@@ -45,14 +45,8 @@ from services.credibility import get_source_credibility
 from services.llm_client import initialize_llm_client
 from services.answer_generator_continued import answer_orchestrator
 
-# Import with fallback for missing modules
-try:
-    from services.auth_service import auth_service
-except ImportError:
-    logger.warning("auth_service module not found, authentication features will be limited")
-    auth_service = None
-
 # Import production services
+from services.auth_service import AuthService
 from services.rate_limiter import RateLimiter, RateLimitMiddleware
 from services.monitoring import PrometheusMetrics, ApplicationInsights, create_monitoring_middleware
 from services.webhook_manager import WebhookManager, WebhookEvent, create_webhook_router

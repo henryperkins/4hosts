@@ -248,7 +248,7 @@ class ResearchSource(Base):
     
     # Metadata
     source_type = Column(String(50))  # article, academic, social, etc.
-    metadata = Column(JSONB, default={})
+    source_metadata = Column(JSONB, default={})
     
     # Status
     is_analyzed = Column(Boolean, default=False)

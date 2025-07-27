@@ -657,3 +657,42 @@ def create_monitoring_stack(config: MonitoringConfig) -> Dict[str, Any]:
         "health": health_service,
         "middleware": MonitoringMiddleware(app_insights, otel_service)
     }
+
+# --- Middleware Factory Helper ---
+
+def create_monitoring_middleware(
+    prometheus_metrics: "PrometheusMetrics",  # noqa: F821 – forward reference
+    app_insights: "ApplicationInsights",     # noqa: F821 – forward reference
+    otel_service: Optional["OpenTelemetryService"] = None  # noqa: F821 – forward reference
+) -> MonitoringMiddleware:
+    """Factory helper that returns an instance of ``MonitoringMiddleware``.
+
+    The existing codebase occasionally expects a convenience wrapper for
+    constructing the monitoring middleware instead of instantiating
+    ``MonitoringMiddleware`` directly.  The underlying middleware only requires
+    ``ApplicationInsights`` (and optionally an ``OpenTelemetryService``) so we
+    merely forward the *insights* argument and ignore ``prometheus_metrics``
+    which is already embedded inside the ``ApplicationInsights`` instance.
+
+    Parameters
+    ----------
+    prometheus_metrics : PrometheusMetrics
+        Prometheus metrics registry instance.  It is kept here to preserve the
+        historical call-signature used throughout the project, but is not
+        required for the middleware itself.
+    app_insights : ApplicationInsights
+        The application insights object used by the middleware to track
+        request and error information.
+    otel_service : OpenTelemetryService, optional
+        Optional OpenTelemetry service for distributed tracing.
+
+    Returns
+    -------
+    MonitoringMiddleware
+        A fully-initialised monitoring middleware ready to be added to a
+        FastAPI application via ``app.add_middleware``.
+    """
+
+    # Only *app_insights* is necessary for the middleware; *prometheus_metrics*
+    # is accepted to maintain backwards compatibility with existing call sites.
+    return MonitoringMiddleware(app_insights, otel_service)

@@ -14,6 +14,7 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
+from pydantic import BaseModel, Field
 
 from services.auth import decode_token, TokenData, UserRole
 
@@ -495,6 +496,12 @@ class ProgressTracker:
         # Clean up
         if research_id in self.research_progress:
             del self.research_progress[research_id]
+
+# --- Research Progress Tracker (alias for compatibility) ---
+
+class ResearchProgressTracker(ProgressTracker):
+    """Alias for ProgressTracker to maintain compatibility with imports"""
+    pass
 
 # --- WebSocket Authentication ---
 

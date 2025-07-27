@@ -329,6 +329,11 @@ class ConnectionPoolMonitor:
 # Create global pool monitor
 pool_monitor = ConnectionPoolMonitor(engine)
 
+# Simple wrapper for main.py
+async def init_database():
+    """Initialize database tables"""
+    await db_manager.create_all_tables()
+
 # --- Database Migrations ---
 
 async def run_migrations():
