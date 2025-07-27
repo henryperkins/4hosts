@@ -7,21 +7,32 @@ import os
 import jwt
 import bcrypt
 import secrets
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, EmailStr, Field
 from fastapi import HTTPException, Depends, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 import logging
 from enum import Enum
 import re
+
+# Import database models and connection
+from database.models import User as DBUser, APIKey as DBAPIKey
+from database.connection import get_db
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY environment variable must be set. Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
@@ -200,19 +211,40 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def create_refresh_token(user_id: str) -> str:
-    """Create a JWT refresh token"""
-    data = {
-        "user_id": user_id,
-        "type": "refresh"
-    }
-    expires_delta = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    return create_access_token(data, expires_delta)
+async def create_refresh_token(
+    user_id: str,
+    device_id: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None
+) -> str:
+    """Create a refresh token using TokenManager"""
+    from services.token_manager import token_manager
+    
+    result = await token_manager.create_refresh_token(
+        user_id=user_id,
+        device_id=device_id,
+        ip_address=ip_address,
+        user_agent=user_agent
+    )
+    
+    return result["token"]
 
-def decode_token(token: str) -> Dict[str, Any]:
+async def decode_token(token: str) -> Dict[str, Any]:
     """Decode and validate a JWT token"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        # Check if JTI is revoked
+        jti = payload.get("jti")
+        if jti:
+            from services.token_manager import token_manager
+            if await token_manager.is_jti_revoked(jti):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has been revoked",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -232,11 +264,7 @@ def decode_token(token: str) -> Dict[str, Any]:
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> TokenData:
     """Get current user from JWT token"""
     token = credentials.credentials
-    payload = decode_token(token)
-    
-    # Check if token is revoked (would check against database/cache)
-    # if is_token_revoked(payload.get("jti")):
-    #     raise HTTPException(status_code=401, detail="Token has been revoked")
+    payload = await decode_token(token)
     
     return TokenData(
         user_id=payload.get("user_id"),
@@ -247,24 +275,63 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
         jti=payload.get("jti")
     )
 
-async def get_api_key_info(api_key: str) -> Optional[APIKey]:
+async def get_api_key_info(api_key: str, db: Session = None) -> Optional[APIKey]:
     """Validate API key and return key info"""
-    # In production, this would query the database
-    # For now, return mock data for valid API keys starting with "fh_"
     if not api_key.startswith("fh_"):
         return None
     
-    # Mock API key info
-    return APIKey(
-        id=f"key_{secrets.token_hex(8)}",
-        key_hash=hash_api_key(api_key),
-        user_id="user_123",
-        name="Production API Key",
-        role=UserRole.PRO,
-        created_at=datetime.now(timezone.utc),
-        is_active=True,
-        rate_limit_tier="pro"
-    )
+    # Get database session
+    if db is None:
+        db = next(get_db())
+        should_close = True
+    else:
+        should_close = False
+    
+    try:
+        # Query all active API keys and check each one
+        db_api_keys = db.query(DBAPIKey).filter(
+            DBAPIKey.is_active == True
+        ).all()
+        
+        # Check each stored hash against the provided API key
+        matching_key = None
+        for db_api_key in db_api_keys:
+            if bcrypt.checkpw(api_key.encode('utf-8'), db_api_key.key_hash.encode('utf-8')):
+                matching_key = db_api_key
+                break
+        
+        if not matching_key:
+            return None
+        
+        # Check expiration
+        if matching_key.expires_at and matching_key.expires_at < datetime.now(timezone.utc):
+            return None
+        
+        # Update last used timestamp
+        matching_key.last_used = datetime.now(timezone.utc)
+        db.commit()
+        
+        # Convert to Pydantic model
+        api_key_info = APIKey(
+            id=matching_key.id,
+            key_hash=matching_key.key_hash,
+            user_id=matching_key.user_id,
+            name=matching_key.name,
+            role=UserRole(matching_key.role),
+            created_at=matching_key.created_at,
+            last_used=matching_key.last_used,
+            expires_at=matching_key.expires_at,
+            is_active=matching_key.is_active,
+            allowed_origins=matching_key.allowed_origins or [],
+            rate_limit_tier=matching_key.rate_limit_tier or "standard",
+            metadata=matching_key.metadata or {}
+        )
+        
+        return api_key_info
+        
+    finally:
+        if should_close and db:
+            db.close()
 
 def check_permissions(required_role: UserRole, user_role: UserRole) -> bool:
     """Check if user has required role permissions"""
@@ -295,12 +362,9 @@ class AuthService:
     """Authentication and authorization service"""
     
     def __init__(self):
-        # In production, this would use a database
-        self.users: Dict[str, User] = {}
-        self.api_keys: Dict[str, APIKey] = {}
-        self.revoked_tokens: set = set()
+        pass
     
-    async def create_user(self, user_data: UserCreate) -> User:
+    async def create_user(self, user_data: UserCreate, db: AsyncSession) -> User:
         """Create a new user"""
         # Validate password strength
         if not validate_password_strength(user_data.password):
@@ -309,71 +373,164 @@ class AuthService:
                 detail="Password must be at least 8 characters with uppercase, lowercase, number, and special character"
             )
         
-        # Check if user already exists
-        if any(u.email == user_data.email for u in self.users.values()):
-            raise HTTPException(status_code=400, detail="Email already registered")
-        
-        # Create user
-        user_id = f"user_{secrets.token_hex(8)}"
-        user = User(
-            id=user_id,
-            email=user_data.email,
-            username=user_data.username,
-            role=user_data.role,
-            auth_provider=user_data.auth_provider
-        )
-        
-        # Store user with hashed password
-        self.users[user_id] = user
-        # In production, store hashed password separately
-        
-        logger.info(f"Created new user: {user.email}")
-        return user
+        try:
+            # Check if user exists
+            from sqlalchemy import select
+            result = await db.execute(
+                select(DBUser).filter(
+                    (DBUser.email == user_data.email) | 
+                    (DBUser.username == user_data.username)
+                )
+            )
+            existing_user = result.scalar_first()
+            
+            if existing_user:
+                raise HTTPException(
+                    status_code=409,
+                    detail="User with this email or username already exists"
+                )
+            
+            # Create user in database
+            db_user = DBUser(
+                id=f"user_{secrets.token_hex(8)}",
+                email=user_data.email,
+                username=user_data.username,
+                password_hash=hash_password(user_data.password),
+                role=user_data.role or UserRole.FREE,
+                is_active=True,
+                provider=user_data.auth_provider or AuthProvider.LOCAL
+            )
+            
+            db.add(db_user)
+            await db.commit()
+            await db.refresh(db_user)
+            
+            # Convert to Pydantic model
+            user = User(
+                id=db_user.id,
+                email=db_user.email,
+                username=db_user.username,
+                role=UserRole(db_user.role),
+                auth_provider=AuthProvider(db_user.provider)
+            )
+            
+            logger.info(f"Created user: {user.email}")
+            return user
+            
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="User already exists"
+            )
     
-    async def authenticate_user(self, login_data: UserLogin) -> Optional[User]:
+    async def authenticate_user(self, login_data: UserLogin, db: Session = None) -> Optional[User]:
         """Authenticate user with email and password"""
-        # In production, query database
-        for user in self.users.values():
-            if user.email == login_data.email:
-                # In production, verify against stored hash
-                # if verify_password(login_data.password, stored_hash):
-                user.last_login = datetime.now(timezone.utc)
-                return user
-        return None
+        # Get database session
+        if db is None:
+            db = next(get_db())
+            should_close = True
+        else:
+            should_close = False
+        
+        try:
+            # Query user from database
+            db_user = db.query(DBUser).filter(DBUser.email == login_data.email).first()
+            
+            if not db_user:
+                return None
+            
+            # Verify password
+            if not verify_password(login_data.password, db_user.password_hash):
+                return None
+            
+            # Check if user is active
+            if not db_user.is_active:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Account is disabled"
+                )
+            
+            # Update last login
+            db_user.last_login = datetime.now(timezone.utc)
+            db.commit()
+            
+            # Convert to Pydantic model
+            user = User(
+                id=db_user.id,
+                email=db_user.email,
+                username=db_user.username,
+                role=UserRole(db_user.role),
+                auth_provider=AuthProvider(db_user.provider)
+            )
+            
+            return user
+            
+        finally:
+            if should_close and db:
+                db.close()
     
-    async def create_api_key(self, user_id: str, key_name: str) -> str:
+    async def create_api_key(self, user_id: str, key_name: str, db: Session = None) -> str:
         """Create a new API key for user"""
-        # Get user
-        user = self.users.get(user_id)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+        # Get database session
+        if db is None:
+            db = next(get_db())
+            should_close = True
+        else:
+            should_close = False
+            
+        try:
+            # Get user
+            db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+            if not db_user:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            # Generate key
+            api_key = generate_api_key()
+            key_id = f"key_{secrets.token_hex(8)}"
+            
+            # Create key record in database
+            db_api_key = DBAPIKey(
+                id=key_id,
+                key_hash=hash_api_key(api_key),
+                user_id=user_id,
+                name=key_name,
+                role=db_user.role,
+                is_active=True,
+                created_at=datetime.now(timezone.utc)
+            )
+            
+            db.add(db_api_key)
+            db.commit()
+            
+            logger.info(f"Created API key '{key_name}' for user {user_id}")
+            return api_key  # Return unhashed key only once
+            
+        finally:
+            if should_close and db:
+                db.close()
+    
+    async def revoke_token(self, jti: str, token_type: str = "access", user_id: str = None, expires_at: datetime = None):
+        """Revoke a JWT token"""
+        from services.token_manager import token_manager
         
-        # Generate key
-        api_key = generate_api_key()
-        key_id = f"key_{secrets.token_hex(8)}"
+        if not expires_at:
+            expires_at = datetime.now(timezone.utc) + timedelta(days=1)
         
-        # Create key record
-        key_record = APIKey(
-            id=key_id,
-            key_hash=hash_api_key(api_key),
-            user_id=user_id,
-            name=key_name,
-            role=user.role
+        await token_manager.add_revoked_jti(
+            jti=jti,
+            token_type=token_type,
+            user_id=user_id or "unknown",
+            expires_at=expires_at,
+            reason="manual_revocation"
         )
         
-        self.api_keys[key_id] = key_record
-        
-        logger.info(f"Created API key '{key_name}' for user {user_id}")
-        return api_key  # Return unhashed key only once
-    
-    async def revoke_token(self, jti: str):
-        """Revoke a JWT token"""
-        self.revoked_tokens.add(jti)
         logger.info(f"Revoked token: {jti}")
     
-    def is_token_revoked(self, jti: str) -> bool:
+    async def is_token_revoked(self, jti: str) -> bool:
         """Check if token is revoked"""
-        return jti in self.revoked_tokens
+        from services.token_manager import token_manager
+        return await token_manager.is_jti_revoked(jti)
     
     def get_user_rate_limits(self, role: UserRole) -> Dict[str, Any]:
         """Get rate limits for user role"""
@@ -439,44 +596,195 @@ oauth_service = OAuth2Service()
 # --- Session Management ---
 
 class SessionManager:
-    """Manage user sessions and active tokens"""
+    """Manage user sessions with database backing"""
     
-    def __init__(self):
-        self.active_sessions: Dict[str, Dict[str, Any]] = {}
+    def __init__(self, redis_url: Optional[str] = None):
         self.session_timeout = timedelta(hours=24)
+        self.redis_client = None
+        
+        if redis_url:
+            try:
+                import redis
+                self.redis_client = redis.from_url(redis_url, decode_responses=True)
+                self.redis_client.ping()
+                logger.info("Connected to Redis for session management")
+            except Exception as e:
+                logger.warning(f"Failed to connect to Redis: {e}")
     
-    def create_session(self, user_id: str, token_data: TokenData) -> str:
+    async def create_session(
+        self,
+        user_id: str,
+        token_data: TokenData,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        device_id: Optional[str] = None,
+        db: Session = None
+    ) -> str:
         """Create a new session"""
-        session_id = secrets.token_urlsafe(32)
-        self.active_sessions[session_id] = {
-            "user_id": user_id,
-            "token_jti": token_data.jti,
-            "created_at": datetime.now(timezone.utc),
-            "last_activity": datetime.now(timezone.utc),
-            "ip_address": None,  # Would be set from request
-            "user_agent": None   # Would be set from request
-        }
-        return session_id
+        if db is None:
+            db = next(get_db())
+            should_close = True
+        else:
+            should_close = False
+            
+        try:
+            from database.models import UserSession as DBUserSession
+            
+            session_token = f"sess_{secrets.token_urlsafe(32)}"
+            expires_at = datetime.now(timezone.utc) + self.session_timeout
+            
+            # Create database record
+            db_session = DBUserSession(
+                user_id=user_id,
+                session_token=session_token,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                device_id=device_id,
+                is_active=True,
+                expires_at=expires_at
+            )
+            
+            db.add(db_session)
+            db.commit()
+            db.refresh(db_session)
+            
+            # Cache in Redis if available
+            if self.redis_client:
+                cache_key = f"session:{session_token}"
+                cache_data = json.dumps({
+                    "user_id": str(user_id),
+                    "session_id": str(db_session.id),
+                    "expires_at": expires_at.isoformat()
+                })
+                self.redis_client.setex(
+                    cache_key,
+                    int(self.session_timeout.total_seconds()),
+                    cache_data
+                )
+            
+            logger.info(f"Created session for user {user_id}")
+            return session_token
+            
+        finally:
+            if should_close and db:
+                db.close()
     
-    def validate_session(self, session_id: str) -> bool:
+    async def validate_session(self, session_token: str, db: Session = None) -> Optional[Dict[str, Any]]:
         """Validate if session is still active"""
-        session = self.active_sessions.get(session_id)
-        if not session:
-            return False
+        # Check Redis cache first
+        if self.redis_client:
+            cache_key = f"session:{session_token}"
+            cached_data = self.redis_client.get(cache_key)
+            if cached_data:
+                session_data = json.loads(cached_data)
+                return {
+                    "user_id": session_data["user_id"],
+                    "session_id": session_data["session_id"]
+                }
         
-        # Check timeout
-        if datetime.now(timezone.utc) - session["last_activity"] > self.session_timeout:
-            del self.active_sessions[session_id]
-            return False
-        
-        # Update last activity
-        session["last_activity"] = datetime.now(timezone.utc)
-        return True
+        # Check database
+        if db is None:
+            db = next(get_db())
+            should_close = True
+        else:
+            should_close = False
+            
+        try:
+            from database.models import UserSession as DBUserSession
+            
+            db_session = db.query(DBUserSession).filter(
+                DBUserSession.session_token == session_token,
+                DBUserSession.is_active == True,
+                DBUserSession.expires_at > datetime.now(timezone.utc)
+            ).first()
+            
+            if not db_session:
+                return None
+                
+            # Update last activity
+            db_session.last_activity = datetime.now(timezone.utc)
+            db.commit()
+            
+            # Update cache
+            if self.redis_client:
+                cache_key = f"session:{session_token}"
+                cache_data = json.dumps({
+                    "user_id": str(db_session.user_id),
+                    "session_id": str(db_session.id),
+                    "expires_at": db_session.expires_at.isoformat()
+                })
+                self.redis_client.setex(
+                    cache_key,
+                    int(self.session_timeout.total_seconds()),
+                    cache_data
+                )
+            
+            return {
+                "user_id": str(db_session.user_id),
+                "session_id": str(db_session.id)
+            }
+            
+        finally:
+            if should_close and db:
+                db.close()
     
-    def end_session(self, session_id: str):
+    async def end_session(self, session_token: str, db: Session = None):
         """End a user session"""
-        if session_id in self.active_sessions:
-            del self.active_sessions[session_id]
+        # Remove from cache
+        if self.redis_client:
+            self.redis_client.delete(f"session:{session_token}")
+        
+        # Update database
+        if db is None:
+            db = next(get_db())
+            should_close = True
+        else:
+            should_close = False
+            
+        try:
+            from database.models import UserSession as DBUserSession
+            
+            db_session = db.query(DBUserSession).filter(
+                DBUserSession.session_token == session_token
+            ).first()
+            
+            if db_session:
+                db_session.is_active = False
+                db.commit()
+                logger.info(f"Ended session for user {db_session.user_id}")
+                
+        finally:
+            if should_close and db:
+                db.close()
+    
+    async def end_all_user_sessions(self, user_id: str, db: Session = None):
+        """End all sessions for a user"""
+        if db is None:
+            db = next(get_db())
+            should_close = True
+        else:
+            should_close = False
+            
+        try:
+            from database.models import UserSession as DBUserSession
+            
+            db_sessions = db.query(DBUserSession).filter(
+                DBUserSession.user_id == user_id,
+                DBUserSession.is_active == True
+            ).all()
+            
+            for session in db_sessions:
+                session.is_active = False
+                # Remove from cache
+                if self.redis_client:
+                    self.redis_client.delete(f"session:{session.session_token}")
+            
+            db.commit()
+            logger.info(f"Ended all sessions for user {user_id}")
+            
+        finally:
+            if should_close and db:
+                db.close()
 
 # Create global session manager
-session_manager = SessionManager()
+session_manager = SessionManager(redis_url=os.getenv("REDIS_URL"))

@@ -36,13 +36,26 @@ export const RegisterForm: React.FC = () => {
       return
     }
 
+    // Check password complexity
+    const hasUpperCase = /[A-Z]/.test(formData.password)
+    const hasLowerCase = /[a-z]/.test(formData.password)
+    const hasNumber = /[0-9]/.test(formData.password)
+    const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(formData.password)
+
+    if (!hasUpperCase || !hasLowerCase || !hasNumber || !hasSpecialChar) {
+      setError('Password must contain uppercase, lowercase, number, and special character')
+      return
+    }
+
     setIsLoading(true)
 
     try {
       await register(formData.username, formData.email, formData.password)
       navigate('/')
     } catch (error) {
-      // Error is handled by AuthContext
+      // Error is handled by AuthContext, but we should also show it here
+      console.error('Registration error in form:', error)
+      setError(error instanceof Error ? error.message : 'Registration failed')
     } finally {
       setIsLoading(false)
     }

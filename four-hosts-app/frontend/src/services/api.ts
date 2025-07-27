@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
 // Feature flags from environment (available for conditional feature enabling)
 // const ENABLE_WEBSOCKET = import.meta.env.VITE_ENABLE_WEBSOCKET !== 'false'
@@ -93,10 +93,26 @@ class APIService {
     }
 
     try {
-      return await fetch(`${API_BASE_URL}${url}`, {
+      console.log('API Request:', {
+        url: `${API_BASE_URL}${url}`,
+        method: options.method || 'GET',
+        headers,
+        body: options.body,
+        bodyParsed: options.body ? JSON.parse(options.body as string) : null
+      })
+
+      const response = await fetch(`${API_BASE_URL}${url}`, {
         ...options,
         headers,
       })
+
+      console.log('API Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      })
+
+      return response
     } catch (error) {
       // Handle network errors (backend not running)
       console.error('Network error:', error)
@@ -105,18 +121,38 @@ class APIService {
   }
 
   // Authentication endpoints
-  async register(username: string, email: string, password: string): Promise<User> {
+  async register(username: string, email: string, password: string): Promise<AuthTokens> {
     const response = await this.fetchWithAuth('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ username, email, password }),
+      body: JSON.stringify({ username, email, password, role: 'free' }),
     })
 
     if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.detail || 'Registration failed')
+      let errorMessage = 'Registration failed'
+      try {
+        const errorText = await response.text()
+        console.error('Registration error response text:', errorText)
+        try {
+          const error = JSON.parse(errorText)
+          console.error('Registration error parsed:', error)
+          errorMessage = error.detail || error.message || errorMessage
+          if (Array.isArray(error.detail)) {
+            errorMessage = error.detail[0]?.msg || errorMessage
+          }
+        } catch (jsonError) {
+          console.error('Failed to parse error as JSON:', jsonError)
+          errorMessage = errorText || errorMessage
+        }
+      } catch (e) {
+        console.error('Failed to read error response:', e)
+      }
+      throw new Error(errorMessage)
     }
 
-    return response.json()
+    const tokens = await response.json()
+    this.authToken = tokens.access_token
+    localStorage.setItem('auth_token', tokens.access_token)
+    return tokens
   }
 
   async login(email: string, password: string): Promise<AuthTokens> {
@@ -126,8 +162,22 @@ class APIService {
     })
 
     if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.detail || 'Login failed')
+      let errorMessage = 'Login failed'
+      try {
+        const errorText = await response.text()
+        console.error('Login error response text:', errorText)
+        try {
+          const error = JSON.parse(errorText)
+          console.error('Login error parsed:', error)
+          errorMessage = error.detail || error.message || errorMessage
+        } catch (jsonError) {
+          console.error('Failed to parse error as JSON:', jsonError)
+          errorMessage = errorText || errorMessage
+        }
+      } catch (e) {
+        console.error('Failed to read error response:', e)
+      }
+      throw new Error(errorMessage)
     }
 
     const tokens = await response.json()
@@ -144,7 +194,7 @@ class APIService {
   }
 
   async getCurrentUser(): Promise<User> {
-    const response = await this.fetchWithAuth('/auth/me')
+    const response = await this.fetchWithAuth('/auth/user')
     
     if (!response.ok) {
       throw new Error('Failed to get user info')

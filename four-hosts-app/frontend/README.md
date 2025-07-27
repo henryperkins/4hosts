@@ -83,7 +83,7 @@ src/
 ├── services/           # API services
 │   └── api.ts
 ├── types.ts            # TypeScript type definitions
-├── App.enhanced.tsx    # Main app component with routing
+├── App.tsx             # Main app component with routing
 └── main.tsx           # Entry point
 ```
 

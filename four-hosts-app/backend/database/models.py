@@ -339,7 +339,7 @@ class Webhook(Base):
     # Configuration
     url = Column(Text, nullable=False)
     secret = Column(String(255))  # For HMAC signing
-    events = relationship("WebhookEvent", secondary=webhook_events)
+    # Note: events are stored in the webhook_events_mapping association table
     
     # Options
     is_active = Column(Boolean, default=True, nullable=False)

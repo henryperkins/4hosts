@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, EmailStr, HttpUrl
 from dotenv import load_dotenv
 import jwt
 import uvicorn
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, REGISTRY
+from prometheus_client import Counter, Histogram, Gauge, generate_latest
 
 # Load environment variables
 load_dotenv()
@@ -44,6 +44,7 @@ from services.cache import initialize_cache
 from services.credibility import get_source_credibility
 from services.llm_client import initialize_llm_client
 from services.answer_generator_continued import answer_orchestrator
+from services.research_store import research_store
 
 # Import production services
 from services.auth_service import AuthService
@@ -57,13 +58,31 @@ from database.models import User as DBUser, ResearchQuery as Research, Webhook a
 from utils.custom_docs import custom_openapi, get_custom_swagger_ui_html, get_custom_redoc_html
 
 # Import authentication components
-from services.auth import get_current_user as auth_get_current_user, TokenData, User, auth_service as real_auth_service
+from services.auth import (
+    get_current_user as auth_get_current_user,
+    TokenData,
+    User,
+    auth_service as real_auth_service,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    SECRET_KEY,
+    ALGORITHM,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    UserRole as AuthUserRole,
+    require_role
+)
+# Handle session_manager import safely
+try:
+    from services.auth import session_manager
+except ImportError:
+    # Create a mock session manager if not available
+    class MockSessionManager:
+        async def end_all_user_sessions(self, user_id: str):
+            pass
+    session_manager = MockSessionManager()
+from services.token_manager import token_manager
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
-# Constants
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Initialize services
 auth_service = AuthService()
@@ -73,11 +92,16 @@ connection_manager = ConnectionManager()
 progress_tracker = ResearchProgressTracker(connection_manager)
 export_service = ExportService()
 
-# Metrics
-request_count = Counter('http_requests_total', 'Total HTTP requests', ['method', 'endpoint', 'status'])
-request_duration = Histogram('http_request_duration_seconds', 'HTTP request duration', ['method', 'endpoint'])
-active_research = Gauge('active_research_queries', 'Number of active research queries')
-websocket_connections = Gauge('websocket_connections', 'Number of active WebSocket connections')
+# Create middleware instance
+rate_limit_middleware_instance = None
+
+# Metrics - Initialize with a new registry if needed
+from prometheus_client import CollectorRegistry, Counter, Histogram, Gauge
+metrics_registry = CollectorRegistry()
+request_count = Counter('http_requests_total', 'Total HTTP requests', ['method', 'endpoint', 'status'], registry=metrics_registry)
+request_duration = Histogram('http_request_duration_seconds', 'HTTP request duration', ['method', 'endpoint'], registry=metrics_registry)
+active_research = Gauge('active_research_queries', 'Number of active research queries', registry=metrics_registry)
+websocket_connections = Gauge('websocket_connections', 'Number of active WebSocket connections', registry=metrics_registry)
 
 # Data Models
 class Paradigm(str, Enum):
@@ -166,8 +190,7 @@ class WebhookCreate(BaseModel):
     secret: Optional[str] = None
     active: bool = True
 
-# In-memory storage
-research_store: Dict[str, Dict] = {}
+# In-memory storage - will be replaced by research_store
 system_initialized = False
 
 # Application Lifespan Manager
@@ -184,6 +207,10 @@ async def lifespan(app: FastAPI):
         await init_database()
         logger.info("✓ Database initialized")
 
+        # Initialize research store
+        await research_store.initialize()
+        logger.info("✓ Research store initialized")
+
         # Initialize cache system
         cache_success = await initialize_cache()
         if cache_success:
@@ -198,7 +225,7 @@ async def lifespan(app: FastAPI):
         logger.info("✓ LLM client initialized")
 
         # Initialize monitoring
-        prometheus = PrometheusMetrics(REGISTRY)
+        prometheus = PrometheusMetrics(metrics_registry)
         insights = ApplicationInsights(prometheus)
         monitoring_middleware = create_monitoring_middleware(prometheus, insights)
 
@@ -212,6 +239,8 @@ async def lifespan(app: FastAPI):
         # Initialize production services
         app.state.auth_service = auth_service
         app.state.rate_limiter = rate_limiter
+        global rate_limit_middleware_instance
+        rate_limit_middleware_instance = RateLimitMiddleware(rate_limiter)
         app.state.webhook_manager = webhook_manager
         app.state.export_service = export_service
         logger.info("✓ Production services initialized")
@@ -248,7 +277,7 @@ app = FastAPI(
 # Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://api.4hosts.ai"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "https://api.4hosts.ai"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -276,9 +305,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # Rate Limiting Middleware
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    if hasattr(app.state, "rate_limiter"):
-        middleware = RateLimitMiddleware(app.state.rate_limiter)
-        return await middleware(request, call_next)
+    if rate_limit_middleware_instance:
+        return await rate_limit_middleware_instance(request, call_next)
     return await call_next(request)
 
 # Monitoring Middleware
@@ -308,7 +336,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
     user = SimpleNamespace(
         id=token_data.user_id,
         email=token_data.email,
-        role=token_data.role
+        role=UserRole(token_data.role) if isinstance(token_data.role, str) else token_data.role
     )
     return user
 
@@ -368,7 +396,7 @@ async def health_check():
 
 # Authentication Endpoints
 @app.post("/auth/register", response_model=Token, tags=["authentication"])
-async def register(user_data: UserCreate):
+async def register(user_data: UserCreate, request: Request):
     """Register a new user"""
     # Convert to auth module's UserCreate model
     from services.auth import UserCreate as AuthUserCreate
@@ -379,7 +407,10 @@ async def register(user_data: UserCreate):
         role=user_data.role
     )
 
-    user = await real_auth_service.create_user(auth_user_data)
+    # Use async context manager for database session
+    from database.connection import get_db_context
+    async with get_db_context() as db:
+        user = await real_auth_service.create_user(auth_user_data, db)
 
     access_token = create_access_token({
         "user_id": str(user.id),
@@ -387,7 +418,12 @@ async def register(user_data: UserCreate):
         "role": user.role.value
     })
 
-    refresh_token = await real_auth_service.create_api_key(str(user.id), "refresh_token")
+    refresh_token = await create_refresh_token(
+        user_id=str(user.id),
+        device_id=None,
+        ip_address=None,
+        user_agent=None
+    )
 
     return Token(
         access_token=access_token,
@@ -397,7 +433,7 @@ async def register(user_data: UserCreate):
     )
 
 @app.post("/auth/login", response_model=Token, tags=["authentication"])
-async def login(login_data: UserLogin):
+async def login(login_data: UserLogin, request: Request):
     """Login with email and password"""
     # Convert to auth module's UserLogin model
     from services.auth import UserLogin as AuthUserLogin
@@ -416,7 +452,12 @@ async def login(login_data: UserLogin):
         "role": user.role.value
     })
 
-    refresh_token = await real_auth_service.create_api_key(str(user.id), "refresh_token")
+    refresh_token = await create_refresh_token(
+        user_id=str(user.id),
+        device_id=None,
+        ip_address=None,
+        user_agent=None
+    )
 
     return Token(
         access_token=access_token,
@@ -426,51 +467,89 @@ async def login(login_data: UserLogin):
     )
 
 @app.post("/auth/refresh", response_model=Token, tags=["authentication"])
-async def refresh_token(refresh_token: str):
-    """Refresh access token"""
-    # For now, create a simple refresh mechanism
-    # In production, this would validate the refresh token properly
+async def refresh_token(refresh_token: str, request: Request):
+    """Refresh access token using secure token rotation"""
+    # Validate and rotate refresh token
+    token_result = await token_manager.rotate_refresh_token(refresh_token)
+
+    if not token_result:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    # Validate the old token to get user info
+    token_info = await token_manager.validate_refresh_token(refresh_token)
+    if not token_info:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Get user from database
+    from sqlalchemy.orm import Session
+    db = next(get_db())
     try:
-        # Mock refresh token validation
-        if not refresh_token.startswith("fh_"):
-            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        user = db.query(DBUser).filter(DBUser.id == token_info["user_id"]).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
-        # Mock user data (in production, decode refresh token)
-        user_id = "user_123"
-
+        # Create new access token
         access_token = create_access_token({
-            "user_id": user_id,
-            "email": "user@example.com",
-            "role": "pro"
+            "user_id": str(user.id),
+            "email": user.email,
+            "role": user.role
         })
-
-        new_refresh_token = await real_auth_service.create_api_key(user_id, "refresh_token")
 
         return Token(
             access_token=access_token,
-            refresh_token=new_refresh_token,
+            refresh_token=token_result["token"],
             token_type="bearer",
             expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    finally:
+        db.close()
 
 @app.get("/auth/user", tags=["authentication"])
-async def get_current_user_info(current_user: User = Depends(get_current_user)):
+async def get_current_user_info(current_user = Depends(get_current_user)):
     """Get current user information"""
     return {
         "id": str(current_user.id),
         "email": current_user.email,
         "username": getattr(current_user, 'username', current_user.email.split('@')[0]),
-        "role": current_user.role
+        "role": getattr(current_user, 'role', 'free')
     }
+
+@app.post("/auth/logout", tags=["authentication"])
+async def logout(
+    current_user: TokenData = Depends(auth_get_current_user),
+    refresh_token: Optional[str] = None
+):
+    """Logout user by revoking tokens"""
+    # Revoke the access token using its JTI
+    if current_user.jti:
+        await real_auth_service.revoke_token(
+            jti=current_user.jti,
+            token_type="access",
+            user_id=current_user.user_id,
+            expires_at=current_user.exp
+        )
+
+    # Revoke the refresh token if provided
+    if refresh_token:
+        # Revoke all tokens in the refresh token family
+        token_info = await token_manager.validate_refresh_token(refresh_token)
+        if token_info and "family_id" in token_info:
+            await token_manager.revoke_token_family(
+                family_id=token_info["family_id"],
+                reason="user_logout"
+            )
+
+    # End all user sessions
+    await session_manager.end_all_user_sessions(current_user.user_id)
+
+    return {"message": "Successfully logged out"}
 
 # Paradigm Classification
 @app.post("/paradigms/classify", tags=["paradigms"])
 async def classify_paradigm(query: str, current_user: User = Depends(get_current_user)):
     """Classify a query into paradigms"""
     try:
-        classification = await classify_query(query)
+        classification = classify_query(query)  # Remove await
         return {
             "query": query,
             "classification": classification.dict(),
@@ -486,11 +565,21 @@ async def classify_paradigm(query: str, current_user: User = Depends(get_current
 async def submit_research(
     research: ResearchQuery,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ):
     """Submit a research query for paradigm-based analysis"""
     if not system_initialized:
         raise HTTPException(status_code=503, detail="System not initialized")
+
+    # Check role requirements for research depth
+    if research.options.depth == ResearchDepth.DEEP:
+        # Deep research requires at least PRO role
+        if not hasattr(current_user, 'role') or current_user.role not in ['pro', 'enterprise', 'admin']:
+            raise HTTPException(
+                status_code=403,
+                detail="Deep research requires PRO subscription or higher"
+            )
 
     research_id = f"res_{uuid.uuid4().hex[:12]}"
 
@@ -499,7 +588,7 @@ async def submit_research(
 
     try:
         # Classify the query
-        classification = await classify_query(research.query)
+        classification = classify_query(research.query)
 
         # Store research request
         research_data = {
@@ -512,7 +601,7 @@ async def submit_research(
             "created_at": datetime.utcnow().isoformat(),
             "results": None
         }
-        research_store[research_id] = research_data
+        await research_store.set(research_id, research_data)
 
         # Execute real research
         background_tasks.add_task(
@@ -561,10 +650,9 @@ async def get_research_status(
     current_user: User = Depends(get_current_user)
 ):
     """Get the status of a research query"""
-    if research_id not in research_store:
+    research = await research_store.get(research_id)
+    if not research:
         raise HTTPException(status_code=404, detail="Research not found")
-
-    research = research_store[research_id]
 
     # Verify ownership
     if research["user_id"] != str(current_user.id) and current_user.role != UserRole.ADMIN:
@@ -585,10 +673,9 @@ async def get_research_results(
     current_user: User = Depends(get_current_user)
 ):
     """Get completed research results"""
-    if research_id not in research_store:
+    research = await research_store.get(research_id)
+    if not research:
         raise HTTPException(status_code=404, detail="Research not found")
-
-    research = research_store[research_id]
 
     # Verify ownership
     if research["user_id"] != str(current_user.id) and current_user.role != UserRole.ADMIN:
@@ -603,13 +690,12 @@ async def get_research_results(
 async def export_research(
     research_id: str,
     format: str = "pdf",
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role(AuthUserRole.BASIC))
 ):
-    """Export research results"""
-    if research_id not in research_store:
+    """Export research results (requires BASIC subscription or higher)"""
+    research = await research_store.get(research_id)
+    if not research:
         raise HTTPException(status_code=404, detail="Research not found")
-
-    research = research_store[research_id]
 
     # Verify ownership
     if research["user_id"] != str(current_user.id) and current_user.role != UserRole.ADMIN:
@@ -639,19 +725,16 @@ async def get_research_history(
 ):
     """Get user's research history"""
     try:
-        # Filter research by user
-        user_research = [
-            r for r in research_store.values() 
-            if r["user_id"] == str(current_user.id)
-        ]
-        
+        # Get research history for user
+        user_research = await research_store.get_user_research(str(current_user.id), limit + offset)
+
         # Sort by creation date (newest first)
         user_research.sort(key=lambda x: x["created_at"], reverse=True)
-        
+
         # Apply pagination
         total = len(user_research)
         paginated = user_research[offset:offset + limit]
-        
+
         # Format the response
         history = []
         for research in paginated:
@@ -663,18 +746,21 @@ async def get_research_history(
                 "created_at": research["created_at"],
                 "options": research["options"]
             }
-            
+
             # Include results summary if completed
             if research["status"] == ResearchStatus.COMPLETED and research.get("results"):
                 results = research["results"]
+                content_preview = ""
+                if results.get("answer", {}).get("sections"):
+                    content_preview = results["answer"]["sections"][0].get("content", "")[:200] + "..."
                 history_item["summary"] = {
-                    "answer_preview": results.get("answer", {}).get("sections", [{}])[0].get("content", "")[:200] + "...",
+                    "answer_preview": content_preview,
                     "source_count": len(results.get("sources", [])),
                     "total_cost": results.get("cost_info", {}).get("total_cost", 0)
                 }
-            
+
             history.append(history_item)
-        
+
         return {
             "total": total,
             "limit": limit,
@@ -738,7 +824,7 @@ async def get_system_stats(current_user: User = Depends(get_current_user)):
 @app.get("/metrics", tags=["monitoring"])
 async def prometheus_metrics():
     """Prometheus metrics endpoint"""
-    metrics = generate_latest(REGISTRY)
+    metrics = generate_latest(metrics_registry)
     return Response(content=metrics, media_type="text/plain")
 
 # WebSocket endpoint
@@ -789,14 +875,8 @@ app.include_router(
 )
 
 # Helper functions
-def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None):
-    """Create a JWT access token"""
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-async def classify_query(query: str) -> ParadigmClassification:
+def classify_query(query: str) -> ParadigmClassification:
     """Classify a query into paradigms"""
     query_lower = query.lower()
 
@@ -893,7 +973,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
     """Execute real research using the complete pipeline"""
     try:
         # Update status
-        research_store[research_id]["status"] = ResearchStatus.IN_PROGRESS
+        await research_store.update_field(research_id, "status", ResearchStatus.IN_PROGRESS)
 
         # Update progress
         await progress_tracker.update_progress(
@@ -903,7 +983,11 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
         )
 
         # Get classification
-        classification = ParadigmClassification(**research_store[research_id]["paradigm_classification"])
+        research_data = await research_store.get(research_id)
+        if not research_data:
+            raise Exception("Research data not found")
+
+        classification = ParadigmClassification(**research_data["paradigm_classification"])
 
         # Create context for research
         mock_classification = SimpleNamespace()
@@ -1057,9 +1141,9 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
         )
 
         # Store results
-        research_store[research_id]["status"] = ResearchStatus.COMPLETED
-        research_store[research_id]["results"] = final_result.dict()
-        research_store[research_id]["cost_info"] = execution_result.cost_breakdown
+        await research_store.update_field(research_id, "status", ResearchStatus.COMPLETED)
+        await research_store.update_field(research_id, "results", final_result.dict())
+        await research_store.update_field(research_id, "cost_info", execution_result.cost_breakdown)
 
         # Trigger webhook
         await webhook_manager.trigger_event(
@@ -1081,8 +1165,8 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
 
     except Exception as e:
         logger.error(f"Research execution failed for {research_id}: {str(e)}")
-        research_store[research_id]["status"] = ResearchStatus.FAILED
-        research_store[research_id]["error"] = str(e)
+        await research_store.update_field(research_id, "status", ResearchStatus.FAILED)
+        await research_store.update_field(research_id, "error", str(e))
 
         # Update progress with error
         await progress_tracker.update_progress(
@@ -1105,30 +1189,37 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
         active_research.dec()
 
         # Track error in monitoring
-        if hasattr(app.state, "monitoring"):
-            await app.state.monitoring["insights"].track_error(
-                error_type="research_execution_error",
-                severity="error",
-                details={
-                    "research_id": research_id,
-                    "error": str(e),
-                    "user_id": user_id
-                }
-            )
+        if hasattr(app.state, "monitoring") and "insights" in app.state.monitoring:
+            try:
+                await app.state.monitoring["insights"].track_error(
+                    error_type="research_execution_error",
+                    severity="error",
+                    details={
+                        "research_id": research_id,
+                        "error": str(e),
+                        "user_id": user_id
+                    }
+                )
+            except Exception:
+                pass  # Don't let monitoring errors break the flow
 
 # Error Handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Handle HTTP exceptions"""
-    await app.state.monitoring["insights"].track_error(
-        error_type="http_error",
-        severity="warning",
-        details={
-            "status_code": exc.status_code,
-            "detail": exc.detail,
-            "path": request.url.path
-        }
-    )
+    if hasattr(app.state, "monitoring") and "insights" in app.state.monitoring:
+        try:
+            await app.state.monitoring["insights"].track_error(
+                error_type="http_error",
+                severity="warning",
+                details={
+                    "status_code": exc.status_code,
+                    "detail": exc.detail,
+                    "path": request.url.path
+                }
+            )
+        except Exception:
+            pass  # Don't let monitoring errors break the response
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -1143,15 +1234,19 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle general exceptions"""
-    await app.state.monitoring["insights"].track_error(
-        error_type="unhandled_error",
-        severity="error",
-        details={
-            "error": str(exc),
-            "type": type(exc).__name__,
-            "path": request.url.path
-        }
-    )
+    if hasattr(app.state, "monitoring") and "insights" in app.state.monitoring:
+        try:
+            await app.state.monitoring["insights"].track_error(
+                error_type="unhandled_error",
+                severity="error",
+                details={
+                    "error": str(exc),
+                    "type": type(exc).__name__,
+                    "path": request.url.path
+                }
+            )
+        except Exception:
+            pass  # Don't let monitoring errors break the response
 
     return JSONResponse(
         status_code=500,
@@ -1168,12 +1263,12 @@ if __name__ == "__main__":
     environment = os.getenv("ENVIRONMENT", "production")
 
     if environment == "production":
-        # Production configuration
+        # Production configuration - SINGLE WORKER until Redis is implemented
         uvicorn.run(
             "main:app",
             host="0.0.0.0",
             port=8000,
-            workers=4,
+            workers=1,  # Changed from 4 to 1
             log_level="info",
             access_log=True,
             reload=False,

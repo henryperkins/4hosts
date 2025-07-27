@@ -11,7 +11,7 @@ from typing import Dict, Set, Any, Optional, List
 from enum import Enum
 import uuid
 
-from fastapi import WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi import WebSocket, WebSocketDisconnect, Depends, Query, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 from pydantic import BaseModel, Field
@@ -504,23 +504,15 @@ class ResearchProgressTracker(ProgressTracker):
     pass
 
 # --- WebSocket Authentication ---
-
-async def get_websocket_user(
-    websocket: WebSocket,
-    token: Optional[str] = Query(None)
-) -> Optional[TokenData]:
-    """Authenticate WebSocket connection"""
-    if not token:
-        await websocket.close(code=1008, reason="Missing authentication token")
-        return None
-    
-    try:
-        # Decode token
-        user_data = decode_token(token)
-        return TokenData(**user_data)
-    except Exception as e:
-        await websocket.close(code=1008, reason="Invalid authentication token")
-        return None
+# Import enhanced authentication from websocket_auth module
+from services.websocket_auth import (
+    authenticate_websocket,
+    verify_websocket_rate_limit,
+    check_websocket_message_rate,
+    check_websocket_subscription_limit,
+    cleanup_websocket_connection,
+    secure_websocket_endpoint
+)
 
 # --- WebSocket Endpoint ---
 
@@ -536,39 +528,84 @@ def create_websocket_router(
     @router.websocket("/ws")
     async def websocket_endpoint(
         websocket: WebSocket,
-        token: Optional[str] = Query(None)
+        authorization: Optional[str] = Header(None),
+        sec_websocket_protocol: Optional[str] = Header(None),
+        origin: Optional[str] = Header(None),
+        user_agent: Optional[str] = Header(None),
+        x_real_ip: Optional[str] = Header(None),
+        x_forwarded_for: Optional[str] = Header(None),
+        token: Optional[str] = Query(None)  # Deprecated, for backward compatibility
     ):
-        """WebSocket endpoint for real-time updates"""
-        # Authenticate
-        user_data = await get_websocket_user(websocket, token)
-        if not user_data:
+        """Enhanced WebSocket endpoint with security features"""
+        # Use secure authentication
+        auth_result = await secure_websocket_endpoint(
+            websocket,
+            authorization=authorization,
+            sec_websocket_protocol=sec_websocket_protocol,
+            origin=origin,
+            user_agent=user_agent,
+            x_real_ip=x_real_ip,
+            x_forwarded_for=x_forwarded_for
+        )
+        
+        if not auth_result:
             return
         
+        user_data = auth_result["user_data"]
+        connection_id = auth_result["connection_id"]
+        
         try:
-            # Connect
+            # Connect with enhanced metadata
             await connection_manager.connect(
                 websocket,
                 user_data.user_id,
                 metadata={
-                    "user_agent": websocket.headers.get("user-agent"),
-                    "origin": websocket.headers.get("origin")
+                    "user_agent": auth_result["user_agent"],
+                    "origin": auth_result["origin"],
+                    "client_ip": auth_result["client_ip"],
+                    "connection_id": connection_id,
+                    "role": user_data.role.value
                 }
             )
             
-            # Handle messages
+            # Handle messages with rate limiting
             while True:
                 # Receive message
                 data = await websocket.receive_json()
+                
+                # Check message rate limit
+                if not await check_websocket_message_rate(user_data.user_id, user_data.role):
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "rate_limit_exceeded",
+                        "message": "Message rate limit exceeded. Please slow down."
+                    })
+                    continue
+                
+                # Check subscription limits for subscribe messages
+                if data.get("type") == "subscribe":
+                    if not await check_websocket_subscription_limit(connection_id, user_data.role):
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": "subscription_limit_exceeded",
+                            "message": "Maximum subscriptions reached for this connection."
+                        })
+                        continue
                 
                 # Handle message
                 await connection_manager.handle_client_message(websocket, data)
                 
         except WebSocketDisconnect:
             await connection_manager.disconnect(websocket)
+            await cleanup_websocket_connection(user_data.user_id, connection_id)
         except Exception as e:
-            logger.error(f"WebSocket error: {e}")
+            logger.error(f"WebSocket error for user {user_data.user_id}: {e}")
             await connection_manager.disconnect(websocket)
-            await websocket.close(code=1011, reason="Internal server error")
+            await cleanup_websocket_connection(user_data.user_id, connection_id)
+            try:
+                await websocket.close(code=1011, reason="Internal server error")
+            except:
+                pass
     
     return router
 

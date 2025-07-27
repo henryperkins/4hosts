@@ -14,7 +14,7 @@ import logging
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from services.auth import UserRole, RATE_LIMITS
+from services.auth import UserRole, RATE_LIMITS, get_api_key_info, decode_token
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -363,20 +363,40 @@ class RateLimitMiddleware:
         # Check for API key in header
         api_key = request.headers.get("X-API-Key")
         if api_key:
-            return f"api_key:{api_key}"
+            api_key_info = await get_api_key_info(api_key)
+            if api_key_info:
+                # Store API key info in request state for role extraction
+                request.state.api_key_info = api_key_info
+                return f"api_key:{api_key_info.user_id}"
+            return None
         
         # Check for Bearer token
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
-            # In production, decode JWT to get user ID
-            return f"user:mock_user_id"
+            try:
+                token = auth_header.split(" ")[1]
+                from services.auth import decode_token
+                payload = await decode_token(token)
+                # Store token data in request state for role extraction
+                request.state.token_data = payload
+                return f"user:{payload.get('user_id')}"
+            except Exception:
+                return None
         
         return None
     
     async def _extract_role(self, request: Request) -> UserRole:
         """Extract user role from request"""
-        # In production, this would decode the JWT or look up API key
-        # For now, return a default role
+        # Check if we have API key info
+        if hasattr(request.state, 'api_key_info'):
+            return request.state.api_key_info.role
+        
+        # Check if we have token data
+        if hasattr(request.state, 'token_data'):
+            role_str = request.state.token_data.get('role', 'free')
+            return UserRole(role_str)
+        
+        # Default to free tier
         return UserRole.FREE
 
 # --- Adaptive Rate Limiting ---

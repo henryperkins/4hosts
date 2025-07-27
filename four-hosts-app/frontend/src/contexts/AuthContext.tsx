@@ -87,9 +87,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const register = async (username: string, email: string, password: string) => {
     try {
-      const user = await api.register(username, email, password)
-      // Auto-login after registration using email
-      await api.login(email, password)
+      // Register returns tokens, not user
+      await api.register(username, email, password)
+      // Get user info after registration
+      const user = await api.getCurrentUser()
       setAuthState({
         isAuthenticated: true,
         user,
