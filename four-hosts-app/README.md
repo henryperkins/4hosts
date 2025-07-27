@@ -95,6 +95,10 @@ This is an MVP implementation with simulated research results. The paradigm clas
 - Caching layer for performance
 - User authentication and preferences
 
+## Azure OpenAI Integration
+
+This implementation includes support for Azure OpenAI services. See [backend/README_AZURE_OPENAI.md](backend/README_AZURE_OPENAI.md) for configuration details.
+
 ## License
 
 This project is part of the Four Hosts Agentic Research System.

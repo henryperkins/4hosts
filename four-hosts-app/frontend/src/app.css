@@ -1,0 +1,32 @@
+/* Custom theme variables for Tailwind CSS v4 */
+@theme {
+  --color-paradigm-dolores: #ef4444;
+  --color-paradigm-teddy: #3b82f6;
+  --color-paradigm-bernard: #10b981;
+  --color-paradigm-maeve: #8b5cf6;
+  
+  --animate-spin-slow: spin 2s linear infinite;
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Custom utility classes */
+.paradigm-dolores {
+  background-color: var(--color-paradigm-dolores);
+}
+
+.paradigm-teddy {
+  background-color: var(--color-paradigm-teddy);
+}
+
+.paradigm-bernard {
+  background-color: var(--color-paradigm-bernard);
+}
+
+.paradigm-maeve {
+  background-color: var(--color-paradigm-maeve);
+}
+
+/* Dark mode support */
+.dark {
+  color-scheme: dark;
+}

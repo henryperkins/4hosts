@@ -52,3 +52,43 @@ export interface ResearchResult {
     paradigms_used: Paradigm[]
   }
 }
+
+// Authentication types
+export interface User {
+  id: string
+  username: string
+  email: string
+  created_at: string
+  preferences?: UserPreferences
+}
+
+export interface UserPreferences {
+  default_paradigm?: Paradigm
+  default_depth?: 'quick' | 'standard' | 'deep'
+  enable_real_search?: boolean
+  enable_ai_classification?: boolean
+  theme?: 'light' | 'dark'
+}
+
+export interface AuthState {
+  isAuthenticated: boolean
+  user: User | null
+  loading: boolean
+}
+
+// WebSocket types
+export interface WSMessage {
+  type: 'status_update' | 'progress' | 'result' | 'error'
+  research_id: string
+  data: any
+}
+
+// Research history
+export interface ResearchHistoryItem {
+  research_id: string
+  query: string
+  paradigm: Paradigm
+  status: string
+  created_at: string
+  processing_time?: number
+}

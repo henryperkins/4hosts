@@ -1,0 +1,147 @@
+import React, { createContext, useContext, useState, useEffect } from 'react'
+import type { ReactNode } from 'react'
+import type { AuthState } from '../types'
+import api from '../services/api'
+import toast from 'react-hot-toast'
+
+interface AuthContextType extends AuthState {
+  login: (username: string, password: string) => Promise<void>
+  register: (username: string, email: string, password: string) => Promise<void>
+  logout: () => Promise<void>
+  updatePreferences: (preferences: any) => Promise<void>
+}
+
+const AuthContext = createContext<AuthContextType | null>(null)
+
+export const useAuth = () => {
+  const context = useContext(AuthContext)
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider')
+  }
+  return context
+}
+
+interface AuthProviderProps {
+  children: ReactNode
+}
+
+export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
+  const [authState, setAuthState] = useState<AuthState>({
+    isAuthenticated: false,
+    user: null,
+    loading: true,
+  })
+
+  useEffect(() => {
+    // Check if user is already logged in
+    const checkAuth = async () => {
+      const token = localStorage.getItem('auth_token')
+      if (token) {
+        try {
+          const user = await api.getCurrentUser()
+          setAuthState({
+            isAuthenticated: true,
+            user,
+            loading: false,
+          })
+        } catch (error) {
+          // Token invalid, clear it
+          localStorage.removeItem('auth_token')
+          setAuthState({
+            isAuthenticated: false,
+            user: null,
+            loading: false,
+          })
+        }
+      } else {
+        setAuthState({
+          isAuthenticated: false,
+          user: null,
+          loading: false,
+        })
+      }
+    }
+
+    checkAuth()
+  }, [])
+
+  const login = async (username: string, password: string) => {
+    try {
+      await api.login(username, password)
+      const user = await api.getCurrentUser()
+      setAuthState({
+        isAuthenticated: true,
+        user,
+        loading: false,
+      })
+      toast.success('Logged in successfully!')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Login failed')
+      throw error
+    }
+  }
+
+  const register = async (username: string, email: string, password: string) => {
+    try {
+      const user = await api.register(username, email, password)
+      // Auto-login after registration
+      await api.login(username, password)
+      setAuthState({
+        isAuthenticated: true,
+        user,
+        loading: false,
+      })
+      toast.success('Registration successful!')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Registration failed')
+      throw error
+    }
+  }
+
+  const logout = async () => {
+    try {
+      await api.logout()
+      setAuthState({
+        isAuthenticated: false,
+        user: null,
+        loading: false,
+      })
+      toast.success('Logged out successfully')
+    } catch (error) {
+      // Even if logout fails on server, clear local state
+      setAuthState({
+        isAuthenticated: false,
+        user: null,
+        loading: false,
+      })
+    }
+  }
+
+  const updatePreferences = async (preferences: any) => {
+    try {
+      const updatedUser = await api.updateUserPreferences(preferences)
+      setAuthState(prev => ({
+        ...prev,
+        user: updatedUser,
+      }))
+      toast.success('Preferences updated')
+    } catch (error) {
+      toast.error('Failed to update preferences')
+      throw error
+    }
+  }
+
+  return (
+    <AuthContext.Provider
+      value={{
+        ...authState,
+        login,
+        register,
+        logout,
+        updatePreferences,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  )
+}
