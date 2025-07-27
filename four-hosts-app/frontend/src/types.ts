@@ -18,32 +18,16 @@ export interface ResearchResult {
       confidence: number
       approach: string
       focus: string
+    },
+    secondary?: {
+        paradigm: Paradigm
+        confidence: number
+        approach: string
+        focus: string
     }
-  }
-  answer: {
-    summary: string
-    sections: Array<{
-      title: string
-      paradigm: Paradigm
-      content: string
-      confidence: number
-      sources_count: number
-    }>
-    action_items: Array<{
-      priority: string
-      action: string
-      timeframe: string
-      paradigm: Paradigm
-    }>
-    citations: Array<{
-      id: string
-      source: string
-      title: string
-      url: string
-      credibility_score: number
-      paradigm_alignment: Paradigm
-    }>
-  }
+  },
+  answer: GeneratedAnswer
+  integrated_synthesis?: IntegratedSynthesis
   metadata: {
     total_sources_analyzed: number
     high_quality_sources: number
@@ -51,6 +35,56 @@ export interface ResearchResult {
     processing_time_seconds: number
     paradigms_used: Paradigm[]
   }
+}
+
+export interface GeneratedAnswer {
+    summary: string
+    sections: AnswerSection[]
+    action_items: ActionItem[]
+    citations: Citation[]
+}
+
+export interface AnswerSection {
+  title: string
+  paradigm: Paradigm
+  content: string
+  confidence: number
+  sources_count: number
+  citations: string[]
+  key_insights: string[]
+}
+
+export interface ActionItem {
+  priority: string
+  action: string
+  timeframe: string
+  paradigm: Paradigm
+}
+
+export interface Citation {
+  id: string
+  source: string
+  title: string
+  url: string
+  credibility_score: number
+  paradigm_alignment: Paradigm
+}
+
+export interface Conflict {
+    conflict_type: string
+    description: string
+    primary_paradigm_view: string
+    secondary_paradigm_view: string
+    confidence: number
+}
+
+export interface IntegratedSynthesis {
+    primary_answer: GeneratedAnswer
+    secondary_perspective: AnswerSection | null
+    conflicts_identified: Conflict[]
+    synergies: string[]
+    integrated_summary: string
+    confidence_score: number
 }
 
 // Authentication types

@@ -293,6 +293,184 @@ class ArxivAPI(BaseSearchAPI):
         
         return results
 
+class BraveSearchAPI(BaseSearchAPI):
+    """Brave Search API implementation with full feature support"""
+    
+    def __init__(self, api_key: str, rate_limiter: Optional[RateLimiter] = None):
+        super().__init__(api_key, rate_limiter)
+        self.base_url = "https://api.search.brave.com/res/v1/web/search"
+    
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
+        """Search using Brave Search API with comprehensive result parsing"""
+        await self.rate_limiter.wait_if_needed()
+        
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": self.api_key
+        }
+        
+        # Core parameters
+        params = {
+            "q": query[:400],  # Max 400 chars per API docs
+            "count": min(config.max_results, 20),  # Brave max is 20 per request
+            "search_lang": config.language,
+            "country": config.region.upper() if config.region else "US",
+            "safesearch": config.safe_search,
+            "text_decorations": "true",  # Include highlighting (as string)
+            "spellcheck": "true"  # Enable spell correction (as string)
+        }
+        
+        # Add freshness filter if date range is specified
+        if config.date_range:
+            freshness_map = {"d": "pd", "w": "pw", "m": "pm", "y": "py"}
+            if config.date_range in freshness_map:
+                params["freshness"] = freshness_map[config.date_range]
+        
+        # Add result filters based on source types
+        if config.source_types:
+            # Map our source types to Brave's result filters
+            result_filters = []
+            if "web" in config.source_types:
+                result_filters.append("web")
+            if "news" in config.source_types:
+                result_filters.append("news")
+            if "academic" in config.source_types:
+                result_filters.extend(["faq", "discussions"])  # Academic-like content
+            if result_filters:
+                params["result_filter"] = ",".join(result_filters)
+        
+        try:
+            async with self.session.get(self.base_url, headers=headers, params=params) as response:
+                # Check rate limit headers
+                if 'x-ratelimit-remaining' in response.headers:
+                    remaining = response.headers['x-ratelimit-remaining'].split(', ')
+                    if remaining and int(remaining[0]) < 5:
+                        logger.warning(f"Brave API rate limit low: {remaining[0]} requests remaining this second")
+                
+                if response.status == 200:
+                    data = await response.json()
+                    return self._parse_brave_results(data)
+                elif response.status == 401:
+                    logger.error("Brave API authentication failed - check API key")
+                    return []
+                elif response.status == 429:
+                    retry_after = response.headers.get('retry-after', '60')
+                    logger.warning(f"Brave API rate limit exceeded. Retry after {retry_after} seconds")
+                    raise Exception(f"Rate limit exceeded. Retry after {retry_after}s")
+                else:
+                    logger.error(f"Brave API error: {response.status}")
+                    return []
+        except Exception as e:
+            logger.error(f"Brave search failed: {str(e)}")
+            raise
+    
+    def _parse_brave_results(self, data: Dict[str, Any]) -> List[SearchResult]:
+        """Parse Brave API response according to documented structure"""
+        results = []
+        
+        # Parse web results
+        web_results = data.get("web", {}).get("results", [])
+        for item in web_results:
+            # Parse age to published date if available
+            published_date = None
+            if "age" in item:
+                try:
+                    # Brave returns ISO format timestamps
+                    published_date = datetime.fromisoformat(item["age"].replace("Z", "+00:00"))
+                except:
+                    pass
+            
+            # Extract domain from meta_url if available
+            domain = ""
+            if "meta_url" in item and "hostname" in item["meta_url"]:
+                domain = item["meta_url"]["hostname"]
+            elif "url" in item:
+                from urllib.parse import urlparse
+                domain = urlparse(item["url"]).netloc
+            
+            result = SearchResult(
+                title=item.get("title", ""),
+                url=item.get("url", ""),
+                snippet=item.get("description", ""),
+                source="brave_search",
+                domain=domain,
+                published_date=published_date,
+                result_type="web",
+                raw_data=item
+            )
+            results.append(result)
+        
+        # Parse news results
+        news_results = data.get("news", {}).get("results", [])
+        for item in news_results:
+            published_date = None
+            if "age" in item:
+                try:
+                    published_date = datetime.fromisoformat(item["age"].replace("Z", "+00:00"))
+                except:
+                    pass
+            
+            # Extract source info
+            source_info = item.get("source", "")
+            domain = item.get("domain", "")
+            if not domain and "url" in item:
+                from urllib.parse import urlparse
+                domain = urlparse(item["url"]).netloc
+            
+            result = SearchResult(
+                title=item.get("title", ""),
+                url=item.get("url", ""),
+                snippet=item.get("description", ""),
+                source="brave_search",
+                domain=domain,
+                result_type="news",
+                published_date=published_date,
+                bias_rating=source_info,  # Store source name as bias rating
+                raw_data=item
+            )
+            results.append(result)
+        
+        # Parse FAQ results
+        faq_results = data.get("faq", {}).get("results", [])
+        for item in faq_results:
+            # FAQ results have question/answer format
+            snippet = f"Q: {item.get('question', '')}\nA: {item.get('answer', '')}"
+            
+            result = SearchResult(
+                title=item.get("title", item.get("question", "")),
+                url=item.get("url", ""),
+                snippet=snippet[:300],  # Limit snippet length
+                source="brave_search",
+                domain=item.get("meta_url", {}).get("hostname", ""),
+                result_type="faq",
+                raw_data=item
+            )
+            results.append(result)
+        
+        # Parse discussion results
+        discussions = data.get("discussions", {}).get("results", [])
+        for item in discussions:
+            if "data" in item:
+                disc_data = item["data"]
+                snippet = disc_data.get("question", "")
+                if "top_comment" in disc_data:
+                    snippet += f"\n{disc_data['top_comment']}"
+                
+                result = SearchResult(
+                    title=disc_data.get("title", ""),
+                    url=item.get("url", ""),
+                    snippet=snippet[:300],
+                    source="brave_search",
+                    domain=disc_data.get("forum_name", ""),
+                    result_type="discussion",
+                    raw_data=item
+                )
+                results.append(result)
+        
+        return results
+
 class PubMedAPI(BaseSearchAPI):
     """PubMed/NCBI API for medical and life science papers"""
     
@@ -465,10 +643,21 @@ def create_search_manager() -> SearchAPIManager:
     # Get API keys from environment
     google_api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
     google_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
-    bing_api_key = os.getenv("BING_SEARCH_API_KEY") 
+    bing_api_key = os.getenv("BING_SEARCH_API_KEY")
+    brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY")
     pubmed_api_key = os.getenv("PUBMED_API_KEY")  # Optional
     
-    # Add Google Custom Search (primary)
+    # Add Brave Search (can be primary if Google not available)
+    if brave_api_key:
+        brave_api = BraveSearchAPI(
+            api_key=brave_api_key,
+            rate_limiter=RateLimiter(calls_per_minute=100)  # Brave allows up to 2000/month on free tier
+        )
+        # If no Google API is configured, make Brave primary
+        is_primary = not (google_api_key and google_engine_id)
+        manager.add_api("brave", brave_api, is_primary=is_primary)
+    
+    # Add Google Custom Search (primary if available)
     if google_api_key and google_engine_id:
         google_api = GoogleCustomSearchAPI(
             api_key=google_api_key,

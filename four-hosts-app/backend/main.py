@@ -56,6 +56,8 @@ from services.export_service import ExportService, create_export_router
 from database.connection import init_database, get_db
 from database.models import User as DBUser, ResearchQuery as Research, Webhook as WebhookSubscription
 from utils.custom_docs import custom_openapi, get_custom_swagger_ui_html, get_custom_redoc_html
+# Preferences management import
+from services.user_management import user_profile_service
 
 # Import authentication components
 from services.auth import (
@@ -150,6 +152,10 @@ class Token(BaseModel):
     refresh_token: Optional[str] = None
     token_type: str = "bearer"
     expires_in: int
+
+class PreferencesPayload(BaseModel):
+    """Payload for updating user preferences"""
+    preferences: Dict[str, Any]
 
 class ParadigmClassification(BaseModel):
     primary: Paradigm
@@ -515,10 +521,14 @@ async def refresh_token(refresh_token: str, request: Request):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     # Get user from database
-    from sqlalchemy.orm import Session
-    db = next(get_db())
+    from sqlalchemy import select
+    db_gen = get_db()
+    db = await anext(db_gen)
     try:
-        user = db.query(DBUser).filter(DBUser.id == token_info["user_id"]).first()
+        result = await db.execute(
+            select(DBUser).filter(DBUser.id == token_info["user_id"])
+        )
+        user = result.scalars().first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -536,7 +546,7 @@ async def refresh_token(refresh_token: str, request: Request):
             expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
     finally:
-        db.close()
+        await db_gen.aclose()
 
 @app.get("/auth/user", tags=["authentication"])
 async def get_current_user_info(current_user = Depends(get_current_user)):
@@ -577,6 +587,32 @@ async def logout(
     await session_manager.end_all_user_sessions(current_user.user_id)
 
     return {"message": "Successfully logged out"}
+
+# --- User Preferences Endpoints ---
+@app.put("/auth/preferences", tags=["authentication"])
+async def update_user_preferences(
+    payload: PreferencesPayload,
+    current_user: User = Depends(get_current_user)
+):
+    """Update the current user's preferences"""
+    success = await user_profile_service.update_user_preferences(
+        uuid.UUID(str(current_user.id)),
+        payload.preferences
+    )
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update preferences")
+
+    # Return updated profile
+    profile = await user_profile_service.get_user_profile(uuid.UUID(str(current_user.id)))
+    return profile
+
+@app.get("/auth/preferences", tags=["authentication"])
+async def get_user_preferences(current_user: User = Depends(get_current_user)):
+    """Retrieve the current user's preferences"""
+    profile = await user_profile_service.get_user_profile(uuid.UUID(str(current_user.id)))
+    if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"preferences": profile.get("preferences", {})}
 
 # Paradigm Classification
 @app.post("/paradigms/classify", tags=["paradigms"])

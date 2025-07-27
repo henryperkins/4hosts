@@ -1,31 +1,39 @@
 import React, { useState } from 'react'
-import { Download, ExternalLink, Shield, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
+import { Download, ExternalLink, Shield, AlertTriangle, ChevronDown, ChevronUp, Zap, GitMerge } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
-import type { ResearchResult } from '../types'
+import type { ResearchResult, AnswerSection } from '../types'
 
 interface ResultsDisplayEnhancedProps {
   results: ResearchResult
 }
 
-const paradigmColors = {
+const paradigmColors: Record<string, string> = {
   dolores: 'bg-red-100 text-red-800 border-red-200',
   teddy: 'bg-blue-100 text-blue-800 border-blue-200',
   bernard: 'bg-green-100 text-green-800 border-green-200',
   maeve: 'bg-purple-100 text-purple-800 border-purple-200',
+  default: 'bg-gray-100 text-gray-800 border-gray-200',
 }
 
-const paradigmDescriptions = {
+const paradigmDescriptions: Record<string, string> = {
   dolores: 'Truth & Justice',
   teddy: 'Care & Support',
   bernard: 'Analysis & Logic',
   maeve: 'Strategy & Power',
 }
 
+const getParadigmClass = (paradigm: string) => paradigmColors[paradigm] || paradigmColors.default;
+const getParadigmDescription = (paradigm: string) => paradigmDescriptions[paradigm] || paradigm;
+
+
 export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ results }) => {
   const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set([0]))
   const [isExporting, setIsExporting] = useState(false)
   const [showAllCitations, setShowAllCitations] = useState(false)
+
+  const answer = results.integrated_synthesis ? results.integrated_synthesis.primary_answer : results.answer;
+  const { integrated_synthesis } = results;
 
   const toggleSection = (index: number) => {
     setExpandedSections(prev => {
@@ -60,21 +68,25 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   }
 
   const getCredibilityColor = (score: number) => {
-    if (score >= 80) return 'text-green-600'
-    if (score >= 60) return 'text-yellow-600'
-    if (score >= 40) return 'text-orange-600'
+    if (score >= 0.8) return 'text-green-600'
+    if (score >= 0.6) return 'text-yellow-600'
+    if (score >= 0.4) return 'text-orange-600'
     return 'text-red-600'
   }
 
   const getCredibilityIcon = (score: number) => {
-    if (score >= 80) return <Shield className="h-4 w-4" />
-    if (score >= 40) return <AlertTriangle className="h-4 w-4" />
+    if (score >= 0.8) return <Shield className="h-4 w-4" />
+    if (score >= 0.4) return <AlertTriangle className="h-4 w-4" />
     return <AlertTriangle className="h-4 w-4" />
   }
 
   const displayedCitations = showAllCitations 
-    ? results.answer.citations 
-    : results.answer.citations.slice(0, 5)
+    ? answer.citations 
+    : answer.citations.slice(0, 5)
+
+  const allSections = integrated_synthesis?.secondary_perspective 
+    ? [...answer.sections, integrated_synthesis.secondary_perspective]
+    : answer.sections;
 
   return (
     <div className="mt-8 space-y-6">
@@ -90,10 +102,17 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           
           <div className="flex items-center gap-2">
             <span className={`px-3 py-1 rounded-full text-sm font-medium border ${
-              paradigmColors[results.paradigm_analysis.primary.paradigm]
+              getParadigmClass(results.paradigm_analysis.primary.paradigm)
             }`}>
-              {paradigmDescriptions[results.paradigm_analysis.primary.paradigm]}
+              {getParadigmDescription(results.paradigm_analysis.primary.paradigm)}
             </span>
+            {results.paradigm_analysis.secondary && (
+                <span className={`px-3 py-1 rounded-full text-sm font-medium border ${
+                    getParadigmClass(results.paradigm_analysis.secondary.paradigm)
+                }`}>
+                    + {getParadigmDescription(results.paradigm_analysis.secondary.paradigm)}
+                </span>
+            )}
             
             <div className="relative group">
               <button
@@ -130,7 +149,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
 
         <div className="prose max-w-none">
-          <p className="text-gray-700">{results.answer.summary}</p>
+          <p className="text-gray-700">{integrated_synthesis ? integrated_synthesis.integrated_summary : answer.summary}</p>
         </div>
 
         <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -153,9 +172,32 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
       </div>
 
+      {/* Mesh Network Analysis */}
+      {integrated_synthesis && (
+        <div className="bg-white rounded-lg shadow-md p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Mesh Network Analysis</h3>
+            {integrated_synthesis.synergies.length > 0 && (
+                <div className="mb-4">
+                    <h4 className="font-semibold text-gray-800 flex items-center"><GitMerge className="h-5 w-5 mr-2 text-green-500" />Synergies</h4>
+                    <ul className="list-disc list-inside mt-2 text-gray-700">
+                        {integrated_synthesis.synergies.map((synergy, i) => <li key={i}>{synergy}</li>)}
+                    </ul>
+                </div>
+            )}
+            {integrated_synthesis.conflicts_identified.length > 0 && (
+                <div>
+                    <h4 className="font-semibold text-gray-800 flex items-center"><Zap className="h-5 w-5 mr-2 text-red-500" />Conflicts</h4>
+                    <ul className="list-disc list-inside mt-2 text-gray-700">
+                        {integrated_synthesis.conflicts_identified.map((conflict, i) => <li key={i}>{conflict.description}</li>)}
+                    </ul>
+                </div>
+            )}
+        </div>
+      )}
+
       {/* Detailed Sections */}
       <div className="space-y-4">
-        {results.answer.sections.map((section, index) => (
+        {allSections.map((section: AnswerSection, index) => (
           <div key={index} className="bg-white rounded-lg shadow-md overflow-hidden">
             <button
               onClick={() => toggleSection(index)}
@@ -164,9 +206,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               <div className="flex items-center gap-3">
                 <h3 className="text-lg font-semibold text-gray-900">{section.title}</h3>
                 <span className={`px-2 py-1 rounded text-xs font-medium ${
-                  paradigmColors[section.paradigm]
+                  getParadigmClass(section.paradigm)
                 }`}>
-                  {paradigmDescriptions[section.paradigm]}
+                  {getParadigmDescription(section.paradigm)}
                 </span>
                 <span className="text-sm text-gray-600">
                   {section.sources_count} sources • {Math.round(section.confidence * 100)}% confidence
@@ -191,11 +233,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       </div>
 
       {/* Action Items */}
-      {results.answer.action_items.length > 0 && (
+      {answer.action_items.length > 0 && (
         <div className="bg-white rounded-lg shadow-md p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Action Items</h3>
           <div className="space-y-3">
-            {results.answer.action_items.map((item, index) => (
+            {answer.action_items.map((item, index) => (
               <div key={index} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
                 <div className={`mt-0.5 w-2 h-2 rounded-full ${
                   item.priority === 'high' ? 'bg-red-500' :
@@ -207,9 +249,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   <div className="flex items-center gap-4 mt-1 text-sm text-gray-600">
                     <span>Timeframe: {item.timeframe}</span>
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      paradigmColors[item.paradigm]
+                      getParadigmClass(item.paradigm)
                     }`}>
-                      {paradigmDescriptions[item.paradigm]}
+                      {getParadigmDescription(item.paradigm)}
                     </span>
                   </div>
                 </div>
@@ -234,14 +276,14 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     <div className={`flex items-center gap-1 text-sm ${getCredibilityColor(citation.credibility_score)}`}>
                       {getCredibilityIcon(citation.credibility_score)}
                       <span className="font-medium">
-                        {citation.credibility_score}% credibility
+                        {citation.credibility_score * 100}% credibility
                       </span>
                     </div>
                     
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      paradigmColors[citation.paradigm_alignment]
+                      getParadigmClass(citation.paradigm_alignment)
                     }`}>
-                      {paradigmDescriptions[citation.paradigm_alignment]}
+                      {getParadigmDescription(citation.paradigm_alignment)}
                     </span>
                   </div>
                 </div>
@@ -259,12 +301,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           ))}
         </div>
         
-        {results.answer.citations.length > 5 && (
+        {answer.citations.length > 5 && (
           <button
             onClick={() => setShowAllCitations(!showAllCitations)}
             className="mt-4 text-sm text-blue-600 hover:text-blue-700 font-medium"
           >
-            {showAllCitations ? 'Show less' : `Show all ${results.answer.citations.length} citations`}
+            {showAllCitations ? 'Show less' : `Show all ${answer.citations.length} citations`}
           </button>
         )}
       </div>

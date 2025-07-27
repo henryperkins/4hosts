@@ -275,23 +275,28 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
         jti=payload.get("jti")
     )
 
-async def get_api_key_info(api_key: str, db: Session = None) -> Optional[APIKey]:
+async def get_api_key_info(api_key: str, db: AsyncSession = None) -> Optional[APIKey]:
     """Validate API key and return key info"""
     if not api_key.startswith("fh_"):
         return None
 
     # Get database session
     if db is None:
-        db = next(get_db())
-        should_close = True
+        db_gen = get_db()
+        db = await anext(db_gen)
+        should_close_gen = db_gen
     else:
-        should_close = False
+        should_close_gen = None
 
     try:
         # Query all active API keys and check each one
-        db_api_keys = db.query(DBAPIKey).filter(
-            DBAPIKey.is_active == True
-        ).all()
+        from sqlalchemy import select
+        result = await db.execute(
+            select(DBAPIKey).filter(
+                DBAPIKey.is_active == True
+            )
+        )
+        db_api_keys = result.scalars().all()
 
         # Check each stored hash against the provided API key
         matching_key = None
@@ -309,7 +314,7 @@ async def get_api_key_info(api_key: str, db: Session = None) -> Optional[APIKey]
 
         # Update last used timestamp
         matching_key.last_used = datetime.now(timezone.utc)
-        db.commit()
+        await db.commit()
 
         # Convert to Pydantic model
         api_key_info = APIKey(
@@ -330,8 +335,8 @@ async def get_api_key_info(api_key: str, db: Session = None) -> Optional[APIKey]
         return api_key_info
 
     finally:
-        if should_close and db:
-            db.close()
+        if should_close_gen is not None:
+            await should_close_gen.aclose()
 
 def check_permissions(required_role: UserRole, user_role: UserRole) -> bool:
     """Check if user has required role permissions"""
@@ -478,18 +483,23 @@ class AuthService:
             if should_close_gen is not None:     # close async generator – commits / rollbacks
                 await should_close_gen.aclose()
 
-    async def create_api_key(self, user_id: str, key_name: str, db: Session = None) -> str:
+    async def create_api_key(self, user_id: str, key_name: str, db: AsyncSession = None) -> str:
         """Create a new API key for user"""
         # Get database session
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             # Get user
-            db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(DBUser).filter(DBUser.id == user_id)
+            )
+            db_user = result.scalars().first()
             if not db_user:
                 raise HTTPException(status_code=404, detail="User not found")
 
@@ -509,14 +519,14 @@ class AuthService:
             )
 
             db.add(db_api_key)
-            db.commit()
+            await db.commit()
 
             logger.info(f"Created API key '{key_name}' for user {user_id}")
             return api_key  # Return unhashed key only once
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
     async def revoke_token(self, jti: str, token_type: str = "access", user_id: str = None, expires_at: datetime = None):
         """Revoke a JWT token"""
@@ -626,14 +636,15 @@ class SessionManager:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         device_id: Optional[str] = None,
-        db: Session = None
+        db: AsyncSession = None
     ) -> str:
         """Create a new session"""
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             from database.models import UserSession as DBUserSession
@@ -653,8 +664,8 @@ class SessionManager:
             )
 
             db.add(db_session)
-            db.commit()
-            db.refresh(db_session)
+            await db.commit()
+            await db.refresh(db_session)
 
             # Cache in Redis if available
             if self.redis_client:
@@ -674,10 +685,10 @@ class SessionManager:
             return session_token
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
-    async def validate_session(self, session_token: str, db: Session = None) -> Optional[Dict[str, Any]]:
+    async def validate_session(self, session_token: str, db: AsyncSession = None) -> Optional[Dict[str, Any]]:
         """Validate if session is still active"""
         # Check Redis cache first
         if self.redis_client:
@@ -692,26 +703,31 @@ class SessionManager:
 
         # Check database
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             from database.models import UserSession as DBUserSession
 
-            db_session = db.query(DBUserSession).filter(
-                DBUserSession.session_token == session_token,
-                DBUserSession.is_active == True,
-                DBUserSession.expires_at > datetime.now(timezone.utc)
-            ).first()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(DBUserSession).filter(
+                    DBUserSession.session_token == session_token,
+                    DBUserSession.is_active == True,
+                    DBUserSession.expires_at > datetime.now(timezone.utc)
+                )
+            )
+            db_session = result.scalars().first()
 
             if not db_session:
                 return None
 
             # Update last activity
             db_session.last_activity = datetime.now(timezone.utc)
-            db.commit()
+            await db.commit()
 
             # Update cache
             if self.redis_client:
@@ -733,10 +749,10 @@ class SessionManager:
             }
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
-    async def end_session(self, session_token: str, db: Session = None):
+    async def end_session(self, session_token: str, db: AsyncSession = None):
         """End a user session"""
         # Remove from cache
         if self.redis_client:
@@ -744,42 +760,52 @@ class SessionManager:
 
         # Update database
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             from database.models import UserSession as DBUserSession
 
-            db_session = db.query(DBUserSession).filter(
-                DBUserSession.session_token == session_token
-            ).first()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(DBUserSession).filter(
+                    DBUserSession.session_token == session_token
+                )
+            )
+            db_session = result.scalars().first()
 
             if db_session:
                 db_session.is_active = False
-                db.commit()
+                await db.commit()
                 logger.info(f"Ended session for user {db_session.user_id}")
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
-    async def end_all_user_sessions(self, user_id: str, db: Session = None):
+    async def end_all_user_sessions(self, user_id: str, db: AsyncSession = None):
         """End all sessions for a user"""
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             from database.models import UserSession as DBUserSession
 
-            db_sessions = db.query(DBUserSession).filter(
-                DBUserSession.user_id == user_id,
-                DBUserSession.is_active == True
-            ).all()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(DBUserSession).filter(
+                    DBUserSession.user_id == user_id,
+                    DBUserSession.is_active == True
+                )
+            )
+            db_sessions = result.scalars().all()
 
             for session in db_sessions:
                 session.is_active = False
@@ -787,12 +813,12 @@ class SessionManager:
                 if self.redis_client:
                     self.redis_client.delete(f"session:{session.session_token}")
 
-            db.commit()
+            await db.commit()
             logger.info(f"Ended all sessions for user {user_id}")
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
 # Create global session manager
 session_manager = SessionManager(redis_url=os.getenv("REDIS_URL"))

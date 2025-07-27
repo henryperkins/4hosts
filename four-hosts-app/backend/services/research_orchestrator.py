@@ -30,6 +30,7 @@ class ResearchExecutionResult:
     credibility_scores: Dict[str, float]  # Domain -> score
     execution_metrics: Dict[str, Any]
     cost_breakdown: Dict[str, float]
+    secondary_results: List[SearchResult] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
 
 @dataclass 
@@ -316,7 +317,22 @@ class ParadigmAwareSearchOrchestrator:
         
         # Limit final results
         final_results = filtered_results[:max_results]
-        
+
+        # Execute secondary search if applicable
+        secondary_results = []
+        if secondary_paradigm:
+            logger.info(f"Executing secondary research for paradigm: {secondary_paradigm}")
+            secondary_strategy = get_search_strategy(secondary_paradigm)
+            # Using a simplified query for secondary search for now
+            secondary_query = f"{original_query} {secondary_paradigm}"
+            
+            config = SearchConfig(max_results=min(max_results // 2, 25), language="en", region="us")
+            try:
+                api_results = await self.search_manager.search_with_fallback(secondary_query, config)
+                secondary_results.extend(api_results)
+            except Exception as e:
+                logger.error(f"Secondary search failed for '{secondary_query}': {str(e)}")
+
         # Calculate execution metrics
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
@@ -328,6 +344,7 @@ class ParadigmAwareSearchOrchestrator:
             "raw_results_count": len(combined_results),
             "deduplicated_count": len(deduplicated_results),
             "final_results_count": len(final_results),
+            "secondary_results_count": len(secondary_results),
             "duplicates_removed": dedup_result.duplicates_removed,
             "credibility_checks": len(credibility_scores)
         })
@@ -346,6 +363,7 @@ class ParadigmAwareSearchOrchestrator:
             search_queries_executed=search_queries,
             raw_results=all_results,
             filtered_results=final_results,
+            secondary_results=secondary_results,
             credibility_scores=credibility_scores,
             execution_metrics=metrics,
             cost_breakdown=cost_breakdown

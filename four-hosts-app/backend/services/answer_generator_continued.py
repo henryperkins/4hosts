@@ -12,6 +12,7 @@ from datetime import datetime
 import asyncio
 import logging
 from .llm_client import llm_client
+from .mesh_network import mesh_network_service, IntegratedSynthesis
 
 logger = logging.getLogger(__name__)
 
@@ -674,57 +675,34 @@ class AnswerGenerationOrchestrator:
                                            primary_paradigm: str,
                                            secondary_paradigm: Optional[str],
                                            query: str,
-                                           search_results: List[Dict[str, Any]],
+                                           primary_results: List[Dict[str, Any]],
+                                           secondary_results: List[Dict[str, Any]],
                                            context_engineering: Dict[str, Any],
-                                           options: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Generate answer combining multiple paradigms"""
+                                           options: Dict[str, Any] = None) -> IntegratedSynthesis:
+        """Generate answer combining multiple paradigms using the Mesh Network Service."""
 
         # Generate primary answer
         primary_answer = await self.generate_answer(
-            primary_paradigm, query, search_results,
+            primary_paradigm, query, primary_results,
             context_engineering, options
         )
 
         # Generate secondary answer if specified
         secondary_answer = None
         if secondary_paradigm and secondary_paradigm != primary_paradigm:
-            # Use subset of results for secondary
-            secondary_results = search_results[:int(len(search_results) * 0.3)]
             secondary_answer = await self.generate_answer(
                 secondary_paradigm, query, secondary_results,
                 context_engineering, options
             )
 
-        # Combine answers
-        combined = {
-            'research_id': primary_answer.research_id,
-            'query': query,
-            'primary_paradigm': {
-                'paradigm': primary_paradigm,
-                'answer': primary_answer,
-                'weight': 0.7
-            },
-            'secondary_paradigm': {
-                'paradigm': secondary_paradigm,
-                'answer': secondary_answer,
-                'weight': 0.3
-            } if secondary_answer else None,
-            'synthesis_quality': self._calculate_combined_quality(
-                primary_answer, secondary_answer
-            ),
-            'timestamp': datetime.now()
-        }
+        # Integrate answers using the Mesh Network Service
+        integrated_synthesis = await mesh_network_service.integrate_paradigm_results(
+            primary_answer, secondary_answer
+        )
 
-        return combined
+        return integrated_synthesis
 
-    def _calculate_combined_quality(self,
-                                  primary: GeneratedAnswer,
-                                  secondary: Optional[GeneratedAnswer]) -> float:
-        """Calculate quality score for combined answer"""
-        if not secondary:
-            return primary.synthesis_quality
-
-        return (primary.synthesis_quality * 0.7 + secondary.synthesis_quality * 0.3)
+    
 
     def get_generation_stats(self) -> Dict[str, Any]:
         """Get statistics about answer generation"""

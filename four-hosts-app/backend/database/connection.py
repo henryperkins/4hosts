@@ -11,9 +11,9 @@ import logging
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     create_async_engine,
-    async_sessionmaker,
     AsyncEngine
 )
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool, QueuePool
 from sqlalchemy import event, text
@@ -93,7 +93,7 @@ engine: AsyncEngine = create_async_engine(
 )
 
 # Create async session factory
-AsyncSessionLocal = async_sessionmaker(
+AsyncSessionLocal = sessionmaker(
     engine,
     class_=AsyncSession,
     expire_on_commit=False,

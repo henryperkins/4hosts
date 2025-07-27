@@ -8,6 +8,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import Column, String, DateTime, Boolean, JSON, Integer
 from sqlalchemy.ext.declarative import declarative_base
 import redis
@@ -101,7 +102,7 @@ class TokenManager:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         scope: Optional[list] = None,
-        db: Session = None
+        db: AsyncSession = None
     ) -> Dict[str, Any]:
         """Create a new refresh token (pure async version)"""
         db_gen = get_db()                 # async generator
@@ -162,25 +163,30 @@ class TokenManager:
     async def validate_refresh_token(
         self,
         refresh_token: str,
-        db: Session = None
+        db: AsyncSession = None
     ) -> Optional[Dict[str, Any]]:
         """Validate a refresh token and return token info"""
         if not refresh_token.startswith("fhrt_"):
             return None
 
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             # Query all active refresh tokens
-            db_tokens = db.query(RefreshToken).filter(
-                RefreshToken.is_active == True,
-                RefreshToken.is_revoked == False,
-                RefreshToken.expires_at > datetime.now(timezone.utc)
-            ).all()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(RefreshToken).filter(
+                    RefreshToken.is_active == True,
+                    RefreshToken.is_revoked == False,
+                    RefreshToken.expires_at > datetime.now(timezone.utc)
+                )
+            )
+            db_tokens = result.scalars().all()
 
             # Find matching token
             matching_token = None
@@ -194,7 +200,7 @@ class TokenManager:
 
             # Update last used
             matching_token.last_used_at = datetime.now(timezone.utc)
-            db.commit()
+            await db.commit()
 
             return {
                 "token_id": matching_token.id,
@@ -206,13 +212,13 @@ class TokenManager:
             }
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
     async def rotate_refresh_token(
         self,
         old_token: str,
-        db: Session = None
+        db: AsyncSession = None
     ) -> Optional[Dict[str, Any]]:
         """Rotate a refresh token (create new, invalidate old)"""
         # Validate old token
@@ -221,16 +227,21 @@ class TokenManager:
             return None
 
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             # Revoke old token
-            old_db_token = db.query(RefreshToken).filter(
-                RefreshToken.id == token_info["token_id"]
-            ).first()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(RefreshToken).filter(
+                    RefreshToken.id == token_info["token_id"]
+                )
+            )
+            old_db_token = result.scalars().first()
 
             if old_db_token:
                 old_db_token.is_active = False
@@ -256,7 +267,7 @@ class TokenManager:
             )
 
             db.add(new_db_token)
-            db.commit()
+            await db.commit()
 
             logger.info(f"Rotated refresh token for user {token_info['user_id']}")
 
@@ -267,27 +278,32 @@ class TokenManager:
             }
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
     async def revoke_token_family(
         self,
         family_id: str,
         reason: str = "security",
-        db: Session = None
+        db: AsyncSession = None
     ):
         """Revoke all tokens in a family (potential token reuse detected)"""
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
-            tokens = db.query(RefreshToken).filter(
-                RefreshToken.family_id == family_id,
-                RefreshToken.is_active == True
-            ).all()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(RefreshToken).filter(
+                    RefreshToken.family_id == family_id,
+                    RefreshToken.is_active == True
+                )
+            )
+            tokens = result.scalars().all()
 
             for token in tokens:
                 token.is_active = False
@@ -295,31 +311,36 @@ class TokenManager:
                 token.revoked_at = datetime.now(timezone.utc)
                 token.revoked_reason = reason
 
-            db.commit()
+            await db.commit()
             logger.warning(f"Revoked token family {family_id} for reason: {reason}")
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
     async def revoke_user_tokens(
         self,
         user_id: str,
         reason: str = "user_request",
-        db: Session = None
+        db: AsyncSession = None
     ):
         """Revoke all refresh tokens for a user"""
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
-            tokens = db.query(RefreshToken).filter(
-                RefreshToken.user_id == user_id,
-                RefreshToken.is_active == True
-            ).all()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(RefreshToken).filter(
+                    RefreshToken.user_id == user_id,
+                    RefreshToken.is_active == True
+                )
+            )
+            tokens = result.scalars().all()
 
             for token in tokens:
                 token.is_active = False
@@ -327,12 +348,12 @@ class TokenManager:
                 token.revoked_at = datetime.now(timezone.utc)
                 token.revoked_reason = reason
 
-            db.commit()
+            await db.commit()
             logger.info(f"Revoked all tokens for user {user_id}")
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
     async def add_revoked_jti(
         self,
@@ -341,14 +362,15 @@ class TokenManager:
         user_id: str,
         expires_at: datetime,
         reason: str = "manual",
-        db: Session = None
+        db: AsyncSession = None
     ):
         """Add a JTI to the revocation list"""
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             revoked = RevokedToken(
@@ -360,7 +382,7 @@ class TokenManager:
             )
 
             db.add(revoked)
-            db.commit()
+            await db.commit()
 
             # Cache in Redis if available
             if self.redis_client:
@@ -372,13 +394,13 @@ class TokenManager:
             logger.info(f"Revoked JTI {jti} for user {user_id}")
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
     async def is_jti_revoked(
         self,
         jti: str,
-        db: Session = None
+        db: AsyncSession = None
     ) -> bool:
         """Check if a JTI is revoked"""
         # Check Redis cache first
@@ -388,49 +410,60 @@ class TokenManager:
 
         # Check database
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
-            revoked = db.query(RevokedToken).filter(
-                RevokedToken.jti == jti
-            ).first()
+            from sqlalchemy import select
+            result = await db.execute(
+                select(RevokedToken).filter(
+                    RevokedToken.jti == jti
+                )
+            )
+            revoked = result.scalars().first()
 
             return revoked is not None
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
-    async def cleanup_expired_tokens(self, db: Session = None):
+    async def cleanup_expired_tokens(self, db: AsyncSession = None):
         """Clean up expired tokens from database"""
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()
+            db = await anext(db_gen)
+            should_close_gen = db_gen
         else:
-            should_close = False
+            should_close_gen = None
 
         try:
             now = datetime.now(timezone.utc)
 
             # Delete expired refresh tokens
-            db.query(RefreshToken).filter(
-                RefreshToken.expires_at < now
-            ).delete()
+            from sqlalchemy import delete
+            await db.execute(
+                delete(RefreshToken).filter(
+                    RefreshToken.expires_at < now
+                )
+            )
 
             # Delete expired revoked JTIs
-            db.query(RevokedToken).filter(
-                RevokedToken.expires_at < now
-            ).delete()
+            await db.execute(
+                delete(RevokedToken).filter(
+                    RevokedToken.expires_at < now
+                )
+            )
 
-            db.commit()
+            await db.commit()
             logger.info("Cleaned up expired tokens")
 
         finally:
-            if should_close and db:
-                db.close()
+            if should_close_gen is not None:
+                await should_close_gen.aclose()
 
 # Create global token manager instance (single authoritative one)
 token_manager = TokenManager(redis_url=os.getenv("REDIS_URL"))
