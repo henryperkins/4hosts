@@ -196,18 +196,18 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     """Create a JWT access token"""
     to_encode = data.copy()
     now = datetime.now(timezone.utc)
-    
+
     if expires_delta:
         expire = now + expires_delta
     else:
         expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+
     to_encode.update({
         "exp": expire,
         "iat": now,
         "jti": secrets.token_urlsafe(16)  # JWT ID for revocation
     })
-    
+
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -219,21 +219,21 @@ async def create_refresh_token(
 ) -> str:
     """Create a refresh token using TokenManager"""
     from services.token_manager import token_manager
-    
+
     result = await token_manager.create_refresh_token(
         user_id=user_id,
         device_id=device_id,
         ip_address=ip_address,
         user_agent=user_agent
     )
-    
+
     return result["token"]
 
 async def decode_token(token: str) -> Dict[str, Any]:
     """Decode and validate a JWT token"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        
+
         # Check if JTI is revoked
         jti = payload.get("jti")
         if jti:
@@ -244,7 +244,7 @@ async def decode_token(token: str) -> Dict[str, Any]:
                     detail="Token has been revoked",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-        
+
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -265,7 +265,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
     """Get current user from JWT token"""
     token = credentials.credentials
     payload = await decode_token(token)
-    
+
     return TokenData(
         user_id=payload.get("user_id"),
         email=payload.get("email"),
@@ -279,38 +279,38 @@ async def get_api_key_info(api_key: str, db: Session = None) -> Optional[APIKey]
     """Validate API key and return key info"""
     if not api_key.startswith("fh_"):
         return None
-    
+
     # Get database session
     if db is None:
         db = next(get_db())
         should_close = True
     else:
         should_close = False
-    
+
     try:
         # Query all active API keys and check each one
         db_api_keys = db.query(DBAPIKey).filter(
             DBAPIKey.is_active == True
         ).all()
-        
+
         # Check each stored hash against the provided API key
         matching_key = None
         for db_api_key in db_api_keys:
             if bcrypt.checkpw(api_key.encode('utf-8'), db_api_key.key_hash.encode('utf-8')):
                 matching_key = db_api_key
                 break
-        
+
         if not matching_key:
             return None
-        
+
         # Check expiration
         if matching_key.expires_at and matching_key.expires_at < datetime.now(timezone.utc):
             return None
-        
+
         # Update last used timestamp
         matching_key.last_used = datetime.now(timezone.utc)
         db.commit()
-        
+
         # Convert to Pydantic model
         api_key_info = APIKey(
             id=matching_key.id,
@@ -326,9 +326,9 @@ async def get_api_key_info(api_key: str, db: Session = None) -> Optional[APIKey]
             rate_limit_tier=matching_key.rate_limit_tier or "standard",
             metadata=matching_key.metadata or {}
         )
-        
+
         return api_key_info
-        
+
     finally:
         if should_close and db:
             db.close()
@@ -342,7 +342,7 @@ def check_permissions(required_role: UserRole, user_role: UserRole) -> bool:
         UserRole.ENTERPRISE: 3,
         UserRole.ADMIN: 4
     }
-    
+
     return role_hierarchy.get(user_role, 0) >= role_hierarchy.get(required_role, 0)
 
 def require_role(required_role: UserRole):
@@ -360,10 +360,10 @@ def require_role(required_role: UserRole):
 
 class AuthService:
     """Authentication and authorization service"""
-    
+
     def __init__(self):
         pass
-    
+
     async def create_user(self, user_data: UserCreate, db: AsyncSession) -> User:
         """Create a new user"""
         # Validate password strength
@@ -372,104 +372,112 @@ class AuthService:
                 status_code=400,
                 detail="Password must be at least 8 characters with uppercase, lowercase, number, and special character"
             )
-        
+
         try:
             # Check if user exists
             from sqlalchemy import select
             result = await db.execute(
                 select(DBUser).filter(
-                    (DBUser.email == user_data.email) | 
+                    (DBUser.email == user_data.email) |
                     (DBUser.username == user_data.username)
                 )
             )
-            existing_user = result.scalar_first()
-            
+            # SQLAlchemy 2.x async returns ChunkedIteratorResult; use scalars().first()
+            existing_user = result.scalars().first()
+
             if existing_user:
                 raise HTTPException(
                     status_code=409,
                     detail="User with this email or username already exists"
                 )
-            
+
             # Create user in database
+            # Let PostgreSQL UUID default generate the ID
             db_user = DBUser(
-                id=f"user_{secrets.token_hex(8)}",
                 email=user_data.email,
                 username=user_data.username,
                 password_hash=hash_password(user_data.password),
                 role=user_data.role or UserRole.FREE,
                 is_active=True,
-                provider=user_data.auth_provider or AuthProvider.LOCAL
+                auth_provider=user_data.auth_provider or AuthProvider.LOCAL
             )
-            
+
             db.add(db_user)
             await db.commit()
             await db.refresh(db_user)
-            
+
             # Convert to Pydantic model
             user = User(
-                id=db_user.id,
+                id=str(db_user.id),  # Cast UUID to string for Pydantic
                 email=db_user.email,
                 username=db_user.username,
                 role=UserRole(db_user.role),
-                auth_provider=AuthProvider(db_user.provider)
+                auth_provider=AuthProvider(db_user.auth_provider)
             )
-            
+
             logger.info(f"Created user: {user.email}")
             return user
-            
+
         except IntegrityError:
             await db.rollback()
             raise HTTPException(
                 status_code=409,
                 detail="User already exists"
             )
-    
-    async def authenticate_user(self, login_data: UserLogin, db: Session = None) -> Optional[User]:
+
+    async def authenticate_user(self, login_data: UserLogin, db: AsyncSession = None) -> Optional[User]:
         """Authenticate user with email and password"""
-        # Get database session
+        # Obtain DB session correctly from async generator
         if db is None:
-            db = next(get_db())
-            should_close = True
+            db_gen = get_db()                    # async generator
+            db = await anext(db_gen)             # first yielded session
+            should_close_gen = db_gen            # remember to close later
         else:
-            should_close = False
-        
+            should_close_gen = None
+
         try:
-            # Query user from database
-            db_user = db.query(DBUser).filter(DBUser.email == login_data.email).first()
-            
+            from sqlalchemy import select
+
+            # Async query
+            result = await db.execute(
+                select(DBUser).filter(DBUser.email == login_data.email)
+            )
+            db_user = result.scalars().first()
+
             if not db_user:
                 return None
-            
+
             # Verify password
             if not verify_password(login_data.password, db_user.password_hash):
                 return None
-            
+
             # Check if user is active
             if not db_user.is_active:
                 raise HTTPException(
                     status_code=403,
                     detail="Account is disabled"
                 )
-            
+
             # Update last login
             db_user.last_login = datetime.now(timezone.utc)
-            db.commit()
-            
+            await db.commit()
+            await db.refresh(db_user)
+
             # Convert to Pydantic model
             user = User(
-                id=db_user.id,
+                id=str(db_user.id),  # Cast UUID to string for Pydantic
                 email=db_user.email,
                 username=db_user.username,
                 role=UserRole(db_user.role),
-                auth_provider=AuthProvider(db_user.provider)
+                auth_provider=AuthProvider(db_user.auth_provider)
             )
-            
+
             return user
-            
+
         finally:
-            if should_close and db:
-                db.close()
-    
+            if should_close_gen is not None:     # close async generator – commits / rollbacks
+                await should_close_gen.aclose()
+
     async def create_api_key(self, user_id: str, key_name: str, db: Session = None) -> str:
         """Create a new API key for user"""
         # Get database session
@@ -478,17 +486,17 @@ class AuthService:
             should_close = True
         else:
             should_close = False
-            
+
         try:
             # Get user
             db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
             if not db_user:
                 raise HTTPException(status_code=404, detail="User not found")
-            
+
             # Generate key
             api_key = generate_api_key()
             key_id = f"key_{secrets.token_hex(8)}"
-            
+
             # Create key record in database
             db_api_key = DBAPIKey(
                 id=key_id,
@@ -499,24 +507,24 @@ class AuthService:
                 is_active=True,
                 created_at=datetime.now(timezone.utc)
             )
-            
+
             db.add(db_api_key)
             db.commit()
-            
+
             logger.info(f"Created API key '{key_name}' for user {user_id}")
             return api_key  # Return unhashed key only once
-            
+
         finally:
             if should_close and db:
                 db.close()
-    
+
     async def revoke_token(self, jti: str, token_type: str = "access", user_id: str = None, expires_at: datetime = None):
         """Revoke a JWT token"""
         from services.token_manager import token_manager
-        
+
         if not expires_at:
             expires_at = datetime.now(timezone.utc) + timedelta(days=1)
-        
+
         await token_manager.add_revoked_jti(
             jti=jti,
             token_type=token_type,
@@ -524,14 +532,14 @@ class AuthService:
             expires_at=expires_at,
             reason="manual_revocation"
         )
-        
+
         logger.info(f"Revoked token: {jti}")
-    
+
     async def is_token_revoked(self, jti: str) -> bool:
         """Check if token is revoked"""
         from services.token_manager import token_manager
         return await token_manager.is_jti_revoked(jti)
-    
+
     def get_user_rate_limits(self, role: UserRole) -> Dict[str, Any]:
         """Get rate limits for user role"""
         return RATE_LIMITS.get(role, RATE_LIMITS[UserRole.FREE])
@@ -543,7 +551,7 @@ auth_service = AuthService()
 
 class OAuth2Service:
     """OAuth2 integration service"""
-    
+
     def __init__(self):
         self.providers = {
             "google": {
@@ -561,13 +569,13 @@ class OAuth2Service:
                 "token_url": "https://github.com/login/oauth/access_token"
             }
         }
-    
+
     def get_authorization_url(self, provider: str, state: str) -> str:
         """Get OAuth2 authorization URL"""
         config = self.providers.get(provider)
         if not config:
             raise ValueError(f"Unknown OAuth provider: {provider}")
-        
+
         params = {
             "client_id": config["client_id"],
             "redirect_uri": config["redirect_uri"],
@@ -575,11 +583,11 @@ class OAuth2Service:
             "scope": "email profile",
             "state": state
         }
-        
+
         # Build URL with params
         from urllib.parse import urlencode
         return f"{config['auth_url']}?{urlencode(params)}"
-    
+
     async def exchange_code_for_token(self, provider: str, code: str) -> Dict[str, Any]:
         """Exchange authorization code for access token"""
         # Implementation would make HTTP request to provider
@@ -597,11 +605,11 @@ oauth_service = OAuth2Service()
 
 class SessionManager:
     """Manage user sessions with database backing"""
-    
+
     def __init__(self, redis_url: Optional[str] = None):
         self.session_timeout = timedelta(hours=24)
         self.redis_client = None
-        
+
         if redis_url:
             try:
                 import redis
@@ -610,7 +618,7 @@ class SessionManager:
                 logger.info("Connected to Redis for session management")
             except Exception as e:
                 logger.warning(f"Failed to connect to Redis: {e}")
-    
+
     async def create_session(
         self,
         user_id: str,
@@ -626,13 +634,13 @@ class SessionManager:
             should_close = True
         else:
             should_close = False
-            
+
         try:
             from database.models import UserSession as DBUserSession
-            
+
             session_token = f"sess_{secrets.token_urlsafe(32)}"
             expires_at = datetime.now(timezone.utc) + self.session_timeout
-            
+
             # Create database record
             db_session = DBUserSession(
                 user_id=user_id,
@@ -643,11 +651,11 @@ class SessionManager:
                 is_active=True,
                 expires_at=expires_at
             )
-            
+
             db.add(db_session)
             db.commit()
             db.refresh(db_session)
-            
+
             # Cache in Redis if available
             if self.redis_client:
                 cache_key = f"session:{session_token}"
@@ -661,14 +669,14 @@ class SessionManager:
                     int(self.session_timeout.total_seconds()),
                     cache_data
                 )
-            
+
             logger.info(f"Created session for user {user_id}")
             return session_token
-            
+
         finally:
             if should_close and db:
                 db.close()
-    
+
     async def validate_session(self, session_token: str, db: Session = None) -> Optional[Dict[str, Any]]:
         """Validate if session is still active"""
         # Check Redis cache first
@@ -681,30 +689,30 @@ class SessionManager:
                     "user_id": session_data["user_id"],
                     "session_id": session_data["session_id"]
                 }
-        
+
         # Check database
         if db is None:
             db = next(get_db())
             should_close = True
         else:
             should_close = False
-            
+
         try:
             from database.models import UserSession as DBUserSession
-            
+
             db_session = db.query(DBUserSession).filter(
                 DBUserSession.session_token == session_token,
                 DBUserSession.is_active == True,
                 DBUserSession.expires_at > datetime.now(timezone.utc)
             ).first()
-            
+
             if not db_session:
                 return None
-                
+
             # Update last activity
             db_session.last_activity = datetime.now(timezone.utc)
             db.commit()
-            
+
             # Update cache
             if self.redis_client:
                 cache_key = f"session:{session_token}"
@@ -718,45 +726,45 @@ class SessionManager:
                     int(self.session_timeout.total_seconds()),
                     cache_data
                 )
-            
+
             return {
                 "user_id": str(db_session.user_id),
                 "session_id": str(db_session.id)
             }
-            
+
         finally:
             if should_close and db:
                 db.close()
-    
+
     async def end_session(self, session_token: str, db: Session = None):
         """End a user session"""
         # Remove from cache
         if self.redis_client:
             self.redis_client.delete(f"session:{session_token}")
-        
+
         # Update database
         if db is None:
             db = next(get_db())
             should_close = True
         else:
             should_close = False
-            
+
         try:
             from database.models import UserSession as DBUserSession
-            
+
             db_session = db.query(DBUserSession).filter(
                 DBUserSession.session_token == session_token
             ).first()
-            
+
             if db_session:
                 db_session.is_active = False
                 db.commit()
                 logger.info(f"Ended session for user {db_session.user_id}")
-                
+
         finally:
             if should_close and db:
                 db.close()
-    
+
     async def end_all_user_sessions(self, user_id: str, db: Session = None):
         """End all sessions for a user"""
         if db is None:
@@ -764,24 +772,24 @@ class SessionManager:
             should_close = True
         else:
             should_close = False
-            
+
         try:
             from database.models import UserSession as DBUserSession
-            
+
             db_sessions = db.query(DBUserSession).filter(
                 DBUserSession.user_id == user_id,
                 DBUserSession.is_active == True
             ).all()
-            
+
             for session in db_sessions:
                 session.is_active = False
                 # Remove from cache
                 if self.redis_client:
                     self.redis_client.delete(f"session:{session.session_token}")
-            
+
             db.commit()
             logger.info(f"Ended all sessions for user {user_id}")
-            
+
         finally:
             if should_close and db:
                 db.close()

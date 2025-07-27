@@ -326,13 +326,47 @@ async def request_id_middleware(request: Request, call_next):
     return response
 
 # Authentication dependency
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(HTTPBearer())):
-    """Get current authenticated user"""
-    # Use the auth module's get_current_user function
-    token_data = await auth_get_current_user(credentials)
+# Accept token from Authorization header, cookies, or `access_token` query param
+async def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(HTTPBearer(auto_error=False))
+):
+    """Resolve the current authenticated user.
 
-    # Create a simple user object from token data
-    # In production, this would fetch from database
+    Priority of token lookup:
+    1. Standard Authorization header processed by FastAPI's HTTPBearer
+    2. Raw `Authorization` header (if auto_error=False disabled automatic 401)
+    3. Cookie named `access_token`
+    4. Query string param `access_token`
+    """
+    token: Optional[str] = None
+
+    # 1. Token provided via normal HTTPBearer dependency
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+
+    # 2. Manually inspect Authorization header if not captured
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+
+    # 3. Check cookie
+    if not token:
+        token = request.cookies.get("access_token")
+
+    # 4. Check query param
+    if not token:
+        token = request.query_params.get("access_token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing authentication token")
+
+    # Re-use the auth service’s validator
+    bearer_credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    token_data = await auth_get_current_user(bearer_credentials)
+
+    # Map to lightweight user object
     user = SimpleNamespace(
         id=token_data.user_id,
         email=token_data.email,

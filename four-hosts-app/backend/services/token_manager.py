@@ -94,7 +94,7 @@ class TokenManager:
         import hashlib
         return hashlib.sha256(token.encode()).hexdigest() == hashed
 
-    def _create_refresh_token_sync(
+    async def create_refresh_token(
         self,
         user_id: str,
         device_id: Optional[str] = None,
@@ -103,13 +103,9 @@ class TokenManager:
         scope: Optional[list] = None,
         db: Session = None
     ) -> Dict[str, Any]:
-        """Synchronous version of create_refresh_token for thread pool execution"""
-        if db is None:
-            db = next(get_db())
-            should_close = True
-        else:
-            should_close = False
-
+        """Create a new refresh token (pure async version)"""
+        db_gen = get_db()                 # async generator
+        db = await anext(db_gen)          # first yielded session
         try:
             # Generate tokens
             refresh_token = self.generate_refresh_token()
@@ -161,29 +157,7 @@ class TokenManager:
             }
 
         finally:
-            if should_close and db:
-                db.close()
-
-    async def create_refresh_token(
-        self,
-        user_id: str,
-        device_id: Optional[str] = None,
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None,
-        scope: Optional[list] = None,
-        db: Session = None
-    ) -> Dict[str, Any]:
-        """Create a new refresh token using thread pool for async execution"""
-        from fastapi.concurrency import run_in_threadpool
-        return await run_in_threadpool(
-            self._create_refresh_token_sync,
-            user_id,
-            device_id,
-            ip_address,
-            user_agent,
-            scope,
-            db
-        )
+            await db_gen.aclose()
 
     async def validate_refresh_token(
         self,
@@ -458,5 +432,5 @@ class TokenManager:
             if should_close and db:
                 db.close()
 
-# Create global token manager instance
+# Create global token manager instance (single authoritative one)
 token_manager = TokenManager(redis_url=os.getenv("REDIS_URL"))
