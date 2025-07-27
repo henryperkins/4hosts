@@ -42,7 +42,7 @@ export const LoginForm: React.FC = () => {
           <div className="rounded-md shadow-sm -space-y-px">
             <div>
               <label htmlFor="username" className="sr-only">
-                Username
+                Email or Username
               </label>
               <input
                 id="username"
@@ -51,7 +51,7 @@ export const LoginForm: React.FC = () => {
                 autoComplete="username"
                 required
                 className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm"
-                placeholder="Username"
+                placeholder="Email or Username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />

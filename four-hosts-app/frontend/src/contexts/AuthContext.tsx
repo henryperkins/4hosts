@@ -65,9 +65,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     checkAuth()
   }, [])
 
-  const login = async (username: string, password: string) => {
+  const login = async (emailOrUsername: string, password: string) => {
     try {
-      await api.login(username, password)
+      // Check if it's an email or username
+      const isEmail = emailOrUsername.includes('@')
+      const email = isEmail ? emailOrUsername : `${emailOrUsername}@example.com` // Fallback for username
+      
+      await api.login(email, password)
       const user = await api.getCurrentUser()
       setAuthState({
         isAuthenticated: true,
@@ -84,8 +88,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const register = async (username: string, email: string, password: string) => {
     try {
       const user = await api.register(username, email, password)
-      // Auto-login after registration
-      await api.login(username, password)
+      // Auto-login after registration using email
+      await api.login(email, password)
       setAuthState({
         isAuthenticated: true,
         user,

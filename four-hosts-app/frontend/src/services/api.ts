@@ -92,10 +92,16 @@ class APIService {
       headers['Authorization'] = `Bearer ${this.authToken}`
     }
 
-    return fetch(`${API_BASE_URL}${url}`, {
-      ...options,
-      headers,
-    })
+    try {
+      return await fetch(`${API_BASE_URL}${url}`, {
+        ...options,
+        headers,
+      })
+    } catch (error) {
+      // Handle network errors (backend not running)
+      console.error('Network error:', error)
+      throw new Error('Cannot connect to backend server. Please ensure the backend is running on http://localhost:8000')
+    }
   }
 
   // Authentication endpoints
@@ -113,10 +119,10 @@ class APIService {
     return response.json()
   }
 
-  async login(username: string, password: string): Promise<AuthTokens> {
+  async login(email: string, password: string): Promise<AuthTokens> {
     const response = await this.fetchWithAuth('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ email, password }),
     })
 
     if (!response.ok) {

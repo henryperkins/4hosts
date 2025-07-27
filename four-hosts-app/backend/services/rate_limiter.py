@@ -301,8 +301,16 @@ class RateLimitMiddleware:
     
     async def __call__(self, request: Request, call_next):
         """Process request with rate limiting"""
+        # Skip rate limiting for OPTIONS requests
+        if request.method == "OPTIONS":
+            return await call_next(request)
+            
         # Skip rate limiting for certain paths
-        if request.url.path in ["/health", "/metrics", "/docs", "/openapi.json"]:
+        skip_paths = [
+            "/health", "/metrics", "/docs", "/openapi.json", "/redoc",
+            "/", "/auth/register", "/auth/login", "/auth/refresh"
+        ]
+        if request.url.path in skip_paths:
             return await call_next(request)
         
         # Extract identifier (API key or user ID from auth)
