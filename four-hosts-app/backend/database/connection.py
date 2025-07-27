@@ -9,8 +9,8 @@ from contextlib import asynccontextmanager
 import logging
 
 from sqlalchemy.ext.asyncio import (
-    AsyncSession, 
-    create_async_engine, 
+    AsyncSession,
+    create_async_engine,
     async_sessionmaker,
     AsyncEngine
 )
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Database configuration
 class DatabaseConfig:
     """Database configuration"""
-    
+
     def __init__(self):
         # Build database URL from individual components
         pghost = os.getenv("PGHOST", "localhost")
@@ -35,25 +35,29 @@ class DatabaseConfig:
         pgpassword = os.getenv("PGPASSWORD", "password")
         pgport = os.getenv("PGPORT", "5432")
         pgdatabase = os.getenv("PGDATABASE", "fourhosts")
-        
+
         self.database_url = os.getenv(
             "DATABASE_URL",
             f"postgresql+asyncpg://{pguser}:{pgpassword}@{pghost}:{pgport}/{pgdatabase}"
         )
-        
+
+        # Debug: Print the database URL (without password for security)
+        import logging
+        logging.info(f"Database URL: postgresql+asyncpg://{pguser}:****@{pghost}:{pgport}/{pgdatabase}")
+
         # Connection pool settings
         self.pool_size = int(os.getenv("DB_POOL_SIZE", "20"))
         self.max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "40"))
         self.pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
         self.pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "3600"))
-        
+
         # Query settings
         self.echo_sql = os.getenv("DB_ECHO_SQL", "false").lower() == "true"
         self.slow_query_threshold = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
-        
+
         # SSL settings
         self.ssl_mode = os.getenv("DB_SSL_MODE", "prefer")
-        
+
     def get_engine_kwargs(self):
         """Get SQLAlchemy engine configuration"""
         kwargs = {
@@ -72,11 +76,11 @@ class DatabaseConfig:
                 "ssl": self.ssl_mode
             }
         }
-        
+
         # Use NullPool for serverless environments
         if os.getenv("SERVERLESS", "false").lower() == "true":
             kwargs["poolclass"] = NullPool
-        
+
         return kwargs
 
 # Global database configuration
@@ -142,22 +146,22 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
 
 class DatabaseManager:
     """Database management operations"""
-    
+
     def __init__(self, engine: AsyncEngine):
         self.engine = engine
-    
+
     async def create_all_tables(self):
         """Create all database tables"""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("All database tables created")
-    
+
     async def drop_all_tables(self):
         """Drop all database tables (use with caution!)"""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
         logger.warning("All database tables dropped")
-    
+
     async def check_connection(self) -> bool:
         """Check if database is accessible"""
         try:
@@ -167,11 +171,11 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Database connection check failed: {e}")
             return False
-    
+
     async def get_table_sizes(self) -> dict:
         """Get size of all tables"""
         query = """
-        SELECT 
+        SELECT
             schemaname,
             tablename,
             pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size,
@@ -180,7 +184,7 @@ class DatabaseManager:
         WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
         ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
         """
-        
+
         async with self.engine.connect() as conn:
             result = await conn.execute(text(query))
             return {
@@ -190,7 +194,7 @@ class DatabaseManager:
                 }
                 for row in result
             }
-    
+
     async def vacuum_analyze(self, table_name: Optional[str] = None):
         """Run VACUUM ANALYZE on tables"""
         async with self.engine.connect() as conn:
@@ -200,11 +204,11 @@ class DatabaseManager:
             else:
                 await conn.execute(text("VACUUM ANALYZE"))
                 logger.info("VACUUM ANALYZE completed for all tables")
-    
+
     async def get_slow_queries(self, min_duration_ms: int = 1000) -> list:
         """Get slow queries from pg_stat_statements"""
         query = """
-        SELECT 
+        SELECT
             query,
             calls,
             total_exec_time,
@@ -217,7 +221,7 @@ class DatabaseManager:
         ORDER BY mean_exec_time DESC
         LIMIT 20;
         """
-        
+
         try:
             async with self.engine.connect() as conn:
                 result = await conn.execute(
@@ -236,7 +240,7 @@ db_manager = DatabaseManager(engine)
 
 class QueryBuilder:
     """Helper class for building complex queries"""
-    
+
     @staticmethod
     def build_search_query(
         search_term: str,
@@ -258,9 +262,9 @@ class QueryBuilder:
                 for field in fields
             ]
             order_by = f"{fields[0]}"
-        
+
         where_clause = " OR ".join(conditions)
-        
+
         return f"""
         SELECT *
         FROM research_queries
@@ -268,7 +272,7 @@ class QueryBuilder:
         ORDER BY {order_by}
         LIMIT 100
         """
-    
+
     @staticmethod
     def build_analytics_query(
         user_id: str,
@@ -283,9 +287,9 @@ class QueryBuilder:
             "week": "week",
             "month": "month"
         }.get(granularity, "day")
-        
+
         return f"""
-        SELECT 
+        SELECT
             date_trunc('{date_trunc}', created_at) as period,
             COUNT(*) as total_queries,
             COUNT(DISTINCT primary_paradigm) as unique_paradigms,
@@ -304,14 +308,14 @@ class QueryBuilder:
 
 class ConnectionPoolMonitor:
     """Monitor database connection pool health"""
-    
+
     def __init__(self, engine: AsyncEngine):
         self.engine = engine
-    
+
     def get_pool_status(self) -> dict:
         """Get current pool status"""
         pool = self.engine.pool
-        
+
         return {
             "size": pool.size(),
             "checked_in": pool.checkedin(),
@@ -320,7 +324,7 @@ class ConnectionPoolMonitor:
             "total": pool.total(),
             "status": "healthy" if pool.checkedin() > 0 else "exhausted"
         }
-    
+
     async def reset_pool(self):
         """Reset connection pool"""
         await self.engine.dispose()
@@ -339,7 +343,7 @@ async def init_database():
 async def run_migrations():
     """Run database migrations using Alembic"""
     import subprocess
-    
+
     try:
         # Run alembic upgrade
         result = subprocess.run(
@@ -361,7 +365,7 @@ async def database_health_check() -> dict:
         "status": "unknown",
         "details": {}
     }
-    
+
     try:
         # Check connection
         if await db_manager.check_connection():
@@ -370,24 +374,24 @@ async def database_health_check() -> dict:
             health["status"] = "unhealthy"
             health["details"]["connection"] = "failed"
             return health
-        
+
         # Check pool status
         pool_status = pool_monitor.get_pool_status()
         health["details"]["pool"] = pool_status
-        
+
         if pool_status["status"] == "exhausted":
             health["status"] = "degraded"
         else:
             health["status"] = "healthy"
-        
+
         # Get table sizes
         table_sizes = await db_manager.get_table_sizes()
         health["details"]["largest_tables"] = dict(
             list(table_sizes.items())[:5]
         )
-        
+
         return health
-        
+
     except Exception as e:
         health["status"] = "unhealthy"
         health["details"]["error"] = str(e)
