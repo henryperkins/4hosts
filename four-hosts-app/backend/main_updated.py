@@ -20,19 +20,20 @@ load_dotenv()
 
 # Import our new services
 from services.research_orchestrator import (
-    research_orchestrator, 
+    research_orchestrator,
     initialize_research_system,
     execute_research
 )
 from services.cache import initialize_cache
 from services.credibility import get_source_credibility
+from services.llm_client import initialize_llm_client
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Four Hosts Research API", 
+    title="Four Hosts Research API",
     version="2.0.0",
     description="Paradigm-aware research with integrated Context Engineering Pipeline"
 )
@@ -113,9 +114,9 @@ system_initialized = False
 async def startup_event():
     """Initialize the research system on startup"""
     global system_initialized
-    
+
     logger.info("Initializing Four Hosts Research System...")
-    
+
     try:
         # Initialize cache system
         cache_success = await initialize_cache()
@@ -123,14 +124,18 @@ async def startup_event():
             logger.info("✓ Cache system initialized")
         else:
             logger.warning("⚠ Cache system failed - continuing without cache")
-        
+
+
         # Initialize research orchestrator
         await initialize_research_system()
         logger.info("✓ Research orchestrator initialized")
-        
+
+        # Initialize LLM client
+        await initialize_llm_client()
+        logger.info("✓ LLM client initialized")
         system_initialized = True
         logger.info("🚀 Four Hosts Research System ready!")
-        
+
     except Exception as e:
         logger.error(f"❌ System initialization failed: {str(e)}")
         system_initialized = False
@@ -139,12 +144,12 @@ async def startup_event():
 async def root():
     """API root endpoint"""
     return {
-        "message": "Four Hosts Research API v2.0", 
+        "message": "Four Hosts Research API v2.0",
         "version": "2.0.0",
         "system_initialized": system_initialized,
         "features": [
             "Paradigm-aware research",
-            "Real search API integration", 
+            "Real search API integration",
             "Source credibility scoring",
             "Context engineering pipeline",
             "Result caching and deduplication"
@@ -157,7 +162,7 @@ async def health_check():
     try:
         # Check system components
         stats = await research_orchestrator.get_execution_stats()
-        
+
         return {
             "status": "healthy" if system_initialized else "degraded",
             "system_initialized": system_initialized,
@@ -189,13 +194,13 @@ async def submit_research(research: ResearchQuery, background_tasks: BackgroundT
     """Submit a research query for paradigm-based analysis."""
     if not system_initialized:
         raise HTTPException(status_code=503, detail="System not initialized")
-    
+
     research_id = f"res_{uuid.uuid4().hex[:12]}"
-    
+
     try:
         # Classify the query
         classification = await classify_query(research.query)
-        
+
         # Store research request
         research_data = {
             "id": research_id,
@@ -207,14 +212,14 @@ async def submit_research(research: ResearchQuery, background_tasks: BackgroundT
             "results": None
         }
         research_store[research_id] = research_data
-        
+
         # Start research execution in background
         if research.options.enable_real_search and system_initialized:
             background_tasks.add_task(execute_real_research, research_id, research)
         else:
             # Fallback to mock research for development
             background_tasks.add_task(execute_mock_research, research_id, research.query, classification)
-        
+
         return {
             "research_id": research_id,
             "status": ResearchStatus.PROCESSING,
@@ -222,7 +227,7 @@ async def submit_research(research: ResearchQuery, background_tasks: BackgroundT
             "estimated_completion": "2025-01-20T10:30:45Z",
             "real_search_enabled": research.options.enable_real_search and system_initialized
         }
-        
+
     except Exception as e:
         logger.error(f"Research submission error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Research submission failed: {str(e)}")
@@ -232,7 +237,7 @@ async def get_research_status(research_id: str):
     """Get the status of a research query."""
     if research_id not in research_store:
         raise HTTPException(status_code=404, detail="Research not found")
-    
+
     research = research_store[research_id]
     return {
         "research_id": research_id,
@@ -248,11 +253,11 @@ async def get_research_results(research_id: str):
     """Get completed research results."""
     if research_id not in research_store:
         raise HTTPException(status_code=404, detail="Research not found")
-    
+
     research = research_store[research_id]
     if research["status"] != ResearchStatus.COMPLETED:
         raise HTTPException(status_code=400, detail=f"Research is {research['status']}")
-    
+
     return research["results"]
 
 @app.get("/sources/credibility/{domain}")
@@ -280,7 +285,7 @@ async def get_system_stats():
     try:
         if not system_initialized:
             return {"error": "System not initialized"}
-        
+
         stats = await research_orchestrator.get_execution_stats()
         return {
             "system_status": "operational",
@@ -297,38 +302,38 @@ async def execute_real_research(research_id: str, research: ResearchQuery):
     try:
         # Update status
         research_store[research_id]["status"] = ResearchStatus.IN_PROGRESS
-        
+
         # This is where we would integrate with the Context Engineering Pipeline
         # For now, we'll create a simplified version
-        
+
         # Step 1: Classify (already done)
         classification = ParadigmClassification(**research_store[research_id]["paradigm_classification"])
-        
+
         # Step 2: Create mock context engineered query (would come from pipeline)
         from types import SimpleNamespace
-        
+
         mock_classification = SimpleNamespace()
         mock_classification.primary_paradigm = SimpleNamespace()
         mock_classification.primary_paradigm.value = classification.primary.value
         mock_classification.secondary_paradigm = None
-        
+
         # Mock select output with paradigm-specific queries
         mock_select_output = SimpleNamespace()
         paradigm_queries = generate_paradigm_queries(research.query, classification.primary.value)
         mock_select_output.search_queries = paradigm_queries
-        
+
         mock_context_query = SimpleNamespace()
         mock_context_query.original_query = research.query
         mock_context_query.classification = mock_classification
         mock_context_query.select_output = mock_select_output
-        
+
         # Step 3: Execute research
         execution_result = await execute_research(mock_context_query, research.options.max_sources)
-        
+
         # Step 4: Format search results
         formatted_sources = []
         search_results_for_synthesis = []
-        
+
         for result in execution_result.filtered_results[:research.options.max_sources]:
             # Format for API response
             formatted_sources.append(SourceResult(
@@ -340,7 +345,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery):
                 published_date=result.published_date.isoformat() if result.published_date else None,
                 source_type=result.result_type
             ))
-            
+
             # Format for answer synthesis
             search_results_for_synthesis.append({
                 'title': result.title,
@@ -351,10 +356,10 @@ async def execute_real_research(research_id: str, research: ResearchQuery):
                 'published_date': result.published_date,
                 'result_type': result.result_type
             })
-        
+
         # Step 5: Generate paradigm-aware answer using Answer Generation System
         from services.answer_generator_continued import answer_orchestrator
-        
+
         # Mock context engineering output for answer generation
         context_engineering = {
             'write_output': {
@@ -368,7 +373,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery):
                 'max_sources': research.options.max_sources
             }
         }
-        
+
         # Generate answer
         generated_answer = await answer_orchestrator.generate_answer(
             paradigm=classification.primary.value,
@@ -381,7 +386,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery):
                 'include_citations': True
             }
         )
-        
+
         # Format answer for API response
         answer_sections = []
         for section in generated_answer.sections:
@@ -392,7 +397,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery):
                 "confidence": section.confidence,
                 "sources_count": len(section.citations)
             })
-        
+
         # Convert citations to list format
         citations_list = []
         for cite_id, citation in generated_answer.citations.items():
@@ -403,7 +408,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery):
                 "credibility_score": citation.credibility_score,
                 "paradigm_alignment": classification.primary.value
             })
-        
+
         # Create final result
         final_result = ResearchResult(
             research_id=research_id,
@@ -436,14 +441,14 @@ async def execute_real_research(research_id: str, research: ResearchQuery):
             },
             cost_info=execution_result.cost_breakdown
         )
-        
+
         # Store results
         research_store[research_id]["status"] = ResearchStatus.COMPLETED
         research_store[research_id]["results"] = final_result.dict()
         research_store[research_id]["cost_info"] = execution_result.cost_breakdown
-        
+
         logger.info(f"✓ Real research completed for {research_id}")
-        
+
     except Exception as e:
         logger.error(f"Real research execution failed for {research_id}: {str(e)}")
         research_store[research_id]["status"] = ResearchStatus.FAILED
@@ -454,13 +459,13 @@ async def execute_mock_research(research_id: str, query: str, classification: Pa
     try:
         # Update status
         research_store[research_id]["status"] = ResearchStatus.IN_PROGRESS
-        
+
         # Simulate processing time
         await asyncio.sleep(2)
-        
+
         # Generate mock results
         paradigm = classification.primary
-        
+
         mock_sources = [
             SourceResult(
                 title=f"Mock Research Article about {query}",
@@ -474,12 +479,12 @@ async def execute_mock_research(research_id: str, query: str, classification: Pa
                 title=f"Academic Study on {query}",
                 url="https://academic-example.com/study",
                 snippet=f"Academic perspective on {query} from {paradigm.value} viewpoint",
-                domain="academic-example.com", 
+                domain="academic-example.com",
                 credibility_score=0.92,
                 source_type="academic"
             )
         ]
-        
+
         results = ResearchResult(
             research_id=research_id,
             query=query,
@@ -516,13 +521,13 @@ async def execute_mock_research(research_id: str, query: str, classification: Pa
                 "real_search": False
             }
         )
-        
+
         # Store results
         research_store[research_id]["status"] = ResearchStatus.COMPLETED
         research_store[research_id]["results"] = results.dict()
-        
+
         logger.info(f"✓ Mock research completed for {research_id}")
-        
+
     except Exception as e:
         logger.error(f"Mock research execution failed for {research_id}: {str(e)}")
         research_store[research_id]["status"] = ResearchStatus.FAILED
@@ -532,40 +537,40 @@ async def execute_mock_research(research_id: str, query: str, classification: Pa
 async def classify_query(query: str) -> ParadigmClassification:
     """Classify a query into paradigms using keyword matching and simple heuristics."""
     query_lower = query.lower()
-    
+
     paradigm_keywords = {
         Paradigm.DOLORES: ["injustice", "systemic", "power", "revolution", "expose", "corrupt", "unfair", "inequality"],
         Paradigm.TEDDY: ["protect", "help", "care", "support", "vulnerable", "community", "safety", "wellbeing"],
         Paradigm.BERNARD: ["analyze", "data", "research", "study", "evidence", "statistical", "scientific", "measure"],
         Paradigm.MAEVE: ["strategy", "compete", "optimize", "control", "influence", "business", "advantage", "implement"]
     }
-    
+
     scores = {paradigm: 0.0 for paradigm in Paradigm}
     for paradigm, keywords in paradigm_keywords.items():
         for keyword in keywords:
             if keyword in query_lower:
                 scores[paradigm] += 1.0
-    
+
     total_score = sum(scores.values()) or 1
     distribution = {p.value: scores[p] / total_score for p in Paradigm}
-    
+
     sorted_paradigms = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     primary = sorted_paradigms[0][0] if sorted_paradigms[0][1] > 0 else Paradigm.BERNARD
     secondary = sorted_paradigms[1][0] if len(sorted_paradigms) > 1 and sorted_paradigms[1][1] > 0 else None
-    
+
     confidence = min(0.95, max(0.5, sorted_paradigms[0][1] / total_score if total_score > 0 else 0.5))
-    
+
     explanations = {
         Paradigm.DOLORES: "Focus on systemic issues and power dynamics",
         Paradigm.TEDDY: "Emphasis on protection and care",
         Paradigm.BERNARD: "Analytical and evidence-based approach",
         Paradigm.MAEVE: "Strategic and action-oriented perspective"
     }
-    
+
     explanation_dict = {primary.value: explanations[primary]}
     if secondary:
         explanation_dict[secondary.value] = explanations[secondary]
-    
+
     return ParadigmClassification(
         primary=primary,
         secondary=secondary,
@@ -582,23 +587,23 @@ def generate_paradigm_queries(query: str, paradigm: str) -> List[Dict[str, Any]]
         "bernard": ["research", "study", "analysis", "data"],
         "maeve": ["strategy", "competitive", "optimize", "framework"]
     }
-    
+
     queries = [{"query": query, "type": "original", "weight": 1.0}]
-    
+
     for i, modifier in enumerate(modifiers.get(paradigm, [])[:3]):
         queries.append({
             "query": f"{query} {modifier}",
             "type": f"paradigm_modified_{i+1}",
             "weight": 0.8 - (i * 0.1)
         })
-    
+
     return queries
 
 def get_paradigm_approach_suggestion(paradigm: Paradigm) -> str:
     """Get approach suggestion for a paradigm"""
     suggestions = {
         Paradigm.DOLORES: "Focus on exposing systemic issues and empowering resistance",
-        Paradigm.TEDDY: "Prioritize community support and protective measures", 
+        Paradigm.TEDDY: "Prioritize community support and protective measures",
         Paradigm.BERNARD: "Emphasize empirical research and data-driven analysis",
         Paradigm.MAEVE: "Develop strategic frameworks and actionable implementation plans"
     }
@@ -626,7 +631,7 @@ def get_section_title(paradigm: Paradigm) -> str:
     titles = {
         Paradigm.DOLORES: "Systemic Analysis",
         Paradigm.TEDDY: "Protection Framework",
-        Paradigm.BERNARD: "Data-Driven Insights", 
+        Paradigm.BERNARD: "Data-Driven Insights",
         Paradigm.MAEVE: "Strategic Implementation"
     }
     return titles[paradigm]
@@ -644,7 +649,7 @@ def generate_paradigm_content(query: str, paradigm: Paradigm) -> str:
     content_templates = {
         Paradigm.DOLORES: "Analysis reveals deep-rooted systemic issues that require fundamental transformation...",
         Paradigm.TEDDY: "Comprehensive support framework prioritizing vulnerable stakeholders and community wellbeing...",
-        Paradigm.BERNARD: "Statistical analysis indicates significant patterns and correlations in the data...",  
+        Paradigm.BERNARD: "Statistical analysis indicates significant patterns and correlations in the data...",
         Paradigm.MAEVE: "Strategic framework identifies key leverage points and actionable implementation steps..."
     }
     return content_templates[paradigm]

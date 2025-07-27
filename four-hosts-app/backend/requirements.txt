@@ -14,3 +14,5 @@ passlib[bcrypt]==1.7.4
 python-multipart==0.0.7
 openai==1.12.0
 tenacity==8.2.3
+azure-identity==1.15.0
+prometheus-client==0.22.1

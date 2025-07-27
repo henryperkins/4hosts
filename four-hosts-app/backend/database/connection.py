@@ -29,9 +29,16 @@ class DatabaseConfig:
     """Database configuration"""
     
     def __init__(self):
+        # Build database URL from individual components
+        pghost = os.getenv("PGHOST", "localhost")
+        pguser = os.getenv("PGUSER", "user")
+        pgpassword = os.getenv("PGPASSWORD", "password")
+        pgport = os.getenv("PGPORT", "5432")
+        pgdatabase = os.getenv("PGDATABASE", "fourhosts")
+        
         self.database_url = os.getenv(
             "DATABASE_URL",
-            "postgresql+asyncpg://user:password@localhost/fourhosts"
+            f"postgresql+asyncpg://{pguser}:{pgpassword}@{pghost}:{pgport}/{pgdatabase}"
         )
         
         # Connection pool settings
