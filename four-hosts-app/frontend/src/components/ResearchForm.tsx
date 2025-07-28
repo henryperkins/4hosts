@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Search, Sparkles } from 'lucide-react'
+import { Button } from './ui/Button'
+import { InputField } from './ui/InputField'
 
 interface ResearchFormProps {
   onSubmit: (query: string) => void
@@ -10,7 +12,7 @@ function ResearchForm({ onSubmit, isLoading }: ResearchFormProps) {
   const [query, setQuery] = useState('')
   const [isFocused, setIsFocused] = useState(false)
   const [charCount, setCharCount] = useState(0)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -63,12 +65,13 @@ function ResearchForm({ onSubmit, isLoading }: ResearchFormProps) {
           </span>
         </div>
         <div className="relative">
-          <textarea
+          <InputField
             ref={textareaRef}
             id="query"
             name="query"
+            textarea
             rows={3}
-            className={`input-field resize-none transition-all duration-200 ${
+            className={`transition-all duration-200 ${
               isFocused ? 'shadow-lg' : ''
             } ${
               charCount >= 10 ? 'border-green-500 focus:ring-green-500' : ''
@@ -93,24 +96,14 @@ function ResearchForm({ onSubmit, isLoading }: ResearchFormProps) {
       </div>
       
       <div className="mt-4 flex items-center space-x-4">
-        <button
+        <Button
           type="submit"
-          disabled={isLoading || query.trim().length < 10}
-          className="btn-primary flex items-center space-x-2 group"
+          disabled={query.trim().length < 10}
+          loading={isLoading}
+          icon={Search}
         >
-          <Search className={`h-4 w-4 transition-transform duration-300 ${
-            isLoading ? 'animate-spin' : 'group-hover:scale-110'
-          }`} />
-          <span>
-            {isLoading ? (
-              <span className="flex items-center">
-                Researching<span className="loading-dots"></span>
-              </span>
-            ) : (
-              'Start Research'
-            )}
-          </span>
-        </button>
+          {isLoading ? 'Researching' : 'Start Research'}
+        </Button>
         {isLoading && (
           <div className="flex items-center text-sm text-gray-600 animate-fade-in">
             <div className="loading-spinner mr-2"></div>

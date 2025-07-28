@@ -2,6 +2,8 @@ import React, { useState, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 import { LogIn, Mail, Lock, Eye, EyeOff, Check, AlertCircle } from 'lucide-react'
+import { Button } from '../ui/Button'
+import { InputField } from '../ui/InputField'
 
 // Animation and timing constants
 const REDIRECT_DELAY = 500
@@ -123,27 +125,27 @@ export const LoginForm: React.FC = () => {
                 Email or Username
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none z-10">
                   <Mail className={`h-5 w-5 transition-colors duration-200 ${
                     getInputStatus('username') === 'error' ? 'text-red-500 dark:text-red-400' :
                     getInputStatus('username') === 'success' ? 'text-green-500 dark:text-green-400' :
                     'text-gray-400 dark:text-gray-500'
                   }`} />
                 </div>
-                <input
+                <InputField
                   id="username"
                   name="username"
                   type="text"
                   autoComplete="username"
                   required
-                  className={`input-field pl-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 ${
+                  className={`pl-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 ${
                     getInputStatus('username') === 'error' ? 'input-error animate-pulse-border' :
                     getInputStatus('username') === 'success' ? 'input-success' :
                     ''
                   }`}
                   placeholder="Email or Username"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
                   onBlur={() => setFormTouched(prev => ({ ...prev, username: true }))}
                 />
               </div>
@@ -165,7 +167,7 @@ export const LoginForm: React.FC = () => {
                 Password
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none z-10">
                   <Lock className={`h-5 w-5 transition-colors duration-200 ${
                     getInputStatus('password') === 'error' ? 'text-red-500 dark:text-red-400' :
                     getInputStatus('password') === 'strong' ? 'text-green-600 dark:text-green-400' :
@@ -173,13 +175,13 @@ export const LoginForm: React.FC = () => {
                     'text-gray-400 dark:text-gray-500'
                   }`} />
                 </div>
-                <input
+                <InputField
                   id="password"
                   name="password"
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
                   required
-                  className={`input-field pl-10 pr-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 ${
+                  className={`pl-10 pr-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 ${
                     getInputStatus('password') === 'error' ? 'input-error animate-pulse-border' :
                     getInputStatus('password') === 'strong' ? 'input-success border-green-600' :
                     getInputStatus('password') === 'success' ? 'input-success' :
@@ -187,12 +189,12 @@ export const LoginForm: React.FC = () => {
                   }`}
                   placeholder="Password"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
                   onBlur={() => setFormTouched(prev => ({ ...prev, password: true }))}
                 />
                 <button
                   type="button"
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center z-10"
                   onClick={togglePasswordVisibility}
                   aria-label={showPassword ? "Hide password" : "Show password"}
                 >
@@ -229,25 +231,15 @@ export const LoginForm: React.FC = () => {
           </div>
 
           <div>
-            <button
+            <Button
               type="submit"
-              disabled={isLoading || !username || !password}
-              className="btn-primary w-full flex justify-center items-center relative overflow-hidden group"
+              disabled={!username || !password}
+              loading={isLoading}
+              fullWidth
+              icon={LogIn}
             >
-              <span className="absolute left-0 inset-y-0 flex items-center pl-3">
-                <LogIn className={`h-5 w-5 transition-all duration-300 ${
-                  isLoading ? 'animate-spin' : 'group-hover:rotate-12'
-                }`} />
-              </span>
-              {isLoading ? (
-                <span className="flex items-center">
-                  <span className="loading-spinner mr-2"></span>
-                  Signing in<span className="loading-dots"></span>
-                </span>
-              ) : (
-                'Sign in'
-              )}
-            </button>
+              {isLoading ? 'Signing in' : 'Sign in'}
+            </Button>
           </div>
         </form>
       </div>

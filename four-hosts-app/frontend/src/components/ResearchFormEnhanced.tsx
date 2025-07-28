@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react'
-import { Settings2, Loader2, Sparkles, Users, AlertCircle } from 'lucide-react'
+import { Settings2, Sparkles, Users, AlertCircle } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import type { ResearchOptions } from '../types'
+import { Button } from './ui/Button'
+import { InputField } from './ui/InputField'
 
 interface ResearchFormEnhancedProps {
   onSubmit: (query: string, options: ResearchOptions) => void
@@ -14,7 +16,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [error, setError] = useState('')
   const [paradigm, setParadigm] = useState('auto')
-  const [depth, setDepth] = useState(user?.preferences?.default_depth ?? 'standard')
+  const [depth, setDepth] = useState<'quick' | 'standard' | 'deep'>(user?.preferences?.default_depth ?? 'standard')
 
   const [options, setOptions] = useState<ResearchOptions>({
     depth: user?.preferences?.default_depth || 'standard',
@@ -40,7 +42,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (query.trim()) {
-      onSubmit(query, { ...options, depth: depth as 'quick' | 'standard' | 'deep', paradigm_override: paradigm === 'auto' ? null : paradigm })
+      onSubmit(query, { ...options, depth })
     }
   }
 
@@ -61,15 +63,16 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             Research Query
           </label>
           <div className="relative">
-            <textarea
+            <InputField
               id="query"
+              textarea
               value={query}
-              onChange={(e) => {
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
                 setQuery(e.target.value)
                 setError('')
               }}
               placeholder="What would you like to research today?"
-              className={`w-full px-4 py-3 border-2 rounded-xl transition-all duration-200 resize-none
+              className={`px-4 py-3 border-2 rounded-xl transition-all duration-200
                 ${error
                   ? 'border-red-500 dark:border-red-400 focus:ring-red-500 dark:focus:ring-red-400'
                   : 'border-gray-300 dark:border-gray-600 focus:border-blue-500 dark:focus:border-blue-400'
@@ -147,7 +150,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
               <button
                 key={option.value}
                 type="button"
-                onClick={() => setDepth(option.value)}
+                onClick={() => setDepth(option.value as 'quick' | 'standard' | 'deep')}
                 disabled={isLoading}
                 className={`flex-1 p-3 rounded-xl border-2 transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800
                   ${depth === option.value
@@ -197,13 +200,13 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                 <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">
                   Max sources
                 </label>
-                <input
+                <InputField
                   type="number"
                   min="10"
                   max="200"
                   value={options.max_sources || 100}
-                  onChange={(e) => setOptions({ ...options, max_sources: parseInt(e.target.value) })}
-                  className="w-full px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-700 dark:text-white transition-colors duration-200"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOptions({ ...options, max_sources: parseInt(e.target.value) })}
+                  className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-700 dark:text-white transition-colors duration-200"
                 />
               </div>
             </div>
@@ -212,25 +215,20 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
 
         {/* Submit Button */}
         <div className="animate-fade-in-up" style={{ animationDelay: '0.4s' }}>
-          <button
+          <Button
             type="submit"
-            disabled={isLoading || !query.trim()}
-            className="w-full bg-gradient-to-r from-blue-500 to-blue-600 dark:from-blue-600 dark:to-blue-700 text-white py-3 px-4 rounded-xl font-medium hover:from-blue-600 hover:to-blue-700 dark:hover:from-blue-700 dark:hover:to-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-[1.02] hover:shadow-lg group relative overflow-hidden"
+            disabled={!query.trim()}
+            loading={isLoading}
+            fullWidth
+            icon={Users}
+            className="bg-gradient-to-r from-blue-500 to-blue-600 dark:from-blue-600 dark:to-blue-700 hover:from-blue-600 hover:to-blue-700 dark:hover:from-blue-700 dark:hover:to-blue-800 py-3 px-4 rounded-xl font-medium transition-all duration-300 transform hover:scale-[1.02] hover:shadow-lg group relative overflow-hidden"
           >
             <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -skew-x-12 translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-700"></span>
-            {isLoading ? (
-              <span className="flex items-center justify-center relative">
-                <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                <span className="animate-pulse">Researching...</span>
-              </span>
-            ) : (
-              <span className="flex items-center justify-center relative">
-                <Users className="h-5 w-5 mr-2 opacity-0 group-hover:opacity-100 transition-all duration-300 transform group-hover:rotate-12" />
-                <span>Ask the Four Hosts</span>
-                <Sparkles className="h-5 w-5 ml-2 opacity-0 group-hover:opacity-100 transition-all duration-300 transform group-hover:-rotate-12" />
-              </span>
-            )}
-          </button>
+            <span className="flex items-center justify-center relative">
+              {!isLoading && <Sparkles className="h-5 w-5 ml-2 opacity-0 group-hover:opacity-100 transition-all duration-300 transform group-hover:-rotate-12" />}
+              {isLoading ? 'Researching...' : 'Ask the Four Hosts'}
+            </span>
+          </Button>
         </div>
       </div>
     </form>
