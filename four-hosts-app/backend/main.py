@@ -56,10 +56,14 @@ from services.webhook_manager import WebhookManager, WebhookEvent, create_webhoo
 from services.websocket_service import ConnectionManager, ResearchProgressTracker, create_websocket_router
 from services.export_service import ExportService, create_export_router
 from database.connection import init_database, get_db
-from database.models import User as DBUser, ResearchQuery as Research, Webhook as WebhookSubscription
+from database.models import User as DBUser, ResearchQuery as Research, Webhook as WebhookSubscription, UserRole as _DBUserRole, ParadigmType as _DBParadigm
 from utils.custom_docs import custom_openapi, get_custom_swagger_ui_html, get_custom_redoc_html
 # Preferences management import
 from services.user_management import user_profile_service
+
+# Re-export canonical definitions (for backward compatibility)
+UserRole = _DBUserRole
+Paradigm = _DBParadigm
 
 # Import authentication components
 from services.auth import (
@@ -108,23 +112,19 @@ active_research = Gauge('active_research_queries', 'Number of active research qu
 websocket_connections = Gauge('websocket_connections', 'Number of active WebSocket connections', registry=metrics_registry)
 
 # Data Models
-class Paradigm(str, Enum):
-    DOLORES = "dolores"
-    TEDDY = "teddy"
-    BERNARD = "bernard"
-    MAEVE = "maeve"
+# Mapping from HostParadigm to Paradigm
+HOST_TO_MAIN_PARADIGM = {
+    HostParadigm.DOLORES: Paradigm.DOLORES,
+    HostParadigm.TEDDY: Paradigm.TEDDY,
+    HostParadigm.BERNARD: Paradigm.BERNARD,
+    HostParadigm.MAEVE: Paradigm.MAEVE,
+}
+
 
 class ResearchDepth(str, Enum):
     QUICK = "quick"
     STANDARD = "standard"
     DEEP = "deep"
-
-class UserRole(str, Enum):
-    FREE = "free"
-    BASIC = "basic"
-    PRO = "pro"
-    ENTERPRISE = "enterprise"
-    ADMIN = "admin"
 
 class ResearchOptions(BaseModel):
     depth: ResearchDepth = ResearchDepth.STANDARD
@@ -631,17 +631,16 @@ async def classify_paradigm(query: str, current_user: User = Depends(get_current
         
         # Convert to the old format for compatibility
         classification = ParadigmClassification(
-            primary=Paradigm(classification_result.primary_paradigm.value),
-            secondary=Paradigm(classification_result.secondary_paradigm.value) if classification_result.secondary_paradigm else None,
+            primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
+            secondary=HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm) if classification_result.secondary_paradigm else None,
             distribution={
-                "revolutionary": classification_result.distribution.get(HostParadigm.DOLORES, 0),
-                "devotion": classification_result.distribution.get(HostParadigm.TEDDY, 0),
-                "analytical": classification_result.distribution.get(HostParadigm.BERNARD, 0),
-                "strategic": classification_result.distribution.get(HostParadigm.MAEVE, 0)
+                HOST_TO_MAIN_PARADIGM[p].value: v
+                for p, v in classification_result.distribution.items()
             },
             confidence=classification_result.confidence,
             explanation={
-                classification_result.primary_paradigm.value: '; '.join(classification_result.reasoning.get(classification_result.primary_paradigm, [])[:2])
+                HOST_TO_MAIN_PARADIGM[p].value: '; '.join(r)
+                for p, r in classification_result.reasoning.items()
             }
         )
         
@@ -687,17 +686,16 @@ async def submit_research(
         
         # Convert to the old format for compatibility
         classification = ParadigmClassification(
-            primary=Paradigm(classification_result.primary_paradigm.value),
-            secondary=Paradigm(classification_result.secondary_paradigm.value) if classification_result.secondary_paradigm else None,
+            primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
+            secondary=HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm) if classification_result.secondary_paradigm else None,
             distribution={
-                "revolutionary": classification_result.distribution.get(HostParadigm.DOLORES, 0),
-                "devotion": classification_result.distribution.get(HostParadigm.TEDDY, 0),
-                "analytical": classification_result.distribution.get(HostParadigm.BERNARD, 0),
-                "strategic": classification_result.distribution.get(HostParadigm.MAEVE, 0)
+                HOST_TO_MAIN_PARADIGM[p].value: v
+                for p, v in classification_result.distribution.items()
             },
             confidence=classification_result.confidence,
             explanation={
-                classification_result.primary_paradigm.value: '; '.join(classification_result.reasoning.get(classification_result.primary_paradigm, [])[:2])
+                HOST_TO_MAIN_PARADIGM[p].value: '; '.join(r)
+                for p, r in classification_result.reasoning.items()
             }
         )
 
@@ -1105,8 +1103,20 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
             }
         }
 
+        # Map enum value to paradigm name
+        paradigm_mapping = {
+            "revolutionary": "dolores",
+            "devotion": "teddy",
+            "analytical": "bernard",
+            "strategic": "maeve"
+        }
+        paradigm_name = paradigm_mapping.get(
+            context_engineered_query.classification.primary_paradigm.value,
+            "bernard"  # Default to bernard if not found
+        )
+        
         generated_answer = await answer_orchestrator.generate_answer(
-            paradigm=context_engineered_query.classification.primary_paradigm.value,
+            paradigm=paradigm_name,
             query=research.query,
             search_results=search_results_for_synthesis,
             context_engineering=context_engineering,

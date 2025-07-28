@@ -192,3 +192,4 @@ local/
 # Azure specific
 .azure/
 azure.err
+.aider*

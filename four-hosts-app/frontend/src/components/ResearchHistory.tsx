@@ -4,33 +4,7 @@ import { format, formatDistanceToNow } from 'date-fns'
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
 import type { ResearchHistoryItem } from '../types'
-
-const paradigmInfo = {
-  dolores: {
-    color: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
-    borderColor: 'border-red-500',
-    icon: '⚖️',
-    description: 'Truth & Justice'
-  },
-  teddy: {
-    color: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
-    borderColor: 'border-orange-500',
-    icon: '🤝',
-    description: 'Care & Support'
-  },
-  bernard: {
-    color: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
-    borderColor: 'border-blue-500',
-    icon: '🧠',
-    description: 'Analysis & Logic'
-  },
-  maeve: {
-    color: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
-    borderColor: 'border-green-500',
-    icon: '♟️',
-    description: 'Strategy & Power'
-  },
-}
+import { paradigmInfo, getParadigmClass, type Paradigm } from '../constants/paradigm'
 
 export const ResearchHistory: React.FC = () => {
   const [history, setHistory] = useState<ResearchHistoryItem[]>([])
@@ -135,7 +109,7 @@ export const ResearchHistory: React.FC = () => {
 
       <div className="space-y-3">
         {history.map((item, index) => {
-          const paradigm = item.paradigm && paradigmInfo[item.paradigm]
+          const paradigm = item.paradigm && paradigmInfo[item.paradigm as Paradigm]
           const isHovered = hoveredItem === item.research_id
 
           return (
@@ -172,9 +146,9 @@ export const ResearchHistory: React.FC = () => {
                     </span>
 
                     {paradigm && (
-                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${paradigm.color} flex items-center gap-1 animate-fade-in`}>
+                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${getParadigmClass(item.paradigm!)} flex items-center gap-1 animate-fade-in`}>
                         <span>{paradigm.icon}</span>
-                        {paradigm.description}
+                        {paradigm.shortDescription}
                       </span>
                     )}
 

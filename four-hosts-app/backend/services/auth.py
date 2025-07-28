@@ -21,8 +21,11 @@ from enum import Enum
 import re
 
 # Import database models and connection
-from database.models import User as DBUser, APIKey as DBAPIKey
+from database.models import User as DBUser, APIKey as DBAPIKey, UserRole as _DBUserRole
 from database.connection import get_db
+
+# Re-export to preserve "services.auth.UserRole"
+UserRole = _DBUserRole
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,14 +45,6 @@ API_KEY_LENGTH = 32
 security = HTTPBearer()
 
 # --- Data Models ---
-
-class UserRole(str, Enum):
-    """User roles for authorization"""
-    FREE = "free"
-    BASIC = "basic"
-    PRO = "pro"
-    ENTERPRISE = "enterprise"
-    ADMIN = "admin"
 
 class AuthProvider(str, Enum):
     """Authentication providers"""

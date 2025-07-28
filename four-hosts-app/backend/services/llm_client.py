@@ -366,6 +366,25 @@ class LLMClient:
 
         raise RuntimeError("No LLM back-ends configured for conversation.")
 
+    async def generate_paradigm_content(
+        self,
+        prompt: str,
+        *,
+        paradigm: str,
+        max_tokens: int = 2_000,
+        temperature: float = 0.7,
+        model: str | None = None,
+    ) -> str:
+        """Generate content based on a specific paradigm's perspective."""
+        return await self.generate_completion(
+            prompt=prompt,
+            paradigm=paradigm,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=model,
+            stream=False,
+        )
+
     # ─────────── low-level Azure helper ───────────
     async def _create_response_azure(
         self,

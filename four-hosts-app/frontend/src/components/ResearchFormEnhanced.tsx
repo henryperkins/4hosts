@@ -14,7 +14,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [error, setError] = useState('')
   const [paradigm, setParadigm] = useState('auto')
-  const [depth, setDepth] = useState('standard')
+  const [depth, setDepth] = useState(user?.preferences?.default_depth ?? 'standard')
 
   const [options, setOptions] = useState<ResearchOptions>({
     depth: user?.preferences?.default_depth || 'standard',
@@ -40,7 +40,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (query.trim()) {
-      onSubmit(query, { ...options, depth: depth as 'quick' | 'standard' | 'deep' })
+      onSubmit(query, { ...options, depth: depth as 'quick' | 'standard' | 'deep', paradigm_override: paradigm === 'auto' ? null : paradigm })
     }
   }
 

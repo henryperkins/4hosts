@@ -279,7 +279,8 @@ class APIService {
       throw new Error('Failed to get research history')
     }
 
-    return response.json()
+    const data = await response.json()
+    return data.history || []
   }
 
   async exportResearch(researchId: string, format: 'json' | 'pdf' | 'markdown' = 'json'): Promise<Blob> {

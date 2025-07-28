@@ -113,7 +113,7 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
             "key": self.api_key,
             "cx": self.search_engine_id,
             "q": query,
-            "num": min(config.max_results, 10),  # Google max is 10 per request
+            "num": min(config.max_results, 10),
             "lr": f"lang_{config.language}",
             "gl": config.region,
             "safe": config.safe_search

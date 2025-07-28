@@ -1,23 +1,10 @@
 import { useState, useEffect } from 'react'
 import type { ResearchResult } from '../types'
 import { CheckCircle, AlertCircle, Clock, ExternalLink, TrendingUp, ChevronDown, Shield } from 'lucide-react'
+import { getParadigmClass, getParadigmDescription } from '../constants/paradigm'
 
 interface ResultsDisplayProps {
   results: ResearchResult
-}
-
-const paradigmColors = {
-  dolores: 'text-red-700 bg-red-50 border-red-200 dark:text-red-300 dark:bg-red-900/20 dark:border-red-800',
-  teddy: 'text-orange-700 bg-orange-50 border-orange-200 dark:text-orange-300 dark:bg-orange-900/20 dark:border-orange-800',
-  bernard: 'text-blue-700 bg-blue-50 border-blue-200 dark:text-blue-300 dark:bg-blue-900/20 dark:border-blue-800',
-  maeve: 'text-green-700 bg-green-50 border-green-200 dark:text-green-300 dark:bg-green-900/20 dark:border-green-800'
-}
-
-const paradigmDescriptions = {
-  dolores: 'Truth & Justice',
-  teddy: 'Care & Support',
-  bernard: 'Analysis & Logic',
-  maeve: 'Strategy & Power'
 }
 
 function ResultsDisplay({ results }: ResultsDisplayProps) {
@@ -62,7 +49,7 @@ function ResultsDisplay({ results }: ResultsDisplayProps) {
                 visibleSections.includes(index) 
                   ? 'opacity-100 translate-y-0' 
                   : 'opacity-0 translate-y-4'
-              } ${paradigmColors[section.paradigm]} hover:shadow-lg`}
+              } ${getParadigmClass(section.paradigm)} hover:shadow-lg`}
               style={{ 
                 animationDelay: `${index * 0.1}s`,
                 transitionDelay: `${index * 0.1}s`
@@ -77,7 +64,7 @@ function ResultsDisplay({ results }: ResultsDisplayProps) {
                 <h4 className="font-medium mb-2 flex items-center justify-between">
                   <span className="flex items-center">
                     <span className="text-xs font-medium px-2 py-1 rounded-full mr-2 bg-current/10">
-                      {paradigmDescriptions[section.paradigm]}
+                      {getParadigmDescription(section.paradigm)}
                     </span>
                     {section.title}
                   </span>

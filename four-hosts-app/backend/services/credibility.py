@@ -98,23 +98,23 @@ class DomainAuthorityChecker:
                 ).digest()
             ).decode('utf-8')
             
-            headers = {
-                "Authorization": f"Basic {base64.b64encode(f'{self.moz_api_key}:{signature}'.encode()).decode()}"
-            }
+            url = f"https://lsapi.seomoz.com/v2/url_metrics"
             
-            url = f"https://lsapi.seomoz.com/linkscape/url-metrics/{quote(domain)}"
-            params = {
-                "Cols": "103079215108",  # DA, PA, and other metrics
-                "AccessID": self.moz_api_key,
-                "Expires": expires,
-                "Signature": signature
+            # Correct payload for POST request
+            payload = {
+                "targets": [domain]
             }
+
+            # Correct authentication
+            auth = (self.moz_api_key, self.moz_secret_key)
             
-            async with self.session.get(url, headers=headers, params=params) as response:
+            async with self.session.post(url, auth=aiohttp.BasicAuth(*auth), json=payload) as response:
                 if response.status == 200:
                     data = await response.json()
-                    # Domain Authority is typically in the 'pda' field
-                    return data.get("pda")
+                    # Extract Domain Authority from the new response structure
+                    if "results" in data and data["results"]:
+                        return data["results"][0].get("page_authority") # Moz v2 uses page_authority
+                    return None
                 else:
                     logger.warning(f"Moz API error for {domain}: {response.status}")
                     

@@ -49,10 +49,15 @@ const Navigation = () => {
     { path: '/metrics', icon: BarChart3, label: 'Metrics', paradigm: 'teddy' },
   ]
 
-  const paradigmColors: Record<string, string> = {
-    dolores: 'hover:text-red-600 dark:hover:text-red-400',
-    bernard: 'hover:text-blue-600 dark:hover:text-blue-400',
-    teddy: 'hover:text-orange-600 dark:hover:text-orange-400',
+  const getParadigmHoverClass = (paradigm?: string) => {
+    if (!paradigm) return ''
+    const paradigmHoverColors: Record<string, string> = {
+      dolores: 'hover:text-red-600 dark:hover:text-red-400',
+      bernard: 'hover:text-blue-600 dark:hover:text-blue-400',
+      teddy: 'hover:text-orange-600 dark:hover:text-orange-400',
+      maeve: 'hover:text-green-600 dark:hover:text-green-400'
+    }
+    return paradigmHoverColors[paradigm] || ''
   }
 
   return (
@@ -78,7 +83,7 @@ const Navigation = () => {
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 ${
                       isActive(path)
                         ? 'bg-gradient-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300 shadow-lg scale-105'
-                        : `text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 ${paradigmColors[paradigm] || ''}`
+                        : `text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 ${getParadigmHoverClass(paradigm)}`
                     }`}
                     aria-current={isActive(path) ? 'page' : undefined}
                   >

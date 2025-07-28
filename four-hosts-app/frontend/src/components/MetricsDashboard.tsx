@@ -5,13 +5,7 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { Activity, TrendingUp, Users, Clock, Database, AlertCircle } from 'lucide-react'
 import api from '../services/api'
 import type { SystemStats } from '../services/api'
-
-const paradigmColors = {
-  dolores: '#EF4444',
-  teddy: '#3B82F6',
-  bernard: '#10B981',
-  maeve: '#8B5CF6',
-}
+import { paradigmHexColors } from '../constants/paradigm'
 
 export const MetricsDashboard: React.FC = () => {
   const [stats, setStats] = useState<SystemStats | null>(null)
@@ -60,7 +54,7 @@ export const MetricsDashboard: React.FC = () => {
   const paradigmData = Object.entries(stats.paradigm_distribution).map(([paradigm, count]) => ({
     name: paradigm.charAt(0).toUpperCase() + paradigm.slice(1),
     value: count,
-    paradigm: paradigm as keyof typeof paradigmColors,
+    paradigm: paradigm as keyof typeof paradigmHexColors,
   }))
 
   const healthColor = {
@@ -134,7 +128,7 @@ export const MetricsDashboard: React.FC = () => {
                 dataKey="value"
               >
                 {paradigmData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={paradigmColors[entry.paradigm]} />
+                  <Cell key={`cell-${index}`} fill={paradigmHexColors[entry.paradigm]} />
                 ))}
               </Pie>
               <Tooltip />
@@ -186,13 +180,13 @@ export const MetricsDashboard: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="text-center">
             <p className="text-3xl font-bold text-blue-600">
-              {Math.round(paradigmData.find(p => p.paradigm === 'dolores')?.value || 0 / stats.total_queries * 100)}%
+              {Math.round(((paradigmData.find(p => p.paradigm === 'dolores')?.value ?? 0) / stats.total_queries) * 100)}%
             </p>
             <p className="text-sm text-gray-600 mt-1">Truth-seeking queries</p>
           </div>
           <div className="text-center">
             <p className="text-3xl font-bold text-green-600">
-              {Math.round(paradigmData.find(p => p.paradigm === 'bernard')?.value || 0 / stats.total_queries * 100)}%
+              {Math.round(((paradigmData.find(p => p.paradigm === 'bernard')?.value ?? 0) / stats.total_queries) * 100)}%
             </p>
             <p className="text-sm text-gray-600 mt-1">Analytical queries</p>
           </div>

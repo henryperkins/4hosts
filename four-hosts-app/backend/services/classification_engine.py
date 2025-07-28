@@ -159,17 +159,6 @@ class QueryAnalyzer:
     }
     
     DOMAIN_PARADIGM_BIAS = {
-        'social_justice': HostParadigm.DOLORES,
-        'healthcare': HostParadigm.TEDDY,
-        'science': HostParadigm.BERNARD,
-        'business': HostParadigm.MAEVE,
-        'politics': HostParadigm.DOLORES,
-        'education': HostParadigm.BERNARD,
-        'nonprofit': HostParadigm.TEDDY,
-        'technology': HostParadigm.MAEVE
-    }
-    
-    DOMAIN_PARADIGM_BIAS = {
         'technology': HostParadigm.BERNARD,
         'business': HostParadigm.MAEVE,
         'healthcare': HostParadigm.TEDDY,

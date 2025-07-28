@@ -224,8 +224,24 @@ class ParadigmAwareSearchOrchestrator:
         classification = context_engineered_query.classification
         select_output = context_engineered_query.select_output
         
-        paradigm = classification.primary_paradigm.value
-        secondary_paradigm = classification.secondary_paradigm.value if classification.secondary_paradigm else None
+        # Map enum values to paradigm names
+        paradigm_mapping = {
+            "revolutionary": "dolores",
+            "devotion": "teddy",
+            "analytical": "bernard",
+            "strategic": "maeve"
+        }
+        
+        paradigm = paradigm_mapping.get(
+            classification.primary_paradigm.value,
+            "bernard"  # Default to bernard if not found
+        )
+        secondary_paradigm = None
+        if classification.secondary_paradigm:
+            secondary_paradigm = paradigm_mapping.get(
+                classification.secondary_paradigm.value,
+                None
+            )
         
         logger.info(f"Executing research for paradigm: {paradigm}")
         

@@ -1,47 +1,13 @@
 import type { ParadigmClassification } from '../types'
+import { paradigmInfo, type Paradigm } from '../constants/paradigm'
 
 interface ParadigmDisplayProps {
   classification: ParadigmClassification
 }
 
-const paradigmInfo = {
-  dolores: {
-    name: 'Dolores (Revolutionary)',
-    color: 'bg-red-500',
-    borderColor: 'border-red-500',
-    textColor: 'text-red-700',
-    bgLight: 'bg-red-50',
-    description: 'Exposing systemic injustices and power imbalances'
-  },
-  teddy: {
-    name: 'Teddy (Devotion)',
-    color: 'bg-orange-500',
-    borderColor: 'border-orange-500',
-    textColor: 'text-orange-700',
-    bgLight: 'bg-orange-50',
-    description: 'Protecting and supporting vulnerable communities'
-  },
-  bernard: {
-    name: 'Bernard (Analytical)',
-    color: 'bg-blue-500',
-    borderColor: 'border-blue-500',
-    textColor: 'text-blue-700',
-    bgLight: 'bg-blue-50',
-    description: 'Providing objective analysis and empirical evidence'
-  },
-  maeve: {
-    name: 'Maeve (Strategic)',
-    color: 'bg-green-500',
-    borderColor: 'border-green-500',
-    textColor: 'text-green-700',
-    bgLight: 'bg-green-50',
-    description: 'Delivering actionable strategies and competitive advantage'
-  }
-}
-
 function ParadigmDisplay({ classification }: ParadigmDisplayProps) {
-  const primary = paradigmInfo[classification.primary]
-  const secondary = classification.secondary ? paradigmInfo[classification.secondary] : null
+  const primary = paradigmInfo[classification.primary as Paradigm]
+  const secondary = classification.secondary ? paradigmInfo[classification.secondary as Paradigm] : null
   
   return (
     <div className="mt-6 bg-white shadow rounded-lg p-6">
@@ -77,7 +43,7 @@ function ParadigmDisplay({ classification }: ParadigmDisplayProps) {
           <h4 className="text-sm font-medium text-gray-700 mb-2">Distribution</h4>
           <div className="space-y-2">
             {Object.entries(classification.distribution).map(([paradigm, score]) => {
-              const info = paradigmInfo[paradigm as keyof typeof paradigmInfo]
+              const info = paradigmInfo[paradigm as Paradigm]
               return (
                 <div key={paradigm} className="flex items-center">
                   <span className="text-xs text-gray-600 w-20">{info.name.split(' ')[0]}</span>

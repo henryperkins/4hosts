@@ -14,6 +14,12 @@ interface ProgressUpdate {
   timestamp: string
 }
 
+interface WebSocketData {
+  status?: 'pending' | 'processing' | 'completed' | 'failed'
+  progress?: number
+  message?: string
+}
+
 export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, onComplete }) => {
   const [updates, setUpdates] = useState<ProgressUpdate[]>([])
   const [currentStatus, setCurrentStatus] = useState<ProgressUpdate['status']>('pending')
@@ -28,10 +34,11 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
       
       api.connectWebSocket(researchId, (message) => {
         setIsConnecting(false)
+        const data = message.data as WebSocketData
         const update: ProgressUpdate = {
-          status: message.data.status || currentStatus,
-          progress: message.data.progress,
-          message: message.data.message,
+          status: data.status || currentStatus,
+          progress: data.progress,
+          message: data.message,
           timestamp: new Date().toISOString(),
         }
 
@@ -46,15 +53,15 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           return newUpdates
         })
         
-        if (message.data.status) {
-          setCurrentStatus(message.data.status)
+        if (data.status) {
+          setCurrentStatus(data.status)
         }
         
-        if (message.data.progress !== undefined) {
-          setProgress(message.data.progress)
+        if (data.progress !== undefined) {
+          setProgress(data.progress)
         }
 
-        if (message.data.status === 'completed' && onComplete) {
+        if (data.status === 'completed' && onComplete) {
           onComplete()
         }
       })

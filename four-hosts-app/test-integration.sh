@@ -44,7 +44,7 @@ fi
 
 # Check frontend dependencies
 echo -e "\n${YELLOW}Checking frontend setup...${NC}"
-cd frontend
+cd four-hosts-app/frontend
 
 if [ -d "node_modules" ]; then
     echo -e "${GREEN}✓ Frontend dependencies installed${NC}"
