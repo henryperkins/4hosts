@@ -14,6 +14,8 @@ from sqlalchemy.ext.declarative import declarative_base
 import redis
 import logging
 
+from utils.async_utils import run_in_thread
+
 from database.connection import get_db
 from database.models import Base
 
@@ -143,7 +145,7 @@ class TokenManager:
             )
 
             db.add(db_token)
-            db.commit()
+            await db.commit()
 
             # Cache in Redis if available
             if self.redis_client:
@@ -154,7 +156,9 @@ class TokenManager:
                     "generation": 0,
                     "expires_at": expires_at.isoformat(),
                 }
-                self.redis_client.setex(
+
+                await run_in_thread(
+                    self.redis_client.setex,
                     cache_key,
                     int(timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS).total_seconds()),
                     str(cache_data),

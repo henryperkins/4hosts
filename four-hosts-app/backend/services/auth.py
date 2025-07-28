@@ -6,6 +6,9 @@ Phase 5: Production-Ready Features
 import os
 import jwt
 import bcrypt
+
+# Async helper for running blocking calls in a thread pool
+from utils.async_utils import run_in_thread
 import secrets
 import json
 from datetime import datetime, timedelta, timezone
@@ -175,15 +178,21 @@ RATE_LIMITS = {
 # --- Authentication Functions ---
 
 
-def hash_password(password: str) -> str:
-    """Hash a password using bcrypt"""
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+async def hash_password(password: str) -> str:
+    """Hash *password* using bcrypt in a worker thread."""
+    return await run_in_thread(
+        lambda: bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode(
+            "utf-8"
+        )
+    )
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash"""
-    return bcrypt.checkpw(
-        plain_password.encode("utf-8"), hashed_password.encode("utf-8")
+async def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify *plain_password* against *hashed_password* without blocking the loop."""
+    return await run_in_thread(
+        lambda: bcrypt.checkpw(
+            plain_password.encode("utf-8"), hashed_password.encode("utf-8")
+        )
     )
 
 
@@ -258,7 +267,7 @@ async def create_refresh_token(
 async def decode_token(token: str) -> Dict[str, Any]:
     """Decode and validate a JWT token"""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = await run_in_thread(jwt.decode, token, SECRET_KEY, algorithms=[ALGORITHM])
 
         # Check if JTI is revoked
         jti = payload.get("jti")
@@ -279,7 +288,10 @@ async def decode_token(token: str) -> Dict[str, Any]:
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except jwt.PyJWTError:
+    except jwt.PyJWTError as e:
+        import logging
+
+        logging.getLogger(__name__).warning(f"JWT validation error: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
@@ -441,7 +453,7 @@ class AuthService:
             db_user = DBUser(
                 email=user_data.email,
                 username=user_data.username,
-                password_hash=hash_password(user_data.password),
+                password_hash=await hash_password(user_data.password),
                 role=user_data.role or UserRole.FREE,
                 is_active=True,
                 auth_provider=user_data.auth_provider or AuthProvider.LOCAL,
@@ -492,7 +504,7 @@ class AuthService:
                 return None
 
             # Verify password
-            if not verify_password(login_data.password, db_user.password_hash):
+            if not await verify_password(login_data.password, db_user.password_hash):
                 return None
 
             # Check if user is active

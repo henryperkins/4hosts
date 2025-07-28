@@ -41,6 +41,7 @@ class WSEventType(str, Enum):
     RESEARCH_PHASE_CHANGE = "research.phase_change"
     RESEARCH_COMPLETED = "research.completed"
     RESEARCH_FAILED = "research.failed"
+    RESEARCH_CANCELLED = "research.cancelled"
 
     # Source events
     SOURCE_FOUND = "source.found"

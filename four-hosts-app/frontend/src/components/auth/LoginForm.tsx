@@ -131,7 +131,7 @@ export const LoginForm: React.FC = () => {
                 Email or Username
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none z-10">
+                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none z-10" style={{ paddingLeft: '1rem' }}>
                   <Mail className={`h-5 w-5 transition-colors duration-200 ${
                     usernameStatus === 'error' ? 'text-red-500 dark:text-red-400' :
                     usernameStatus === 'success' ? 'text-green-500 dark:text-green-400' :
@@ -145,7 +145,7 @@ export const LoginForm: React.FC = () => {
                   autoComplete="username"
                   required
                   status={(getInputStatus('username') as 'error' | 'success') || undefined}
-                  className="pl-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
+                  className="pl-14 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
                   placeholder="Email or Username"
                   value={username}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
@@ -170,7 +170,7 @@ export const LoginForm: React.FC = () => {
                 Password
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none z-10">
+                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none z-10" style={{ paddingLeft: '1rem' }}>
                   <Lock className={`h-5 w-5 transition-colors duration-200 ${
                     passwordStatus === 'error' ? 'text-red-500 dark:text-red-400' :
                     pwdIconOk ? 'text-green-500 dark:text-green-400' :
@@ -184,7 +184,7 @@ export const LoginForm: React.FC = () => {
                   autoComplete="current-password"
                   required
                   status={passwordStatus}
-                  className="pl-10 pr-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
+                  className="pl-14 pr-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
                   placeholder="Password"
                   value={password}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}

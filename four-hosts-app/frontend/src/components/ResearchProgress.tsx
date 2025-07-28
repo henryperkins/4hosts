@@ -1,30 +1,33 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { Activity, CheckCircle, AlertCircle, Clock, Loader2 } from 'lucide-react'
+import { Activity, CheckCircle, AlertCircle, Clock, Loader2, X, XCircle } from 'lucide-react'
 import { format } from 'date-fns'
+import { Button } from './ui/Button'
 
 interface ResearchProgressProps {
   researchId: string
   onComplete?: () => void
+  onCancel?: () => void
 }
 
 interface ProgressUpdate {
-  status: 'pending' | 'processing' | 'completed' | 'failed'
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
   progress?: number
   message?: string
   timestamp: string
 }
 
 interface WebSocketData {
-  status?: 'pending' | 'processing' | 'completed' | 'failed'
+  status?: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
   progress?: number
   message?: string
 }
 
-export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, onComplete }) => {
+export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, onComplete, onCancel }) => {
   const [updates, setUpdates] = useState<ProgressUpdate[]>([])
   const [currentStatus, setCurrentStatus] = useState<ProgressUpdate['status']>('pending')
   const [progress, setProgress] = useState(0)
   const [isConnecting, setIsConnecting] = useState(true)
+  const [isCancelling, setIsCancelling] = useState(false)
   const updatesContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -64,13 +67,32 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         if (data.status === 'completed' && onComplete) {
           onComplete()
         }
+        
+        if (data.status === 'cancelled' && onCancel) {
+          onCancel()
+        }
       })
 
       return () => {
         api.unsubscribeFromResearch(researchId)
       }
     })
-  }, [researchId, currentStatus, onComplete])
+  }, [researchId, currentStatus, onComplete, onCancel])
+
+  const handleCancel = async () => {
+    setIsCancelling(true)
+    try {
+      // Import api here for cancel function
+      const { default: api } = await import('../services/api')
+      await api.cancelResearch(researchId)
+      // Status will be updated via WebSocket
+    } catch (error) {
+      console.error('Failed to cancel research:', error)
+      // You might want to show a toast error here
+    } finally {
+      setIsCancelling(false)
+    }
+  }
 
   const getStatusIcon = () => {
     if (isConnecting) {
@@ -86,6 +108,8 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         return <CheckCircle className="h-5 w-5 text-green-500 dark:text-green-400" />
       case 'failed':
         return <AlertCircle className="h-5 w-5 text-red-500 dark:text-red-400" />
+      case 'cancelled':
+        return <XCircle className="h-5 w-5 text-orange-500 dark:text-orange-400" />
     }
   }
 
@@ -103,18 +127,38 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         return 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-200'
       case 'failed':
         return 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-200'
+      case 'cancelled':
+        return 'bg-orange-100 text-orange-800 dark:bg-orange-900/20 dark:text-orange-200'
     }
+  }
+
+  const canCancel = () => {
+    return currentStatus === 'processing' || currentStatus === 'pending'
   }
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mt-6 transition-colors duration-200 animate-slide-up">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Research Progress</h3>
-        <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm transition-all duration-300 ${getStatusColor()}`}>
-          {getStatusIcon()}
-          <span className="capitalize">
-            {isConnecting ? 'Connecting...' : currentStatus}
-          </span>
+        <div className="flex items-center gap-3">
+          {canCancel() && (
+            <Button
+              variant="danger"
+              size="sm"
+              icon={X}
+              loading={isCancelling}
+              onClick={handleCancel}
+              className="text-xs"
+            >
+              {isCancelling ? 'Cancelling...' : 'Cancel'}
+            </Button>
+          )}
+          <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm transition-all duration-300 ${getStatusColor()}`}>
+            {getStatusIcon()}
+            <span className="capitalize">
+              {isConnecting ? 'Connecting...' : currentStatus}
+            </span>
+          </div>
         </div>
       </div>
 

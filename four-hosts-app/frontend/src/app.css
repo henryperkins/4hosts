@@ -105,6 +105,11 @@
   @apply dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100;
 }
 
+/* Override default padding when custom padding is applied */
+.input-field.pl-14 {
+  padding-left: 3.5rem !important;
+}
+
 .input-error {
   @apply border-red-500 focus:border-red-500 focus:ring-red-500/20;
   @apply dark:border-red-400 dark:focus:border-red-400 dark:focus:ring-red-400/20;

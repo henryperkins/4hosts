@@ -69,6 +69,8 @@ from services.webhook_manager import WebhookManager, WebhookEvent, create_webhoo
 from services.websocket_service import (
     ConnectionManager,
     ResearchProgressTracker,
+    WSEventType,
+    WSMessage,
     create_websocket_router,
 )
 from services.export_service import ExportService, create_export_router
@@ -230,6 +232,7 @@ class ResearchStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class SourceResult(BaseModel):
@@ -638,13 +641,14 @@ async def refresh_token(refresh_token: str, request: Request):
 
 
 @app.get("/auth/user", tags=["authentication"])
-async def get_current_user_info(current_user=Depends(get_current_user)):
+# Expect TokenData from services.auth.get_current_user
+async def get_current_user_info(current_user: TokenData = Depends(auth_get_current_user)):
     """Get current user information"""
     return {
-        "id": str(current_user.id),
+        "id": str(current_user.user_id),
         "email": current_user.email,
-        "username": getattr(current_user, "username", current_user.email.split("@")[0]),
-        "role": getattr(current_user, "role", "free"),
+        "username": current_user.email.split("@")[0],
+        "role": str(current_user.role.value if hasattr(current_user, "role") else current_user.role),
     }
 
 
@@ -875,7 +879,7 @@ async def get_research_status(
     ):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    return {
+    status_response = {
         "research_id": research_id,
         "status": research["status"],
         "paradigm": research["paradigm_classification"]["primary"],
@@ -883,6 +887,24 @@ async def get_research_status(
         "progress": research.get("progress", {}),
         "cost_info": research.get("cost_info"),
     }
+    
+    # Add status-specific information
+    if research["status"] == ResearchStatus.FAILED:
+        status_response["error"] = research.get("error", "Research execution failed")
+        status_response["can_retry"] = True
+        status_response["message"] = "Research failed. You can submit a new research query."
+    elif research["status"] == ResearchStatus.CANCELLED:
+        status_response["cancelled_at"] = research.get("cancelled_at")
+        status_response["cancelled_by"] = research.get("cancelled_by")
+        status_response["can_retry"] = True
+        status_response["message"] = "Research was cancelled by user."
+    elif research["status"] == ResearchStatus.COMPLETED:
+        status_response["message"] = "Research completed successfully. Results are available."
+    elif research["status"] in [ResearchStatus.PROCESSING, ResearchStatus.IN_PROGRESS]:
+        status_response["can_cancel"] = True
+        status_response["message"] = f"Research is {research['status']}. Please wait for completion or cancel if needed."
+    
+    return status_response
 
 
 @app.get("/research/results/{research_id}", tags=["research"])
@@ -902,9 +924,138 @@ async def get_research_results(
         raise HTTPException(status_code=403, detail="Access denied")
 
     if research["status"] != ResearchStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail=f"Research is {research['status']}")
+        if research["status"] == ResearchStatus.FAILED:
+            # Return detailed error information for failed research
+            error_detail = research.get("error", "Research execution failed")
+            return {
+                "status": "failed",
+                "error": error_detail,
+                "research_id": research_id,
+                "message": "Research execution failed. Please try submitting a new research query.",
+                "can_retry": True
+            }
+        elif research["status"] == ResearchStatus.CANCELLED:
+            # Return cancellation information
+            return {
+                "status": "cancelled",
+                "research_id": research_id,
+                "message": "Research was cancelled by user.",
+                "cancelled_at": research.get("cancelled_at"),
+                "cancelled_by": research.get("cancelled_by"),
+                "can_retry": True
+            }
+        elif research["status"] in [ResearchStatus.PROCESSING, ResearchStatus.IN_PROGRESS]:
+            # Return progress information for ongoing research
+            return {
+                "status": research["status"],
+                "research_id": research_id,
+                "message": f"Research is still {research['status']}. Please wait for completion or cancel if needed.",
+                "progress": research.get("progress", {}),
+                "estimated_completion": research.get("estimated_completion"),
+                "can_cancel": True,
+                "can_retry": False
+            }
+        else:
+            # Handle other statuses (QUEUED, etc.)
+            return {
+                "status": research["status"],
+                "research_id": research_id,
+                "message": f"Research is {research['status']}",
+                "can_retry": research["status"] != ResearchStatus.PROCESSING,
+                "can_cancel": research["status"] in [ResearchStatus.QUEUED]
+            }
 
     return research["results"]
+
+
+@app.post("/research/cancel/{research_id}", tags=["research"])
+async def cancel_research(
+    research_id: str, current_user: User = Depends(get_current_user)
+):
+    """Cancel an ongoing research query"""
+    research = await research_store.get(research_id)
+    if not research:
+        raise HTTPException(status_code=404, detail="Research not found")
+
+    # Verify ownership
+    if (
+        research["user_id"] != str(current_user.id)
+        and current_user.role != UserRole.ADMIN
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Check if research can be cancelled
+    current_status = research["status"]
+    if current_status in [ResearchStatus.COMPLETED, ResearchStatus.FAILED, ResearchStatus.CANCELLED]:
+        return {
+            "research_id": research_id,
+            "status": current_status,
+            "message": f"Research is already {current_status} and cannot be cancelled",
+            "cancelled": False
+        }
+
+    try:
+        # Update status to cancelled
+        await research_store.update_field(research_id, "status", ResearchStatus.CANCELLED)
+        await research_store.update_field(research_id, "cancelled_at", datetime.utcnow().isoformat())
+        await research_store.update_field(research_id, "cancelled_by", str(current_user.id))
+
+        # Update progress tracker with cancellation
+        try:
+            await progress_tracker.update_progress(
+                research_id, "Research cancelled by user", -1
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update progress tracker for cancellation: {e}")
+
+        # Send WebSocket notification for cancellation
+        try:
+            cancel_message = WSMessage(
+                type=WSEventType.RESEARCH_CANCELLED,
+                data={
+                    "research_id": research_id,
+                    "message": "Research cancelled by user",
+                    "cancelled_by": str(current_user.id)
+                }
+            )
+            await connection_manager.broadcast_to_research(research_id, cancel_message)
+        except Exception as e:
+            logger.warning(f"Failed to send WebSocket notification for cancellation: {e}")
+
+        # Trigger webhook for cancellation
+        try:
+            await webhook_manager.trigger_event(
+                WebhookEvent.RESEARCH_CANCELLED,
+                {
+                    "research_id": research_id,
+                    "user_id": str(current_user.id),
+                    "message": "Research cancelled by user",
+                    "cancelled_by": str(current_user.id),
+                    "cancelled_at": datetime.utcnow().isoformat()
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to trigger webhook for cancellation: {e}")
+
+        # Decrement active research counter
+        try:
+            active_research.dec()
+        except Exception as e:
+            logger.warning(f"Failed to decrement active research counter: {e}")
+            
+    except Exception as e:
+        logger.error(f"Failed to cancel research {research_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to cancel research")
+
+    logger.info(f"Research {research_id} cancelled by user {current_user.id}")
+
+    return {
+        "research_id": research_id,
+        "status": "cancelled",
+        "message": "Research has been successfully cancelled",
+        "cancelled": True,
+        "cancelled_at": datetime.utcnow().isoformat()
+    }
 
 
 @app.get("/research/export/{research_id}", tags=["research"])
@@ -1126,7 +1277,20 @@ async def execute_real_research(
     research_id: str, research: ResearchQuery, user_id: str
 ):
     """Execute real research using the complete pipeline"""
+    
+    async def check_cancellation():
+        """Check if research has been cancelled"""
+        research_data = await research_store.get(research_id)
+        if research_data and research_data.get("status") == ResearchStatus.CANCELLED:
+            logger.info(f"Research {research_id} was cancelled, stopping execution")
+            return True
+        return False
+    
     try:
+        # Check for cancellation before starting
+        if await check_cancellation():
+            return
+            
         # Update status
         await research_store.update_field(
             research_id, "status", ResearchStatus.IN_PROGRESS
@@ -1136,6 +1300,10 @@ async def execute_real_research(
         await progress_tracker.update_progress(
             research_id, "Initializing research pipeline", 10
         )
+
+        # Check for cancellation
+        if await check_cancellation():
+            return
 
         # Get classification
         research_data = await research_store.get(research_id)
@@ -1152,6 +1320,10 @@ async def execute_real_research(
             research_id, "Processing query through context engineering", 20
         )
 
+        # Check for cancellation
+        if await check_cancellation():
+            return
+
         # Process through context engineering pipeline
         context_engineered_query = await context_pipeline.process_query(
             classification_result
@@ -1162,6 +1334,10 @@ async def execute_real_research(
             research_id, "Executing search queries", 30
         )
 
+        # Check for cancellation
+        if await check_cancellation():
+            return
+
         # Execute research with context-engineered query
         execution_result = await research_orchestrator.execute_paradigm_research(
             context_engineered_query, research.options.max_sources
@@ -1171,6 +1347,10 @@ async def execute_real_research(
         await progress_tracker.update_progress(
             research_id, "Processing search results", 60
         )
+
+        # Check for cancellation
+        if await check_cancellation():
+            return
 
         # Format results
         formatted_sources = []
@@ -1209,6 +1389,10 @@ async def execute_real_research(
         await progress_tracker.update_progress(
             research_id, "Generating AI-powered answer", 80
         )
+
+        # Check for cancellation before AI generation
+        if await check_cancellation():
+            return
 
         # Generate answer using context engineering outputs
         context_engineering = {

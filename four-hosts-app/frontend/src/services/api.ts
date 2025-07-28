@@ -42,10 +42,14 @@ export interface ResearchSubmission {
 
 export interface ResearchStatus {
   id: string
-  status: 'pending' | 'processing' | 'completed' | 'failed'
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
   progress?: number
   message?: string
   updated_at: string
+  can_cancel?: boolean
+  can_retry?: boolean
+  cancelled_at?: string
+  cancelled_by?: string
 }
 
 export interface CredibilityScore {
@@ -267,6 +271,19 @@ class APIService {
         throw new Error('Research not found or still processing')
       }
       throw new Error('Failed to get research results')
+    }
+
+    return response.json()
+  }
+
+  async cancelResearch(researchId: string): Promise<{ message: string; cancelled: boolean }> {
+    const response = await this.fetchWithAuth(`/research/cancel/${researchId}`, {
+      method: 'POST',
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || 'Failed to cancel research')
     }
 
     return response.json()

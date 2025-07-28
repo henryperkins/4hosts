@@ -126,15 +126,38 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         """Search using Google Custom Search API"""
         await self.rate_limiter.wait_if_needed()
 
+        # Validate parameters to prevent 400 errors
+        if not query or not query.strip():
+            logger.error("Empty query provided to Google search")
+            return []
+            
+        if not self.api_key:
+            logger.error("Google API key not configured")
+            return []
+            
+        if not self.search_engine_id:
+            logger.error("Google search engine ID not configured")
+            return []
+
+        # Clean and validate query
+        clean_query = query.strip()[:2048]  # Google has a query length limit
+        
         params = {
             "key": self.api_key,
             "cx": self.search_engine_id,
-            "q": query,
+            "q": clean_query,
             "num": min(config.max_results, 10),
-            "lr": f"lang_{config.language}",
-            "gl": config.region,
-            "safe": config.safe_search,
         }
+        
+        # Add optional parameters only if they have valid values
+        if config.language and config.language != "auto":
+            params["lr"] = f"lang_{config.language}"
+            
+        if config.region and config.region.lower() != "global":
+            params["gl"] = config.region
+            
+        if config.safe_search and config.safe_search in ["active", "moderate", "off"]:
+            params["safe"] = config.safe_search
 
         if config.date_range:
             params["dateRestrict"] = config.date_range
@@ -148,7 +171,23 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                     logger.warning("Google API rate limit exceeded")
                     raise Exception("Rate limit exceeded")
                 else:
-                    logger.error(f"Google API error: {response.status}")
+                    # Get response body for detailed error information
+                    try:
+                        # Try to parse as JSON first for structured error info
+                        try:
+                            error_data = await response.json()
+                            logger.error(f"Google API error: {response.status} - {error_data}")
+                            if 'error' in error_data:
+                                error_details = error_data['error']
+                                logger.error(f"Google API error details: {error_details.get('message', 'Unknown error')}")
+                                logger.error(f"Error code: {error_details.get('code', 'Unknown')}")
+                        except:
+                            # If not JSON, get as text
+                            error_body = await response.text()
+                            logger.error(f"Google API error: {response.status} - {error_body}")
+                    except:
+                        logger.error(f"Google API error: {response.status} - Could not read response body")
+                    
                     return []
         except Exception as e:
             logger.error(f"Google search failed: {str(e)}")

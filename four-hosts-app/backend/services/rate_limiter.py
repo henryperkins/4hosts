@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, Tuple
 from collections import defaultdict, deque
 import redis
+
+from utils.async_utils import run_in_thread
 import json
 import logging
 from fastapi import HTTPException, Request, status
@@ -187,33 +189,25 @@ class RateLimiter:
         current_time: float,
     ) -> bool:
         """Check rate limit using Redis sliding window"""
-        key = f"rate_limit:{identifier}:{window_name}"
-        window_start = current_time - window_seconds
+        def _sync_op() -> bool:
+            key_local = f"rate_limit:{identifier}:{window_name}"
+            window_start_local = current_time - window_seconds
 
-        # Use Redis sorted set for sliding window
-        pipe = self.redis_client.pipeline()
+            pipe_local = self.redis_client.pipeline()
+            pipe_local.zremrangebyscore(key_local, 0, window_start_local)
+            pipe_local.zcard(key_local)
+            pipe_local.zadd(key_local, {str(current_time): current_time})
+            pipe_local.expire(key_local, window_seconds + 60)
+            results_local = pipe_local.execute()
+            count_local = results_local[1]
 
-        # Remove old entries
-        pipe.zremrangebyscore(key, 0, window_start)
+            if count_local >= limit:
+                self.redis_client.zrem(key_local, str(current_time))
+                return False
 
-        # Count current window entries
-        pipe.zcard(key)
+            return True
 
-        # Add current request (will be rolled back if limit exceeded)
-        pipe.zadd(key, {str(current_time): current_time})
-
-        # Set expiry
-        pipe.expire(key, window_seconds + 60)
-
-        results = pipe.execute()
-        count = results[1]
-
-        if count >= limit:
-            # Rollback the addition
-            self.redis_client.zrem(key, str(current_time))
-            return False
-
-        return True
+        return await run_in_thread(_sync_op)
 
     async def _record_request(self, identifier: str, timestamp: float):
         """Record a request for tracking"""
@@ -222,16 +216,16 @@ class RateLimiter:
         if self.redis_client:
             # Record in Redis for distributed tracking
             key = f"request_history:{identifier}"
-            self.redis_client.lpush(key, timestamp)
-            self.redis_client.ltrim(key, 0, 999)  # Keep last 1000
-            self.redis_client.expire(key, 86400)  # 24 hour expiry
+            await run_in_thread(self.redis_client.lpush, key, timestamp)
+            await run_in_thread(self.redis_client.ltrim, key, 0, 999)  # Keep last 1000
+            await run_in_thread(self.redis_client.expire, key, 86400)  # 24 hour expiry
 
     async def increment_concurrent(self, identifier: str):
         """Increment concurrent request counter"""
         if self.redis_client:
             key = f"concurrent:{identifier}"
-            self.redis_client.incr(key)
-            self.redis_client.expire(key, 300)  # 5 minute expiry
+            await run_in_thread(self.redis_client.incr, key)
+            await run_in_thread(self.redis_client.expire, key, 300)  # 5 minute expiry
         else:
             self.concurrent_requests[identifier] += 1
 
@@ -241,14 +235,14 @@ class RateLimiter:
             key = f"concurrent:{identifier}"
             current = await self._redis_get_int(key, 0)
             if current > 0:
-                self.redis_client.decr(key)
+                await run_in_thread(self.redis_client.decr, key)
         else:
             if self.concurrent_requests[identifier] > 0:
                 self.concurrent_requests[identifier] -= 1
 
     async def _redis_get_int(self, key: str, default: int = 0) -> int:
         """Get integer value from Redis with default"""
-        value = self.redis_client.get(key)
+        value = await run_in_thread(self.redis_client.get, key)
         return int(value) if value else default
 
     def get_usage_stats(self, identifier: str, role: UserRole) -> Dict[str, Any]:
@@ -323,6 +317,7 @@ class RateLimitMiddleware:
             "/auth/register",
             "/auth/login",
             "/auth/refresh",
+            "/auth/user",
         ]
         if request.url.path in skip_paths:
             return await call_next(request)

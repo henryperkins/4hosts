@@ -141,11 +141,11 @@ class UserProfileService:
                 return False
 
             # Verify current password
-            if not verify_password(current_password, user.password_hash):
+            if not await verify_password(current_password, user.password_hash):
                 return False
 
             # Update password
-            new_hash = hash_password(new_password)
+            new_hash = await hash_password(new_password)
             stmt = update(User).where(User.id == user_id).values(password_hash=new_hash)
 
             await session.execute(stmt)
@@ -162,7 +162,7 @@ class UserProfileService:
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
 
-            if not user or not verify_password(password, user.password_hash):
+            if not user or not await verify_password(password, user.password_hash):
                 return False
 
             # Soft delete - anonymize data
@@ -478,7 +478,7 @@ class APIKeyService:
 
             # Generate key
             raw_key = f"fh_{secrets.token_urlsafe(32)}"
-            key_hash = hash_password(raw_key)  # Reuse password hashing
+            key_hash = await hash_password(raw_key)  # Reuse password hashing
 
             # Calculate expiry
             expires_at = None

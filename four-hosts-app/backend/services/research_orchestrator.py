@@ -182,6 +182,9 @@ class CostMonitor:
 
         total_cost = sum(api_data.get("cost", 0.0) for api_data in costs.values())
 
+        if daily_budget <= 0:
+            return ["Invalid daily budget configuration"]
+
         if total_cost > daily_budget * 0.8:
             alerts.append(
                 f"Daily budget at {total_cost/daily_budget*100:.1f}% (${total_cost:.2f})"
@@ -435,6 +438,9 @@ class ParadigmAwareSearchOrchestrator:
             return {"message": "No executions yet"}
 
         total_executions = len(self.execution_history)
+        if total_executions == 0:
+            return {"message": "No executions yet"}
+            
         avg_processing_time = (
             sum(
                 r.execution_metrics.get("processing_time_seconds", 0)

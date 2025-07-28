@@ -18,8 +18,38 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  const answer = results.integrated_synthesis ? results.integrated_synthesis.primary_answer : results.answer;
+  // Safely handle cases where answer might be undefined (failed research)
+  const answer = results.integrated_synthesis 
+    ? results.integrated_synthesis.primary_answer 
+    : results.answer;
   const { integrated_synthesis } = results;
+
+  // If there's no answer data, show error state
+  if (!answer) {
+    return (
+      <div className="mt-8 animate-fade-in">
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center transition-colors duration-200">
+          <AlertCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
+          <h3 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
+            Research Incomplete
+          </h3>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">
+            This research could not be completed due to an error during processing.
+          </p>
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+            <p className="text-sm text-red-600 dark:text-red-400">
+              Status: {results.status || 'Unknown'}
+            </p>
+            {results.metadata && (
+              <p className="text-sm text-red-600 dark:text-red-400 mt-1">
+                Research ID: {results.research_id}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -104,13 +134,19 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     }
   }
 
+  // Safely handle all answer properties that might be undefined
+  const citations = answer.citations || []
+  const sections = answer.sections || []
+  const actionItems = answer.action_items || []
+  const summary = answer.summary || 'No summary available'
+  
   const displayedCitations = showAllCitations
-    ? answer.citations
-    : answer.citations.slice(0, 5)
+    ? citations
+    : citations.slice(0, 5)
 
   const allSections = integrated_synthesis?.secondary_perspective
-    ? [...answer.sections, integrated_synthesis.secondary_perspective]
-    : answer.sections;
+    ? [...sections, integrated_synthesis.secondary_perspective]
+    : sections;
 
   return (
     <div className="mt-8 space-y-6 animate-fade-in">
@@ -193,7 +229,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
 
         <div className="prose dark:prose-invert max-w-none">
-          <p className="text-gray-700 dark:text-gray-300">{integrated_synthesis ? integrated_synthesis.integrated_summary : answer.summary}</p>
+          <p className="text-gray-700 dark:text-gray-300">{integrated_synthesis ? integrated_synthesis.integrated_summary : summary}</p>
         </div>
 
         <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -329,11 +365,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       </div>
 
       {/* Action Items */}
-      {answer.action_items.length > 0 && (
+      {actionItems.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.3s' }}>
           <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Action Items</h3>
           <div className="space-y-3">
-            {answer.action_items.map((item, index) => (
+            {actionItems.map((item, index) => (
               <div key={index} className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg transition-colors duration-200 hover:bg-gray-100 dark:hover:bg-gray-600">
                 <div className="mt-0.5">
                   {getPriorityIcon(item.priority)}
@@ -439,12 +475,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           ))}
         </div>
 
-        {answer.citations.length > 5 && (
+        {citations.length > 5 && (
           <button
             onClick={() => setShowAllCitations(!showAllCitations)}
             className="mt-4 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium transition-colors duration-200 focus:outline-none focus:underline"
           >
-            {showAllCitations ? 'Show less' : `Show all ${answer.citations.length} citations`}
+            {showAllCitations ? 'Show less' : `Show all ${citations.length} citations`}
           </button>
         )}
       </div>

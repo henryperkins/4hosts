@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react'
-import { Clock, Search, CheckCircle, XCircle, Loader, TrendingUp, Eye, Calendar, ChevronRight } from 'lucide-react'
+import { Clock, Search, CheckCircle, XCircle, Loader, TrendingUp, Eye, Calendar, ChevronRight, X } from 'lucide-react'
 import { format, formatDistanceToNow } from 'date-fns'
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
 import type { ResearchHistoryItem } from '../types'
 import { paradigmInfo, getParadigmClass, type Paradigm } from '../constants/paradigm'
+import { Button } from './ui/Button'
 
 export const ResearchHistory: React.FC = () => {
   const [history, setHistory] = useState<ResearchHistoryItem[]>([])
@@ -12,6 +13,7 @@ export const ResearchHistory: React.FC = () => {
   const [hasMore, setHasMore] = useState(true)
   const [offset, setOffset] = useState(0)
   const [hoveredItem, setHoveredItem] = useState<string | null>(null)
+  const [cancellingItems, setCancellingItems] = useState<Set<string>>(new Set())
   const navigate = useNavigate()
   const limit = 10
 
@@ -53,12 +55,44 @@ export const ResearchHistory: React.FC = () => {
     navigate(`/research/${researchId}`)
   }
 
+  const handleCancelResearch = async (researchId: string, event: React.MouseEvent) => {
+    event.stopPropagation() // Prevent clicking through to view result
+
+    setCancellingItems(prev => new Set(prev).add(researchId))
+
+    try {
+      await api.cancelResearch(researchId)
+      
+      // Update the local state immediately
+      setHistory(prev => prev.map(item => 
+        item.research_id === researchId 
+          ? { ...item, status: 'cancelled' }
+          : item
+      ))
+    } catch (error) {
+      console.error('Failed to cancel research:', error)
+      // You might want to show a toast error here
+    } finally {
+      setCancellingItems(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(researchId)
+        return newSet
+      })
+    }
+  }
+
+  const canCancel = (status: string) => {
+    return status === 'processing' || status === 'pending'
+  }
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'completed':
         return <CheckCircle className="h-4 w-4 text-green-500 animate-scale-in" />
       case 'failed':
         return <XCircle className="h-4 w-4 text-red-500 animate-pulse" />
+      case 'cancelled':
+        return <XCircle className="h-4 w-4 text-orange-500 animate-scale-in" />
       case 'processing':
         return <Loader className="h-4 w-4 text-blue-500 animate-spin" />
       default:
@@ -164,6 +198,19 @@ export const ResearchHistory: React.FC = () => {
                 <div className={`flex items-center gap-2 transition-all duration-300 ${
                   isHovered ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2'
                 }`}>
+                  {canCancel(item.status) && (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      icon={X}
+                      loading={cancellingItems.has(item.research_id)}
+                      onClick={(e) => handleCancelResearch(item.research_id, e)}
+                      className="text-xs mr-2"
+                      title="Cancel research"
+                    >
+                      {cancellingItems.has(item.research_id) ? 'Cancelling...' : 'Cancel'}
+                    </Button>
+                  )}
                   <Eye className="h-5 w-5 text-gray-400 dark:text-gray-500" />
                   <ChevronRight className="h-5 w-5 text-gray-400 dark:text-gray-500" />
                 </div>
