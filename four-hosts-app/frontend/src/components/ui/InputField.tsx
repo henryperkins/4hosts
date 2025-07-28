@@ -5,6 +5,7 @@ type BaseProps = {
   label?: string
   textarea?: boolean
   className?: string
+  status?: 'error' | 'success'
 }
 
 export type InputFieldProps = 
@@ -14,8 +15,13 @@ export type InputFieldProps =
 export const InputField = forwardRef<
   HTMLInputElement | HTMLTextAreaElement,
   InputFieldProps
->(({ label, textarea = false, className = '', ...props }, ref) => {
-  const Component: any = textarea ? 'textarea' : 'input'
+>(({ label, textarea = false, className = '', status, ...props }, ref) => {
+  const statusClass = 
+    status === 'error' 
+      ? 'input-error animate-pulse-border' 
+      : status === 'success' 
+      ? 'input-success' 
+      : ''
   
   return (
     <div className="space-y-1">
@@ -27,11 +33,19 @@ export const InputField = forwardRef<
           {label}
         </label>
       )}
-      <Component
-        ref={ref}
-        className={`input-field ${textarea ? 'resize-none' : ''} ${className}`}
-        {...props}
-      />
+      {textarea ? (
+        <textarea
+          ref={ref as React.Ref<HTMLTextAreaElement>}
+          className={`input-field resize-none ${statusClass} ${className}`}
+          {...(props as TextareaHTMLAttributes<HTMLTextAreaElement>)}
+        />
+      ) : (
+        <input
+          ref={ref as React.Ref<HTMLInputElement>}
+          className={`input-field ${statusClass} ${className}`}
+          {...(props as InputHTMLAttributes<HTMLInputElement>)}
+        />
+      )}
     </div>
   )
 })

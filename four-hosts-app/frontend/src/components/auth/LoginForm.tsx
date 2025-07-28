@@ -66,7 +66,7 @@ export const LoginForm: React.FC = () => {
     setShowPassword(!showPassword)
   }
 
-  const getInputStatus = (field: 'username' | 'password') => {
+  const getInputStatus = (field: 'username' | 'password'): 'error' | 'success' | 'strong' | '' => {
     if (!formTouched[field]) return ''
 
     if (field === 'username') {
@@ -85,6 +85,12 @@ export const LoginForm: React.FC = () => {
 
     return ''
   }
+
+  const usernameStatus = (getInputStatus('username') as 'error' | 'success') || undefined
+  const pwdRaw = getInputStatus('password')
+  const passwordStatus: 'error' | 'success' | undefined = 
+    pwdRaw === 'error' ? 'error' : pwdRaw ? 'success' : undefined
+  const pwdIconOk = pwdRaw === 'success' || pwdRaw === 'strong'
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8 transition-colors duration-200">
@@ -127,8 +133,8 @@ export const LoginForm: React.FC = () => {
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none z-10">
                   <Mail className={`h-5 w-5 transition-colors duration-200 ${
-                    getInputStatus('username') === 'error' ? 'text-red-500 dark:text-red-400' :
-                    getInputStatus('username') === 'success' ? 'text-green-500 dark:text-green-400' :
+                    usernameStatus === 'error' ? 'text-red-500 dark:text-red-400' :
+                    usernameStatus === 'success' ? 'text-green-500 dark:text-green-400' :
                     'text-gray-400 dark:text-gray-500'
                   }`} />
                 </div>
@@ -138,11 +144,8 @@ export const LoginForm: React.FC = () => {
                   type="text"
                   autoComplete="username"
                   required
-                  className={`pl-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 ${
-                    getInputStatus('username') === 'error' ? 'input-error animate-pulse-border' :
-                    getInputStatus('username') === 'success' ? 'input-success' :
-                    ''
-                  }`}
+                  status={(getInputStatus('username') as 'error' | 'success') || undefined}
+                  className="pl-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
                   placeholder="Email or Username"
                   value={username}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
@@ -169,9 +172,8 @@ export const LoginForm: React.FC = () => {
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none z-10">
                   <Lock className={`h-5 w-5 transition-colors duration-200 ${
-                    getInputStatus('password') === 'error' ? 'text-red-500 dark:text-red-400' :
-                    getInputStatus('password') === 'strong' ? 'text-green-600 dark:text-green-400' :
-                    getInputStatus('password') === 'success' ? 'text-green-500 dark:text-green-400' :
+                    passwordStatus === 'error' ? 'text-red-500 dark:text-red-400' :
+                    pwdIconOk ? 'text-green-500 dark:text-green-400' :
                     'text-gray-400 dark:text-gray-500'
                   }`} />
                 </div>
@@ -181,12 +183,8 @@ export const LoginForm: React.FC = () => {
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
                   required
-                  className={`pl-10 pr-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 ${
-                    getInputStatus('password') === 'error' ? 'input-error animate-pulse-border' :
-                    getInputStatus('password') === 'strong' ? 'input-success border-green-600' :
-                    getInputStatus('password') === 'success' ? 'input-success' :
-                    ''
-                  }`}
+                  status={passwordStatus}
+                  className="pl-10 pr-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
                   placeholder="Password"
                   value={password}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
@@ -219,7 +217,7 @@ export const LoginForm: React.FC = () => {
                       Consider using at least 8 characters
                     </p>
                   )}
-                  {getInputStatus('password') === 'strong' && (
+                  {pwdRaw === 'strong' && (
                     <p className="text-sm text-green-600 dark:text-green-400 animate-slide-down flex items-center">
                       <Check className="h-4 w-4 mr-1" />
                       Strong password

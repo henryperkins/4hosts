@@ -24,6 +24,17 @@ export const RegisterForm: React.FC = () => {
     })
   }
 
+  const pwdValid = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>]).{8,}$/.test(formData.password)
+  const passwordStatus: 'error' | 'success' | undefined = 
+    formData.password ? (pwdValid ? 'success' : 'error') : undefined
+
+  const confirmStatus: 'error' | 'success' | undefined = 
+    formData.confirmPassword 
+      ? formData.confirmPassword === formData.password 
+        ? 'success' 
+        : 'error' 
+      : undefined
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
@@ -119,6 +130,7 @@ export const RegisterForm: React.FC = () => {
               value={formData.password}
               onChange={handleChange}
               required
+              status={passwordStatus}
             />
 
             <InputField
@@ -131,6 +143,7 @@ export const RegisterForm: React.FC = () => {
               value={formData.confirmPassword}
               onChange={handleChange}
               required
+              status={confirmStatus}
             />
           </div>
 
