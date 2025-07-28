@@ -29,7 +29,7 @@ export const MetricsDashboard: React.FC = () => {
       const data = await api.getSystemStats()
       setStats(data)
       setError(null)
-    } catch (err) {
+    } catch {
       setError('Failed to load system metrics')
     } finally {
       setIsLoading(false)

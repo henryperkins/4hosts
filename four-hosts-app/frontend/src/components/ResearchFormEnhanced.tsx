@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Settings2, Loader2, Sparkles, Users, AlertCircle } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../hooks/useAuth'
 import type { ResearchOptions } from '../types'
 
 interface ResearchFormEnhancedProps {

@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { User, Settings, Save, LogOut, Moon, Sun, Database, Brain } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../hooks/useAuth'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import type { UserPreferences, Paradigm } from '../types'
@@ -25,7 +25,7 @@ export const UserProfile: React.FC = () => {
       await updatePreferences(preferences)
       setIsEditing(false)
       toast.success('Preferences saved successfully')
-    } catch (error) {
+    } catch {
       toast.error('Failed to save preferences')
     } finally {
       setIsSaving(false)

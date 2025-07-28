@@ -1,25 +1,9 @@
-import React, { createContext, useContext, useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import type { ReactNode } from 'react'
-import type { AuthState } from '../types'
+import type { AuthState, UserPreferences } from '../types'
+import { AuthContext } from './AuthContextDefinition'
 import api from '../services/api'
 import toast from 'react-hot-toast'
-
-interface AuthContextType extends AuthState {
-  login: (username: string, password: string) => Promise<void>
-  register: (username: string, email: string, password: string) => Promise<void>
-  logout: () => Promise<void>
-  updatePreferences: (preferences: any) => Promise<void>
-}
-
-const AuthContext = createContext<AuthContextType | null>(null)
-
-export const useAuth = () => {
-  const context = useContext(AuthContext)
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider')
-  }
-  return context
-}
 
 interface AuthProviderProps {
   children: ReactNode
@@ -44,7 +28,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             user,
             loading: false,
           })
-        } catch (error) {
+        } catch {
           // Token invalid, clear it
           localStorage.removeItem('auth_token')
           setAuthState({
@@ -112,7 +96,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         loading: false,
       })
       toast.success('Logged out successfully')
-    } catch (error) {
+    } catch {
       // Even if logout fails on server, clear local state
       setAuthState({
         isAuthenticated: false,
@@ -122,7 +106,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   }
 
-  const updatePreferences = async (preferences: any) => {
+  const updatePreferences = async (preferences: UserPreferences) => {
     try {
       const updatedUser = await api.updateUserPreferences(preferences)
       setAuthState(prev => ({

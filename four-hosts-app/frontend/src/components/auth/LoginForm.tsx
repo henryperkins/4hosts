@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../hooks/useAuth'
 import { LogIn, Mail, Lock, Eye, EyeOff, Check, AlertCircle } from 'lucide-react'
 
 // Animation and timing constants

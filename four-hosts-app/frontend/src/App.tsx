@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useParams, useLocation } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { Home, History, User, BarChart3, Menu, X, Sun, Moon, AlertCircle, Loader2 } from 'lucide-react'
 import { PageTransition } from './components/ui/PageTransition'
 
 // Context providers
-import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { AuthProvider } from './contexts/AuthContext'
+import { useAuth } from './hooks/useAuth'
+import { ThemeContext, useTheme } from './contexts/ThemeContext'
 
 // Components
 import { LoginForm } from './components/auth/LoginForm'
@@ -21,18 +23,7 @@ import { MetricsDashboard } from './components/MetricsDashboard'
 
 // Services and types
 import api from './services/api'
-import type { ResearchResult, ParadigmClassification } from './types'
-
-// Theme context
-const ThemeContext = React.createContext<{
-  darkMode: boolean
-  toggleDarkMode: () => void
-}>({
-  darkMode: false,
-  toggleDarkMode: () => {}
-})
-
-export const useTheme = () => React.useContext(ThemeContext)
+import type { ResearchResult, ParadigmClassification, ResearchOptions } from './types'
 
 // Navigation component
 const Navigation = () => {
@@ -58,6 +49,12 @@ const Navigation = () => {
     { path: '/metrics', icon: BarChart3, label: 'Metrics', paradigm: 'teddy' },
   ]
 
+  const paradigmColors: Record<string, string> = {
+    dolores: 'hover:text-red-600 dark:hover:text-red-400',
+    bernard: 'hover:text-blue-600 dark:hover:text-blue-400',
+    teddy: 'hover:text-orange-600 dark:hover:text-orange-400',
+  }
+
   return (
     <nav className="bg-white dark:bg-gray-800 shadow-lg border-b border-gray-200 dark:border-gray-700 animate-slide-down transition-all duration-300 backdrop-blur-sm bg-opacity-95 dark:bg-opacity-95">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -74,12 +71,6 @@ const Navigation = () => {
             </Link>
             <div className="hidden md:flex items-center gap-2">
               {navItems.map(({ path, icon: Icon, label, paradigm }) => {
-                const paradigmColors = {
-                  dolores: 'hover:text-red-600 dark:hover:text-red-400',
-                  bernard: 'hover:text-blue-600 dark:hover:text-blue-400',
-                  teddy: 'hover:text-orange-600 dark:hover:text-orange-400',
-                }
-
                 return (
                   <Link
                     key={path}
@@ -87,7 +78,7 @@ const Navigation = () => {
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 ${
                       isActive(path)
                         ? 'bg-gradient-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300 shadow-lg scale-105'
-                        : `text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 ${paradigmColors[paradigm]}`
+                        : `text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 ${paradigmColors[paradigm] || ''}`
                     }`}
                     aria-current={isActive(path) ? 'page' : undefined}
                   >
@@ -190,7 +181,7 @@ const ResearchPage = () => {
   const [currentResearchId, setCurrentResearchId] = useState<string | null>(null)
   const [showProgress, setShowProgress] = useState(false)
 
-  const handleSubmit = async (query: string, options: any) => {
+  const handleSubmit = async (query: string, options: ResearchOptions) => {
     setIsLoading(true)
     setError(null)
     setResults(null)
@@ -213,7 +204,7 @@ const ResearchPage = () => {
           setIsLoading(false)
           setShowProgress(false)
           clearInterval(pollInterval)
-        } catch (err) {
+        } catch {
           // Continue polling if not ready
           if (retries >= maxRetries) {
             setError('Research timeout - please try again')
@@ -292,7 +283,7 @@ const ResearchResultPage = () => {
       try {
         const data = await api.getResearchResults(id)
         setResults(data)
-      } catch (err) {
+      } catch {
         setError('Failed to load research results')
       } finally {
         setIsLoading(false)

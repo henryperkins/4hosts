@@ -84,7 +84,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           <span>Exported as {format.toUpperCase()}</span>
         </div>
       )
-    } catch (error) {
+    } catch {
       toast.error(
         <div className="flex items-center gap-2">
           <AlertCircle className="h-4 w-4" />

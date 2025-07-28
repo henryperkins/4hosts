@@ -139,7 +139,7 @@ export interface AuthState {
 export interface WSMessage {
   type: 'status_update' | 'progress' | 'result' | 'error'
   research_id: string
-  data: any
+  data: unknown
 }
 
 // Research history

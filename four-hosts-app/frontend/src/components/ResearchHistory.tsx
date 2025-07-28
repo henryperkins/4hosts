@@ -42,7 +42,22 @@ export const ResearchHistory: React.FC = () => {
   const limit = 10
 
   useEffect(() => {
-    loadHistory()
+    const loadHistoryOnMount = async () => {
+      try {
+        const items = await api.getUserResearchHistory(limit, 0)
+        if (items.length < limit) {
+          setHasMore(false)
+        }
+        setHistory(items)
+        setOffset(items.length)
+      } catch (error) {
+        console.error('Failed to load history:', error)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    
+    loadHistoryOnMount()
   }, [])
 
   const loadHistory = async () => {

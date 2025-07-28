@@ -1,3 +1,5 @@
+import type { ParadigmClassification, ResearchResult, ResearchHistoryItem, UserPreferences } from '../types'
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
 // Feature flags from environment (available for conditional feature enabling)
@@ -17,7 +19,7 @@ export interface User {
   username: string
   email: string
   created_at: string
-  preferences?: Record<string, any>
+  preferences?: Record<string, unknown>
 }
 
 export interface ResearchOptions {
@@ -34,7 +36,7 @@ export interface ResearchOptions {
 export interface ResearchSubmission {
   research_id: string
   status: string
-  paradigm_classification: any
+  paradigm_classification: ParadigmClassification
   created_at: string
 }
 
@@ -70,7 +72,7 @@ export interface SystemStats {
 export interface WebSocketMessage {
   type: 'status_update' | 'progress' | 'result' | 'error'
   research_id: string
-  data: any
+  data: unknown
 }
 
 class APIService {
@@ -205,7 +207,7 @@ class APIService {
     return response.json()
   }
 
-  async updateUserPreferences(preferences: Record<string, any>): Promise<User> {
+  async updateUserPreferences(preferences: UserPreferences): Promise<User> {
     const response = await this.fetchWithAuth('/auth/preferences', {
       method: 'PUT',
       body: JSON.stringify({ preferences }),
@@ -219,7 +221,7 @@ class APIService {
   }
 
   // Paradigm classification
-  async classifyQuery(query: string): Promise<any> {
+  async classifyQuery(query: string): Promise<ParadigmClassification> {
     const params = new URLSearchParams({ query })
     const response = await this.fetchWithAuth(`/paradigms/classify?${params}`, {
       method: 'POST',
@@ -257,7 +259,7 @@ class APIService {
     return response.json()
   }
 
-  async getResearchResults(researchId: string): Promise<any> {
+  async getResearchResults(researchId: string): Promise<ResearchResult> {
     const response = await this.fetchWithAuth(`/research/results/${researchId}`)
 
     if (!response.ok) {
@@ -270,7 +272,7 @@ class APIService {
     return response.json()
   }
 
-  async getUserResearchHistory(limit: number = 10, offset: number = 0): Promise<any[]> {
+  async getUserResearchHistory(limit: number = 10, offset: number = 0): Promise<ResearchHistoryItem[]> {
     const response = await this.fetchWithAuth(`/research/history?limit=${limit}&offset=${offset}`)
 
     if (!response.ok) {
@@ -312,7 +314,7 @@ class APIService {
     return response.json()
   }
 
-  async getHealthCheck(): Promise<any> {
+  async getHealthCheck(): Promise<Record<string, unknown>> {
     const response = await fetch(`${API_BASE_URL}/health`)
 
     if (!response.ok) {

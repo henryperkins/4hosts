@@ -1,12 +1,6 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import { CheckCircle, XCircle, AlertCircle, X } from 'lucide-react'
-
-export interface Toast {
-  id: string
-  type: 'success' | 'error' | 'info'
-  message: string
-  duration?: number
-}
+import type { Toast } from '../../types/toast'
 
 interface ToastNotificationProps {
   toast: Toast
@@ -16,6 +10,13 @@ interface ToastNotificationProps {
 export const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onClose }) => {
   const [isVisible, setIsVisible] = useState(false)
   const [isExiting, setIsExiting] = useState(false)
+
+  const handleClose = useCallback(() => {
+    setIsExiting(true)
+    setTimeout(() => {
+      onClose(toast.id)
+    }, 300)
+  }, [onClose, toast.id])
 
   useEffect(() => {
     // Trigger entrance animation
@@ -29,14 +30,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onC
     }, toast.duration || 5000)
 
     return () => clearTimeout(timer)
-  }, [toast.id])
-
-  const handleClose = () => {
-    setIsExiting(true)
-    setTimeout(() => {
-      onClose(toast.id)
-    }, 300)
-  }
+  }, [toast.duration, handleClose])
 
   const icons = {
     success: <CheckCircle className="h-5 w-5 text-green-400" />,
@@ -96,29 +90,4 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onClose 
       </div>
     </div>
   )
-}
-
-// Toast hook for easy usage
-export const useToast = () => {
-  const [toasts, setToasts] = useState<Toast[]>([])
-
-  const showToast = (type: Toast['type'], message: string, duration?: number) => {
-    const id = Date.now().toString()
-    const newToast: Toast = { id, type, message, duration }
-    
-    setToasts((prev) => [...prev, newToast])
-  }
-
-  const removeToast = (id: string) => {
-    setToasts((prev) => prev.filter((toast) => toast.id !== id))
-  }
-
-  return {
-    toasts,
-    showToast,
-    removeToast,
-    success: (message: string, duration?: number) => showToast('success', message, duration),
-    error: (message: string, duration?: number) => showToast('error', message, duration),
-    info: (message: string, duration?: number) => showToast('info', message, duration),
-  }
 }
