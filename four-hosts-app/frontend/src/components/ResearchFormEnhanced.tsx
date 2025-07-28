@@ -15,7 +15,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const [error, setError] = useState('')
   const [paradigm, setParadigm] = useState('auto')
   const [depth, setDepth] = useState('standard')
-  
+
   const [options, setOptions] = useState<ResearchOptions>({
     depth: user?.preferences?.default_depth || 'standard',
     include_secondary: true,

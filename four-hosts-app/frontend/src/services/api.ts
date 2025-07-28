@@ -199,7 +199,7 @@ class APIService {
 
   async getCurrentUser(): Promise<User> {
     const response = await this.fetchWithAuth('/auth/user')
-    
+
     if (!response.ok) {
       throw new Error('Failed to get user info')
     }

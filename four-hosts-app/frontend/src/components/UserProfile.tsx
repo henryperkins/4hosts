@@ -10,7 +10,7 @@ export const UserProfile: React.FC = () => {
   const navigate = useNavigate()
   const [isEditing, setIsEditing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
-  
+
   const [preferences, setPreferences] = useState<UserPreferences>({
     default_paradigm: user?.preferences?.default_paradigm,
     default_depth: user?.preferences?.default_depth || 'standard',

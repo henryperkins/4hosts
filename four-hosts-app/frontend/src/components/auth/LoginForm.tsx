@@ -66,12 +66,12 @@ export const LoginForm: React.FC = () => {
 
   const getInputStatus = (field: 'username' | 'password') => {
     if (!formTouched[field]) return ''
-    
+
     if (field === 'username') {
       if (!username) return ''
       return validateInput(username) ? 'success' : 'error'
     }
-    
+
     if (field === 'password') {
       if (!password) return ''
       if (password.length < 6) return 'error'
@@ -80,7 +80,7 @@ export const LoginForm: React.FC = () => {
       }
       return 'success'
     }
-    
+
     return ''
   }
 

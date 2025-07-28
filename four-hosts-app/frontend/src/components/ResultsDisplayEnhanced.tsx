@@ -68,7 +68,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     setIsExporting(true)
     setExportFormat(format)
     setDropdownOpen(false)
-    
+
     try {
       const blob = await api.exportResearch(results.research_id, format)
       const url = URL.createObjectURL(blob)
@@ -77,7 +77,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       link.download = `research-${results.research_id}.${format}`
       link.click()
       URL.revokeObjectURL(url)
-      
+
       toast.success(
         <div className="flex items-center gap-2">
           <CheckCircle className="h-4 w-4" />
@@ -121,11 +121,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     }
   }
 
-  const displayedCitations = showAllCitations 
-    ? answer.citations 
+  const displayedCitations = showAllCitations
+    ? answer.citations
     : answer.citations.slice(0, 5)
 
-  const allSections = integrated_synthesis?.secondary_perspective 
+  const allSections = integrated_synthesis?.secondary_perspective
     ? [...answer.sections, integrated_synthesis.secondary_perspective]
     : answer.sections;
 
@@ -140,7 +140,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               Query: "{results.query}"
             </p>
           </div>
-          
+
           <div className="flex items-center gap-2">
             <span className={`px-3 py-1 rounded-full text-sm font-medium border ${
               getParadigmClass(results.paradigm_analysis.primary.paradigm)
@@ -154,7 +154,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     + {getParadigmDescription(results.paradigm_analysis.secondary.paradigm)}
                 </span>
             )}
-            
+
             <div className="relative" ref={dropdownRef}>
               <button
                 onClick={() => setDropdownOpen(!dropdownOpen)}
@@ -170,7 +170,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   <Download className="h-5 w-5" />
                 )}
               </button>
-              
+
               <div className={`absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 transition-all duration-200 z-10 ${
                 dropdownOpen ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible -translate-y-2'
               }`}>
@@ -333,7 +333,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 <ChevronDown className="h-5 w-5 text-gray-400 transition-transform duration-200" />
               )}
             </button>
-            
+
             {expandedSections.has(index) && (
               <div className="px-6 pb-4 border-t border-gray-200 dark:border-gray-700 animate-slide-down">
                 <div className="prose dark:prose-invert max-w-none mt-4">
@@ -425,7 +425,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 <div className="flex-1">
                   <h4 className="font-medium text-gray-900 dark:text-gray-100">{citation.title}</h4>
                   <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{citation.source}</p>
-                  
+
                   <div className="flex items-center gap-4 mt-2">
                     <div className={`flex items-center gap-1 text-sm ${getCredibilityColor(citation.credibility_score)}`}>
                       {getCredibilityIcon(citation.credibility_score)}
@@ -433,7 +433,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                         {citation.credibility_score * 100}% credibility
                       </span>
                     </div>
-                    
+
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                       getParadigmClass(citation.paradigm_alignment)
                     }`}>
@@ -441,7 +441,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     </span>
                   </div>
                 </div>
-                
+
                 <a
                   href={citation.url}
                   target="_blank"
@@ -455,7 +455,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             </div>
           ))}
         </div>
-        
+
         {answer.citations.length > 5 && (
           <button
             onClick={() => setShowAllCitations(!showAllCitations)}

@@ -54,7 +54,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // Check if it's an email or username
       const isEmail = emailOrUsername.includes('@')
       const email = isEmail ? emailOrUsername : `${emailOrUsername}@example.com` // Fallback for username
-      
+
       await api.login(email, password)
       const user = await api.getCurrentUser()
       setAuthState({

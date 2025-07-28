@@ -8,7 +8,7 @@ export const useToast = () => {
   const showToast = (type: Toast['type'], message: string, duration?: number) => {
     const id = Date.now().toString()
     const newToast: Toast = { id, type, message, duration }
-    
+
     setToasts((prev) => [...prev, newToast])
   }
 

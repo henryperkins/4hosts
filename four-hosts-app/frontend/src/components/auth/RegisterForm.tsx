@@ -81,7 +81,7 @@ export const RegisterForm: React.FC = () => {
               <p className="text-sm text-red-800">{error}</p>
             </div>
           )}
-          
+
           <div className="space-y-4">
             <div>
               <label htmlFor="username" className="block text-sm font-medium text-gray-700">
@@ -99,7 +99,7 @@ export const RegisterForm: React.FC = () => {
                 onChange={handleChange}
               />
             </div>
-            
+
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-gray-700">
                 Email
@@ -116,7 +116,7 @@ export const RegisterForm: React.FC = () => {
                 onChange={handleChange}
               />
             </div>
-            
+
             <div>
               <label htmlFor="password" className="block text-sm font-medium text-gray-700">
                 Password
@@ -133,7 +133,7 @@ export const RegisterForm: React.FC = () => {
                 onChange={handleChange}
               />
             </div>
-            
+
             <div>
               <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700">
                 Confirm Password

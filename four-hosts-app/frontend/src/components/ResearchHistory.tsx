@@ -56,7 +56,7 @@ export const ResearchHistory: React.FC = () => {
         setIsLoading(false)
       }
     }
-    
+
     loadHistoryOnMount()
   }, [])
 
