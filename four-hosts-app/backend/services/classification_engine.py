@@ -4,18 +4,25 @@ Core implementation for paradigm classification with 85%+ accuracy target
 """
 
 import re
+import json
 import logging
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
 
-# Internal imports - will be connected later
-# from .llm_client import llm_client 
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Internal imports
+try:
+    from .llm_client import llm_client
+    LLM_AVAILABLE = True
+except ImportError:
+    llm_client = None
+    LLM_AVAILABLE = False
+    logger.warning("LLM client not available - classification will use rule-based only")
 
 # --- Core Enums and Models ---
 
@@ -162,6 +169,16 @@ class QueryAnalyzer:
         'technology': HostParadigm.MAEVE
     }
     
+    DOMAIN_PARADIGM_BIAS = {
+        'technology': HostParadigm.BERNARD,
+        'business': HostParadigm.MAEVE,
+        'healthcare': HostParadigm.TEDDY,
+        'education': HostParadigm.BERNARD,
+        'social_justice': HostParadigm.DOLORES,
+        'science': HostParadigm.BERNARD,
+        'nonprofit': HostParadigm.TEDDY
+    }
+    
     def __init__(self):
         self.intent_patterns = self._compile_patterns()
         
@@ -292,8 +309,12 @@ class ParadigmClassifier:
         rule_scores = self._rule_based_classification(query, features)
         
         llm_scores = {}
-        # if self.use_llm:
-        #     llm_scores = await self._llm_classification(query, features)
+        if self.use_llm:
+            try:
+                llm_scores = await self._llm_classification(query, features)
+            except Exception as e:
+                logger.warning(f"LLM classification failed, using rule-based only: {e}")
+                llm_scores = {}
         
         final_scores = self._combine_scores(rule_scores, llm_scores, features)
         distribution = self._normalize_scores(final_scores)
@@ -422,6 +443,86 @@ class ParadigmClassifier:
         top_score_confidence = scores[top_paradigm].confidence
         confidence = (spread * 0.5 + top_score_confidence * 0.5)
         return min(confidence, 0.95)
+    
+    async def _llm_classification(self, query: str, features: QueryFeatures) -> Dict[HostParadigm, ParadigmScore]:
+        """Use LLM to classify the query into paradigms"""
+        # Create a prompt for the LLM
+        prompt = f"""Analyze this query and determine which host paradigm(s) it best aligns with.
+
+Query: "{query}"
+
+Extracted Features:
+- Domain: {features.domain or 'General'}
+- Intent Signals: {', '.join(features.intent_signals) if features.intent_signals else 'None'}
+- Urgency Score: {features.urgency_score:.2f}
+- Complexity Score: {features.complexity_score:.2f}
+- Emotional Valence: {features.emotional_valence:.2f}
+
+Host Paradigms:
+1. DOLORES (Revolutionary): Focuses on exposing injustices, fighting oppression, revealing truth
+2. TEDDY (Devotion): Emphasizes helping, supporting, protecting vulnerable populations
+3. BERNARD (Analytical): Seeks data, evidence, research, objective analysis
+4. MAEVE (Strategic): Pursues optimization, competitive advantage, actionable strategies
+
+For each paradigm, provide:
+1. A score from 0-10 indicating alignment
+2. Brief reasoning (1-2 sentences)
+
+Return as JSON with this structure:
+{{
+  "dolores": {{"score": 0-10, "reasoning": "..."}},
+  "teddy": {{"score": 0-10, "reasoning": "..."}},
+  "bernard": {{"score": 0-10, "reasoning": "..."}},
+  "maeve": {{"score": 0-10, "reasoning": "..."}}
+}}"""
+
+        try:
+            # Call LLM with structured output
+            if not llm_client:
+                logger.warning("LLM client not available")
+                return {}
+                
+            # Generate completion returns a string
+            response_text = await llm_client.generate_completion(
+                prompt=prompt,
+                paradigm="bernard",  # Use analytical paradigm for classification
+                response_format={"type": "json_object"},
+                temperature=0.3,  # Lower temperature for more consistent classification
+                max_tokens=500
+            )
+            
+            # Parse the JSON response
+            llm_result = json.loads(response_text)
+            
+            # Convert to ParadigmScore objects
+            scores = {}
+            paradigm_map = {
+                'dolores': HostParadigm.DOLORES,
+                'teddy': HostParadigm.TEDDY,
+                'bernard': HostParadigm.BERNARD,
+                'maeve': HostParadigm.MAEVE
+            }
+            
+            for key, paradigm in paradigm_map.items():
+                if key in llm_result:
+                    score_data = llm_result[key]
+                    score = float(score_data.get('score', 0))
+                    reasoning = score_data.get('reasoning', '')
+                    
+                    scores[paradigm] = ParadigmScore(
+                        paradigm=paradigm,
+                        score=score,
+                        confidence=min(score / 10.0, 1.0),  # Normalize to 0-1
+                        reasoning=[f"LLM: {reasoning}"],
+                        keyword_matches=[]
+                    )
+            
+            return scores
+            
+        except Exception as e:
+            logger.error(f"Error in LLM classification: {e}")
+            # Return empty scores on error
+            return {}
 
 # --- Classification Manager ---
 
@@ -430,7 +531,11 @@ class ClassificationEngine:
     
     def __init__(self, use_llm: bool = False, cache_enabled: bool = True):
         self.analyzer = QueryAnalyzer()
-        self.classifier = ParadigmClassifier(self.analyzer, use_llm)
+        # Only enable LLM if it's available and requested
+        actual_use_llm = use_llm and LLM_AVAILABLE
+        if use_llm and not LLM_AVAILABLE:
+            logger.warning("LLM requested but not available - using rule-based classification")
+        self.classifier = ParadigmClassifier(self.analyzer, actual_use_llm)
         self.cache_enabled = cache_enabled
         self.cache: Dict[str, ClassificationResult] = {} if cache_enabled else None
         

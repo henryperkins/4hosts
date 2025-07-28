@@ -1,0 +1,97 @@
+#!/bin/bash
+
+echo "🚀 Starting Four Hosts Application"
+echo "=================================="
+
+# Function to cleanup on exit
+cleanup() {
+    echo -e "\n\n🛑 Shutting down services..."
+    kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    exit
+}
+
+# Set trap to cleanup on script exit
+trap cleanup EXIT INT TERM
+
+# Increase file watcher limit to prevent ENOSPC error
+echo "📊 Configuring system file watcher limits..."
+if [ -w /proc/sys/fs/inotify/max_user_watches ]; then
+    echo 524288 | sudo tee /proc/sys/fs/inotify/max_user_watches > /dev/null
+    echo "✅ File watcher limit increased"
+else
+    echo "⚠️  Could not increase file watcher limit (may need sudo)"
+fi
+
+# Kill any existing processes on our ports
+echo -e "\n🔍 Checking for existing processes..."
+lsof -ti:8000 | xargs -r kill -9 2>/dev/null
+lsof -ti:5173 | xargs -r kill -9 2>/dev/null
+lsof -ti:5174 | xargs -r kill -9 2>/dev/null
+echo "✅ Ports cleared"
+
+# Start Backend
+echo -e "\n📡 Starting Backend Service..."
+cd /home/azureuser/4hosts/four-hosts-app/backend
+
+# Check if virtual environment exists
+if [ ! -d "venv" ]; then
+    echo "Creating Python virtual environment..."
+    python3 -m venv venv
+fi
+
+# Activate virtual environment and install dependencies
+source venv/bin/activate
+pip install -r requirements.txt > /dev/null 2>&1
+
+# Set environment variable
+export ENVIRONMENT=development
+
+# Start backend without watching venv directory
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --reload --reload-exclude "venv/*" --reload-exclude "__pycache__/*" --reload-exclude "*.pyc" &
+BACKEND_PID=$!
+echo "✅ Backend started (PID: $BACKEND_PID)"
+echo "   Available at: http://localhost:8000"
+echo "   API Docs at: http://localhost:8000/docs"
+
+# Wait a moment for backend to start
+sleep 2
+
+# Start Frontend
+echo -e "\n🎨 Starting Frontend Service..."
+cd /home/azureuser/4hosts/four-hosts-app/frontend
+
+# Check if .env exists, if not create from example
+if [ ! -f .env ] && [ -f .env.example ]; then
+    echo "Creating .env file from .env.example..."
+    cp .env.example .env
+fi
+
+# Install dependencies if node_modules doesn't exist
+if [ ! -d "node_modules" ]; then
+    echo "Installing frontend dependencies..."
+    npm install
+fi
+
+# Check if default port is available, otherwise use 5174
+PORT=5173
+if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null ; then
+    PORT=5174
+    echo "⚠️  Port 5173 is in use, using port $PORT instead"
+fi
+
+# Start frontend with explicit port
+VITE_PORT=$PORT npm run dev -- --port $PORT &
+FRONTEND_PID=$!
+echo "✅ Frontend started (PID: $FRONTEND_PID)"
+echo "   Available at: http://localhost:$PORT"
+
+# Display status
+echo -e "\n✨ Four Hosts Application is running!"
+echo "=================================="
+echo "Backend:  http://localhost:8000"
+echo "API Docs: http://localhost:8000/docs" 
+echo "Frontend: http://localhost:$PORT"
+echo -e "\nPress Ctrl+C to stop all services"
+
+# Wait for both processes
+wait $BACKEND_PID $FRONTEND_PID

@@ -14,6 +14,10 @@ from urllib.parse import quote_plus
 import hashlib
 import os
 from tenacity import retry, stop_after_attempt, wait_exponential
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -150,76 +154,6 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         
         return results
 
-class BingSearchAPI(BaseSearchAPI):
-    """Bing Search API implementation"""
-    
-    def __init__(self, subscription_key: str, rate_limiter: Optional[RateLimiter] = None):
-        super().__init__(subscription_key, rate_limiter)
-        self.base_url = "https://api.bing.microsoft.com/v7.0/search"
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
-        """Search using Bing Search API"""
-        await self.rate_limiter.wait_if_needed()
-        
-        headers = {
-            "Ocp-Apim-Subscription-Key": self.api_key
-        }
-        
-        params = {
-            "q": query,
-            "count": min(config.max_results, 50),  # Bing max is 50
-            "mkt": f"{config.language}-{config.region}",
-            "safeSearch": config.safe_search.capitalize()
-        }
-        
-        if config.date_range:
-            # Convert to Bing format
-            freshness_map = {"d": "Day", "w": "Week", "m": "Month"}
-            if config.date_range in freshness_map:
-                params["freshness"] = freshness_map[config.date_range]
-        
-        try:
-            async with self.session.get(self.base_url, headers=headers, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return self._parse_bing_results(data)
-                elif response.status == 429:
-                    logger.warning("Bing API rate limit exceeded")
-                    raise Exception("Rate limit exceeded")
-                else:
-                    logger.error(f"Bing API error: {response.status}")
-                    return []
-        except Exception as e:
-            logger.error(f"Bing search failed: {str(e)}")
-            return []
-    
-    def _parse_bing_results(self, data: Dict[str, Any]) -> List[SearchResult]:
-        """Parse Bing API response"""
-        results = []
-        
-        for item in data.get("webPages", {}).get("value", []):
-            # Parse date if available
-            published_date = None
-            if "dateLastCrawled" in item:
-                try:
-                    published_date = datetime.fromisoformat(
-                        item["dateLastCrawled"].replace("Z", "+00:00")
-                    )
-                except:
-                    pass
-            
-            result = SearchResult(
-                title=item.get("name", ""),
-                url=item.get("url", ""),
-                snippet=item.get("snippet", ""),
-                source="bing_search",
-                published_date=published_date,
-                raw_data=item
-            )
-            results.append(result)
-        
-        return results
 
 class ArxivAPI(BaseSearchAPI):
     """ArXiv academic paper search API"""
@@ -580,6 +514,7 @@ class SearchAPIManager:
     def __init__(self):
         self.apis: Dict[str, BaseSearchAPI] = {}
         self.fallback_order = []
+        self._initialized = False
     
     def add_api(self, name: str, api: BaseSearchAPI, is_primary: bool = False):
         """Add a search API"""
@@ -591,17 +526,16 @@ class SearchAPIManager:
     
     async def search_all(self, query: str, config: SearchConfig) -> Dict[str, List[SearchResult]]:
         """Search using all available APIs"""
+        # Ensure APIs are initialized
+        if not self._initialized:
+            await self.initialize()
+            
         results = {}
         
         tasks = []
         for name, api in self.apis.items():
-            if hasattr(api, 'session') and api.session is None:
-                async with api:
-                    task = asyncio.create_task(api.search(query, config))
-                    tasks.append((name, task))
-            else:
-                task = asyncio.create_task(api.search(query, config))
-                tasks.append((name, task))
+            task = asyncio.create_task(api.search(query, config))
+            tasks.append((name, task))
         
         for name, task in tasks:
             try:
@@ -614,17 +548,41 @@ class SearchAPIManager:
         
         return results
     
+    async def initialize(self):
+        """Initialize all API sessions"""
+        if self._initialized:
+            return
+            
+        for name, api in self.apis.items():
+            if hasattr(api, '__aenter__'):
+                await api.__aenter__()
+                logger.info(f"Initialized session for {name}")
+        
+        self._initialized = True
+    
+    async def cleanup(self):
+        """Cleanup all API sessions"""
+        if not self._initialized:
+            return
+            
+        for name, api in self.apis.items():
+            if hasattr(api, '__aexit__'):
+                await api.__aexit__(None, None, None)
+                logger.info(f"Cleaned up session for {name}")
+        
+        self._initialized = False
+    
     async def search_with_fallback(self, query: str, config: SearchConfig) -> List[SearchResult]:
         """Search with automatic failover"""
+        # Ensure APIs are initialized
+        if not self._initialized:
+            await self.initialize()
+            
         for api_name in self.fallback_order:
             if api_name in self.apis:
                 try:
                     api = self.apis[api_name]
-                    if hasattr(api, 'session') and api.session is None:
-                        async with api:
-                            results = await api.search(query, config)
-                    else:
-                        results = await api.search(query, config)
+                    results = await api.search(query, config)
                     
                     if results:
                         logger.info(f"Used {api_name} for search, got {len(results)} results")
@@ -643,7 +601,6 @@ def create_search_manager() -> SearchAPIManager:
     # Get API keys from environment
     google_api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
     google_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
-    bing_api_key = os.getenv("BING_SEARCH_API_KEY")
     brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY")
     pubmed_api_key = os.getenv("PUBMED_API_KEY")  # Optional
     
@@ -666,13 +623,6 @@ def create_search_manager() -> SearchAPIManager:
         )
         manager.add_api("google", google_api, is_primary=True)
     
-    # Add Bing Search (secondary)
-    if bing_api_key:
-        bing_api = BingSearchAPI(
-            subscription_key=bing_api_key,
-            rate_limiter=RateLimiter(calls_per_minute=50)
-        )
-        manager.add_api("bing", bing_api)
     
     # Add ArXiv (free, for academic content)
     arxiv_api = ArxivAPI(rate_limiter=RateLimiter(calls_per_minute=30))

@@ -170,6 +170,58 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             <p className="font-semibold text-lg">{results.metadata.paradigms_used.length}</p>
           </div>
         </div>
+
+        {/* Context Engineering Info */}
+        {results.paradigm_analysis.context_engineering && (
+          <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+            <h4 className="text-sm font-semibold text-blue-900 mb-2">Context Engineering Pipeline</h4>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+              <div>
+                <p className="text-blue-700">Compression Ratio</p>
+                <p className="font-semibold">{(results.paradigm_analysis.context_engineering.compression_ratio * 100).toFixed(0)}%</p>
+              </div>
+              <div>
+                <p className="text-blue-700">Token Budget</p>
+                <p className="font-semibold">{results.paradigm_analysis.context_engineering.token_budget.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-blue-700">Search Queries</p>
+                <p className="font-semibold">{results.paradigm_analysis.context_engineering.search_queries_count}</p>
+              </div>
+              <div>
+                <p className="text-blue-700">Isolation Strategy</p>
+                <p className="font-semibold capitalize">{results.paradigm_analysis.context_engineering.isolation_strategy}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Cost Information */}
+        {results.cost_info && (
+          <div className="mt-4 p-4 bg-amber-50 rounded-lg border border-amber-200">
+            <h4 className="text-sm font-semibold text-amber-900 mb-2">Research Costs</h4>
+            <div className="grid grid-cols-3 gap-3 text-sm">
+              {results.cost_info.search_api_costs !== undefined && (
+                <div>
+                  <p className="text-amber-700">Search API</p>
+                  <p className="font-semibold">${results.cost_info.search_api_costs.toFixed(3)}</p>
+                </div>
+              )}
+              {results.cost_info.llm_costs !== undefined && (
+                <div>
+                  <p className="text-amber-700">LLM Processing</p>
+                  <p className="font-semibold">${results.cost_info.llm_costs.toFixed(3)}</p>
+                </div>
+              )}
+              {results.cost_info.total !== undefined && (
+                <div>
+                  <p className="text-amber-700">Total Cost</p>
+                  <p className="font-semibold">${results.cost_info.total.toFixed(3)}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Mesh Network Analysis */}
@@ -261,9 +313,51 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
       )}
 
+      {/* Sources Overview */}
+      {results.sources && results.sources.length > 0 && (
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Research Sources</h3>
+          <div className="grid gap-3">
+            {results.sources.slice(0, 5).map((source, index) => (
+              <div key={index} className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <h4 className="font-medium text-gray-900">{source.title}</h4>
+                    <p className="text-sm text-gray-600 mt-1">{source.snippet}</p>
+                    <div className="flex items-center gap-4 mt-2">
+                      <span className="text-xs text-gray-500">{source.domain}</span>
+                      {source.published_date && (
+                        <span className="text-xs text-gray-500">{new Date(source.published_date).toLocaleDateString()}</span>
+                      )}
+                      <div className={`flex items-center gap-1 text-sm ${getCredibilityColor(source.credibility_score)}`}>
+                        {getCredibilityIcon(source.credibility_score)}
+                        <span className="font-medium">{(source.credibility_score * 100).toFixed(0)}%</span>
+                      </div>
+                    </div>
+                  </div>
+                  <a
+                    href={source.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-4 p-2 text-gray-500 hover:text-gray-700"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+          {results.sources.length > 5 && (
+            <p className="mt-4 text-sm text-gray-600">
+              Showing 5 of {results.sources.length} sources analyzed
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Citations with Credibility */}
       <div className="bg-white rounded-lg shadow-md p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Sources & Citations</h3>
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Answer Citations</h3>
         <div className="space-y-3">
           {displayedCitations.map((citation) => (
             <div key={citation.id} className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors">

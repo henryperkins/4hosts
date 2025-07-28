@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Search, Settings2, Zap, Database, Brain } from 'lucide-react'
+import { Search, Settings2, Zap, Database } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import type { ResearchOptions } from '../services/api'
 
@@ -15,9 +15,10 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const [options, setOptions] = useState<ResearchOptions>({
     depth: user?.preferences?.default_depth || 'standard',
     include_secondary: true,
-    max_sources: 100,
-    enable_real_search: user?.preferences?.enable_real_search || false,
-    enable_ai_classification: user?.preferences?.enable_ai_classification || false,
+    max_sources: 50,
+    enable_real_search: user?.preferences?.enable_real_search !== false,
+    language: 'en',
+    region: 'us'
   })
 
   useEffect(() => {
@@ -26,8 +27,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
       setOptions(prev => ({
         ...prev,
         depth: user.preferences?.default_depth || prev.depth,
-        enable_real_search: user.preferences?.enable_real_search || false,
-        enable_ai_classification: user.preferences?.enable_ai_classification || false,
+        enable_real_search: user.preferences?.enable_real_search !== false,
       }))
     }
   }, [user])
@@ -75,12 +75,6 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
               <span className="flex items-center gap-1 text-green-600">
                 <Database className="h-4 w-4" />
                 Real Search
-              </span>
-            )}
-            {options.enable_ai_classification && (
-              <span className="flex items-center gap-1 text-purple-600">
-                <Brain className="h-4 w-4" />
-                AI Classification
               </span>
             )}
           </div>

@@ -144,7 +144,7 @@ class CostMonitor:
     def __init__(self):
         self.cost_per_call = {
             "google": 0.005,     # $5 per 1000 queries
-            "bing": 0.003,       # $3 per 1000 queries  
+            "brave": 0.0,        # Free tier (up to 2000/month)
             "moz": 0.01,         # Domain authority calls
             "arxiv": 0.0,        # Free
             "pubmed": 0.0        # Free
@@ -158,6 +158,7 @@ class CostMonitor:
         await cache_manager.track_api_cost(api_name, cost, queries_count)
         
         return cost
+    
     
     async def get_daily_costs(self, date: Optional[str] = None) -> Dict[str, Dict[str, float]]:
         """Get daily API costs"""
@@ -195,8 +196,15 @@ class ParadigmAwareSearchOrchestrator:
     async def initialize(self):
         """Initialize the orchestrator"""
         self.search_manager = create_search_manager()
+        await self.search_manager.initialize()
         await cache_manager.initialize()
         logger.info("Research orchestrator initialized")
+    
+    async def cleanup(self):
+        """Cleanup resources"""
+        if self.search_manager:
+            await self.search_manager.cleanup()
+            logger.info("Search manager cleaned up")
     
     async def execute_paradigm_research(self, 
                                       context_engineered_query,

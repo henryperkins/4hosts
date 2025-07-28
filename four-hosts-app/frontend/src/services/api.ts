@@ -22,11 +22,12 @@ export interface User {
 
 export interface ResearchOptions {
   depth?: 'quick' | 'standard' | 'deep'
+  paradigm_override?: string | null
   include_secondary?: boolean
   max_sources?: number
+  language?: string
+  region?: string
   enable_real_search?: boolean
-  enable_ai_classification?: boolean
-  export_format?: 'json' | 'pdf' | 'markdown'
 }
 
 export interface ResearchSubmission {
@@ -218,9 +219,9 @@ class APIService {
 
   // Paradigm classification
   async classifyQuery(query: string): Promise<any> {
-    const response = await this.fetchWithAuth('/paradigms/classify', {
+    const params = new URLSearchParams({ query })
+    const response = await this.fetchWithAuth(`/paradigms/classify?${params}`, {
       method: 'POST',
-      body: JSON.stringify({ query }),
     })
 
     if (!response.ok) {
@@ -279,7 +280,7 @@ class APIService {
   }
 
   async exportResearch(researchId: string, format: 'json' | 'pdf' | 'markdown' = 'json'): Promise<Blob> {
-    const response = await this.fetchWithAuth(`/export/${researchId}?format=${format}`)
+    const response = await this.fetchWithAuth(`/research/export/${researchId}?format=${format}`)
 
     if (!response.ok) {
       throw new Error('Failed to export research')
@@ -340,7 +341,7 @@ class APIService {
 
     const wsUrl = API_BASE_URL.replace('http', 'ws')
     const token = this.authToken ? `?token=${this.authToken}` : ''
-    this.wsConnection = new WebSocket(`${wsUrl}/ws/research${token}`)
+    this.wsConnection = new WebSocket(`${wsUrl}/ws/research/${researchId}${token}`)
 
     this.wsConnection.onopen = () => {
       console.log('WebSocket connected')
@@ -394,28 +395,10 @@ class APIService {
     }
   }
 
-  // Custom document analysis
-  async analyzeDocument(file: File, paradigm?: string): Promise<any> {
-    const formData = new FormData()
-    formData.append('file', file)
-    if (paradigm) {
-      formData.append('paradigm', paradigm)
-    }
-
-    const response = await fetch(`${API_BASE_URL}/paradigms/analyze-document`, {
-      method: 'POST',
-      headers: {
-        ...(this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {}),
-      },
-      body: formData,
-    })
-
-    if (!response.ok) {
-      throw new Error('Failed to analyze document')
-    }
-
-    return response.json()
-  }
+  // Custom document analysis - NOT IMPLEMENTED IN BACKEND
+  // async analyzeDocument(file: File, paradigm?: string): Promise<any> {
+  //   throw new Error('Document analysis not yet implemented in backend')
+  // }
 }
 
 // Export singleton instance

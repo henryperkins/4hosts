@@ -24,16 +24,30 @@ export interface ResearchResult {
         confidence: number
         approach: string
         focus: string
+    },
+    context_engineering?: {
+      compression_ratio: number
+      token_budget: number
+      isolation_strategy: string
+      search_queries_count: number
     }
   },
   answer: GeneratedAnswer
   integrated_synthesis?: IntegratedSynthesis
+  sources: SourceResult[]
   metadata: {
     total_sources_analyzed: number
     high_quality_sources: number
     search_queries_executed: number
     processing_time_seconds: number
+    answer_generation_time?: number
+    synthesis_quality?: number
     paradigms_used: Paradigm[]
+  },
+  cost_info?: {
+    search_api_costs?: number
+    llm_costs?: number
+    total?: number
   }
 }
 
@@ -92,7 +106,8 @@ export interface User {
   id: string
   username: string
   email: string
-  created_at: string
+  created_at?: string
+  role?: string
   preferences?: UserPreferences
 }
 
@@ -100,7 +115,6 @@ export interface UserPreferences {
   default_paradigm?: Paradigm
   default_depth?: 'quick' | 'standard' | 'deep'
   enable_real_search?: boolean
-  enable_ai_classification?: boolean
   theme?: 'light' | 'dark'
 }
 
@@ -124,5 +138,23 @@ export interface ResearchHistoryItem {
   paradigm: Paradigm
   status: string
   created_at: string
-  processing_time?: number
+  options?: {
+    depth?: string
+    max_sources?: number
+  }
+  summary?: {
+    answer_preview: string
+    source_count: number
+    total_cost: number
+  }
+}
+
+export interface SourceResult {
+  title: string
+  url: string
+  snippet: string
+  domain: string
+  credibility_score: number
+  published_date?: string
+  source_type?: string
 }

@@ -45,6 +45,8 @@ from services.credibility import get_source_credibility
 from services.llm_client import initialize_llm_client
 from services.answer_generator_continued import answer_orchestrator
 from services.research_store import research_store
+from services.classification_engine import classification_engine, HostParadigm
+from services.context_engineering import context_pipeline
 
 # Import production services
 from services.auth_service import AuthService
@@ -262,6 +264,11 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("🛑 Shutting down Four Hosts Research API...")
+
+    # Cleanup research orchestrator
+    if hasattr(research_orchestrator, 'cleanup'):
+        await research_orchestrator.cleanup()
+        logger.info("✓ Research orchestrator cleaned up")
 
     # Cleanup connections
     if hasattr(connection_manager, 'disconnect_all'):
@@ -619,7 +626,25 @@ async def get_user_preferences(current_user: User = Depends(get_current_user)):
 async def classify_paradigm(query: str, current_user: User = Depends(get_current_user)):
     """Classify a query into paradigms"""
     try:
-        classification = classify_query(query)  # Remove await
+        # Use the new classification engine
+        classification_result = await classification_engine.classify_query(query)
+        
+        # Convert to the old format for compatibility
+        classification = ParadigmClassification(
+            primary=Paradigm(classification_result.primary_paradigm.value),
+            secondary=Paradigm(classification_result.secondary_paradigm.value) if classification_result.secondary_paradigm else None,
+            distribution={
+                "revolutionary": classification_result.distribution.get(HostParadigm.DOLORES, 0),
+                "devotion": classification_result.distribution.get(HostParadigm.TEDDY, 0),
+                "analytical": classification_result.distribution.get(HostParadigm.BERNARD, 0),
+                "strategic": classification_result.distribution.get(HostParadigm.MAEVE, 0)
+            },
+            confidence=classification_result.confidence,
+            explanation={
+                classification_result.primary_paradigm.value: '; '.join(classification_result.reasoning.get(classification_result.primary_paradigm, [])[:2])
+            }
+        )
+        
         return {
             "query": query,
             "classification": classification.dict(),
@@ -657,8 +682,24 @@ async def submit_research(
     active_research.inc()
 
     try:
-        # Classify the query
-        classification = classify_query(research.query)
+        # Classify the query using the new classification engine
+        classification_result = await classification_engine.classify_query(research.query)
+        
+        # Convert to the old format for compatibility
+        classification = ParadigmClassification(
+            primary=Paradigm(classification_result.primary_paradigm.value),
+            secondary=Paradigm(classification_result.secondary_paradigm.value) if classification_result.secondary_paradigm else None,
+            distribution={
+                "revolutionary": classification_result.distribution.get(HostParadigm.DOLORES, 0),
+                "devotion": classification_result.distribution.get(HostParadigm.TEDDY, 0),
+                "analytical": classification_result.distribution.get(HostParadigm.BERNARD, 0),
+                "strategic": classification_result.distribution.get(HostParadigm.MAEVE, 0)
+            },
+            confidence=classification_result.confidence,
+            explanation={
+                classification_result.primary_paradigm.value: '; '.join(classification_result.reasoning.get(classification_result.primary_paradigm, [])[:2])
+            }
+        )
 
         # Store research request
         research_data = {
@@ -946,71 +987,6 @@ app.include_router(
 
 # Helper functions
 
-def classify_query(query: str) -> ParadigmClassification:
-    """Classify a query into paradigms"""
-    query_lower = query.lower()
-
-    paradigm_keywords = {
-        Paradigm.DOLORES: ["injustice", "systemic", "power", "revolution", "expose", "corrupt", "unfair", "inequality"],
-        Paradigm.TEDDY: ["protect", "help", "care", "support", "vulnerable", "community", "safety", "wellbeing"],
-        Paradigm.BERNARD: ["analyze", "data", "research", "study", "evidence", "statistical", "scientific", "measure"],
-        Paradigm.MAEVE: ["strategy", "compete", "optimize", "control", "influence", "business", "advantage", "implement"]
-    }
-
-    scores = {paradigm: 0.0 for paradigm in Paradigm}
-    for paradigm, keywords in paradigm_keywords.items():
-        for keyword in keywords:
-            if keyword in query_lower:
-                scores[paradigm] += 1.0
-
-    total_score = sum(scores.values()) or 1
-    distribution = {p.value: scores[p] / total_score for p in Paradigm}
-
-    sorted_paradigms = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    primary = sorted_paradigms[0][0] if sorted_paradigms[0][1] > 0 else Paradigm.BERNARD
-    secondary = sorted_paradigms[1][0] if len(sorted_paradigms) > 1 and sorted_paradigms[1][1] > 0 else None
-
-    confidence = min(0.95, max(0.5, sorted_paradigms[0][1] / total_score if total_score > 0 else 0.5))
-
-    explanations = {
-        Paradigm.DOLORES: "Focus on systemic issues and power dynamics",
-        Paradigm.TEDDY: "Emphasis on protection and care",
-        Paradigm.BERNARD: "Analytical and evidence-based approach",
-        Paradigm.MAEVE: "Strategic and action-oriented perspective"
-    }
-
-    explanation_dict = {primary.value: explanations[primary]}
-    if secondary:
-        explanation_dict[secondary.value] = explanations[secondary]
-
-    return ParadigmClassification(
-        primary=primary,
-        secondary=secondary,
-        distribution=distribution,
-        confidence=confidence,
-        explanation=explanation_dict
-    )
-
-def generate_paradigm_queries(query: str, paradigm: str) -> List[Dict[str, Any]]:
-    """Generate paradigm-specific search queries"""
-    modifiers = {
-        "dolores": ["controversy", "expose", "systemic", "injustice"],
-        "teddy": ["support", "help", "community", "resources"],
-        "bernard": ["research", "study", "analysis", "data"],
-        "maeve": ["strategy", "competitive", "optimize", "framework"]
-    }
-
-    queries = [{"query": query, "type": "original", "weight": 1.0}]
-
-    for i, modifier in enumerate(modifiers.get(paradigm, [])[:3]):
-        queries.append({
-            "query": f"{query} {modifier}",
-            "type": f"paradigm_modified_{i+1}",
-            "weight": 0.8 - (i * 0.1)
-        })
-
-    return queries
-
 def get_paradigm_approach_suggestion(paradigm: Paradigm) -> str:
     suggestions = {
         Paradigm.DOLORES: "Focus on exposing systemic issues and empowering resistance",
@@ -1020,23 +996,6 @@ def get_paradigm_approach_suggestion(paradigm: Paradigm) -> str:
     }
     return suggestions[paradigm]
 
-def get_paradigm_approach(paradigm: Paradigm) -> str:
-    approaches = {
-        Paradigm.DOLORES: "revolutionary",
-        Paradigm.TEDDY: "protective",
-        Paradigm.BERNARD: "analytical",
-        Paradigm.MAEVE: "strategic"
-    }
-    return approaches[paradigm]
-
-def get_paradigm_focus(paradigm: Paradigm) -> str:
-    focuses = {
-        Paradigm.DOLORES: "Exposing systemic injustices and power imbalances",
-        Paradigm.TEDDY: "Protecting and supporting vulnerable communities",
-        Paradigm.BERNARD: "Providing objective analysis and empirical evidence",
-        Paradigm.MAEVE: "Delivering actionable strategies and competitive advantage"
-    }
-    return focuses[paradigm]
 
 # Background task for real research execution
 async def execute_real_research(research_id: str, research: ResearchQuery, user_id: str):
@@ -1057,24 +1016,18 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
         if not research_data:
             raise Exception("Research data not found")
 
-        classification = ParadigmClassification(**research_data["paradigm_classification"])
-
-        # Create context for research
-        mock_classification = SimpleNamespace()
-        mock_classification.primary_paradigm = SimpleNamespace()
-        mock_classification.primary_paradigm.value = classification.primary.value
-        mock_classification.secondary_paradigm = None
-
-        # Generate paradigm-specific queries
-        paradigm_queries = generate_paradigm_queries(research.query, classification.primary.value)
-
-        mock_select_output = SimpleNamespace()
-        mock_select_output.search_queries = paradigm_queries
-
-        mock_context_query = SimpleNamespace()
-        mock_context_query.original_query = research.query
-        mock_context_query.classification = mock_classification
-        mock_context_query.select_output = mock_select_output
+        # Get the stored classification result from the new engine
+        classification_result = await classification_engine.classify_query(research.query)
+        
+        # Update progress
+        await progress_tracker.update_progress(
+            research_id,
+            "Processing query through context engineering",
+            20
+        )
+        
+        # Process through context engineering pipeline
+        context_engineered_query = await context_pipeline.process_query(classification_result)
 
         # Update progress
         await progress_tracker.update_progress(
@@ -1083,8 +1036,11 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
             30
         )
 
-        # Execute research
-        execution_result = await execute_research(mock_context_query, research.options.max_sources)
+        # Execute research with context-engineered query
+        execution_result = await research_orchestrator.execute_paradigm_research(
+            context_engineered_query, 
+            research.options.max_sources
+        )
 
         # Update progress
         await progress_tracker.update_progress(
@@ -1125,22 +1081,32 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
             80
         )
 
-        # Generate answer
+        # Generate answer using context engineering outputs
         context_engineering = {
             'write_output': {
-                'documentation_focus': get_paradigm_focus(classification.primary),
-                'key_themes': classification.explanation.get(classification.primary.value, '').split()[:4],
-                'narrative_frame': get_paradigm_approach(classification.primary)
+                'documentation_focus': context_engineered_query.write_output.documentation_focus,
+                'key_themes': context_engineered_query.write_output.key_themes[:4],
+                'narrative_frame': context_engineered_query.write_output.narrative_frame
             },
             'select_output': {
-                'search_queries': paradigm_queries,
-                'source_preferences': [],
-                'max_sources': research.options.max_sources
+                'search_queries': context_engineered_query.select_output.search_queries,
+                'source_preferences': context_engineered_query.select_output.source_preferences,
+                'max_sources': context_engineered_query.select_output.max_sources
+            },
+            'compress_output': {
+                'compression_ratio': context_engineered_query.compress_output.compression_ratio,
+                'priority_elements': context_engineered_query.compress_output.priority_elements,
+                'token_budget': context_engineered_query.compress_output.token_budget
+            },
+            'isolate_output': {
+                'isolation_strategy': context_engineered_query.isolate_output.isolation_strategy,
+                'key_findings_criteria': context_engineered_query.isolate_output.key_findings_criteria,
+                'output_structure': context_engineered_query.isolate_output.output_structure
             }
         }
 
         generated_answer = await answer_orchestrator.generate_answer(
-            paradigm=classification.primary.value,
+            paradigm=context_engineered_query.classification.primary_paradigm.value,
             query=research.query,
             search_results=search_results_for_synthesis,
             context_engineering=context_engineering,
@@ -1169,7 +1135,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
                 "source": citation.source_title,
                 "url": citation.source_url,
                 "credibility_score": citation.credibility_score,
-                "paradigm_alignment": classification.primary.value
+                "paradigm_alignment": context_engineered_query.classification.primary_paradigm.value
             })
 
         final_result = ResearchResult(
@@ -1178,10 +1144,16 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
             status=ResearchStatus.COMPLETED,
             paradigm_analysis={
                 "primary": {
-                    "paradigm": classification.primary.value,
-                    "confidence": classification.confidence,
-                    "approach": get_paradigm_approach(classification.primary),
-                    "focus": get_paradigm_focus(classification.primary)
+                    "paradigm": context_engineered_query.classification.primary_paradigm.value,
+                    "confidence": context_engineered_query.classification.confidence,
+                    "approach": context_engineered_query.write_output.narrative_frame,
+                    "focus": context_engineered_query.write_output.documentation_focus
+                },
+                "context_engineering": {
+                    "compression_ratio": context_engineered_query.compress_output.compression_ratio,
+                    "token_budget": context_engineered_query.compress_output.token_budget,
+                    "isolation_strategy": context_engineered_query.isolate_output.isolation_strategy,
+                    "search_queries_count": len(context_engineered_query.select_output.search_queries)
                 }
             },
             answer={
@@ -1198,7 +1170,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
                 "processing_time_seconds": execution_result.execution_metrics["processing_time_seconds"],
                 "answer_generation_time": generated_answer.generation_time,
                 "synthesis_quality": generated_answer.synthesis_quality,
-                "paradigms_used": [classification.primary.value]
+                "paradigms_used": [context_engineered_query.classification.primary_paradigm.value]
             },
             cost_info=execution_result.cost_breakdown
         )
@@ -1222,7 +1194,7 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
                 "research_id": research_id,
                 "user_id": user_id,
                 "query": research.query,
-                "paradigm": classification.primary.value,
+                "paradigm": context_engineered_query.classification.primary_paradigm.value,
                 "sources_count": len(formatted_sources),
                 "cost": execution_result.cost_breakdown.get("total", 0)
             }
