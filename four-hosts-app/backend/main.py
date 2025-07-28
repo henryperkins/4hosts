@@ -42,7 +42,7 @@ from services.research_orchestrator import (
 )
 from services.cache import initialize_cache
 from services.credibility import get_source_credibility
-from services.llm_client import initialize_llm_client
+from services.llm_client import initialise_llm_client
 from services.answer_generator_continued import answer_orchestrator
 from services.research_store import research_store
 from services.classification_engine import classification_engine, HostParadigm
@@ -229,7 +229,7 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Research orchestrator initialized")
 
         # Initialize LLM client
-        await initialize_llm_client()
+        await initialise_llm_client()
         logger.info("✓ LLM client initialized")
 
         # Initialize monitoring

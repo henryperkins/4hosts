@@ -1,5 +1,15 @@
 export type Paradigm = 'dolores' | 'teddy' | 'bernard' | 'maeve'
 
+export interface ResearchOptions {
+  depth: 'quick' | 'standard' | 'deep'
+  include_secondary?: boolean
+  max_sources?: number
+  enable_real_search?: boolean
+  language?: string
+  region?: string
+  enable_ai_classification?: boolean
+}
+
 export interface ParadigmClassification {
   primary: Paradigm
   secondary: Paradigm | null
@@ -115,6 +125,7 @@ export interface UserPreferences {
   default_paradigm?: Paradigm
   default_depth?: 'quick' | 'standard' | 'deep'
   enable_real_search?: boolean
+  enable_ai_classification?: boolean
   theme?: 'light' | 'dark'
 }
 
@@ -138,6 +149,7 @@ export interface ResearchHistoryItem {
   paradigm: Paradigm
   status: string
   created_at: string
+  processing_time?: number
   options?: {
     depth?: string
     max_sources?: number

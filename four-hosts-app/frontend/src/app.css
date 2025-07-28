@@ -1,12 +1,27 @@
 /* Custom theme variables for Tailwind CSS v4 */
 @theme {
   --color-paradigm-dolores: #ef4444;
-  --color-paradigm-teddy: #3b82f6;
-  --color-paradigm-bernard: #10b981;
-  --color-paradigm-maeve: #8b5cf6;
-  
+  --color-paradigm-teddy: #f97316;
+  --color-paradigm-bernard: #3b82f6;
+  --color-paradigm-maeve: #10b981;
+
   --animate-spin-slow: spin 2s linear infinite;
   --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-in: fade-in 0.4s ease-out;
+  --animate-slide-up: slide-up 0.3s ease-out;
+  --animate-scale-in: scale-in 0.3s ease-out;
+
+  /* Custom shadows for depth */
+  --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-medium: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --shadow-large: 0 8px 32px rgba(0, 0, 0, 0.16);
+  --shadow-xl: 0 12px 48px rgba(0, 0, 0, 0.18);
+  --shadow-2xl: 0 16px 64px rgba(0, 0, 0, 0.24);
+  --shadow-3xl: 0 24px 96px rgba(0, 0, 0, 0.32);
+
+  /* Transition timing functions */
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-bounce: cubic-bezier(0.68, -0.55, 0.265, 1.55);
 }
 
 /* Custom utility classes */
@@ -29,4 +44,258 @@
 /* Dark mode support */
 .dark {
   color-scheme: dark;
+}
+
+/* Import Tailwind CSS v4 */
+@import "tailwindcss";
+
+/* Import animations */
+@import "./styles/animations.css";
+
+/* Import theme transitions */
+@import "./styles/theme-transitions.css";
+
+/* Enhanced button styles with micro-interactions */
+.btn-primary {
+  @apply bg-blue-600 text-white px-4 py-2 rounded-md font-medium;
+  @apply transition-all duration-200 ease-out;
+  @apply hover:bg-blue-700 hover:shadow-xl hover:-translate-y-0.5;
+  @apply active:translate-y-0 active:shadow-lg;
+  @apply disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0;
+  @apply focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2;
+  @apply dark:bg-blue-500 dark:hover:bg-blue-600;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.btn-primary:active::before {
+  width: 300px;
+  height: 300px;
+}
+
+.btn-secondary {
+  @apply bg-gray-200 text-gray-800 px-4 py-2 rounded-md font-medium;
+  @apply transition-all duration-200 ease-out;
+  @apply hover:bg-gray-300 hover:shadow-lg hover:-translate-y-0.5;
+  @apply active:translate-y-0 active:shadow-sm;
+  @apply focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2;
+  @apply dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600;
+}
+
+/* Form input enhancements */
+.input-field {
+  @apply w-full px-3 py-2 border border-gray-300 rounded-md;
+  @apply transition-all duration-200 ease-out;
+  @apply focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none;
+  @apply hover:border-gray-400;
+  @apply placeholder:text-gray-400 dark:placeholder:text-gray-500;
+  @apply dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100;
+}
+
+.input-error {
+  @apply border-red-500 focus:border-red-500 focus:ring-red-500/20;
+  @apply dark:border-red-400 dark:focus:border-red-400 dark:focus:ring-red-400/20;
+}
+
+.input-success {
+  @apply border-green-500 focus:border-green-500 focus:ring-green-500/20;
+  @apply dark:border-green-400 dark:focus:border-green-400 dark:focus:ring-green-400/20;
+}
+
+/* Enhanced card hover effects */
+.card-interactive {
+  @apply bg-white rounded-xl shadow-lg p-6;
+  @apply transition-all duration-300 ease-out;
+  @apply hover:shadow-2xl hover:-translate-y-1;
+  @apply cursor-pointer;
+  @apply dark:bg-gray-800 dark:text-gray-100;
+  position: relative;
+  overflow: hidden;
+}
+
+.card-interactive::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.card-interactive:hover::after {
+  left: 100%;
+}
+
+/* Paradigm cards with enhanced animations */
+.paradigm-card {
+  @apply relative overflow-hidden rounded-lg p-6;
+  @apply transition-all duration-300 ease-out;
+  @apply hover:shadow-2xl hover:scale-105;
+}
+
+.paradigm-card::before {
+  content: '';
+  @apply absolute inset-0 opacity-0;
+  @apply transition-opacity duration-300;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0) 100%);
+}
+
+.paradigm-card:hover::before {
+  @apply opacity-100;
+}
+
+/* Remove loading-spinner from here as it's now in animations.css */
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-100 dark:bg-gray-800;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-400 rounded-full;
+  @apply hover:bg-gray-500;
+  @apply dark:bg-gray-600 dark:hover:bg-gray-500;
+}
+
+/* Thin scrollbar utilities */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-track-transparent::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+.scrollbar-thumb-gray-300::-webkit-scrollbar-thumb {
+  @apply bg-gray-300;
+}
+
+.dark .scrollbar-thumb-gray-600::-webkit-scrollbar-thumb {
+  @apply bg-gray-600;
+}
+
+/* Text shadow utilities for Tailwind CSS 4.1 */
+.text-shadow-subtle {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.text-shadow-strong {
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Responsive touch targets */
+@media (pointer: coarse) {
+
+  .btn-primary,
+  .btn-secondary {
+    @apply min-h-[44px] min-w-[44px];
+  }
+
+  .input-field {
+    @apply min-h-[44px];
+  }
+}
+
+/* Paradigm-themed utilities */
+.paradigm-theme-dolores {
+  @apply bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-800/20;
+  @apply border-red-200 dark:border-red-800;
+}
+
+.paradigm-theme-teddy {
+  @apply bg-gradient-to-br from-orange-50 to-orange-100 dark:from-orange-900/20 dark:to-orange-800/20;
+  @apply border-orange-200 dark:border-orange-800;
+}
+
+.paradigm-theme-bernard {
+  @apply bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-800/20;
+  @apply border-blue-200 dark:border-blue-800;
+}
+
+.paradigm-theme-maeve {
+  @apply bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/20 dark:to-green-800/20;
+  @apply border-green-200 dark:border-green-800;
+}
+
+/* Custom shadows for v4 */
+.shadow-soft {
+  box-shadow: var(--shadow-soft);
+}
+
+.shadow-medium {
+  box-shadow: var(--shadow-medium);
+}
+
+.shadow-large {
+  box-shadow: var(--shadow-large);
+}
+
+.shadow-xl {
+  box-shadow: var(--shadow-xl);
+}
+
+.shadow-2xl {
+  box-shadow: var(--shadow-2xl);
+}
+
+.shadow-3xl {
+  box-shadow: var(--shadow-3xl);
+}
+
+/* Glass morphism effects */
+.glass {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.dark .glass {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Animated gradients */
+.gradient-shift {
+  background-size: 200% 200%;
+  animation: gradient-shift 3s ease infinite;
+}
+
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
 }

@@ -1,15 +1,35 @@
 import React, { useEffect, useState } from 'react'
-import { Clock, Search, CheckCircle, XCircle, Loader } from 'lucide-react'
-import { format } from 'date-fns'
+import { Clock, Search, CheckCircle, XCircle, Loader, TrendingUp, Eye, Calendar, ChevronRight } from 'lucide-react'
+import { format, formatDistanceToNow } from 'date-fns'
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
 import type { ResearchHistoryItem } from '../types'
 
-const paradigmColors = {
-  dolores: 'bg-red-100 text-red-800',
-  teddy: 'bg-blue-100 text-blue-800',
-  bernard: 'bg-green-100 text-green-800',
-  maeve: 'bg-purple-100 text-purple-800',
+const paradigmInfo = {
+  dolores: {
+    color: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
+    borderColor: 'border-red-500',
+    icon: '⚖️',
+    description: 'Truth & Justice'
+  },
+  teddy: {
+    color: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
+    borderColor: 'border-orange-500',
+    icon: '🤝',
+    description: 'Care & Support'
+  },
+  bernard: {
+    color: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+    borderColor: 'border-blue-500',
+    icon: '🧠',
+    description: 'Analysis & Logic'
+  },
+  maeve: {
+    color: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
+    borderColor: 'border-green-500',
+    icon: '♟️',
+    description: 'Strategy & Power'
+  },
 }
 
 export const ResearchHistory: React.FC = () => {
@@ -17,6 +37,7 @@ export const ResearchHistory: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [hasMore, setHasMore] = useState(true)
   const [offset, setOffset] = useState(0)
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null)
   const navigate = useNavigate()
   const limit = 10
 
@@ -46,9 +67,9 @@ export const ResearchHistory: React.FC = () => {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'completed':
-        return <CheckCircle className="h-4 w-4 text-green-500" />
+        return <CheckCircle className="h-4 w-4 text-green-500 animate-scale-in" />
       case 'failed':
-        return <XCircle className="h-4 w-4 text-red-500" />
+        return <XCircle className="h-4 w-4 text-red-500 animate-pulse" />
       case 'processing':
         return <Loader className="h-4 w-4 text-blue-500 animate-spin" />
       default:
@@ -58,9 +79,12 @@ export const ResearchHistory: React.FC = () => {
 
   if (isLoading && history.length === 0) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-8">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-8 animate-pulse">
         <div className="flex items-center justify-center">
-          <Loader className="h-8 w-8 text-blue-600 animate-spin" />
+          <div className="relative">
+            <Loader className="h-12 w-12 text-blue-600 dark:text-blue-400 animate-spin" />
+            <div className="absolute inset-0 h-12 w-12 bg-blue-600 dark:bg-blue-400 rounded-full opacity-20 animate-ping"></div>
+          </div>
         </div>
       </div>
     )
@@ -68,66 +92,129 @@ export const ResearchHistory: React.FC = () => {
 
   if (history.length === 0) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-8">
-        <div className="text-center">
-          <Search className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No research history</h3>
-          <p className="text-gray-600">Your research queries will appear here</p>
-        </div>
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-12 text-center animate-fade-in">
+        <Search className="h-16 w-16 text-gray-400 dark:text-gray-600 mx-auto mb-4 animate-pulse" />
+        <h3 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">No research history yet</h3>
+        <p className="text-gray-600 dark:text-gray-400 mb-6">Start exploring and your research queries will appear here</p>
+        <button
+          onClick={() => navigate('/')}
+          className="px-6 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 hover:shadow-lg"
+        >
+          Start Researching
+        </button>
       </div>
     )
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6">
-      <h2 className="text-xl font-bold text-gray-900 mb-6">Research History</h2>
-      
-      <div className="space-y-4">
-        {history.map((item) => (
-          <div
-            key={item.research_id}
-            className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors cursor-pointer"
-            onClick={() => handleViewResult(item.research_id)}
-          >
-            <div className="flex items-start justify-between">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  {getStatusIcon(item.status)}
-                  <h3 className="font-medium text-gray-900 line-clamp-1">{item.query}</h3>
-                </div>
-                
-                <div className="flex items-center gap-4 text-sm text-gray-600">
-                  <span className="flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    {format(new Date(item.created_at), 'MMM d, yyyy HH:mm')}
-                  </span>
-                  
-                  {item.paradigm && (
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      paradigmColors[item.paradigm]
-                    }`}>
-                      {item.paradigm.charAt(0).toUpperCase() + item.paradigm.slice(1)}
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 animate-fade-in">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <Clock className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+          Research History
+        </h2>
+        <span className="text-sm text-gray-600 dark:text-gray-400">
+          {history.length} research{history.length !== 1 ? 'es' : ''}
+        </span>
+      </div>
+
+      <div className="space-y-3">
+        {history.map((item, index) => {
+          const paradigm = item.paradigm && paradigmInfo[item.paradigm]
+          const isHovered = hoveredItem === item.research_id
+
+          return (
+            <div
+              key={item.research_id}
+              className={`relative border-2 ${paradigm ? paradigm.borderColor : 'border-gray-200 dark:border-gray-700'} rounded-xl p-4 transition-all duration-300 cursor-pointer transform ${
+                isHovered ? 'scale-[1.02] shadow-xl -translate-y-1' : 'hover:shadow-lg'
+              } animate-slide-up bg-gradient-to-r from-transparent ${
+                paradigm ? `to-${item.paradigm}-50 dark:to-${item.paradigm}-900/10` : 'to-gray-50 dark:to-gray-900/10'
+              }`}
+              onClick={() => handleViewResult(item.research_id)}
+              onMouseEnter={() => setHoveredItem(item.research_id)}
+              onMouseLeave={() => setHoveredItem(null)}
+              style={{ animationDelay: `${index * 50}ms` }}
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-2">
+                    {getStatusIcon(item.status)}
+                    <h3 className="font-semibold text-gray-900 dark:text-gray-100 line-clamp-1 text-lg">
+                      {item.query}
+                    </h3>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
+                    <span className="flex items-center gap-1">
+                      <Calendar className="h-3 w-3" />
+                      {format(new Date(item.created_at), 'MMM d, yyyy')}
                     </span>
-                  )}
-                  
-                  {item.processing_time && (
-                    <span>{item.processing_time}s</span>
-                  )}
+
+                    <span className="flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
+                    </span>
+
+                    {paradigm && (
+                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${paradigm.color} flex items-center gap-1 animate-fade-in`}>
+                        <span>{paradigm.icon}</span>
+                        {paradigm.description}
+                      </span>
+                    )}
+
+                    {item.processing_time && (
+                      <span className="flex items-center gap-1">
+                        <TrendingUp className="h-3 w-3" />
+                        {item.processing_time}s
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className={`flex items-center gap-2 transition-all duration-300 ${
+                  isHovered ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2'
+                }`}>
+                  <Eye className="h-5 w-5 text-gray-400 dark:text-gray-500" />
+                  <ChevronRight className="h-5 w-5 text-gray-400 dark:text-gray-500" />
                 </div>
               </div>
+
+              {/* Progress bar for processing time */}
+              {item.processing_time && (
+                <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200 dark:bg-gray-700 rounded-b-xl overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-1000 ease-out"
+                    style={{
+                      width: `${Math.min((item.processing_time / 10) * 100, 100)}%`,
+                      animationDelay: `${index * 100}ms`
+                    }}
+                  />
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       {hasMore && (
-        <div className="mt-6 text-center">
+        <div className="mt-6 text-center animate-fade-in">
           <button
             onClick={loadHistory}
             disabled={isLoading}
-            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+            className="px-6 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 mx-auto"
           >
-            {isLoading ? 'Loading...' : 'Load More'}
+            {isLoading ? (
+              <>
+                <Loader className="h-4 w-4 animate-spin" />
+                Loading...
+              </>
+            ) : (
+              <>
+                <Clock className="h-4 w-4" />
+                Load More History
+              </>
+            )}
           </button>
         </div>
       )}

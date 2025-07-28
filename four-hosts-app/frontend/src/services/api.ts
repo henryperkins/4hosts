@@ -28,6 +28,7 @@ export interface ResearchOptions {
   language?: string
   region?: string
   enable_real_search?: boolean
+  enable_ai_classification?: boolean
 }
 
 export interface ResearchSubmission {

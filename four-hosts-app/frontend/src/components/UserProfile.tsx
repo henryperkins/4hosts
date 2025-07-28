@@ -62,7 +62,7 @@ export const UserProfile: React.FC = () => {
             <h3 className="font-semibold text-lg text-gray-900">{user.username}</h3>
             <p className="text-gray-600">{user.email}</p>
             <p className="text-sm text-gray-500">
-              Member since {new Date(user.created_at).toLocaleDateString()}
+              Member since {user.created_at ? new Date(user.created_at).toLocaleDateString() : 'Unknown'}
             </p>
           </div>
         </div>
