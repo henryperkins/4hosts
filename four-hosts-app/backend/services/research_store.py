@@ -11,6 +11,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
 class ResearchStore:
     """Research data storage with Redis backend and in-memory fallback"""
 
@@ -25,6 +26,7 @@ class ResearchStore:
         """Initialize Redis connection with fallback to in-memory"""
         try:
             import redis.asyncio as redis
+
             self.redis_client = await redis.from_url(self.redis_url)
             # Test connection
             await self.redis_client.ping()
@@ -111,7 +113,9 @@ class ResearchStore:
     def values(self):
         """Get all values - for backward compatibility"""
         if self.use_redis:
-            logger.warning("values() method not efficient with Redis - use get_user_research instead")
+            logger.warning(
+                "values() method not efficient with Redis - use get_user_research instead"
+            )
         return self.fallback_store.values()
 
     def __contains__(self, research_id: str) -> bool:
@@ -140,6 +144,7 @@ class ResearchStore:
             logger.warning("Synchronous item setting not available with Redis")
             return
         self.fallback_store[research_id] = data
+
 
 # Create global instance
 research_store = ResearchStore()

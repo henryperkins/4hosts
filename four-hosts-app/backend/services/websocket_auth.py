@@ -23,28 +23,28 @@ WS_RATE_LIMITS = {
     UserRole.FREE: {
         "connections_per_user": 1,
         "messages_per_minute": 10,
-        "subscriptions_per_connection": 5
+        "subscriptions_per_connection": 5,
     },
     UserRole.BASIC: {
         "connections_per_user": 3,
         "messages_per_minute": 30,
-        "subscriptions_per_connection": 10
+        "subscriptions_per_connection": 10,
     },
     UserRole.PRO: {
         "connections_per_user": 5,
         "messages_per_minute": 60,
-        "subscriptions_per_connection": 20
+        "subscriptions_per_connection": 20,
     },
     UserRole.ENTERPRISE: {
         "connections_per_user": 10,
         "messages_per_minute": 200,
-        "subscriptions_per_connection": 50
+        "subscriptions_per_connection": 50,
     },
     UserRole.ADMIN: {
         "connections_per_user": 100,
         "messages_per_minute": 1000,
-        "subscriptions_per_connection": 100
-    }
+        "subscriptions_per_connection": 100,
+    },
 }
 
 # Allowed origins for WebSocket connections
@@ -53,12 +53,13 @@ ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "https://fourhosts.com",
     "https://www.fourhosts.com",
-    "https://app.fourhosts.com"
+    "https://app.fourhosts.com",
 ]
+
 
 class WebSocketRateLimiter:
     """Rate limiter for WebSocket connections"""
-    
+
     def __init__(self):
         # Track connections per user
         self.user_connections: Dict[str, Set[str]] = defaultdict(set)
@@ -66,99 +67,111 @@ class WebSocketRateLimiter:
         self.user_messages: Dict[str, list] = defaultdict(list)
         # Track subscriptions per connection
         self.connection_subscriptions: Dict[str, int] = defaultdict(int)
-        
-    async def check_connection_limit(self, user_id: str, connection_id: str, role: UserRole) -> bool:
+
+    async def check_connection_limit(
+        self, user_id: str, connection_id: str, role: UserRole
+    ) -> bool:
         """Check if user can create new WebSocket connection"""
         limits = WS_RATE_LIMITS.get(role, WS_RATE_LIMITS[UserRole.FREE])
         max_connections = limits["connections_per_user"]
-        
+
         current_connections = len(self.user_connections[user_id])
         if current_connections >= max_connections:
-            logger.warning(f"User {user_id} exceeded max WebSocket connections: {current_connections}/{max_connections}")
+            logger.warning(
+                f"User {user_id} exceeded max WebSocket connections: {current_connections}/{max_connections}"
+            )
             return False
-            
+
         self.user_connections[user_id].add(connection_id)
         return True
-    
+
     async def check_message_rate(self, user_id: str, role: UserRole) -> bool:
         """Check if user can send a message"""
         limits = WS_RATE_LIMITS.get(role, WS_RATE_LIMITS[UserRole.FREE])
         max_messages = limits["messages_per_minute"]
-        
+
         # Clean old messages
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(minutes=1)
         self.user_messages[user_id] = [
-            ts for ts in self.user_messages[user_id]
-            if ts > cutoff
+            ts for ts in self.user_messages[user_id] if ts > cutoff
         ]
-        
+
         # Check limit
         if len(self.user_messages[user_id]) >= max_messages:
             logger.warning(f"User {user_id} exceeded message rate limit")
             return False
-            
+
         self.user_messages[user_id].append(now)
         return True
-    
-    async def check_subscription_limit(self, connection_id: str, role: UserRole) -> bool:
+
+    async def check_subscription_limit(
+        self, connection_id: str, role: UserRole
+    ) -> bool:
         """Check if connection can add more subscriptions"""
         limits = WS_RATE_LIMITS.get(role, WS_RATE_LIMITS[UserRole.FREE])
         max_subscriptions = limits["subscriptions_per_connection"]
-        
+
         current_subscriptions = self.connection_subscriptions[connection_id]
         if current_subscriptions >= max_subscriptions:
             logger.warning(f"Connection {connection_id} exceeded subscription limit")
             return False
-            
+
         self.connection_subscriptions[connection_id] += 1
         return True
-    
+
     async def remove_connection(self, user_id: str, connection_id: str):
         """Remove connection from tracking"""
         self.user_connections[user_id].discard(connection_id)
         if not self.user_connections[user_id]:
             del self.user_connections[user_id]
-        
+
         if connection_id in self.connection_subscriptions:
             del self.connection_subscriptions[connection_id]
 
+
 # Global rate limiter instance
 ws_rate_limiter = WebSocketRateLimiter()
+
 
 async def authenticate_websocket(
     websocket: WebSocket,
     authorization: Optional[str] = Header(None),
     sec_websocket_protocol: Optional[str] = Header(None),
     origin: Optional[str] = Header(None),
-    token_query: Optional[str] = Query(None, alias="token")
+    token_query: Optional[str] = Query(None, alias="token"),
 ) -> Optional[TokenData]:
     """
     Authenticate WebSocket connection with enhanced security
-    
+
     1. Check Origin header against allowed origins
     2. Extract token from Authorization header or Sec-WebSocket-Protocol
     3. Fall back to query parameter if needed (deprecated)
     4. Validate token and check revocation
     """
-    
+
     # 1. Verify Origin
     if origin and origin not in ALLOWED_ORIGINS:
         # Check if it's a development environment
-        if not (origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")):
-            logger.warning(f"WebSocket connection rejected from unauthorized origin: {origin}")
+        if not (
+            origin.startswith("http://localhost:")
+            or origin.startswith("http://127.0.0.1:")
+        ):
+            logger.warning(
+                f"WebSocket connection rejected from unauthorized origin: {origin}"
+            )
             await websocket.close(code=1008, reason="Unauthorized origin")
             return None
-    
+
     # 2. Extract token (priority order)
     token = None
-    
+
     # Try Authorization header first
     if authorization:
         scheme, credentials = get_authorization_scheme_param(authorization)
         if scheme.lower() == "bearer":
             token = credentials
-    
+
     # Try Sec-WebSocket-Protocol header (for browsers that don't support custom headers)
     if not token and sec_websocket_protocol:
         # Format: "access_token, <actual_token>"
@@ -168,20 +181,22 @@ async def authenticate_websocket(
             if protocol.startswith("access_token."):
                 token = protocol[13:]  # Remove "access_token." prefix
                 break
-    
+
     # Fall back to query parameter (deprecated, log warning)
     if not token and token_query:
-        logger.warning(f"WebSocket using deprecated query parameter authentication from {origin}")
+        logger.warning(
+            f"WebSocket using deprecated query parameter authentication from {origin}"
+        )
         token = token_query
-    
+
     if not token:
         await websocket.close(code=1008, reason="Missing authentication token")
         return None
-    
+
     try:
         # Decode and validate token
         payload = await decode_token(token)
-        
+
         # Create TokenData
         user_data = TokenData(
             user_id=payload.get("user_id"),
@@ -189,11 +204,11 @@ async def authenticate_websocket(
             role=UserRole(payload.get("role")),
             exp=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc),
             iat=datetime.fromtimestamp(payload.get("iat"), tz=timezone.utc),
-            jti=payload.get("jti")
+            jti=payload.get("jti"),
         )
-        
+
         return user_data
-        
+
     except HTTPException as e:
         await websocket.close(code=1008, reason=e.detail)
         return None
@@ -202,41 +217,36 @@ async def authenticate_websocket(
         await websocket.close(code=1008, reason="Authentication failed")
         return None
 
+
 async def verify_websocket_rate_limit(
-    user_id: str,
-    connection_id: str,
-    role: UserRole,
-    websocket: WebSocket
+    user_id: str, connection_id: str, role: UserRole, websocket: WebSocket
 ) -> bool:
     """Verify WebSocket connection is within rate limits"""
     if not await ws_rate_limiter.check_connection_limit(user_id, connection_id, role):
         await websocket.close(
             code=1008,
-            reason=f"Connection limit exceeded. Maximum {WS_RATE_LIMITS[role]['connections_per_user']} connections allowed."
+            reason=f"Connection limit exceeded. Maximum {WS_RATE_LIMITS[role]['connections_per_user']} connections allowed.",
         )
         return False
     return True
 
-async def check_websocket_message_rate(
-    user_id: str,
-    role: UserRole
-) -> bool:
+
+async def check_websocket_message_rate(user_id: str, role: UserRole) -> bool:
     """Check if user can send a WebSocket message"""
     return await ws_rate_limiter.check_message_rate(user_id, role)
 
+
 async def check_websocket_subscription_limit(
-    connection_id: str,
-    role: UserRole
+    connection_id: str, role: UserRole
 ) -> bool:
     """Check if connection can add more subscriptions"""
     return await ws_rate_limiter.check_subscription_limit(connection_id, role)
 
-async def cleanup_websocket_connection(
-    user_id: str,
-    connection_id: str
-):
+
+async def cleanup_websocket_connection(user_id: str, connection_id: str):
     """Clean up WebSocket connection resources"""
     await ws_rate_limiter.remove_connection(user_id, connection_id)
+
 
 # Enhanced WebSocket endpoint with better security
 async def secure_websocket_endpoint(
@@ -246,45 +256,48 @@ async def secure_websocket_endpoint(
     origin: Optional[str] = Header(None),
     user_agent: Optional[str] = Header(None),
     x_real_ip: Optional[str] = Header(None),
-    x_forwarded_for: Optional[str] = Header(None)
+    x_forwarded_for: Optional[str] = Header(None),
 ):
     """
     Secure WebSocket endpoint with enhanced authentication and rate limiting
     """
     # Get client IP
-    client_ip = x_real_ip or (x_forwarded_for.split(",")[0] if x_forwarded_for else None) or "unknown"
-    
+    client_ip = (
+        x_real_ip
+        or (x_forwarded_for.split(",")[0] if x_forwarded_for else None)
+        or "unknown"
+    )
+
     # Authenticate
     user_data = await authenticate_websocket(
         websocket,
         authorization=authorization,
         sec_websocket_protocol=sec_websocket_protocol,
-        origin=origin
+        origin=origin,
     )
-    
+
     if not user_data:
         return
-    
+
     connection_id = f"ws_{user_data.user_id}_{datetime.now(timezone.utc).timestamp()}"
-    
+
     # Check rate limits
     if not await verify_websocket_rate_limit(
-        user_data.user_id,
-        connection_id,
-        user_data.role,
-        websocket
+        user_data.user_id, connection_id, user_data.role, websocket
     ):
         return
-    
+
     try:
         # Accept connection with subprotocol if requested
         if sec_websocket_protocol and "access_token" in sec_websocket_protocol:
             await websocket.accept(subprotocol="access_token")
         else:
             await websocket.accept()
-        
-        logger.info(f"WebSocket connected: user={user_data.user_id}, ip={client_ip}, origin={origin}")
-        
+
+        logger.info(
+            f"WebSocket connected: user={user_data.user_id}, ip={client_ip}, origin={origin}"
+        )
+
         # Return connection info for further processing
         return {
             "websocket": websocket,
@@ -292,9 +305,9 @@ async def secure_websocket_endpoint(
             "connection_id": connection_id,
             "client_ip": client_ip,
             "origin": origin,
-            "user_agent": user_agent
+            "user_agent": user_agent,
         }
-        
+
     except Exception as e:
         logger.error(f"WebSocket connection error: {e}")
         await cleanup_websocket_connection(user_data.user_id, connection_id)

@@ -30,6 +30,7 @@ from tenacity import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 # ────────────────────────────────────────────────────────────
 #  Enums / Constants
 # ────────────────────────────────────────────────────────────
@@ -131,7 +132,9 @@ class LLMClient:
 
     # ─────────── utility helpers ───────────
     @staticmethod
-    def _wrap_tool_choice(choice: Union[str, Dict[str, Any], None]) -> Union[Dict[str, Any], None]:
+    def _wrap_tool_choice(
+        choice: Union[str, Dict[str, Any], None]
+    ) -> Union[Dict[str, Any], None]:
         """Normalise `tool_choice` into dict format used by OpenAI 1.x."""
         if choice in (None, "auto"):
             return {"type": "auto"}
@@ -176,7 +179,10 @@ class LLMClient:
 
         # Build shared message list
         messages = [
-            {"role": _system_role_for(model_name), "content": _SYSTEM_PROMPTS.get(paradigm, "")},
+            {
+                "role": _system_role_for(model_name),
+                "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+            },
             {"role": "user", "content": prompt},
         ]
 
@@ -214,7 +220,11 @@ class LLMClient:
         # ─── Azure path (Responses API) ───
         if self.azure_responses:
             try:
-                az_stream_opts = {"include_usage": stream_include_usage} if stream and stream_include_usage else None
+                az_stream_opts = (
+                    {"include_usage": stream_include_usage}
+                    if stream and stream_include_usage
+                    else None
+                )
                 az_response = await self._create_response_azure(
                     **kw, stream=stream, stream_options=az_stream_opts
                 )
@@ -242,7 +252,9 @@ class LLMClient:
                 logger.error(f"OpenAI request failed • {exc}")
                 raise
 
-        raise RuntimeError("No LLM back-ends configured – set AZURE_OPENAI_* or OPENAI_API_KEY env vars.")
+        raise RuntimeError(
+            "No LLM back-ends configured – set AZURE_OPENAI_* or OPENAI_API_KEY env vars."
+        )
 
     # ─────────── higher-level helpers ───────────
     async def generate_structured_output(
@@ -288,7 +300,10 @@ class LLMClient:
                 resp = await self._create_response_azure(
                     model=model_name,
                     messages=[
-                        {"role": _system_role_for(model_name), "content": _SYSTEM_PROMPTS.get(paradigm, "")},
+                        {
+                            "role": _system_role_for(model_name),
+                            "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+                        },
                         {"role": "user", "content": prompt},
                     ],
                     tools=tools,
@@ -304,7 +319,10 @@ class LLMClient:
             op = await self.openai_client.chat.completions.create(
                 model=model_name,
                 messages=[
-                    {"role": _system_role_for(model_name), "content": _SYSTEM_PROMPTS.get(paradigm, "")},
+                    {
+                        "role": _system_role_for(model_name),
+                        "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 tools=tools,
@@ -337,7 +355,10 @@ class LLMClient:
         """Multi-turn chat conversation helper (non-streaming)."""
         model_name = _select_model(paradigm, model)
         full_msgs = [
-            {"role": _system_role_for(model_name), "content": _SYSTEM_PROMPTS.get(paradigm, "")},
+            {
+                "role": _system_role_for(model_name),
+                "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+            },
             *messages,
         ]
 
@@ -347,8 +368,16 @@ class LLMClient:
                 resp = await self._create_response_azure(
                     model=model_name,
                     messages=full_msgs,
-                    max_tokens=max_tokens if not model_name.startswith(("o1", "o3", "o4")) else None,
-                    max_completion_tokens=max_tokens if model_name.startswith(("o1", "o3", "o4")) else None,
+                    max_tokens=(
+                        max_tokens
+                        if not model_name.startswith(("o1", "o3", "o4"))
+                        else None
+                    ),
+                    max_completion_tokens=(
+                        max_tokens
+                        if model_name.startswith(("o1", "o3", "o4"))
+                        else None
+                    ),
                     temperature=temperature,
                 )
                 return resp["content"].strip()
@@ -424,7 +453,11 @@ class LLMClient:
         """Yield token strings from Azure Responses API stream."""
         async for chunk in raw:
             # Azure stream chunks mirror OpenAI delta structure
-            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+            if (
+                chunk.choices
+                and chunk.choices[0].delta
+                and chunk.choices[0].delta.content
+            ):
                 yield chunk.choices[0].delta.content
 
 

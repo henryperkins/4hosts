@@ -15,6 +15,7 @@ load_dotenv()
 from database.connection import get_db
 from database.models import User
 
+
 async def list_users():
     """List all users in the database"""
     db_gen = get_db()
@@ -22,11 +23,11 @@ async def list_users():
     try:
         result = await db.execute(select(User))
         users = result.scalars().all()
-        
+
         if not users:
             print("No users found in the database")
             return
-            
+
         print(f"Found {len(users)} user(s):")
         print("-" * 60)
         for user in users:
@@ -36,9 +37,10 @@ async def list_users():
             print(f"Role: {user.role}")
             print(f"Created: {user.created_at}")
             print("-" * 60)
-            
+
     finally:
         await db_gen.aclose()
+
 
 if __name__ == "__main__":
     asyncio.run(list_users())

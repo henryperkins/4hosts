@@ -24,22 +24,30 @@ print("   - Base generator abstract class")
 
 print("\n2. Paradigm-Specific Generators:")
 print("   🔴 Dolores (Revolutionary):")
-print("      - Sections: Exposing the System, Voices of Oppressed, Pattern of Injustice, Path to Revolution")
+print(
+    "      - Sections: Exposing the System, Voices of Oppressed, Pattern of Injustice, Path to Revolution"
+)
 print("      - Focus: Systemic issues, power structures, calls to action")
 print("      - Tone: Passionate, urgent, confrontational")
 
 print("\n   💙 Teddy (Devotion):")
-print("      - Sections: Understanding Need, Support Resources, Success Stories, How to Help")
+print(
+    "      - Sections: Understanding Need, Support Resources, Success Stories, How to Help"
+)
 print("      - Focus: Empathy, resources, community support")
 print("      - Tone: Warm, supportive, encouraging")
 
 print("\n   🔵 Bernard (Analytical):")
-print("      - Sections: Executive Summary, Data Analysis, Causal Relationships, Methodology, Future Research")
+print(
+    "      - Sections: Executive Summary, Data Analysis, Causal Relationships, Methodology, Future Research"
+)
 print("      - Focus: Statistical evidence, empirical data, objectivity")
 print("      - Tone: Precise, academic, objective")
 
 print("\n   🟢 Maeve (Strategic):")
-print("      - Sections: Strategic Overview, Tactical Approaches, Resource Optimization, Success Metrics, Roadmap")
+print(
+    "      - Sections: Strategic Overview, Tactical Approaches, Resource Optimization, Success Metrics, Roadmap"
+)
 print("      - Focus: Opportunities, implementation, ROI")
 print("      - Tone: Decisive, action-oriented, competitive")
 

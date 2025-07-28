@@ -8,11 +8,7 @@ from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 import logging
 
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    create_async_engine,
-    AsyncEngine
-)
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool, QueuePool
@@ -23,6 +19,7 @@ from database.models import Base
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 # Database configuration
 class DatabaseConfig:
@@ -38,12 +35,15 @@ class DatabaseConfig:
 
         self.database_url = os.getenv(
             "DATABASE_URL",
-            f"postgresql+asyncpg://{pguser}:{pgpassword}@{pghost}:{pgport}/{pgdatabase}"
+            f"postgresql+asyncpg://{pguser}:{pgpassword}@{pghost}:{pgport}/{pgdatabase}",
         )
 
         # Debug: Print the database URL (without password for security)
         import logging
-        logging.info(f"Database URL: postgresql+asyncpg://{pguser}:****@{pghost}:{pgport}/{pgdatabase}")
+
+        logging.info(
+            f"Database URL: postgresql+asyncpg://{pguser}:****@{pghost}:{pgport}/{pgdatabase}"
+        )
 
         # Connection pool settings
         self.pool_size = int(os.getenv("DB_POOL_SIZE", "20"))
@@ -70,11 +70,11 @@ class DatabaseConfig:
             "connect_args": {
                 "server_settings": {
                     "application_name": "four_hosts_research_api",
-                    "jit": "off"
+                    "jit": "off",
                 },
                 "command_timeout": 60,
-                "ssl": self.ssl_mode
-            }
+                "ssl": self.ssl_mode,
+            },
         }
 
         # Use NullPool for serverless environments
@@ -83,13 +83,13 @@ class DatabaseConfig:
 
         return kwargs
 
+
 # Global database configuration
 db_config = DatabaseConfig()
 
 # Create async engine
 engine: AsyncEngine = create_async_engine(
-    db_config.database_url,
-    **db_config.get_engine_kwargs()
+    db_config.database_url, **db_config.get_engine_kwargs()
 )
 
 # Create async session factory
@@ -98,10 +98,11 @@ AsyncSessionLocal = sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
     autoflush=False,
-    autocommit=False
+    autocommit=False,
 )
 
 # --- Database Events ---
+
 
 @event.listens_for(engine.sync_engine, "connect")
 def set_sqlite_pragma(dbapi_conn, connection_record):
@@ -115,7 +116,9 @@ def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor.execute("PRAGMA temp_store=MEMORY")
         cursor.close()
 
+
 # --- Session Management ---
+
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency to get database session"""
@@ -128,6 +131,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
 
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
@@ -142,7 +146,9 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
         finally:
             await session.close()
 
+
 # --- Database Operations ---
+
 
 class DatabaseManager:
     """Database management operations"""
@@ -188,10 +194,7 @@ class DatabaseManager:
         async with self.engine.connect() as conn:
             result = await conn.execute(text(query))
             return {
-                row.tablename: {
-                    "size": row.size,
-                    "size_bytes": row.size_bytes
-                }
+                row.tablename: {"size": row.size, "size_bytes": row.size_bytes}
                 for row in result
             }
 
@@ -225,42 +228,37 @@ class DatabaseManager:
         try:
             async with self.engine.connect() as conn:
                 result = await conn.execute(
-                    text(query),
-                    {"min_duration": min_duration_ms}
+                    text(query), {"min_duration": min_duration_ms}
                 )
                 return [dict(row._mapping) for row in result]
         except Exception as e:
             logger.error(f"Failed to get slow queries: {e}")
             return []
 
+
 # Create global database manager
 db_manager = DatabaseManager(engine)
 
 # --- Query Builders ---
+
 
 class QueryBuilder:
     """Helper class for building complex queries"""
 
     @staticmethod
     def build_search_query(
-        search_term: str,
-        fields: list[str],
-        use_trigram: bool = True
+        search_term: str, fields: list[str], use_trigram: bool = True
     ) -> str:
         """Build full-text search query"""
         if use_trigram:
             # Use trigram similarity for fuzzy matching
             conditions = [
-                f"similarity({field}, :search_term) > 0.3"
-                for field in fields
+                f"similarity({field}, :search_term) > 0.3" for field in fields
             ]
             order_by = f"similarity({fields[0]}, :search_term) DESC"
         else:
             # Use standard ILIKE
-            conditions = [
-                f"{field} ILIKE :search_pattern"
-                for field in fields
-            ]
+            conditions = [f"{field} ILIKE :search_pattern" for field in fields]
             order_by = f"{fields[0]}"
 
         where_clause = " OR ".join(conditions)
@@ -275,17 +273,14 @@ class QueryBuilder:
 
     @staticmethod
     def build_analytics_query(
-        user_id: str,
-        start_date: str,
-        end_date: str,
-        granularity: str = "day"
+        user_id: str, start_date: str, end_date: str, granularity: str = "day"
     ) -> str:
         """Build analytics aggregation query"""
         date_trunc = {
             "hour": "hour",
             "day": "day",
             "week": "week",
-            "month": "month"
+            "month": "month",
         }.get(granularity, "day")
 
         return f"""
@@ -304,7 +299,9 @@ class QueryBuilder:
         ORDER BY period ASC
         """
 
+
 # --- Connection Pooling Monitor ---
+
 
 class ConnectionPoolMonitor:
     """Monitor database connection pool health"""
@@ -322,7 +319,7 @@ class ConnectionPoolMonitor:
             "checked_out": pool.checkedout(),
             "overflow": pool.overflow(),
             "total": pool.total(),
-            "status": "healthy" if pool.checkedin() > 0 else "exhausted"
+            "status": "healthy" if pool.checkedin() > 0 else "exhausted",
         }
 
     async def reset_pool(self):
@@ -330,15 +327,19 @@ class ConnectionPoolMonitor:
         await self.engine.dispose()
         logger.info("Database connection pool reset")
 
+
 # Create global pool monitor
 pool_monitor = ConnectionPoolMonitor(engine)
+
 
 # Simple wrapper for main.py
 async def init_database():
     """Initialize database tables"""
     await db_manager.create_all_tables()
 
+
 # --- Database Migrations ---
+
 
 async def run_migrations():
     """Run database migrations using Alembic"""
@@ -347,24 +348,20 @@ async def run_migrations():
     try:
         # Run alembic upgrade
         result = subprocess.run(
-            ["alembic", "upgrade", "head"],
-            capture_output=True,
-            text=True,
-            check=True
+            ["alembic", "upgrade", "head"], capture_output=True, text=True, check=True
         )
         logger.info(f"Migrations completed: {result.stdout}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Migration failed: {e.stderr}")
         raise
 
+
 # --- Health Checks ---
+
 
 async def database_health_check() -> dict:
     """Comprehensive database health check"""
-    health = {
-        "status": "unknown",
-        "details": {}
-    }
+    health = {"status": "unknown", "details": {}}
 
     try:
         # Check connection
@@ -386,9 +383,7 @@ async def database_health_check() -> dict:
 
         # Get table sizes
         table_sizes = await db_manager.get_table_sizes()
-        health["details"]["largest_tables"] = dict(
-            list(table_sizes.items())[:5]
-        )
+        health["details"]["largest_tables"] = dict(list(table_sizes.items())[:5])
 
         return health
 

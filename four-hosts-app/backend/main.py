@@ -16,7 +16,16 @@ from typing import Optional, Dict, List, Any
 from enum import Enum
 from types import SimpleNamespace
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends, WebSocket, WebSocketDisconnect, Security
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    BackgroundTasks,
+    Request,
+    Depends,
+    WebSocket,
+    WebSocketDisconnect,
+    Security,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -38,7 +47,7 @@ logger = logging.getLogger(__name__)
 from services.research_orchestrator import (
     research_orchestrator,
     initialize_research_system,
-    execute_research
+    execute_research,
 )
 from services.cache import initialize_cache
 from services.credibility import get_source_credibility
@@ -51,13 +60,32 @@ from services.context_engineering import context_pipeline
 # Import production services
 from services.auth_service import AuthService
 from services.rate_limiter import RateLimiter, RateLimitMiddleware
-from services.monitoring import PrometheusMetrics, ApplicationInsights, create_monitoring_middleware
+from services.monitoring import (
+    PrometheusMetrics,
+    ApplicationInsights,
+    create_monitoring_middleware,
+)
 from services.webhook_manager import WebhookManager, WebhookEvent, create_webhook_router
-from services.websocket_service import ConnectionManager, ResearchProgressTracker, create_websocket_router
+from services.websocket_service import (
+    ConnectionManager,
+    ResearchProgressTracker,
+    create_websocket_router,
+)
 from services.export_service import ExportService, create_export_router
 from database.connection import init_database, get_db
-from database.models import User as DBUser, ResearchQuery as Research, Webhook as WebhookSubscription, UserRole as _DBUserRole, ParadigmType as _DBParadigm
-from utils.custom_docs import custom_openapi, get_custom_swagger_ui_html, get_custom_redoc_html
+from database.models import (
+    User as DBUser,
+    ResearchQuery as Research,
+    Webhook as WebhookSubscription,
+    UserRole as _DBUserRole,
+    ParadigmType as _DBParadigm,
+)
+from utils.custom_docs import (
+    custom_openapi,
+    get_custom_swagger_ui_html,
+    get_custom_redoc_html,
+)
+
 # Preferences management import
 from services.user_management import user_profile_service
 
@@ -78,8 +106,9 @@ from services.auth import (
     ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     UserRole as AuthUserRole,
-    require_role
+    require_role,
 )
+
 # Handle session_manager import safely
 try:
     from services.auth import session_manager
@@ -88,6 +117,7 @@ except ImportError:
     class MockSessionManager:
         async def end_all_user_sessions(self, user_id: str):
             pass
+
     session_manager = MockSessionManager()
 from services.token_manager import token_manager
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -105,11 +135,30 @@ rate_limit_middleware_instance = None
 
 # Metrics - Initialize with a new registry if needed
 from prometheus_client import CollectorRegistry, Counter, Histogram, Gauge
+
 metrics_registry = CollectorRegistry()
-request_count = Counter('http_requests_total', 'Total HTTP requests', ['method', 'endpoint', 'status'], registry=metrics_registry)
-request_duration = Histogram('http_request_duration_seconds', 'HTTP request duration', ['method', 'endpoint'], registry=metrics_registry)
-active_research = Gauge('active_research_queries', 'Number of active research queries', registry=metrics_registry)
-websocket_connections = Gauge('websocket_connections', 'Number of active WebSocket connections', registry=metrics_registry)
+request_count = Counter(
+    "http_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "status"],
+    registry=metrics_registry,
+)
+request_duration = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request duration",
+    ["method", "endpoint"],
+    registry=metrics_registry,
+)
+active_research = Gauge(
+    "active_research_queries",
+    "Number of active research queries",
+    registry=metrics_registry,
+)
+websocket_connections = Gauge(
+    "websocket_connections",
+    "Number of active WebSocket connections",
+    registry=metrics_registry,
+)
 
 # Data Models
 # Mapping from HostParadigm to Paradigm
@@ -126,6 +175,7 @@ class ResearchDepth(str, Enum):
     STANDARD = "standard"
     DEEP = "deep"
 
+
 class ResearchOptions(BaseModel):
     depth: ResearchDepth = ResearchDepth.STANDARD
     paradigm_override: Optional[Paradigm] = None
@@ -135,9 +185,11 @@ class ResearchOptions(BaseModel):
     region: str = "us"
     enable_real_search: bool = True
 
+
 class ResearchQuery(BaseModel):
     query: str = Field(..., min_length=10, max_length=500)
     options: ResearchOptions = ResearchOptions()
+
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -145,9 +197,11 @@ class UserCreate(BaseModel):
     password: str
     role: UserRole = UserRole.FREE
 
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
 
 class Token(BaseModel):
     access_token: str
@@ -155,9 +209,12 @@ class Token(BaseModel):
     token_type: str = "bearer"
     expires_in: int
 
+
 class PreferencesPayload(BaseModel):
     """Payload for updating user preferences"""
+
     preferences: Dict[str, Any]
+
 
 class ParadigmClassification(BaseModel):
     primary: Paradigm
@@ -166,12 +223,14 @@ class ParadigmClassification(BaseModel):
     confidence: float
     explanation: Dict[str, str]
 
+
 class ResearchStatus(str, Enum):
     QUEUED = "queued"
     PROCESSING = "processing"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+
 
 class SourceResult(BaseModel):
     title: str
@@ -181,6 +240,7 @@ class SourceResult(BaseModel):
     credibility_score: float
     published_date: Optional[str] = None
     source_type: str = "web"
+
 
 class ResearchResult(BaseModel):
     research_id: str
@@ -192,14 +252,17 @@ class ResearchResult(BaseModel):
     metadata: Dict[str, Any]
     cost_info: Optional[Dict[str, float]] = None
 
+
 class WebhookCreate(BaseModel):
     url: HttpUrl
     events: List[WebhookEvent]
     secret: Optional[str] = None
     active: bool = True
 
+
 # In-memory storage - will be replaced by research_store
 system_initialized = False
+
 
 # Application Lifespan Manager
 @asynccontextmanager
@@ -240,7 +303,7 @@ async def lifespan(app: FastAPI):
         app.state.monitoring = {
             "prometheus": prometheus,
             "insights": insights,
-            "middleware": monitoring_middleware
+            "middleware": monitoring_middleware,
         }
         logger.info("✓ Monitoring systems initialized")
 
@@ -266,12 +329,12 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 Shutting down Four Hosts Research API...")
 
     # Cleanup research orchestrator
-    if hasattr(research_orchestrator, 'cleanup'):
+    if hasattr(research_orchestrator, "cleanup"):
         await research_orchestrator.cleanup()
         logger.info("✓ Research orchestrator cleaned up")
 
     # Cleanup connections
-    if hasattr(connection_manager, 'disconnect_all'):
+    if hasattr(connection_manager, "disconnect_all"):
         await connection_manager.disconnect_all()
     else:
         # Fallback if method doesn't exist
@@ -279,41 +342,52 @@ async def lifespan(app: FastAPI):
 
     logger.info("👋 Shutdown complete")
 
+
 # Create FastAPI App
 app = FastAPI(
     title="Four Hosts Research API",
     version="3.0.0",
     description="Full-featured paradigm-aware research with integrated Context Engineering Pipeline",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "https://api.4hosts.ai"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "https://api.4hosts.ai",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 # Handle OPTIONS requests before authentication
 @app.middleware("http")
 async def handle_options(request: Request, call_next):
     if request.method == "OPTIONS":
-        return Response(status_code=200, headers={
-            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Credentials": "true"
-        })
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+                "Access-Control-Allow-Methods": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Credentials": "true",
+            },
+        )
     return await call_next(request)
 
+
 app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=os.getenv("ALLOWED_HOSTS", "*").split(",")
+    TrustedHostMiddleware, allowed_hosts=os.getenv("ALLOWED_HOSTS", "*").split(",")
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 
 # Rate Limiting Middleware
 @app.middleware("http")
@@ -321,6 +395,7 @@ async def rate_limit_middleware(request: Request, call_next):
     if rate_limit_middleware_instance:
         return await rate_limit_middleware_instance(request, call_next)
     return await call_next(request)
+
 
 # Monitoring Middleware
 @app.middleware("http")
@@ -330,6 +405,7 @@ async def monitoring_middleware(request: Request, call_next):
         return await middleware(request, call_next)
     return await call_next(request)
 
+
 # Request ID Middleware
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
@@ -338,11 +414,14 @@ async def request_id_middleware(request: Request, call_next):
     response.headers["X-Request-ID"] = request.state.request_id
     return response
 
+
 # Authentication dependency
 # Accept token from Authorization header, cookies, or `access_token` query param
 async def get_current_user(
     request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Security(HTTPBearer(auto_error=False))
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(
+        HTTPBearer(auto_error=False)
+    ),
 ):
     """Resolve the current authenticated user.
 
@@ -376,16 +455,23 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Missing authentication token")
 
     # Re-use the auth service’s validator
-    bearer_credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    bearer_credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer", credentials=token
+    )
     token_data = await auth_get_current_user(bearer_credentials)
 
     # Map to lightweight user object
     user = SimpleNamespace(
         id=token_data.user_id,
         email=token_data.email,
-        role=UserRole(token_data.role) if isinstance(token_data.role, str) else token_data.role
+        role=(
+            UserRole(token_data.role)
+            if isinstance(token_data.role, str)
+            else token_data.role
+        ),
     )
     return user
+
 
 # Root Endpoint
 @app.get("/")
@@ -403,14 +489,15 @@ async def root():
             "webhooks": True,
             "websockets": True,
             "export": True,
-            "rate_limiting": True
+            "rate_limiting": True,
         },
         "documentation": {
             "swagger": "/docs",
             "redoc": "/redoc",
-            "openapi": "/openapi.json"
-        }
+            "openapi": "/openapi.json",
+        },
     }
+
 
 # Health Endpoints
 @app.get("/health")
@@ -425,11 +512,11 @@ async def health_check():
                 "database": "healthy",
                 "cache": "healthy",
                 "research": "healthy",
-                "llm": "healthy"
-            }
+                "llm": "healthy",
+            },
         }
 
-        if hasattr(research_orchestrator, 'get_execution_stats'):
+        if hasattr(research_orchestrator, "get_execution_stats"):
             stats = await research_orchestrator.get_execution_stats()
             health_data["execution_stats"] = stats
 
@@ -438,8 +525,9 @@ async def health_check():
         return {
             "status": "unhealthy",
             "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
         }
+
 
 # Authentication Endpoints
 @app.post("/auth/register", response_model=Token, tags=["authentication"])
@@ -447,71 +535,65 @@ async def register(user_data: UserCreate, request: Request):
     """Register a new user"""
     # Convert to auth module's UserCreate model
     from services.auth import UserCreate as AuthUserCreate
+
     auth_user_data = AuthUserCreate(
         email=user_data.email,
         username=user_data.username,
         password=user_data.password,
-        role=user_data.role
+        role=user_data.role,
     )
 
     # Use async context manager for database session
     from database.connection import get_db_context
+
     async with get_db_context() as db:
         user = await real_auth_service.create_user(auth_user_data, db)
 
-    access_token = create_access_token({
-        "user_id": str(user.id),
-        "email": user.email,
-        "role": user.role.value
-    })
+    access_token = create_access_token(
+        {"user_id": str(user.id), "email": user.email, "role": user.role.value}
+    )
 
     refresh_token = await create_refresh_token(
-        user_id=str(user.id),
-        device_id=None,
-        ip_address=None,
-        user_agent=None
+        user_id=str(user.id), device_id=None, ip_address=None, user_agent=None
     )
 
     return Token(
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
+
 
 @app.post("/auth/login", response_model=Token, tags=["authentication"])
 async def login(login_data: UserLogin, request: Request):
     """Login with email and password"""
     # Convert to auth module's UserLogin model
     from services.auth import UserLogin as AuthUserLogin
+
     auth_login_data = AuthUserLogin(
-        email=login_data.email,
-        password=login_data.password
+        email=login_data.email, password=login_data.password
     )
 
     user = await real_auth_service.authenticate_user(auth_login_data)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    access_token = create_access_token({
-        "user_id": str(user.id),
-        "email": user.email,
-        "role": user.role.value
-    })
+    access_token = create_access_token(
+        {"user_id": str(user.id), "email": user.email, "role": user.role.value}
+    )
 
     refresh_token = await create_refresh_token(
-        user_id=str(user.id),
-        device_id=None,
-        ip_address=None,
-        user_agent=None
+        user_id=str(user.id), device_id=None, ip_address=None, user_agent=None
     )
 
     return Token(
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
+
 
 @app.post("/auth/refresh", response_model=Token, tags=["authentication"])
 async def refresh_token(refresh_token: str, request: Request):
@@ -529,6 +611,7 @@ async def refresh_token(refresh_token: str, request: Request):
 
     # Get user from database
     from sqlalchemy import select
+
     db_gen = get_db()
     db = await anext(db_gen)
     try:
@@ -540,35 +623,35 @@ async def refresh_token(refresh_token: str, request: Request):
             raise HTTPException(status_code=404, detail="User not found")
 
         # Create new access token
-        access_token = create_access_token({
-            "user_id": str(user.id),
-            "email": user.email,
-            "role": user.role
-        })
+        access_token = create_access_token(
+            {"user_id": str(user.id), "email": user.email, "role": user.role}
+        )
 
         return Token(
             access_token=access_token,
             refresh_token=token_result["token"],
             token_type="bearer",
-            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         )
     finally:
         await db_gen.aclose()
 
+
 @app.get("/auth/user", tags=["authentication"])
-async def get_current_user_info(current_user = Depends(get_current_user)):
+async def get_current_user_info(current_user=Depends(get_current_user)):
     """Get current user information"""
     return {
         "id": str(current_user.id),
         "email": current_user.email,
-        "username": getattr(current_user, 'username', current_user.email.split('@')[0]),
-        "role": getattr(current_user, 'role', 'free')
+        "username": getattr(current_user, "username", current_user.email.split("@")[0]),
+        "role": getattr(current_user, "role", "free"),
     }
+
 
 @app.post("/auth/logout", tags=["authentication"])
 async def logout(
     current_user: TokenData = Depends(auth_get_current_user),
-    refresh_token: Optional[str] = None
+    refresh_token: Optional[str] = None,
 ):
     """Logout user by revoking tokens"""
     # Revoke the access token using its JTI
@@ -577,7 +660,7 @@ async def logout(
             jti=current_user.jti,
             token_type="access",
             user_id=current_user.user_id,
-            expires_at=current_user.exp
+            expires_at=current_user.exp,
         )
 
     # Revoke the refresh token if provided
@@ -586,8 +669,7 @@ async def logout(
         token_info = await token_manager.validate_refresh_token(refresh_token)
         if token_info and "family_id" in token_info:
             await token_manager.revoke_token_family(
-                family_id=token_info["family_id"],
-                reason="user_logout"
+                family_id=token_info["family_id"], reason="user_logout"
             )
 
     # End all user sessions
@@ -595,31 +677,36 @@ async def logout(
 
     return {"message": "Successfully logged out"}
 
+
 # --- User Preferences Endpoints ---
 @app.put("/auth/preferences", tags=["authentication"])
 async def update_user_preferences(
-    payload: PreferencesPayload,
-    current_user: User = Depends(get_current_user)
+    payload: PreferencesPayload, current_user: User = Depends(get_current_user)
 ):
     """Update the current user's preferences"""
     success = await user_profile_service.update_user_preferences(
-        uuid.UUID(str(current_user.id)),
-        payload.preferences
+        uuid.UUID(str(current_user.id)), payload.preferences
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update preferences")
 
     # Return updated profile
-    profile = await user_profile_service.get_user_profile(uuid.UUID(str(current_user.id)))
+    profile = await user_profile_service.get_user_profile(
+        uuid.UUID(str(current_user.id))
+    )
     return profile
+
 
 @app.get("/auth/preferences", tags=["authentication"])
 async def get_user_preferences(current_user: User = Depends(get_current_user)):
     """Retrieve the current user's preferences"""
-    profile = await user_profile_service.get_user_profile(uuid.UUID(str(current_user.id)))
+    profile = await user_profile_service.get_user_profile(
+        uuid.UUID(str(current_user.id))
+    )
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")
     return {"preferences": profile.get("preferences", {})}
+
 
 # Paradigm Classification
 @app.post("/paradigms/classify", tags=["paradigms"])
@@ -628,31 +715,38 @@ async def classify_paradigm(query: str, current_user: User = Depends(get_current
     try:
         # Use the new classification engine
         classification_result = await classification_engine.classify_query(query)
-        
+
         # Convert to the old format for compatibility
         classification = ParadigmClassification(
             primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
-            secondary=HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm) if classification_result.secondary_paradigm else None,
+            secondary=(
+                HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm)
+                if classification_result.secondary_paradigm
+                else None
+            ),
             distribution={
                 HOST_TO_MAIN_PARADIGM[p].value: v
                 for p, v in classification_result.distribution.items()
             },
             confidence=classification_result.confidence,
             explanation={
-                HOST_TO_MAIN_PARADIGM[p].value: '; '.join(r)
+                HOST_TO_MAIN_PARADIGM[p].value: "; ".join(r)
                 for p, r in classification_result.reasoning.items()
-            }
+            },
         )
-        
+
         return {
             "query": query,
             "classification": classification.dict(),
-            "suggested_approach": get_paradigm_approach_suggestion(classification.primary),
-            "user_id": str(current_user.id)
+            "suggested_approach": get_paradigm_approach_suggestion(
+                classification.primary
+            ),
+            "user_id": str(current_user.id),
         }
     except Exception as e:
         logger.error(f"Classification error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
+
 
 # Research Endpoints
 @app.post("/research/query", tags=["research"])
@@ -660,7 +754,7 @@ async def submit_research(
     research: ResearchQuery,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    request: Request = None
+    request: Request = None,
 ):
     """Submit a research query for paradigm-based analysis"""
     if not system_initialized:
@@ -669,10 +763,14 @@ async def submit_research(
     # Check role requirements for research depth
     if research.options.depth == ResearchDepth.DEEP:
         # Deep research requires at least PRO role
-        if not hasattr(current_user, 'role') or current_user.role not in ['pro', 'enterprise', 'admin']:
+        if not hasattr(current_user, "role") or current_user.role not in [
+            "pro",
+            "enterprise",
+            "admin",
+        ]:
             raise HTTPException(
                 status_code=403,
-                detail="Deep research requires PRO subscription or higher"
+                detail="Deep research requires PRO subscription or higher",
             )
 
     research_id = f"res_{uuid.uuid4().hex[:12]}"
@@ -682,21 +780,27 @@ async def submit_research(
 
     try:
         # Classify the query using the new classification engine
-        classification_result = await classification_engine.classify_query(research.query)
-        
+        classification_result = await classification_engine.classify_query(
+            research.query
+        )
+
         # Convert to the old format for compatibility
         classification = ParadigmClassification(
             primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
-            secondary=HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm) if classification_result.secondary_paradigm else None,
+            secondary=(
+                HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm)
+                if classification_result.secondary_paradigm
+                else None
+            ),
             distribution={
                 HOST_TO_MAIN_PARADIGM[p].value: v
                 for p, v in classification_result.distribution.items()
             },
             confidence=classification_result.confidence,
             explanation={
-                HOST_TO_MAIN_PARADIGM[p].value: '; '.join(r)
+                HOST_TO_MAIN_PARADIGM[p].value: "; ".join(r)
                 for p, r in classification_result.reasoning.items()
-            }
+            },
         )
 
         # Store research request
@@ -708,16 +812,13 @@ async def submit_research(
             "status": ResearchStatus.PROCESSING,
             "paradigm_classification": classification.dict(),
             "created_at": datetime.utcnow().isoformat(),
-            "results": None
+            "results": None,
         }
         await research_store.set(research_id, research_data)
 
         # Execute real research
         background_tasks.add_task(
-            execute_real_research,
-            research_id,
-            research,
-            str(current_user.id)
+            execute_real_research, research_id, research, str(current_user.id)
         )
 
         # Track in WebSocket
@@ -726,7 +827,7 @@ async def submit_research(
             str(current_user.id),
             research.query,
             classification.primary.value,
-            research.options.depth.value
+            research.options.depth.value,
         )
 
         # Trigger webhook
@@ -736,27 +837,31 @@ async def submit_research(
                 "research_id": research_id,
                 "user_id": str(current_user.id),
                 "query": research.query,
-                "paradigm": classification.primary.value
-            }
+                "paradigm": classification.primary.value,
+            },
         )
 
         return {
             "research_id": research_id,
             "status": ResearchStatus.PROCESSING,
             "paradigm_classification": classification.dict(),
-            "estimated_completion": (datetime.utcnow() + timedelta(minutes=2)).isoformat(),
-            "websocket_url": f"/ws/research/{research_id}"
+            "estimated_completion": (
+                datetime.utcnow() + timedelta(minutes=2)
+            ).isoformat(),
+            "websocket_url": f"/ws/research/{research_id}",
         }
 
     except Exception as e:
         active_research.dec()
         logger.error(f"Research submission error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Research submission failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Research submission failed: {str(e)}"
+        )
+
 
 @app.get("/research/status/{research_id}", tags=["research"])
 async def get_research_status(
-    research_id: str,
-    current_user: User = Depends(get_current_user)
+    research_id: str, current_user: User = Depends(get_current_user)
 ):
     """Get the status of a research query"""
     research = await research_store.get(research_id)
@@ -764,7 +869,10 @@ async def get_research_status(
         raise HTTPException(status_code=404, detail="Research not found")
 
     # Verify ownership
-    if research["user_id"] != str(current_user.id) and current_user.role != UserRole.ADMIN:
+    if (
+        research["user_id"] != str(current_user.id)
+        and current_user.role != UserRole.ADMIN
+    ):
         raise HTTPException(status_code=403, detail="Access denied")
 
     return {
@@ -773,13 +881,13 @@ async def get_research_status(
         "paradigm": research["paradigm_classification"]["primary"],
         "started_at": research["created_at"],
         "progress": research.get("progress", {}),
-        "cost_info": research.get("cost_info")
+        "cost_info": research.get("cost_info"),
     }
+
 
 @app.get("/research/results/{research_id}", tags=["research"])
 async def get_research_results(
-    research_id: str,
-    current_user: User = Depends(get_current_user)
+    research_id: str, current_user: User = Depends(get_current_user)
 ):
     """Get completed research results"""
     research = await research_store.get(research_id)
@@ -787,7 +895,10 @@ async def get_research_results(
         raise HTTPException(status_code=404, detail="Research not found")
 
     # Verify ownership
-    if research["user_id"] != str(current_user.id) and current_user.role != UserRole.ADMIN:
+    if (
+        research["user_id"] != str(current_user.id)
+        and current_user.role != UserRole.ADMIN
+    ):
         raise HTTPException(status_code=403, detail="Access denied")
 
     if research["status"] != ResearchStatus.COMPLETED:
@@ -795,11 +906,12 @@ async def get_research_results(
 
     return research["results"]
 
+
 @app.get("/research/export/{research_id}", tags=["research"])
 async def export_research(
     research_id: str,
     format: str = "pdf",
-    current_user: User = Depends(require_role(AuthUserRole.BASIC))
+    current_user: User = Depends(require_role(AuthUserRole.BASIC)),
 ):
     """Export research results (requires BASIC subscription or higher)"""
     research = await research_store.get(research_id)
@@ -807,7 +919,10 @@ async def export_research(
         raise HTTPException(status_code=404, detail="Research not found")
 
     # Verify ownership
-    if research["user_id"] != str(current_user.id) and current_user.role != UserRole.ADMIN:
+    if (
+        research["user_id"] != str(current_user.id)
+        and current_user.role != UserRole.ADMIN
+    ):
         raise HTTPException(status_code=403, detail="Access denied")
 
     if research["status"] != ResearchStatus.COMPLETED:
@@ -815,34 +930,34 @@ async def export_research(
 
     # Generate export
     export_path = await app.state.export_service.export_research(
-        research["results"],
-        format=format
+        research["results"], format=format
     )
 
     return FileResponse(
         export_path,
         media_type=f"application/{format}",
-        filename=f"research_{research_id}.{format}"
+        filename=f"research_{research_id}.{format}",
     )
+
 
 # Research History Endpoint
 @app.get("/research/history", tags=["research"])
 async def get_research_history(
-    current_user: User = Depends(get_current_user),
-    limit: int = 10,
-    offset: int = 0
+    current_user: User = Depends(get_current_user), limit: int = 10, offset: int = 0
 ):
     """Get user's research history"""
     try:
         # Get research history for user
-        user_research = await research_store.get_user_research(str(current_user.id), limit + offset)
+        user_research = await research_store.get_user_research(
+            str(current_user.id), limit + offset
+        )
 
         # Sort by creation date (newest first)
         user_research.sort(key=lambda x: x["created_at"], reverse=True)
 
         # Apply pagination
         total = len(user_research)
-        paginated = user_research[offset:offset + limit]
+        paginated = user_research[offset : offset + limit]
 
         # Format the response
         history = []
@@ -853,39 +968,40 @@ async def get_research_history(
                 "status": research["status"],
                 "paradigm": research["paradigm_classification"]["primary"],
                 "created_at": research["created_at"],
-                "options": research["options"]
+                "options": research["options"],
             }
 
             # Include results summary if completed
-            if research["status"] == ResearchStatus.COMPLETED and research.get("results"):
+            if research["status"] == ResearchStatus.COMPLETED and research.get(
+                "results"
+            ):
                 results = research["results"]
                 content_preview = ""
                 if results.get("answer", {}).get("sections"):
-                    content_preview = results["answer"]["sections"][0].get("content", "")[:200] + "..."
+                    content_preview = (
+                        results["answer"]["sections"][0].get("content", "")[:200]
+                        + "..."
+                    )
                 history_item["summary"] = {
                     "answer_preview": content_preview,
                     "source_count": len(results.get("sources", [])),
-                    "total_cost": results.get("cost_info", {}).get("total_cost", 0)
+                    "total_cost": results.get("cost_info", {}).get("total_cost", 0),
                 }
 
             history.append(history_item)
 
-        return {
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "history": history
-        }
+        return {"total": total, "limit": limit, "offset": offset, "history": history}
     except Exception as e:
         logger.error(f"Error fetching research history: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch research history")
+
 
 # Source Credibility Endpoint
 @app.get("/sources/credibility/{domain}", tags=["sources"])
 async def get_domain_credibility(
     domain: str,
     paradigm: Paradigm = Paradigm.BERNARD,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     """Get credibility score for a specific domain"""
     try:
@@ -899,11 +1015,14 @@ async def get_domain_credibility(
             "fact_check_rating": credibility.fact_check_rating,
             "paradigm_alignment": credibility.paradigm_alignment,
             "reputation_factors": credibility.reputation_factors,
-            "checked_by": str(current_user.id)
+            "checked_by": str(current_user.id),
         }
     except Exception as e:
         logger.error(f"Credibility check error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Credibility check failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Credibility check failed: {str(e)}"
+        )
+
 
 # System Stats
 @app.get("/system/stats", tags=["system"])
@@ -917,10 +1036,14 @@ async def get_system_stats(current_user: User = Depends(get_current_user)):
             "system_status": "operational",
             "active_research": active_research._value.get(),
             "websocket_connections": websocket_connections._value.get(),
-            "total_requests": sum(request_count._metrics.values()) if hasattr(request_count, '_metrics') else 0
+            "total_requests": (
+                sum(request_count._metrics.values())
+                if hasattr(request_count, "_metrics")
+                else 0
+            ),
         }
 
-        if hasattr(research_orchestrator, 'get_execution_stats'):
+        if hasattr(research_orchestrator, "get_execution_stats"):
             stats["research_stats"] = await research_orchestrator.get_execution_stats()
 
         stats["timestamp"] = datetime.utcnow().isoformat()
@@ -929,12 +1052,14 @@ async def get_system_stats(current_user: User = Depends(get_current_user)):
         logger.error(f"Stats error: {str(e)}")
         return {"error": str(e)}
 
+
 # Metrics endpoint
 @app.get("/metrics", tags=["monitoring"])
 async def prometheus_metrics():
     """Prometheus metrics endpoint"""
     metrics = generate_latest(metrics_registry)
     return Response(content=metrics, media_type="text/plain")
+
 
 # WebSocket endpoint
 @app.websocket("/ws/research/{research_id}")
@@ -951,62 +1076,65 @@ async def websocket_research_progress(websocket: WebSocket, research_id: str):
         connection_manager.disconnect(research_id)
         websocket_connections.dec()
 
+
 # Custom Documentation
 @app.get("/openapi.json", include_in_schema=False)
 async def get_openapi():
     return custom_openapi(app)
 
+
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui():
     return HTMLResponse(get_custom_swagger_ui_html(openapi_url="/openapi.json"))
+
 
 @app.get("/redoc", include_in_schema=False)
 async def custom_redoc():
     return HTMLResponse(get_custom_redoc_html(openapi_url="/openapi.json"))
 
+
 # Include Routers
 app.include_router(
-    create_webhook_router(webhook_manager),
-    prefix="/api/v1",
-    tags=["webhooks"]
+    create_webhook_router(webhook_manager), prefix="/api/v1", tags=["webhooks"]
 )
 
 app.include_router(
     create_websocket_router(connection_manager, progress_tracker),
     prefix="/api/v1",
-    tags=["websockets"]
+    tags=["websockets"],
 )
 
 app.include_router(
-    create_export_router(export_service),
-    prefix="/api/v1",
-    tags=["export"]
+    create_export_router(export_service), prefix="/api/v1", tags=["export"]
 )
 
 # Helper functions
+
 
 def get_paradigm_approach_suggestion(paradigm: Paradigm) -> str:
     suggestions = {
         Paradigm.DOLORES: "Focus on exposing systemic issues and empowering resistance",
         Paradigm.TEDDY: "Prioritize community support and protective measures",
         Paradigm.BERNARD: "Emphasize empirical research and data-driven analysis",
-        Paradigm.MAEVE: "Develop strategic frameworks and actionable implementation plans"
+        Paradigm.MAEVE: "Develop strategic frameworks and actionable implementation plans",
     }
     return suggestions[paradigm]
 
 
 # Background task for real research execution
-async def execute_real_research(research_id: str, research: ResearchQuery, user_id: str):
+async def execute_real_research(
+    research_id: str, research: ResearchQuery, user_id: str
+):
     """Execute real research using the complete pipeline"""
     try:
         # Update status
-        await research_store.update_field(research_id, "status", ResearchStatus.IN_PROGRESS)
+        await research_store.update_field(
+            research_id, "status", ResearchStatus.IN_PROGRESS
+        )
 
         # Update progress
         await progress_tracker.update_progress(
-            research_id,
-            "Initializing research pipeline",
-            10
+            research_id, "Initializing research pipeline", 10
         )
 
         # Get classification
@@ -1015,92 +1143,95 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
             raise Exception("Research data not found")
 
         # Get the stored classification result from the new engine
-        classification_result = await classification_engine.classify_query(research.query)
-        
-        # Update progress
-        await progress_tracker.update_progress(
-            research_id,
-            "Processing query through context engineering",
-            20
+        classification_result = await classification_engine.classify_query(
+            research.query
         )
-        
-        # Process through context engineering pipeline
-        context_engineered_query = await context_pipeline.process_query(classification_result)
 
         # Update progress
         await progress_tracker.update_progress(
-            research_id,
-            "Executing search queries",
-            30
+            research_id, "Processing query through context engineering", 20
+        )
+
+        # Process through context engineering pipeline
+        context_engineered_query = await context_pipeline.process_query(
+            classification_result
+        )
+
+        # Update progress
+        await progress_tracker.update_progress(
+            research_id, "Executing search queries", 30
         )
 
         # Execute research with context-engineered query
         execution_result = await research_orchestrator.execute_paradigm_research(
-            context_engineered_query, 
-            research.options.max_sources
+            context_engineered_query, research.options.max_sources
         )
 
         # Update progress
         await progress_tracker.update_progress(
-            research_id,
-            "Processing search results",
-            60
+            research_id, "Processing search results", 60
         )
 
         # Format results
         formatted_sources = []
         search_results_for_synthesis = []
 
-        for result in execution_result.filtered_results[:research.options.max_sources]:
-            formatted_sources.append(SourceResult(
-                title=result.title,
-                url=result.url,
-                snippet=result.snippet,
-                domain=result.domain,
-                credibility_score=getattr(result, 'credibility_score', 0.5),
-                published_date=result.published_date.isoformat() if result.published_date else None,
-                source_type=result.result_type
-            ))
+        for result in execution_result.filtered_results[: research.options.max_sources]:
+            formatted_sources.append(
+                SourceResult(
+                    title=result.title,
+                    url=result.url,
+                    snippet=result.snippet,
+                    domain=result.domain,
+                    credibility_score=getattr(result, "credibility_score", 0.5),
+                    published_date=(
+                        result.published_date.isoformat()
+                        if result.published_date
+                        else None
+                    ),
+                    source_type=result.result_type,
+                )
+            )
 
-            search_results_for_synthesis.append({
-                'title': result.title,
-                'url': result.url,
-                'snippet': result.snippet,
-                'domain': result.domain,
-                'credibility_score': getattr(result, 'credibility_score', 0.5),
-                'published_date': result.published_date,
-                'result_type': result.result_type
-            })
+            search_results_for_synthesis.append(
+                {
+                    "title": result.title,
+                    "url": result.url,
+                    "snippet": result.snippet,
+                    "domain": result.domain,
+                    "credibility_score": getattr(result, "credibility_score", 0.5),
+                    "published_date": result.published_date,
+                    "result_type": result.result_type,
+                }
+            )
 
         # Update progress
         await progress_tracker.update_progress(
-            research_id,
-            "Generating AI-powered answer",
-            80
+            research_id, "Generating AI-powered answer", 80
         )
 
         # Generate answer using context engineering outputs
         context_engineering = {
-            'write_output': {
-                'documentation_focus': context_engineered_query.write_output.documentation_focus,
-                'key_themes': context_engineered_query.write_output.key_themes[:4],
-                'narrative_frame': context_engineered_query.write_output.narrative_frame
+            "write_output": {
+                "documentation_focus": context_engineered_query.write_output.documentation_focus,
+                "key_themes": context_engineered_query.write_output.key_themes[:4],
+                "narrative_frame": context_engineered_query.write_output.narrative_frame,
             },
-            'select_output': {
-                'search_queries': context_engineered_query.select_output.search_queries,
-                'source_preferences': context_engineered_query.select_output.source_preferences,
-                'max_sources': context_engineered_query.select_output.max_sources
+            "select_output": {
+                "search_queries": context_engineered_query.select_output.search_queries,
+                "source_preferences": context_engineered_query.select_output.source_preferences,
+                "max_sources": context_engineered_query.select_output.max_sources,
             },
-            'compress_output': {
-                'compression_ratio': context_engineered_query.compress_output.compression_ratio,
-                'priority_elements': context_engineered_query.compress_output.priority_elements,
-                'token_budget': context_engineered_query.compress_output.token_budget
+            "compress_output": {
+                "compression_ratio": context_engineered_query.compress_output.compression_ratio,
+                "priority_elements": context_engineered_query.compress_output.priority_elements,
+                "token_budget": context_engineered_query.compress_output.token_budget,
             },
-            'isolate_output': {
-                'isolation_strategy': context_engineered_query.isolate_output.isolation_strategy,
-                'key_findings_criteria': context_engineered_query.isolate_output.key_findings_criteria,
-                'output_structure': context_engineered_query.isolate_output.output_structure
-            }
+            "isolate_output": {
+                "isolation_strategy": context_engineered_query.isolate_output.isolation_strategy,
+                "key_findings_criteria": context_engineered_query.isolate_output.key_findings_criteria,
+                "output_structure": context_engineered_query.isolate_output.output_structure,
+            },
         }
 
         # Map enum value to paradigm name
@@ -1108,45 +1239,49 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
             "revolutionary": "dolores",
             "devotion": "teddy",
             "analytical": "bernard",
-            "strategic": "maeve"
+            "strategic": "maeve",
         }
         paradigm_name = paradigm_mapping.get(
             context_engineered_query.classification.primary_paradigm.value,
-            "bernard"  # Default to bernard if not found
+            "bernard",  # Default to bernard if not found
         )
-        
+
         generated_answer = await answer_orchestrator.generate_answer(
             paradigm=paradigm_name,
             query=research.query,
             search_results=search_results_for_synthesis,
             context_engineering=context_engineering,
             options={
-                'research_id': research_id,
-                'max_length': 2000,
-                'include_citations': True
-            }
+                "research_id": research_id,
+                "max_length": 2000,
+                "include_citations": True,
+            },
         )
 
         # Format final result
         answer_sections = []
         for section in generated_answer.sections:
-            answer_sections.append({
-                "title": section.title,
-                "paradigm": section.paradigm,
-                "content": section.content,
-                "confidence": section.confidence,
-                "sources_count": len(section.citations)
-            })
+            answer_sections.append(
+                {
+                    "title": section.title,
+                    "paradigm": section.paradigm,
+                    "content": section.content,
+                    "confidence": section.confidence,
+                    "sources_count": len(section.citations),
+                }
+            )
 
         citations_list = []
         for cite_id, citation in generated_answer.citations.items():
-            citations_list.append({
-                "id": cite_id,
-                "source": citation.source_title,
-                "url": citation.source_url,
-                "credibility_score": citation.credibility_score,
-                "paradigm_alignment": context_engineered_query.classification.primary_paradigm.value
-            })
+            citations_list.append(
+                {
+                    "id": cite_id,
+                    "source": citation.source_title,
+                    "url": citation.source_url,
+                    "credibility_score": citation.credibility_score,
+                    "paradigm_alignment": context_engineered_query.classification.primary_paradigm.value,
+                }
+            )
 
         final_result = ResearchResult(
             research_id=research_id,
@@ -1157,45 +1292,55 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
                     "paradigm": context_engineered_query.classification.primary_paradigm.value,
                     "confidence": context_engineered_query.classification.confidence,
                     "approach": context_engineered_query.write_output.narrative_frame,
-                    "focus": context_engineered_query.write_output.documentation_focus
+                    "focus": context_engineered_query.write_output.documentation_focus,
                 },
                 "context_engineering": {
                     "compression_ratio": context_engineered_query.compress_output.compression_ratio,
                     "token_budget": context_engineered_query.compress_output.token_budget,
                     "isolation_strategy": context_engineered_query.isolate_output.isolation_strategy,
-                    "search_queries_count": len(context_engineered_query.select_output.search_queries)
-                }
+                    "search_queries_count": len(
+                        context_engineered_query.select_output.search_queries
+                    ),
+                },
             },
             answer={
                 "summary": generated_answer.summary,
                 "sections": answer_sections,
                 "action_items": generated_answer.action_items,
-                "citations": citations_list
+                "citations": citations_list,
             },
             sources=formatted_sources,
             metadata={
                 "total_sources_analyzed": len(execution_result.raw_results),
-                "high_quality_sources": len([s for s in formatted_sources if s.credibility_score > 0.7]),
-                "search_queries_executed": len(execution_result.search_queries_executed),
-                "processing_time_seconds": execution_result.execution_metrics["processing_time_seconds"],
+                "high_quality_sources": len(
+                    [s for s in formatted_sources if s.credibility_score > 0.7]
+                ),
+                "search_queries_executed": len(
+                    execution_result.search_queries_executed
+                ),
+                "processing_time_seconds": execution_result.execution_metrics[
+                    "processing_time_seconds"
+                ],
                 "answer_generation_time": generated_answer.generation_time,
                 "synthesis_quality": generated_answer.synthesis_quality,
-                "paradigms_used": [context_engineered_query.classification.primary_paradigm.value]
+                "paradigms_used": [
+                    context_engineered_query.classification.primary_paradigm.value
+                ],
             },
-            cost_info=execution_result.cost_breakdown
+            cost_info=execution_result.cost_breakdown,
         )
 
         # Update progress
-        await progress_tracker.update_progress(
-            research_id,
-            "Research completed",
-            100
-        )
+        await progress_tracker.update_progress(research_id, "Research completed", 100)
 
         # Store results
-        await research_store.update_field(research_id, "status", ResearchStatus.COMPLETED)
+        await research_store.update_field(
+            research_id, "status", ResearchStatus.COMPLETED
+        )
         await research_store.update_field(research_id, "results", final_result.dict())
-        await research_store.update_field(research_id, "cost_info", execution_result.cost_breakdown)
+        await research_store.update_field(
+            research_id, "cost_info", execution_result.cost_breakdown
+        )
 
         # Trigger webhook
         await webhook_manager.trigger_event(
@@ -1206,8 +1351,8 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
                 "query": research.query,
                 "paradigm": context_engineered_query.classification.primary_paradigm.value,
                 "sources_count": len(formatted_sources),
-                "cost": execution_result.cost_breakdown.get("total", 0)
-            }
+                "cost": execution_result.cost_breakdown.get("total", 0),
+            },
         )
 
         # Decrement active research
@@ -1222,19 +1367,13 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
 
         # Update progress with error
         await progress_tracker.update_progress(
-            research_id,
-            f"Research failed: {str(e)}",
-            -1
+            research_id, f"Research failed: {str(e)}", -1
         )
 
         # Trigger failure webhook
         await webhook_manager.trigger_event(
             WebhookEvent.RESEARCH_FAILED,
-            {
-                "research_id": research_id,
-                "user_id": user_id,
-                "error": str(e)
-            }
+            {"research_id": research_id, "user_id": user_id, "error": str(e)},
         )
 
         # Decrement active research
@@ -1249,11 +1388,12 @@ async def execute_real_research(research_id: str, research: ResearchQuery, user_
                     details={
                         "research_id": research_id,
                         "error": str(e),
-                        "user_id": user_id
-                    }
+                        "user_id": user_id,
+                    },
                 )
             except Exception:
                 pass  # Don't let monitoring errors break the flow
+
 
 # Error Handlers
 @app.exception_handler(HTTPException)
@@ -1267,8 +1407,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 details={
                     "status_code": exc.status_code,
                     "detail": exc.detail,
-                    "path": request.url.path
-                }
+                    "path": request.url.path,
+                },
             )
         except Exception:
             pass  # Don't let monitoring errors break the response
@@ -1279,9 +1419,10 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             "error": "HTTP Error",
             "detail": exc.detail,
             "status_code": exc.status_code,
-            "request_id": getattr(request.state, "request_id", "unknown")
-        }
+            "request_id": getattr(request.state, "request_id", "unknown"),
+        },
     )
+
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
@@ -1294,8 +1435,8 @@ async def general_exception_handler(request: Request, exc: Exception):
                 details={
                     "error": str(exc),
                     "type": type(exc).__name__,
-                    "path": request.url.path
-                }
+                    "path": request.url.path,
+                },
             )
         except Exception:
             pass  # Don't let monitoring errors break the response
@@ -1305,9 +1446,10 @@ async def general_exception_handler(request: Request, exc: Exception):
         content={
             "error": "Internal Server Error",
             "detail": "An unexpected error occurred",
-            "request_id": getattr(request.state, "request_id", "unknown")
-        }
+            "request_id": getattr(request.state, "request_id", "unknown"),
+        },
     )
+
 
 # Main entry point
 if __name__ == "__main__":
@@ -1325,14 +1467,10 @@ if __name__ == "__main__":
             access_log=True,
             reload=False,
             server_header=False,
-            date_header=False
+            date_header=False,
         )
     else:
         # Development configuration
         uvicorn.run(
-            "main:app",
-            host="0.0.0.0",
-            port=8000,
-            reload=True,
-            log_level="debug"
+            "main:app", host="0.0.0.0", port=8000, reload=True, log_level="debug"
         )

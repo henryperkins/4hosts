@@ -12,7 +12,7 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
     """Generate custom OpenAPI schema"""
     if app.openapi_schema:
         return app.openapi_schema
-    
+
     openapi_schema = get_openapi(
         title="Four Hosts Research API",
         version="3.0.0",
@@ -59,65 +59,44 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
         tags=[
             {
                 "name": "authentication",
-                "description": "User registration, login, and token management"
+                "description": "User registration, login, and token management",
             },
             {
                 "name": "paradigms",
-                "description": "Paradigm classification and analysis"
+                "description": "Paradigm classification and analysis",
             },
-            {
-                "name": "research",
-                "description": "Submit and manage research queries"
-            },
-            {
-                "name": "sources",
-                "description": "Source credibility and management"
-            },
-            {
-                "name": "webhooks",
-                "description": "Webhook subscription management"
-            },
-            {
-                "name": "websockets",
-                "description": "Real-time updates via WebSocket"
-            },
+            {"name": "research", "description": "Submit and manage research queries"},
+            {"name": "sources", "description": "Source credibility and management"},
+            {"name": "webhooks", "description": "Webhook subscription management"},
+            {"name": "websockets", "description": "Real-time updates via WebSocket"},
             {
                 "name": "export",
-                "description": "Export research results in various formats"
+                "description": "Export research results in various formats",
             },
-            {
-                "name": "system",
-                "description": "System health and statistics"
-            },
-            {
-                "name": "monitoring",
-                "description": "Metrics and monitoring endpoints"
-            }
-        ]
+            {"name": "system", "description": "System health and statistics"},
+            {"name": "monitoring", "description": "Metrics and monitoring endpoints"},
+        ],
     )
-    
+
     # Add security schemes
     openapi_schema["components"]["securitySchemes"] = {
         "bearerAuth": {
             "type": "http",
             "scheme": "bearer",
             "bearerFormat": "JWT",
-            "description": "JWT authentication token"
+            "description": "JWT authentication token",
         },
         "apiKey": {
             "type": "apiKey",
             "in": "header",
             "name": "X-API-Key",
-            "description": "API key for service-to-service communication"
-        }
+            "description": "API key for service-to-service communication",
+        },
     }
-    
+
     # Add global security
-    openapi_schema["security"] = [
-        {"bearerAuth": []},
-        {"apiKey": []}
-    ]
-    
+    openapi_schema["security"] = [{"bearerAuth": []}, {"apiKey": []}]
+
     # Add example requests/responses
     openapi_schema["components"]["examples"] = {
         "research_query": {
@@ -130,8 +109,8 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
                     "max_sources": 50,
                     "language": "en",
                     "region": "us",
-                    "enable_real_search": True
-                }
+                    "enable_real_search": True,
+                },
             }
         },
         "paradigm_classification": {
@@ -142,17 +121,17 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
                     "dolores": 0.1,
                     "teddy": 0.15,
                     "bernard": 0.5,
-                    "maeve": 0.25
+                    "maeve": 0.25,
                 },
                 "confidence": 0.85,
                 "explanation": {
                     "bernard": "Analytical and evidence-based approach",
-                    "maeve": "Strategic and action-oriented perspective"
-                }
+                    "maeve": "Strategic and action-oriented perspective",
+                },
             }
-        }
+        },
     }
-    
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 

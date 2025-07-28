@@ -29,6 +29,7 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 target_metadata = Base.metadata
 
+
 # Get database URL from environment or config
 def get_database_url():
     """Get database URL from environment or config"""
@@ -44,8 +45,10 @@ def get_database_url():
         url = db_config.database_url
     return url
 
+
 # Override sqlalchemy.url with environment variable
 config.set_main_option("sqlalchemy.url", get_database_url())
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -75,7 +78,7 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection: Connection) -> None:
     """Run migrations using the connection"""
     context.configure(
-        connection=connection, 
+        connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
         compare_server_default=True,
@@ -91,7 +94,7 @@ async def run_async_migrations() -> None:
     """
     configuration = config.get_section(config.config_ini_section)
     configuration["sqlalchemy.url"] = get_database_url()
-    
+
     connectable = async_engine_from_config(
         configuration,
         prefix="sqlalchemy.",

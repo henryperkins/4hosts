@@ -6,6 +6,7 @@ Simplified test for Answer Generation System - no external dependencies
 import asyncio
 import sys
 import os
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 print("🚀 Four Hosts Answer Generation System - Phase 4 Test")
@@ -14,8 +15,11 @@ print("=" * 60)
 # Test basic imports
 try:
     from services.answer_generator import (
-        SynthesisContext, DoloresAnswerGenerator, TeddyAnswerGenerator
+        SynthesisContext,
+        DoloresAnswerGenerator,
+        TeddyAnswerGenerator,
     )
+
     print("✓ Successfully imported base answer generators")
 except Exception as e:
     print(f"❌ Failed to import base generators: {e}")
@@ -23,9 +27,11 @@ except Exception as e:
 
 try:
     from services.answer_generator_continued import (
-        BernardAnswerGenerator, MaeveAnswerGenerator,
-        AnswerGenerationOrchestrator
+        BernardAnswerGenerator,
+        MaeveAnswerGenerator,
+        AnswerGenerationOrchestrator,
     )
+
     print("✓ Successfully imported continued generators")
 except Exception as e:
     print(f"❌ Failed to import continued generators: {e}")
@@ -37,9 +43,9 @@ print("=" * 60)
 # Test paradigm detection
 generators = [
     ("Dolores", DoloresAnswerGenerator()),
-    ("Teddy", TeddyAnswerGenerator()), 
+    ("Teddy", TeddyAnswerGenerator()),
     ("Bernard", BernardAnswerGenerator()),
-    ("Maeve", MaeveAnswerGenerator())
+    ("Maeve", MaeveAnswerGenerator()),
 ]
 
 for name, generator in generators:
@@ -49,7 +55,7 @@ for name, generator in generators:
     print(f"  Sections: {len(sections)}")
     for section in sections:
         print(f"    - {section['title']} (weight: {section['weight']})")
-    
+
     # Test alignment keywords
     keywords = generator._get_alignment_keywords()
     print(f"  Alignment keywords: {', '.join(keywords[:5])}...")
@@ -67,13 +73,13 @@ mock_search_results = [
         "url": "https://example.com/1",
         "snippet": "This is a test snippet about the topic.",
         "domain": "example.com",
-        "credibility_score": 0.85
+        "credibility_score": 0.85,
     }
 ]
 
 mock_context_engineering = {
     "write_output": {"key_themes": ["test", "analysis"]},
-    "select_output": {"search_queries": []}
+    "select_output": {"search_queries": []},
 }
 
 print("\n🎉 Phase 4 Implementation Summary:")

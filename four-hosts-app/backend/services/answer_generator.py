@@ -31,7 +31,9 @@ except ImportError:
     def retry(*args, **kwargs):
         def decorator(func):
             return func
+
         return decorator
+
     stop_after_attempt = None
     wait_exponential = None
 
@@ -46,9 +48,11 @@ logger = logging.getLogger(__name__)
 
 # --- Data Models ---
 
+
 @dataclass
 class Citation:
     """Represents a citation in the answer"""
+
     id: str
     source_title: str
     source_url: str
@@ -59,9 +63,11 @@ class Citation:
     paradigm_alignment: float
     timestamp: Optional[datetime] = None
 
+
 @dataclass
 class AnswerSection:
     """Represents a section of the generated answer"""
+
     title: str
     paradigm: str
     content: str
@@ -70,9 +76,11 @@ class AnswerSection:
     word_count: int
     key_insights: List[str]
 
+
 @dataclass
 class GeneratedAnswer:
     """Complete generated answer with all components"""
+
     research_id: str
     query: str
     paradigm: str
@@ -86,9 +94,11 @@ class GeneratedAnswer:
     metadata: Dict[str, Any]
     timestamp: datetime = field(default_factory=datetime.now)
 
+
 @dataclass
 class SynthesisContext:
     """Context for answer synthesis"""
+
     query: str
     paradigm: str
     search_results: List[Dict[str, Any]]
@@ -98,7 +108,9 @@ class SynthesisContext:
     tone: str = "professional"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+
 # --- Base Answer Generator ---
+
 
 class BaseAnswerGenerator(ABC):
     """Abstract base class for paradigm-specific answer generators"""
@@ -123,21 +135,23 @@ class BaseAnswerGenerator(ABC):
         """Get paradigm-specific synthesis prompt"""
         pass
 
-    def create_citation(self, source: Dict[str, Any], fact_type: str = "reference") -> Citation:
+    def create_citation(
+        self, source: Dict[str, Any], fact_type: str = "reference"
+    ) -> Citation:
         """Create a citation from a source"""
         self.citation_counter += 1
         citation_id = f"cite_{self.citation_counter:03d}"
 
         citation = Citation(
             id=citation_id,
-            source_title=source.get('title', 'Untitled'),
-            source_url=source.get('url', ''),
-            domain=source.get('domain', ''),
-            snippet=source.get('snippet', ''),
-            credibility_score=source.get('credibility_score', 0.5),
+            source_title=source.get("title", "Untitled"),
+            source_url=source.get("url", ""),
+            domain=source.get("domain", ""),
+            snippet=source.get("snippet", ""),
+            credibility_score=source.get("credibility_score", 0.5),
             fact_type=fact_type,
             paradigm_alignment=self._calculate_paradigm_alignment(source),
-            timestamp=source.get('published_date')
+            timestamp=source.get("published_date"),
         )
 
         self.citations[citation_id] = citation
@@ -161,17 +175,21 @@ class BaseAnswerGenerator(ABC):
     def extract_key_insights(self, content: str, max_insights: int = 5) -> List[str]:
         """Extract key insights from content"""
         # Simple sentence-based extraction for now
-        sentences = re.split(r'[.!?]+', content)
+        sentences = re.split(r"[.!?]+", content)
 
         # Filter for substantive sentences
         insights = [
-            s.strip() for s in sentences
-            if len(s.strip()) > 30 and not s.strip().startswith(('However', 'Moreover', 'Additionally'))
+            s.strip()
+            for s in sentences
+            if len(s.strip()) > 30
+            and not s.strip().startswith(("However", "Moreover", "Additionally"))
         ]
 
         return insights[:max_insights]
 
+
 # --- Dolores (Revolutionary) Answer Generator ---
+
 
 class DoloresAnswerGenerator(BaseAnswerGenerator):
     """Revolutionary paradigm answer generator"""
@@ -184,23 +202,23 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             {
                 "title": "Exposing the System",
                 "focus": "Reveal systemic issues and power structures",
-                "weight": 0.3
+                "weight": 0.3,
             },
             {
                 "title": "Voices of the Oppressed",
                 "focus": "Highlight victim testimonies and impacts",
-                "weight": 0.25
+                "weight": 0.25,
             },
             {
                 "title": "Pattern of Injustice",
                 "focus": "Document recurring patterns and systemic failures",
-                "weight": 0.25
+                "weight": 0.25,
             },
             {
                 "title": "Path to Revolution",
                 "focus": "Outline resistance strategies and calls to action",
-                "weight": 0.2
-            }
+                "weight": 0.2,
+            },
         ]
 
     def get_synthesis_prompt(self, context: SynthesisContext) -> str:
@@ -225,21 +243,35 @@ Write a {context.max_length} word response that burns with righteous anger and t
 
     def _get_alignment_keywords(self) -> List[str]:
         return [
-            "expose", "corrupt", "injustice", "systemic", "oppression",
-            "revolution", "resistance", "victim", "accountability", "scandal",
-            "whistleblower", "cover-up", "abuse", "exploitation", "inequality"
+            "expose",
+            "corrupt",
+            "injustice",
+            "systemic",
+            "oppression",
+            "revolution",
+            "resistance",
+            "victim",
+            "accountability",
+            "scandal",
+            "whistleblower",
+            "cover-up",
+            "abuse",
+            "exploitation",
+            "inequality",
         ]
 
     def _format_results_for_prompt(self, results: List[Dict[str, Any]]) -> str:
         """Format search results for LLM prompt"""
         formatted = []
         for i, result in enumerate(results, 1):
-            formatted.append(f"""
+            formatted.append(
+                f"""
 {i}. {result.get('title', 'Untitled')}
 Source: {result.get('domain', 'Unknown')}
 Credibility: {result.get('credibility_score', 0.5):.2f}
 Content: {result.get('snippet', 'No snippet available')[:200]}...
-""")
+"""
+            )
         return "\n".join(formatted)
 
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
@@ -268,7 +300,7 @@ Content: {result.get('snippet', 'No snippet available')[:200]}...
 
         # Create final answer
         answer = GeneratedAnswer(
-            research_id=context.metadata.get('research_id', 'unknown'),
+            research_id=context.metadata.get("research_id", "unknown"),
             query=context.query,
             paradigm=self.paradigm,
             summary=summary,
@@ -281,17 +313,22 @@ Content: {result.get('snippet', 'No snippet available')[:200]}...
             metadata={
                 "sources_used": len(context.search_results),
                 "citations_created": len(self.citations),
-                "paradigm_alignment": self._calculate_overall_alignment(context.search_results)
-            }
+                "paradigm_alignment": self._calculate_overall_alignment(
+                    context.search_results
+                ),
+            },
         )
 
         return answer
 
-    async def _generate_section(self, context: SynthesisContext,
-                               section_def: Dict[str, Any]) -> AnswerSection:
+    async def _generate_section(
+        self, context: SynthesisContext, section_def: Dict[str, Any]
+    ) -> AnswerSection:
         """Generate a single section"""
         # Filter results relevant to this section
-        relevant_results = self._filter_results_for_section(context.search_results, section_def)
+        relevant_results = self._filter_results_for_section(
+            context.search_results, section_def
+        )
 
         # Create section-specific prompt
         section_prompt = f"""
@@ -308,7 +345,7 @@ Include specific examples and cite sources.
         content = await llm_client.generate_paradigm_content(
             prompt=section_prompt,
             paradigm=self.paradigm,
-            max_tokens=int(context.max_length * section_def['weight'] * 2)
+            max_tokens=int(context.max_length * section_def["weight"] * 2),
         )
 
         # Extract citations from content
@@ -318,44 +355,44 @@ Include specific examples and cite sources.
         insights = self.extract_key_insights(content, 3)
 
         return AnswerSection(
-            title=section_def['title'],
+            title=section_def["title"],
             paradigm=self.paradigm,
             content=content,
             confidence=0.85,
             citations=citation_ids,
             word_count=len(content.split()),
-            key_insights=insights
+            key_insights=insights,
         )
 
-    async def _mock_generate_content(self, prompt: str, section_def: Dict[str, Any]) -> str:
+    async def _mock_generate_content(
+        self, prompt: str, section_def: Dict[str, Any]
+    ) -> str:
         """Mock content generation (replace with actual LLM call)"""
         # Simulate processing time
         await asyncio.sleep(0.1)
 
         templates = {
             "Exposing the System": """The investigation reveals a deeply troubling pattern of systemic failures and deliberate exploitation. Corporate entities have systematically abused their power, creating structures designed to extract maximum value while providing minimal accountability. Documents obtained through whistleblower testimony show clear evidence of coordinated efforts to suppress dissent and maintain the status quo through intimidation and legal manipulation.""",
-
             "Voices of the Oppressed": """Victims speak of devastating impacts on their lives and communities. 'They took everything from us,' says Maria, a community organizer who has fought for justice for over a decade. The human cost is staggering - families destroyed, communities decimated, and futures stolen by those who prioritize profit over people. These are not isolated incidents but part of a deliberate strategy of oppression.""",
-
             "Pattern of Injustice": """Analysis reveals recurring patterns across multiple cases: silencing of whistleblowers, regulatory capture, and systematic targeting of vulnerable populations. The same tactics appear repeatedly - divide communities, co-opt leaders, and use legal frameworks designed to protect the powerful. This is not incompetence but calculated malice, a system working exactly as designed to benefit the few at the expense of the many.""",
-
-            "Path to Revolution": """The time for polite requests has passed. Effective resistance requires coordinated action: organize locally, document everything, support whistleblowers, and build alternative systems. Direct action, strategic litigation, and public pressure campaigns have shown success. Most importantly, we must reject the narrative that change is impossible. History shows that organized people can topple any system of oppression."""
+            "Path to Revolution": """The time for polite requests has passed. Effective resistance requires coordinated action: organize locally, document everything, support whistleblowers, and build alternative systems. Direct action, strategic litigation, and public pressure campaigns have shown success. Most importantly, we must reject the narrative that change is impossible. History shows that organized people can topple any system of oppression.""",
         }
 
-        return templates.get(section_def['title'], "Content generation in progress...")
+        return templates.get(section_def["title"], "Content generation in progress...")
 
-    def _filter_results_for_section(self, results: List[Dict[str, Any]],
-                                   section_def: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _filter_results_for_section(
+        self, results: List[Dict[str, Any]], section_def: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """Filter results relevant to a specific section"""
         # Simple keyword-based filtering for now
         section_keywords = {
             "Exposing the System": ["systemic", "corporate", "power", "structure"],
             "Voices of the Oppressed": ["victim", "testimony", "impact", "community"],
             "Pattern of Injustice": ["pattern", "recurring", "analysis", "evidence"],
-            "Path to Revolution": ["action", "resistance", "organize", "change"]
+            "Path to Revolution": ["action", "resistance", "organize", "change"],
         }
 
-        keywords = section_keywords.get(section_def['title'], [])
+        keywords = section_keywords.get(section_def["title"], [])
 
         relevant = []
         for result in results:
@@ -365,7 +402,9 @@ Include specific examples and cite sources.
 
         return relevant or results[:5]  # Fallback to top results
 
-    def _extract_and_create_citations(self, content: str, sources: List[Dict[str, Any]]) -> List[str]:
+    def _extract_and_create_citations(
+        self, content: str, sources: List[Dict[str, Any]]
+    ) -> List[str]:
         """Extract facts from content and create citations"""
         citation_ids = []
 
@@ -376,8 +415,9 @@ Include specific examples and cite sources.
 
         return citation_ids
 
-    async def _generate_summary(self, context: SynthesisContext,
-                               sections: List[AnswerSection]) -> str:
+    async def _generate_summary(
+        self, context: SynthesisContext, sections: List[AnswerSection]
+    ) -> str:
         """Generate executive summary"""
         # Mock summary for now
         return f"""Revolutionary analysis reveals systematic exploitation and abuse of power in {context.query}.
@@ -392,35 +432,37 @@ Immediate action required to dismantle these structures of oppression and build 
                 "action": "Document and expose all instances of systemic abuse",
                 "timeframe": "Immediate",
                 "impact": "high",
-                "resources": ["Investigation tools", "Secure communication channels"]
+                "resources": ["Investigation tools", "Secure communication channels"],
             },
             {
                 "priority": "high",
                 "action": "Organize affected communities for collective action",
                 "timeframe": "1-2 weeks",
                 "impact": "high",
-                "resources": ["Community organizers", "Meeting spaces"]
+                "resources": ["Community organizers", "Meeting spaces"],
             },
             {
                 "priority": "high",
                 "action": "Build media campaign to expose truth to wider audience",
                 "timeframe": "2-4 weeks",
                 "impact": "medium",
-                "resources": ["Media contacts", "Documentary evidence"]
-            }
+                "resources": ["Media contacts", "Documentary evidence"],
+            },
         ]
 
-    def _calculate_confidence(self, context: SynthesisContext,
-                             sections: List[AnswerSection]) -> float:
+    def _calculate_confidence(
+        self, context: SynthesisContext, sections: List[AnswerSection]
+    ) -> float:
         """Calculate overall confidence score"""
         # Factors: source credibility, citation count, paradigm alignment
-        avg_credibility = sum(r.get('credibility_score', 0.5)
-                             for r in context.search_results) / len(context.search_results)
+        avg_credibility = sum(
+            r.get("credibility_score", 0.5) for r in context.search_results
+        ) / len(context.search_results)
 
         citation_factor = min(1.0, len(self.citations) / 10)
         section_confidence = sum(s.confidence for s in sections) / len(sections)
 
-        return (avg_credibility * 0.4 + citation_factor * 0.3 + section_confidence * 0.3)
+        return avg_credibility * 0.4 + citation_factor * 0.3 + section_confidence * 0.3
 
     def _calculate_synthesis_quality(self, sections: List[AnswerSection]) -> float:
         """Calculate synthesis quality score"""
@@ -431,7 +473,7 @@ Immediate action required to dismantle these structures of oppression and build 
         insight_factor = min(1.0, insight_count / 15)
         citation_factor = min(1.0, citation_count / 20)
 
-        return (insight_factor * 0.5 + citation_factor * 0.5)
+        return insight_factor * 0.5 + citation_factor * 0.5
 
     def _calculate_overall_alignment(self, results: List[Dict[str, Any]]) -> float:
         """Calculate overall paradigm alignment of results"""
@@ -441,7 +483,9 @@ Immediate action required to dismantle these structures of oppression and build 
         alignments = [self._calculate_paradigm_alignment(r) for r in results]
         return sum(alignments) / len(alignments)
 
+
 # --- Teddy (Devotion) Answer Generator ---
+
 
 class TeddyAnswerGenerator(BaseAnswerGenerator):
     """Devotion paradigm answer generator"""
@@ -454,23 +498,23 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             {
                 "title": "Understanding the Need",
                 "focus": "Empathetic assessment of who needs help and why",
-                "weight": 0.25
+                "weight": 0.25,
             },
             {
                 "title": "Available Support Resources",
                 "focus": "Comprehensive listing of help and resources",
-                "weight": 0.3
+                "weight": 0.3,
             },
             {
                 "title": "Success Stories",
                 "focus": "Inspiring examples of care and recovery",
-                "weight": 0.25
+                "weight": 0.25,
             },
             {
                 "title": "How to Help",
                 "focus": "Practical steps for providing support",
-                "weight": 0.2
-            }
+                "weight": 0.2,
+            },
         ]
 
     def get_synthesis_prompt(self, context: SynthesisContext) -> str:
@@ -495,21 +539,35 @@ Write a {context.max_length} word response filled with compassion and practical 
 
     def _get_alignment_keywords(self) -> List[str]:
         return [
-            "support", "help", "care", "community", "resources",
-            "healing", "recovery", "compassion", "dignity", "together",
-            "volunteer", "assistance", "wellbeing", "protect", "serve"
+            "support",
+            "help",
+            "care",
+            "community",
+            "resources",
+            "healing",
+            "recovery",
+            "compassion",
+            "dignity",
+            "together",
+            "volunteer",
+            "assistance",
+            "wellbeing",
+            "protect",
+            "serve",
         ]
 
     def _format_results_for_prompt(self, results: List[Dict[str, Any]]) -> str:
         """Format search results for LLM prompt"""
         formatted = []
         for i, result in enumerate(results, 1):
-            formatted.append(f"""
+            formatted.append(
+                f"""
 {i}. {result.get('title', 'Untitled')}
 Source: {result.get('domain', 'Unknown')}
 Trust Score: {result.get('credibility_score', 0.5):.2f}
 Content: {result.get('snippet', 'No snippet available')[:200]}...
-""")
+"""
+            )
         return "\n".join(formatted)
 
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
@@ -538,7 +596,7 @@ Content: {result.get('snippet', 'No snippet available')[:200]}...
 
         # Create final answer
         answer = GeneratedAnswer(
-            research_id=context.metadata.get('research_id', 'unknown'),
+            research_id=context.metadata.get("research_id", "unknown"),
             query=context.query,
             paradigm=self.paradigm,
             summary=summary,
@@ -551,17 +609,22 @@ Content: {result.get('snippet', 'No snippet available')[:200]}...
             metadata={
                 "sources_used": len(context.search_results),
                 "citations_created": len(self.citations),
-                "paradigm_alignment": self._calculate_overall_alignment(context.search_results)
-            }
+                "paradigm_alignment": self._calculate_overall_alignment(
+                    context.search_results
+                ),
+            },
         )
 
         return answer
 
-    async def _generate_section(self, context: SynthesisContext,
-                               section_def: Dict[str, Any]) -> AnswerSection:
+    async def _generate_section(
+        self, context: SynthesisContext, section_def: Dict[str, Any]
+    ) -> AnswerSection:
         """Generate a single section"""
         # Filter results relevant to this section
-        relevant_results = self._filter_results_for_section(context.search_results, section_def)
+        relevant_results = self._filter_results_for_section(
+            context.search_results, section_def
+        )
 
         # Create section-specific prompt
         section_prompt = f"""
@@ -579,7 +642,7 @@ Use warm, supportive language.
         content = await llm_client.generate_paradigm_content(
             prompt=section_prompt,
             paradigm=self.paradigm,
-            max_tokens=int(context.max_length * section_def['weight'] * 2)
+            max_tokens=int(context.max_length * section_def["weight"] * 2),
         )
 
         # Extract citations from content
@@ -589,43 +652,48 @@ Use warm, supportive language.
         insights = self.extract_key_insights(content, 3)
 
         return AnswerSection(
-            title=section_def['title'],
+            title=section_def["title"],
             paradigm=self.paradigm,
             content=content,
             confidence=0.88,
             citations=citation_ids,
             word_count=len(content.split()),
-            key_insights=insights
+            key_insights=insights,
         )
 
-    async def _mock_generate_content(self, prompt: str, section_def: Dict[str, Any]) -> str:
+    async def _mock_generate_content(
+        self, prompt: str, section_def: Dict[str, Any]
+    ) -> str:
         """Mock content generation (replace with actual LLM call)"""
         # Simulate processing time
         await asyncio.sleep(0.1)
 
         templates = {
             "Understanding the Need": """Those facing these challenges deserve our deepest compassion and understanding. The struggles are real and often overwhelming - isolation, fear, and uncertainty can make each day feel insurmountable. Yet within each person lies incredible resilience and dignity that must be honored. By truly listening and understanding their experiences, we can provide support that respects their autonomy while offering genuine help.""",
-
             "Available Support Resources": """Numerous organizations stand ready to help: The National Alliance provides 24/7 crisis support at 1-800-HELP, local community centers offer free counseling services, and faith-based organizations provide both material and spiritual support. Online resources include peer support groups, educational materials, and connection to local services. Many programs offer sliding scale fees or free services to ensure help is accessible to all who need it.""",
-
             "Success Stories": """Sarah's story reminds us that recovery is possible: 'When I felt most alone, the community wrapped around me. Small acts of kindness - a meal delivered, someone to talk to, help navigating resources - these made all the difference.' Similar stories emerge daily from support groups, showing how connection and care transform lives. These aren't just statistics; they're our neighbors finding hope again.""",
-
-            "How to Help": """Everyone can make a difference through simple acts of care: volunteer at local organizations, donate to programs providing direct services, or simply be present for someone struggling. Educate yourself about the challenges faced and the resources available. Most importantly, approach with humility and respect - ask how you can help rather than assuming. Together, we build communities where everyone is valued and supported."""
+            "How to Help": """Everyone can make a difference through simple acts of care: volunteer at local organizations, donate to programs providing direct services, or simply be present for someone struggling. Educate yourself about the challenges faced and the resources available. Most importantly, approach with humility and respect - ask how you can help rather than assuming. Together, we build communities where everyone is valued and supported.""",
         }
 
-        return templates.get(section_def['title'], "Content generation in progress...")
+        return templates.get(section_def["title"], "Content generation in progress...")
 
-    def _filter_results_for_section(self, results: List[Dict[str, Any]],
-                                   section_def: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _filter_results_for_section(
+        self, results: List[Dict[str, Any]], section_def: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """Filter results relevant to a specific section"""
         section_keywords = {
-            "Understanding the Need": ["struggle", "challenge", "difficulty", "experience"],
+            "Understanding the Need": [
+                "struggle",
+                "challenge",
+                "difficulty",
+                "experience",
+            ],
             "Available Support Resources": ["resource", "help", "service", "support"],
             "Success Stories": ["success", "recovery", "story", "hope"],
-            "How to Help": ["volunteer", "donate", "action", "contribute"]
+            "How to Help": ["volunteer", "donate", "action", "contribute"],
         }
 
-        keywords = section_keywords.get(section_def['title'], [])
+        keywords = section_keywords.get(section_def["title"], [])
 
         relevant = []
         for result in results:
@@ -635,7 +703,9 @@ Use warm, supportive language.
 
         return relevant or results[:5]
 
-    def _extract_and_create_citations(self, content: str, sources: List[Dict[str, Any]]) -> List[str]:
+    def _extract_and_create_citations(
+        self, content: str, sources: List[Dict[str, Any]]
+    ) -> List[str]:
         """Extract facts from content and create citations"""
         citation_ids = []
 
@@ -646,8 +716,9 @@ Use warm, supportive language.
 
         return citation_ids
 
-    async def _generate_summary(self, context: SynthesisContext,
-                               sections: List[AnswerSection]) -> str:
+    async def _generate_summary(
+        self, context: SynthesisContext, sections: List[AnswerSection]
+    ) -> str:
         """Generate executive summary"""
         return f"""Compassionate analysis of {context.query} reveals both significant challenges and hopeful paths forward.
 Multiple resources and support systems exist to help those affected, with proven success stories demonstrating recovery is possible.
@@ -661,34 +732,36 @@ Community-based care and individual acts of kindness create networks of support 
                 "action": "Connect affected individuals with immediate support resources",
                 "timeframe": "Within 24 hours",
                 "impact": "high",
-                "resources": ["Crisis hotlines", "Local service directories"]
+                "resources": ["Crisis hotlines", "Local service directories"],
             },
             {
                 "priority": "high",
                 "action": "Establish or strengthen community support networks",
                 "timeframe": "1-2 weeks",
                 "impact": "high",
-                "resources": ["Community centers", "Volunteer coordinators"]
+                "resources": ["Community centers", "Volunteer coordinators"],
             },
             {
                 "priority": "medium",
                 "action": "Create educational materials to build understanding",
                 "timeframe": "2-4 weeks",
                 "impact": "medium",
-                "resources": ["Subject matter experts", "Communication tools"]
-            }
+                "resources": ["Subject matter experts", "Communication tools"],
+            },
         ]
 
-    def _calculate_confidence(self, context: SynthesisContext,
-                             sections: List[AnswerSection]) -> float:
+    def _calculate_confidence(
+        self, context: SynthesisContext, sections: List[AnswerSection]
+    ) -> float:
         """Calculate overall confidence score"""
-        avg_credibility = sum(r.get('credibility_score', 0.5)
-                             for r in context.search_results) / len(context.search_results)
+        avg_credibility = sum(
+            r.get("credibility_score", 0.5) for r in context.search_results
+        ) / len(context.search_results)
 
         citation_factor = min(1.0, len(self.citations) / 10)
         section_confidence = sum(s.confidence for s in sections) / len(sections)
 
-        return (avg_credibility * 0.4 + citation_factor * 0.3 + section_confidence * 0.3)
+        return avg_credibility * 0.4 + citation_factor * 0.3 + section_confidence * 0.3
 
     def _calculate_synthesis_quality(self, sections: List[AnswerSection]) -> float:
         """Calculate synthesis quality score"""
@@ -698,7 +771,7 @@ Community-based care and individual acts of kindness create networks of support 
         insight_factor = min(1.0, insight_count / 15)
         citation_factor = min(1.0, citation_count / 20)
 
-        return (insight_factor * 0.5 + citation_factor * 0.5)
+        return insight_factor * 0.5 + citation_factor * 0.5
 
     def _calculate_overall_alignment(self, results: List[Dict[str, Any]]) -> float:
         """Calculate overall paradigm alignment of results"""

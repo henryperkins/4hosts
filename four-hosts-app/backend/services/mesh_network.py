@@ -12,18 +12,22 @@ from .answer_generator import GeneratedAnswer, AnswerSection, Citation
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class Conflict:
     """Represents a conflict between two paradigms"""
+
     conflict_type: str  # e.g., 'factual_discrepancy', 'tonal_dissonance'
     description: str
     primary_paradigm_view: str
     secondary_paradigm_view: str
     confidence: float
 
+
 @dataclass
 class IntegratedSynthesis:
     """Represents an integrated, multi-paradigm synthesis"""
+
     primary_answer: GeneratedAnswer
     secondary_perspective: Optional[AnswerSection]
     conflicts_identified: List[Conflict]
@@ -31,6 +35,7 @@ class IntegratedSynthesis:
     integrated_summary: str
     confidence_score: float
     timestamp: datetime = field(default_factory=datetime.now)
+
 
 class MeshNetworkService:
     """
@@ -44,7 +49,7 @@ class MeshNetworkService:
     async def integrate_paradigm_results(
         self,
         primary_answer: GeneratedAnswer,
-        secondary_answer: Optional[GeneratedAnswer]
+        secondary_answer: Optional[GeneratedAnswer],
     ) -> IntegratedSynthesis:
         """
         Integrates results from a primary and secondary paradigm.
@@ -57,10 +62,12 @@ class MeshNetworkService:
                 conflicts_identified=[],
                 synergies=["Primary paradigm only."],
                 integrated_summary=primary_answer.summary,
-                confidence_score=primary_answer.confidence_score
+                confidence_score=primary_answer.confidence_score,
             )
 
-        logger.info(f"Integrating {primary_answer.paradigm} (primary) and {secondary_answer.paradigm} (secondary) paradigms.")
+        logger.info(
+            f"Integrating {primary_answer.paradigm} (primary) and {secondary_answer.paradigm} (secondary) paradigms."
+        )
 
         # 1. Identify conflicts
         conflicts = self._identify_conflicts(primary_answer, secondary_answer)
@@ -69,13 +76,19 @@ class MeshNetworkService:
         synergies = self._identify_synergies(primary_answer, secondary_answer)
 
         # 3. Create secondary perspective section
-        secondary_perspective = self._create_secondary_perspective_section(secondary_answer)
+        secondary_perspective = self._create_secondary_perspective_section(
+            secondary_answer
+        )
 
         # 4. Generate integrated summary
-        integrated_summary = self._generate_integrated_summary(primary_answer, secondary_answer, conflicts, synergies)
-        
+        integrated_summary = self._generate_integrated_summary(
+            primary_answer, secondary_answer, conflicts, synergies
+        )
+
         # 5. Calculate integrated confidence
-        integrated_confidence = (primary_answer.confidence_score * 0.7) + (secondary_answer.confidence_score * 0.3)
+        integrated_confidence = (primary_answer.confidence_score * 0.7) + (
+            secondary_answer.confidence_score * 0.3
+        )
 
         integrated_synthesis = IntegratedSynthesis(
             primary_answer=primary_answer,
@@ -83,16 +96,14 @@ class MeshNetworkService:
             conflicts_identified=conflicts,
             synergies=synergies,
             integrated_summary=integrated_summary,
-            confidence_score=integrated_confidence
+            confidence_score=integrated_confidence,
         )
 
         self.integration_history.append(integrated_synthesis)
         return integrated_synthesis
 
     def _identify_conflicts(
-        self,
-        primary: GeneratedAnswer,
-        secondary: GeneratedAnswer
+        self, primary: GeneratedAnswer, secondary: GeneratedAnswer
     ) -> List[Conflict]:
         """
         Identifies conflicts between two generated answers.
@@ -101,51 +112,62 @@ class MeshNetworkService:
         conflicts = []
 
         # Example: Check for conflicting action items
-        primary_actions = {item['action'].lower() for item in primary.action_items}
-        secondary_actions = {item['action'].lower() for item in secondary.action_items}
+        primary_actions = {item["action"].lower() for item in primary.action_items}
+        secondary_actions = {item["action"].lower() for item in secondary.action_items}
 
         # This is a very basic check. A real system would need semantic analysis.
         if primary.paradigm == "dolores" and secondary.paradigm == "maeve":
-            if "organize affected communities for collective action" in primary_actions and \
-               "form strategic task force and secure executive mandate" in secondary_actions:
-                conflicts.append(Conflict(
-                    conflict_type='approach_conflict',
-                    description="Dolores advocates for grassroots action, while Maeve suggests a top-down corporate approach.",
-                    primary_paradigm_view="Collective action from the ground up.",
-                    secondary_paradigm_view="Executive-led strategic initiative.",
-                    confidence=0.75
-                ))
+            if (
+                "organize affected communities for collective action" in primary_actions
+                and "form strategic task force and secure executive mandate"
+                in secondary_actions
+            ):
+                conflicts.append(
+                    Conflict(
+                        conflict_type="approach_conflict",
+                        description="Dolores advocates for grassroots action, while Maeve suggests a top-down corporate approach.",
+                        primary_paradigm_view="Collective action from the ground up.",
+                        secondary_paradigm_view="Executive-led strategic initiative.",
+                        confidence=0.75,
+                    )
+                )
 
         return conflicts
 
     def _identify_synergies(
-        self,
-        primary: GeneratedAnswer,
-        secondary: GeneratedAnswer
+        self, primary: GeneratedAnswer, secondary: GeneratedAnswer
     ) -> List[str]:
         """
         Identifies synergies between two generated answers.
         """
         synergies = []
-        
+
         # Example: Bernard's analysis provides data for Maeve's strategy
         if primary.paradigm == "maeve" and secondary.paradigm == "bernard":
-            synergies.append("Bernard's analytical findings provide the evidence base for Maeve's strategic recommendations.")
+            synergies.append(
+                "Bernard's analytical findings provide the evidence base for Maeve's strategic recommendations."
+            )
 
         if primary.paradigm == "dolores" and secondary.paradigm == "teddy":
-             synergies.append("Dolores's exposure of injustice provides the 'why' for Teddy's compassionate action.")
+            synergies.append(
+                "Dolores's exposure of injustice provides the 'why' for Teddy's compassionate action."
+            )
 
         return synergies
 
-    def _create_secondary_perspective_section(self, secondary_answer: GeneratedAnswer) -> AnswerSection:
+    def _create_secondary_perspective_section(
+        self, secondary_answer: GeneratedAnswer
+    ) -> AnswerSection:
         """
         Summarizes the secondary answer into a single section.
         """
         secondary_content = f"From a {secondary_answer.paradigm} perspective, it's also crucial to consider the following:\n\n"
         secondary_content += secondary_answer.summary
-        
+
         key_insights = []
-        for section in secondary_answer.sections[:2]: # take insights from first two sections
+        for section in secondary_answer.sections[
+            :2
+        ]:  # take insights from first two sections
             key_insights.extend(section.key_insights)
 
         return AnswerSection(
@@ -153,9 +175,9 @@ class MeshNetworkService:
             paradigm=secondary_answer.paradigm,
             content=secondary_content,
             confidence=secondary_answer.confidence_score,
-            citations=[], # Citations would need to be re-mapped in a real implementation
+            citations=[],  # Citations would need to be re-mapped in a real implementation
             word_count=len(secondary_content.split()),
-            key_insights=key_insights[:3]
+            key_insights=key_insights[:3],
         )
 
     def _generate_integrated_summary(
@@ -163,7 +185,7 @@ class MeshNetworkService:
         primary: GeneratedAnswer,
         secondary: GeneratedAnswer,
         conflicts: List[Conflict],
-        synergies: List[str]
+        synergies: List[str],
     ) -> str:
         """
         Generates a summary that integrates both perspectives.
@@ -174,11 +196,14 @@ class MeshNetworkService:
 
         if synergies:
             summary += "Key Synergy: " + " ".join(synergies) + "\n"
-        
+
         if conflicts:
-            summary += f"A key point of tension to consider is: {conflicts[0].description}"
+            summary += (
+                f"A key point of tension to consider is: {conflicts[0].description}"
+            )
 
         return summary
+
 
 # Global instance
 mesh_network_service = MeshNetworkService()

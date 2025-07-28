@@ -75,13 +75,13 @@ Subscribe to events:
 CONTACT_INFO = {
     "name": "Four Hosts Research Support",
     "url": "https://fourhoststresearch.com/support",
-    "email": "support@fourhoststresearch.com"
+    "email": "support@fourhoststresearch.com",
 }
 
 # License information
 LICENSE_INFO = {
     "name": "Commercial License",
-    "url": "https://fourhoststresearch.com/license"
+    "url": "https://fourhoststresearch.com/license",
 }
 
 # Tags for organizing endpoints
@@ -117,7 +117,7 @@ TAGS_METADATA = [
     {
         "name": "health",
         "description": "Health checks and system status",
-    }
+    },
 ]
 
 # Security schemes
@@ -126,21 +126,22 @@ SECURITY_SCHEMES = {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-        "description": "JWT token or API key authentication"
+        "description": "JWT token or API key authentication",
     },
     "apiKey": {
         "type": "apiKey",
         "in": "header",
         "name": "X-API-Key",
-        "description": "API key authentication (alternative to Bearer token)"
-    }
+        "description": "API key authentication (alternative to Bearer token)",
+    },
 }
+
 
 def custom_openapi(app: FastAPI) -> Dict[str, Any]:
     """Generate custom OpenAPI schema"""
     if app.openapi_schema:
         return app.openapi_schema
-    
+
     openapi_schema = get_openapi(
         title=API_TITLE,
         version=API_VERSION,
@@ -148,44 +149,41 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
         routes=app.routes,
         contact=CONTACT_INFO,
         license_info=LICENSE_INFO,
-        tags=TAGS_METADATA
+        tags=TAGS_METADATA,
     )
-    
+
     # Add security schemes
     openapi_schema["components"]["securitySchemes"] = SECURITY_SCHEMES
-    
+
     # Add global security requirement
     openapi_schema["security"] = [{"bearerAuth": []}, {"apiKey": []}]
-    
+
     # Add servers
     openapi_schema["servers"] = [
         {
             "url": "https://api.fourhoststresearch.com/v1",
-            "description": "Production server"
+            "description": "Production server",
         },
         {
             "url": "https://staging-api.fourhoststresearch.com/v1",
-            "description": "Staging server"
+            "description": "Staging server",
         },
-        {
-            "url": "http://localhost:8000",
-            "description": "Development server"
-        }
+        {"url": "http://localhost:8000", "description": "Development server"},
     ]
-    
+
     # Add external documentation
     openapi_schema["externalDocs"] = {
         "description": "Full API Documentation",
-        "url": "https://docs.fourhoststresearch.com/api"
+        "url": "https://docs.fourhoststresearch.com/api",
     }
-    
+
     # Add custom schemas
     if "components" not in openapi_schema:
         openapi_schema["components"] = {}
-    
+
     if "schemas" not in openapi_schema["components"]:
         openapi_schema["components"]["schemas"] = {}
-    
+
     # Add custom response schemas
     openapi_schema["components"]["schemas"]["ErrorResponse"] = {
         "type": "object",
@@ -193,21 +191,21 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
             "error": {"type": "string"},
             "detail": {"type": "string"},
             "code": {"type": "string"},
-            "timestamp": {"type": "string", "format": "date-time"}
+            "timestamp": {"type": "string", "format": "date-time"},
         },
-        "required": ["error", "detail"]
+        "required": ["error", "detail"],
     }
-    
+
     openapi_schema["components"]["schemas"]["RateLimitInfo"] = {
         "type": "object",
         "properties": {
             "limit": {"type": "integer"},
             "remaining": {"type": "integer"},
             "reset": {"type": "string", "format": "date-time"},
-            "retry_after": {"type": "integer"}
-        }
+            "retry_after": {"type": "integer"},
+        },
     }
-    
+
     # Add webhook payload schemas
     openapi_schema["components"]["schemas"]["WebhookPayload"] = {
         "type": "object",
@@ -217,11 +215,11 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
             "webhook_id": {"type": "string"},
             "delivery_id": {"type": "string"},
             "data": {"type": "object"},
-            "metadata": {"type": "object"}
+            "metadata": {"type": "object"},
         },
-        "required": ["event", "timestamp", "data"]
+        "required": ["event", "timestamp", "data"],
     }
-    
+
     # Add common responses
     openapi_schema["components"]["responses"] = {
         "UnauthorizedError": {
@@ -230,7 +228,7 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
                 "application/json": {
                     "schema": {"$ref": "#/components/schemas/ErrorResponse"}
                 }
-            }
+            },
         },
         "ForbiddenError": {
             "description": "Insufficient permissions",
@@ -238,7 +236,7 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
                 "application/json": {
                     "schema": {"$ref": "#/components/schemas/ErrorResponse"}
                 }
-            }
+            },
         },
         "NotFoundError": {
             "description": "Resource not found",
@@ -246,7 +244,7 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
                 "application/json": {
                     "schema": {"$ref": "#/components/schemas/ErrorResponse"}
                 }
-            }
+            },
         },
         "RateLimitError": {
             "description": "Rate limit exceeded",
@@ -258,26 +256,27 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
             "headers": {
                 "X-RateLimit-Limit": {
                     "description": "Rate limit ceiling",
-                    "schema": {"type": "integer"}
+                    "schema": {"type": "integer"},
                 },
                 "X-RateLimit-Remaining": {
                     "description": "Remaining requests",
-                    "schema": {"type": "integer"}
+                    "schema": {"type": "integer"},
                 },
                 "X-RateLimit-Reset": {
                     "description": "Reset timestamp",
-                    "schema": {"type": "integer"}
+                    "schema": {"type": "integer"},
                 },
                 "Retry-After": {
                     "description": "Seconds until retry",
-                    "schema": {"type": "integer"}
-                }
-            }
-        }
+                    "schema": {"type": "integer"},
+                },
+            },
+        },
     }
-    
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
+
 
 def generate_openapi_json(app: FastAPI, output_path: str = "openapi.json"):
     """Generate OpenAPI JSON file"""
@@ -286,10 +285,10 @@ def generate_openapi_json(app: FastAPI, output_path: str = "openapi.json"):
         json.dump(schema, f, indent=2)
     print(f"OpenAPI schema saved to {output_path}")
 
+
 # Custom API documentation pages
 def get_custom_swagger_ui_html(
-    openapi_url: str = "/openapi.json",
-    title: str = API_TITLE
+    openapi_url: str = "/openapi.json", title: str = API_TITLE
 ) -> str:
     """Generate custom Swagger UI HTML"""
     return get_swagger_ui_html(
@@ -298,20 +297,21 @@ def get_custom_swagger_ui_html(
         oauth2_redirect_url="/docs/oauth2-redirect",
         swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
         swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
-        swagger_favicon_url="https://fastapi.tiangolo.com/img/favicon.png"
+        swagger_favicon_url="https://fastapi.tiangolo.com/img/favicon.png",
     )
 
+
 def get_custom_redoc_html(
-    openapi_url: str = "/openapi.json",
-    title: str = API_TITLE
+    openapi_url: str = "/openapi.json", title: str = API_TITLE
 ) -> str:
     """Generate custom ReDoc HTML"""
     return get_redoc_html(
         openapi_url=openapi_url,
         title=title,
         redoc_js_url="https://cdn.jsdelivr.net/npm/redoc@next/bundles/redoc.standalone.js",
-        redoc_favicon_url="https://fastapi.tiangolo.com/img/favicon.png"
+        redoc_favicon_url="https://fastapi.tiangolo.com/img/favicon.png",
     )
+
 
 # API Examples
 API_EXAMPLES = {
@@ -320,10 +320,8 @@ API_EXAMPLES = {
             "summary": "Basic research query",
             "value": {
                 "query": "How can small businesses compete with Amazon?",
-                "options": {
-                    "depth": "standard"
-                }
-            }
+                "options": {"depth": "standard"},
+            },
         },
         "advanced": {
             "summary": "Advanced research query",
@@ -335,51 +333,53 @@ API_EXAMPLES = {
                     "include_secondary": True,
                     "max_sources": 200,
                     "language": "en",
-                    "region": "us"
-                }
-            }
-        }
+                    "region": "us",
+                },
+            },
+        },
     },
     "webhook_config": {
         "basic": {
             "summary": "Basic webhook configuration",
             "value": {
                 "url": "https://example.com/webhook",
-                "events": ["research.completed"]
-            }
+                "events": ["research.completed"],
+            },
         },
         "advanced": {
             "summary": "Advanced webhook configuration",
             "value": {
                 "url": "https://example.com/webhook",
-                "events": ["research.started", "research.progress", "research.completed"],
+                "events": [
+                    "research.started",
+                    "research.progress",
+                    "research.completed",
+                ],
                 "secret": "webhook_secret_key",
-                "headers": {
-                    "X-Custom-Header": "value"
-                },
+                "headers": {"X-Custom-Header": "value"},
                 "retry_policy": {
                     "max_attempts": 5,
                     "initial_delay": 2,
-                    "max_delay": 120
-                }
-            }
-        }
-    }
+                    "max_delay": 120,
+                },
+            },
+        },
+    },
 }
 
 if __name__ == "__main__":
     # This would be imported from your main FastAPI app
     # For demonstration, create a minimal app
     from fastapi import FastAPI
-    
+
     app = FastAPI(
         title=API_TITLE,
         version=API_VERSION,
         description=API_DESCRIPTION,
         contact=CONTACT_INFO,
         license_info=LICENSE_INFO,
-        openapi_tags=TAGS_METADATA
+        openapi_tags=TAGS_METADATA,
     )
-    
+
     # Generate OpenAPI JSON
     generate_openapi_json(app)

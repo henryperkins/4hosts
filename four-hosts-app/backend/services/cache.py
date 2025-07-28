@@ -18,6 +18,7 @@ from .search_apis import SearchResult
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class CacheManager:
     """Manages Redis caching with intelligent TTL and cost optimization"""
 
@@ -29,20 +30,18 @@ class CacheManager:
 
         # TTL configurations (in seconds)
         self.ttl_config = {
-            "search_results": 24 * 3600,      # 24 hours
+            "search_results": 24 * 3600,  # 24 hours
             "paradigm_classification": 7 * 24 * 3600,  # 7 days
-            "source_credibility": 30 * 24 * 3600,     # 30 days
-            "api_cost_tracking": 24 * 3600,    # 24 hours
-            "user_preferences": 30 * 24 * 3600 # 30 days
+            "source_credibility": 30 * 24 * 3600,  # 30 days
+            "api_cost_tracking": 24 * 3600,  # 24 hours
+            "user_preferences": 30 * 24 * 3600,  # 30 days
         }
 
     async def initialize(self):
         """Initialize Redis connection pool"""
         try:
             self.redis_pool = redis.ConnectionPool.from_url(
-                self.redis_url,
-                max_connections=20,
-                decode_responses=True
+                self.redis_url, max_connections=20, decode_responses=True
             )
             # Test connection
             redis_client = redis.Redis(connection_pool=self.redis_pool)
@@ -84,12 +83,11 @@ class CacheManager:
 
         return f"{prefix}:{key_string}"
 
-    async def get_search_results(self, query: str, config_dict: Dict[str, Any],
-                                paradigm: str) -> Optional[List[SearchResult]]:
+    async def get_search_results(
+        self, query: str, config_dict: Dict[str, Any], paradigm: str
+    ) -> Optional[List[SearchResult]]:
         """Get cached search results"""
-        cache_key = self._generate_cache_key(
-            "search", query, paradigm, **config_dict
-        )
+        cache_key = self._generate_cache_key("search", query, paradigm, **config_dict)
 
         try:
             async with self.get_client() as client:
@@ -103,9 +101,9 @@ class CacheManager:
                     results = []
                     for result_dict in results_data:
                         # Handle datetime conversion
-                        if result_dict.get('published_date'):
-                            result_dict['published_date'] = datetime.fromisoformat(
-                                result_dict['published_date'].replace('Z', '+00:00')
+                        if result_dict.get("published_date"):
+                            result_dict["published_date"] = datetime.fromisoformat(
+                                result_dict["published_date"].replace("Z", "+00:00")
                             )
                         results.append(SearchResult(**result_dict))
 
@@ -120,12 +118,15 @@ class CacheManager:
             logger.error(f"Cache get error: {str(e)}")
             return None
 
-    async def set_search_results(self, query: str, config_dict: Dict[str, Any],
-                                paradigm: str, results: List[SearchResult]):
+    async def set_search_results(
+        self,
+        query: str,
+        config_dict: Dict[str, Any],
+        paradigm: str,
+        results: List[SearchResult],
+    ):
         """Cache search results"""
-        cache_key = self._generate_cache_key(
-            "search", query, paradigm, **config_dict
-        )
+        cache_key = self._generate_cache_key("search", query, paradigm, **config_dict)
 
         try:
             # Convert SearchResult objects to dict for JSON serialization
@@ -133,18 +134,22 @@ class CacheManager:
             for result in results:
                 result_dict = asdict(result)
                 # Handle datetime serialization
-                if result_dict.get('published_date'):
-                    result_dict['published_date'] = result_dict['published_date'].isoformat()
+                if result_dict.get("published_date"):
+                    result_dict["published_date"] = result_dict[
+                        "published_date"
+                    ].isoformat()
                 results_data.append(result_dict)
 
             async with self.get_client() as client:
                 await client.setex(
                     cache_key,
                     self.ttl_config["search_results"],
-                    json.dumps(results_data, default=str)
+                    json.dumps(results_data, default=str),
                 )
 
-                logger.info(f"Cached {len(results)} search results for: {query[:50]}...")
+                logger.info(
+                    f"Cached {len(results)} search results for: {query[:50]}..."
+                )
 
         except Exception as e:
             logger.error(f"Cache set error: {str(e)}")
@@ -169,7 +174,9 @@ class CacheManager:
             logger.error(f"Cache get error: {str(e)}")
             return None
 
-    async def set_paradigm_classification(self, query: str, classification: Dict[str, Any]):
+    async def set_paradigm_classification(
+        self, query: str, classification: Dict[str, Any]
+    ):
         """Cache paradigm classification"""
         cache_key = self._generate_cache_key("paradigm", query)
 
@@ -178,7 +185,7 @@ class CacheManager:
                 await client.setex(
                     cache_key,
                     self.ttl_config["paradigm_classification"],
-                    json.dumps(classification, default=str)
+                    json.dumps(classification, default=str),
                 )
 
         except Exception as e:
@@ -200,7 +207,9 @@ class CacheManager:
             logger.error(f"Cache get error: {str(e)}")
             return None
 
-    async def set_source_credibility(self, domain: str, credibility_data: Dict[str, Any]):
+    async def set_source_credibility(
+        self, domain: str, credibility_data: Dict[str, Any]
+    ):
         """Cache source credibility data"""
         cache_key = self._generate_cache_key("credibility", domain)
 
@@ -209,7 +218,7 @@ class CacheManager:
                 await client.setex(
                     cache_key,
                     self.ttl_config["source_credibility"],
-                    json.dumps(credibility_data, default=str)
+                    json.dumps(credibility_data, default=str),
                 )
 
         except Exception as e:
@@ -234,7 +243,9 @@ class CacheManager:
         except Exception as e:
             logger.error(f"Cost tracking error: {str(e)}")
 
-    async def get_daily_api_costs(self, date: Optional[str] = None) -> Dict[str, Dict[str, float]]:
+    async def get_daily_api_costs(
+        self, date: Optional[str] = None
+    ) -> Dict[str, Dict[str, float]]:
         """Get API costs for a specific date"""
         if not date:
             date = datetime.now().strftime("%Y-%m-%d")
@@ -254,19 +265,19 @@ class CacheManager:
                 if cost_keys:
                     cost_values = await client.mget(*cost_keys)
                     for key, value in zip(cost_keys, cost_values):
-                        api_name = key.split(':')[1]  # Extract API name
+                        api_name = key.split(":")[1]  # Extract API name
                         if api_name not in results:
                             results[api_name] = {}
-                        results[api_name]['cost'] = float(value) if value else 0.0
+                        results[api_name]["cost"] = float(value) if value else 0.0
 
                 # Get call counts
                 if calls_keys:
                     call_values = await client.mget(*calls_keys)
                     for key, value in zip(calls_keys, call_values):
-                        api_name = key.split(':')[1]  # Extract API name
+                        api_name = key.split(":")[1]  # Extract API name
                         if api_name not in results:
                             results[api_name] = {}
-                        results[api_name]['calls'] = int(value) if value else 0
+                        results[api_name]["calls"] = int(value) if value else 0
 
                 return results
 
@@ -288,7 +299,7 @@ class CacheManager:
                     "miss_count": self.miss_count,
                     "hit_rate_percent": round(hit_rate, 2),
                     "memory_used": info.get("used_memory_human", "Unknown"),
-                    "connected_clients": info.get("connected_clients", 0)
+                    "connected_clients": info.get("connected_clients", 0),
                 }
         except Exception as e:
             logger.error(f"Stats retrieval error: {str(e)}")
@@ -296,7 +307,7 @@ class CacheManager:
                 "hit_count": self.hit_count,
                 "miss_count": self.miss_count,
                 "hit_rate_percent": round(hit_rate, 2),
-                "error": str(e)
+                "error": str(e),
             }
 
     async def clear_expired_keys(self, pattern: str = "*"):
@@ -310,13 +321,15 @@ class CacheManager:
                     ttl = await client.ttl(key)
                     if ttl == -1:  # Key exists but has no expiry
                         # Set a default expiry based on key type
-                        key_type = key.split(':')[0]
+                        key_type = key.split(":")[0]
                         if key_type in self.ttl_config:
                             await client.expire(key, self.ttl_config[key_type])
                     elif ttl == -2:  # Key doesn't exist
                         deleted += 1
 
-                logger.info(f"Maintenance: processed {len(keys)} keys, {deleted} were expired")
+                logger.info(
+                    f"Maintenance: processed {len(keys)} keys, {deleted} were expired"
+                )
                 return {"processed": len(keys), "expired": deleted}
 
         except Exception as e:
@@ -340,8 +353,10 @@ class CacheManager:
             logger.error(f"Cache invalidation error: {str(e)}")
             return 0
 
+
 # Global cache manager instance
 cache_manager = CacheManager()
+
 
 async def initialize_cache():
     """Initialize the global cache manager"""
@@ -352,20 +367,26 @@ async def initialize_cache():
         logger.warning("Cache system initialization failed - running without cache")
     return success
 
+
 async def cleanup_cache():
     """Cleanup cache connections"""
     await cache_manager.close()
 
+
 # Convenience functions for easy use
-async def get_cached_search_results(query: str, config_dict: Dict[str, Any],
-                                  paradigm: str) -> Optional[List[SearchResult]]:
+async def get_cached_search_results(
+    query: str, config_dict: Dict[str, Any], paradigm: str
+) -> Optional[List[SearchResult]]:
     """Convenience function to get cached search results"""
     return await cache_manager.get_search_results(query, config_dict, paradigm)
 
-async def cache_search_results(query: str, config_dict: Dict[str, Any],
-                             paradigm: str, results: List[SearchResult]):
+
+async def cache_search_results(
+    query: str, config_dict: Dict[str, Any], paradigm: str, results: List[SearchResult]
+):
     """Convenience function to cache search results"""
     await cache_manager.set_search_results(query, config_dict, paradigm, results)
+
 
 # Example usage and testing
 async def test_cache_system():
@@ -384,7 +405,7 @@ async def test_cache_system():
         "primary": "maeve",
         "secondary": "dolores",
         "confidence": 0.78,
-        "distribution": {"maeve": 0.4, "dolores": 0.25, "bernard": 0.2, "teddy": 0.15}
+        "distribution": {"maeve": 0.4, "dolores": 0.25, "bernard": 0.2, "teddy": 0.15},
     }
 
     print("Testing paradigm classification cache...")
@@ -411,24 +432,28 @@ async def test_cache_system():
             url="https://example.com/1",
             snippet="This is a test snippet",
             source="test_api",
-            domain="example.com"
+            domain="example.com",
         ),
         SearchResult(
             title="Test Article 2",
             url="https://example.com/2",
             snippet="Another test snippet",
             source="test_api",
-            domain="example.com"
-        )
+            domain="example.com",
+        ),
     ]
 
     config_dict = {"max_results": 50, "language": "en", "region": "us"}
 
     # Cache results
-    await cache_manager.set_search_results(test_query, config_dict, "maeve", test_results)
+    await cache_manager.set_search_results(
+        test_query, config_dict, "maeve", test_results
+    )
 
     # Retrieve results
-    cached_results = await cache_manager.get_search_results(test_query, config_dict, "maeve")
+    cached_results = await cache_manager.get_search_results(
+        test_query, config_dict, "maeve"
+    )
 
     if cached_results and len(cached_results) == 2:
         print("✓ Search results cached successfully")
@@ -457,6 +482,7 @@ async def test_cache_system():
     # Cleanup
     await cleanup_cache()
     print("\nCache test completed")
+
 
 if __name__ == "__main__":
     asyncio.run(test_cache_system())

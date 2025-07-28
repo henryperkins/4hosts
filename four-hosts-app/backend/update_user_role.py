@@ -15,13 +15,16 @@ load_dotenv()
 # Conditional imports to handle different SQLAlchemy versions
 try:
     from database.connection import get_db_context
+
     use_context = True
 except ImportError:
     from database.connection import get_db
+
     use_context = False
 
 from database.models import User
 from services.auth import UserRole
+
 
 async def update_user_role_to_pro(email: str):
     """Update user role to PRO by email"""
@@ -37,36 +40,36 @@ async def update_user_role_to_pro(email: str):
         finally:
             await db_gen.aclose()
 
+
 async def _update_role(db, email: str):
     """Update user role in database"""
     # Find user by email
-    result = await db.execute(
-        select(User).filter(User.email == email)
-    )
+    result = await db.execute(select(User).filter(User.email == email))
     user = result.scalars().first()
-    
+
     if not user:
         print(f"❌ User with email {email} not found")
         return False
-        
+
     print(f"Found user: {user.username} ({user.email})")
     print(f"Current role: {user.role}")
-    
+
     # Update role to PRO
     await db.execute(
         update(User).where(User.id == user.id).values(role=UserRole.PRO.value)
     )
     await db.commit()
-    
+
     # Verify update
     await db.refresh(user)
     print(f"✅ Updated role to: {user.role}")
     return True
 
+
 if __name__ == "__main__":
     email = "hperkins@example.com"
     if len(sys.argv) > 1:
         email = sys.argv[1]
-    
+
     print(f"Updating role for user: {email}")
     asyncio.run(update_user_role_to_pro(email))

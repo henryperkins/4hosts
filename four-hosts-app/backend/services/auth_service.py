@@ -13,8 +13,8 @@ from .auth import (
     AuthService,
     TokenData,
     create_access_token,
-    hash_password,          # convenience
-    verify_password         # convenience
+    hash_password,  # convenience
+    verify_password,  # convenience
 )
 
 __all__ = [
