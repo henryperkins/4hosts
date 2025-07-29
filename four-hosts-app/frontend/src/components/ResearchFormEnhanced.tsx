@@ -47,57 +47,43 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   }
 
   const paradigmOptions = [
-    { value: 'auto', label: 'Auto', icon: '🔮', description: 'Let AI choose', color: 'text-purple-600 dark:text-purple-400' },
-    { value: 'dolores', label: 'Dolores', icon: '🛡️', description: 'Truth & Justice', color: 'text-red-600 dark:text-red-400' },
-    { value: 'bernard', label: 'Bernard', icon: '🧠', description: 'Analysis & Logic', color: 'text-blue-600 dark:text-blue-400' },
-    { value: 'teddy', label: 'Teddy', icon: '❤️', description: 'Care & Support', color: 'text-orange-600 dark:text-orange-400' },
-    { value: 'maeve', label: 'Maeve', icon: '📈', description: 'Strategy & Power', color: 'text-green-600 dark:text-green-400' }
+    { value: 'auto', label: 'Auto', icon: '🔮', description: 'Let AI choose', colorClass: 'text-purple-600 dark:text-purple-400' },
+    { value: 'dolores', label: 'Dolores', icon: '🛡️', description: 'Truth & Justice', colorClass: 'text-[--color-paradigm-dolores]' },
+    { value: 'bernard', label: 'Bernard', icon: '🧠', description: 'Analysis & Logic', colorClass: 'text-[--color-paradigm-bernard]' },
+    { value: 'teddy', label: 'Teddy', icon: '❤️', description: 'Care & Support', colorClass: 'text-[--color-paradigm-teddy]' },
+    { value: 'maeve', label: 'Maeve', icon: '📈', description: 'Strategy & Power', colorClass: 'text-[--color-paradigm-maeve]' }
   ]
 
   return (
-    <form onSubmit={handleSubmit} className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-8 animate-scale-in transition-all duration-300 hover:shadow-3xl">
+    <form onSubmit={handleSubmit} className="card rounded-2xl shadow-xl p-8 animate-scale-in">
       <div className="space-y-6">
         {/* Query Input */}
         <div className="animate-fade-in-up" style={{ animationDelay: '0.1s' }}>
-          <label htmlFor="query" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          <label htmlFor="query" className="block text-sm font-medium text-text mb-2">
             Research Query
           </label>
-          <div className="relative">
-            <InputField
-              id="query"
-              textarea
-              value={query}
-              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
-                setQuery(e.target.value)
-                setError('')
-              }}
-              placeholder="What would you like to research today?"
-              className={`px-4 py-3 border-2 rounded-xl transition-all duration-200
-                ${error
-                  ? 'border-red-500 dark:border-red-400 focus:ring-red-500 dark:focus:ring-red-400'
-                  : 'border-gray-300 dark:border-gray-600 focus:border-blue-500 dark:focus:border-blue-400'
-                }
-                bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100
-                placeholder-gray-400 dark:placeholder-gray-500
-                focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:outline-none
-                hover:border-gray-400 dark:hover:border-gray-500`}
-              rows={3}
-              disabled={isLoading}
-            />
-            {error && (
-              <div className="absolute -bottom-6 left-0 flex items-center text-red-600 dark:text-red-400 text-sm animate-shake">
-                <AlertCircle className="h-4 w-4 mr-1" />
-                {error}
-              </div>
-            )}
-          </div>
+          <InputField
+            id="query"
+            textarea
+            value={query}
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
+              setQuery(e.target.value)
+              setError('')
+            }}
+            placeholder="What would you like to research today?"
+            rows={3}
+            disabled={isLoading}
+            status={error ? 'error' : undefined}
+            errorMessage={error}
+            className="border-2"
+          />
         </div>
 
         {/* Paradigm Selection */}
         <div className="animate-fade-in-up" style={{ animationDelay: '0.2s' }}>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+          <div className="block text-sm font-medium text-text mb-3" role="group" aria-label="Paradigm Selection">
             Paradigm Selection
-          </label>
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             {paradigmOptions.map((option) => (
               <button
@@ -105,15 +91,17 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                 type="button"
                 onClick={() => setParadigm(option.value)}
                 disabled={isLoading}
-                className={`relative p-3 rounded-xl border-2 transition-all duration-200 transform hover:scale-105 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800
+                className={`relative p-3 rounded-xl border-2 transition-all duration-200 transform hover:scale-105 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-800
                   ${paradigm === option.value
-                    ? `border-blue-500 dark:border-blue-400 bg-blue-50 dark:bg-blue-900/30 shadow-lg scale-105 ${
+                    ? `border-blue-500 bg-blue-50 dark:bg-blue-900/30 shadow-lg scale-105 ${
                         option.value !== 'auto' ? `ring-2 ring-blue-500/50` : ''
                       }`
-                    : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-800'
+                    : 'border-border hover:border-border-subtle bg-surface dark:bg-surface-subtle'
                   }
                   ${isLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
                   group`}
+                aria-pressed={paradigm === option.value}
+                aria-label={`${option.label}: ${option.description}`}
               >
                 <div className="text-center">
                   <div className={`text-2xl mb-1 transition-transform duration-200 group-hover:scale-110 ${
@@ -121,15 +109,15 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                   }`}>
                     {option.icon}
                   </div>
-                  <div className={`font-medium text-sm ${option.color || 'text-gray-900 dark:text-gray-100'}`}>
+                  <div className={`font-medium text-sm ${option.colorClass || 'text-text'}`}>
                     {option.label}
                   </div>
-                  <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                  <div className="text-xs text-text-muted mt-1">
                     {option.description}
                   </div>
                 </div>
                 {paradigm === option.value && (
-                  <div className="absolute inset-0 rounded-xl bg-gradient-to-r from-transparent to-blue-500/10 dark:to-blue-400/10 pointer-events-none animate-pulse" />
+                  <div className="absolute inset-0 rounded-xl bg-linear-to-r from-transparent to-blue-500/10 dark:to-blue-400/10 pointer-events-none animate-pulse" />
                 )}
               </button>
             ))}
@@ -221,9 +209,9 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             loading={isLoading}
             fullWidth
             icon={Users}
-            className="bg-gradient-to-r from-blue-500 to-blue-600 dark:from-blue-600 dark:to-blue-700 hover:from-blue-600 hover:to-blue-700 dark:hover:from-blue-700 dark:hover:to-blue-800 py-3 px-4 rounded-xl font-medium transition-all duration-300 transform hover:scale-[1.02] hover:shadow-lg group relative overflow-hidden"
+            className="bg-linear-to-r from-blue-500 to-blue-600 dark:from-blue-600 dark:to-blue-700 hover:from-blue-600 hover:to-blue-700 dark:hover:from-blue-700 dark:hover:to-blue-800 py-3 px-4 rounded-xl font-medium transition-all duration-300 transform hover:scale-[1.02] hover:shadow-lg group relative overflow-hidden"
           >
-            <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -skew-x-12 translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-700"></span>
+            <span className="absolute inset-0 bg-linear-to-r from-transparent via-white/20 to-transparent -skew-x-12 translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-700"></span>
             <span className="flex items-center justify-center relative">
               {!isLoading && <Sparkles className="h-5 w-5 ml-2 opacity-0 group-hover:opacity-100 transition-all duration-300 transform group-hover:-rotate-12" />}
               {isLoading ? 'Researching...' : 'Ask the Four Hosts'}

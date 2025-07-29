@@ -173,7 +173,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               className="bg-blue-600 dark:bg-blue-500 h-2 rounded-full transition-all duration-500 ease-out relative"
               style={{ width: `${progress}%` }}
             >
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent to-white/20 animate-shimmer" />
+              <div className="absolute inset-0 bg-linear-to-r from-transparent to-white/20 animate-shimmer" />
             </div>
           </div>
         </div>

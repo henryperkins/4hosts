@@ -47,19 +47,17 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         }, 600)
       }
 
-      if (onClick) {
-        onClick(e)
-      }
+      onClick?.(e)
     }
 
-    const baseClasses = 'relative overflow-hidden font-medium rounded-md transition-all duration-200 transform active:scale-95'
+    const baseClasses = 'group relative overflow-hidden font-medium rounded-md transition-all duration-200 transform active:scale-95 focus-visible:outline-none'
     
     const variantClasses = {
-      primary: 'bg-blue-600 text-white hover:bg-blue-700 hover:shadow-lg focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
-      secondary: 'bg-gray-200 text-gray-800 hover:bg-gray-300 hover:shadow-md focus:ring-2 focus:ring-gray-500 focus:ring-offset-2',
-      success: 'bg-green-600 text-white hover:bg-green-700 hover:shadow-lg focus:ring-2 focus:ring-green-500 focus:ring-offset-2',
-      danger: 'bg-red-600 text-white hover:bg-red-700 hover:shadow-lg focus:ring-2 focus:ring-red-500 focus:ring-offset-2',
-      ghost: 'bg-transparent text-gray-700 hover:bg-gray-100 focus:ring-2 focus:ring-gray-500 focus:ring-offset-2'
+      primary: 'btn-primary',
+      secondary: 'btn-secondary',
+      success: 'bg-green-600 text-white hover:bg-green-700 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2',
+      danger: 'bg-red-600 text-white hover:bg-red-700 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2',
+      ghost: 'bg-transparent text-text hover:bg-surface-subtle focus-visible:ring-2 focus-visible:ring-gray-500 focus-visible:ring-offset-2'
     }
 
     const sizeClasses = {
@@ -86,13 +84,15 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         className={finalClassName}
         disabled={disabled || loading}
         onClick={handleClick}
+        aria-busy={loading}
+        aria-disabled={disabled || loading}
         {...props}
       >
         <span className="flex items-center justify-center space-x-2">
           {loading ? (
             <>
-              <span className="loading-spinner"></span>
-              <span>Loading<span className="loading-dots"></span></span>
+              <span className="loading-spinner" role="progressbar" aria-label="Loading"></span>
+              <span aria-live="polite">Loading<span className="loading-dots"></span></span>
             </>
           ) : (
             <>
@@ -112,28 +112,3 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
 )
 
 Button.displayName = 'Button'
-
-// Add ripple effect styles to your CSS
-const rippleStyles = `
-  .ripple {
-    position: absolute;
-    border-radius: 50%;
-    transform: scale(0);
-    animation: ripple-animation 0.6s ease-out;
-    background-color: rgba(255, 255, 255, 0.7);
-  }
-
-  @keyframes ripple-animation {
-    to {
-      transform: scale(4);
-      opacity: 0;
-    }
-  }
-`
-
-// Inject styles (in a real app, add this to your CSS file)
-if (typeof document !== 'undefined') {
-  const styleSheet = document.createElement('style')
-  styleSheet.textContent = rippleStyles
-  document.head.appendChild(styleSheet)
-}

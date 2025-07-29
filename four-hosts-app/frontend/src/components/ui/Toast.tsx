@@ -59,7 +59,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onC
         ${isVisible && !isExiting ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'}
       `}
     >
-      <div className="flex-shrink-0 animate-scale-in">
+      <div className="shrink-0 animate-scale-in">
         {icons[toast.type]}
       </div>
       <div className="ml-3 flex-1">
@@ -67,7 +67,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onC
       </div>
       <button
         onClick={handleClose}
-        className="ml-4 flex-shrink-0 inline-flex text-gray-400 hover:text-gray-600 focus:outline-none transition-colors duration-200"
+        className="ml-4 shrink-0 inline-flex text-gray-400 hover:text-gray-600 focus:outline-none transition-colors duration-200"
       >
         <X className="h-4 w-4" />
       </button>

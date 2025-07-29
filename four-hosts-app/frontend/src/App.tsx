@@ -71,8 +71,8 @@ const Navigation = () => {
               onClick={closeMobileMenu}
             >
               <span className="text-2xl group-hover:rotate-12 transition-transform duration-300 inline-block" role="img" aria-label="Theater masks">🎭</span>
-              <span className="hidden sm:inline bg-gradient-to-r from-red-600 via-blue-600 to-green-600 dark:from-red-400 dark:via-blue-400 dark:to-green-400 bg-clip-text text-transparent">Four Hosts Research</span>
-              <span className="sm:hidden bg-gradient-to-r from-red-600 via-blue-600 to-green-600 dark:from-red-400 dark:via-blue-400 dark:to-green-400 bg-clip-text text-transparent">4H Research</span>
+              <span className="hidden sm:inline bg-linear-to-r from-red-600 via-blue-600 to-green-600 dark:from-red-400 dark:via-blue-400 dark:to-green-400 bg-clip-text text-transparent">Four Hosts Research</span>
+              <span className="sm:hidden bg-linear-to-r from-red-600 via-blue-600 to-green-600 dark:from-red-400 dark:via-blue-400 dark:to-green-400 bg-clip-text text-transparent">4H Research</span>
             </Link>
             <div className="hidden md:flex items-center gap-2">
               {navItems.map(({ path, icon: Icon, label, paradigm }) => {
@@ -82,7 +82,7 @@ const Navigation = () => {
                     to={path}
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 ${
                       isActive(path)
-                        ? 'bg-gradient-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300 shadow-lg scale-105'
+                        ? 'bg-linear-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300 shadow-lg scale-105'
                         : `text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 ${getParadigmHoverClass(paradigm)}`
                     }`}
                     aria-current={isActive(path) ? 'page' : undefined}
@@ -97,7 +97,7 @@ const Navigation = () => {
 
           <div className="flex items-center gap-2 md:gap-4">
             <span className="hidden md:block text-sm text-gray-600 dark:text-gray-400 animate-fade-in">
-              Welcome, <span className="font-medium text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-pink-600 dark:from-purple-400 dark:to-pink-400">{user?.username}</span>
+              Welcome, <span className="font-medium text-transparent bg-clip-text bg-linear-to-r from-purple-600 to-pink-600 dark:from-purple-400 dark:to-pink-400">{user?.username}</span>
             </span>
 
             {/* Dark mode toggle with animation */}
@@ -153,7 +153,7 @@ const Navigation = () => {
                 onClick={closeMobileMenu}
                 className={`block px-4 py-2 transition-all duration-300 transform hover:translate-x-2 ${
                   isActive(path)
-                    ? 'bg-gradient-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300'
+                  ? 'bg-linear-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300'
                     : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
                 }`}
                 style={{ animationDelay: `${index * 50}ms` }}
@@ -244,7 +244,7 @@ const ResearchPage = () => {
       {error && (
         <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg animate-slide-down transform transition-all duration-300 hover:scale-[1.02]">
           <div className="flex items-center gap-2">
-            <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 flex-shrink-0 animate-pulse" />
+            <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 shrink-0 animate-pulse" />
             <p className="text-red-800 dark:text-red-200">{error}</p>
           </div>
         </div>

@@ -1,11 +1,12 @@
 export type Paradigm = 'dolores' | 'teddy' | 'bernard' | 'maeve'
 
+// Use CSS variables for colors to maintain single source of truth
 export const paradigmColors: Record<Paradigm | 'default', string> = {
-  dolores: 'bg-red-100 text-red-800 border-red-200 dark:bg-red-900/20 dark:text-red-200 dark:border-red-800',
-  teddy: 'bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/20 dark:text-orange-200 dark:border-orange-800',
-  bernard: 'bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/20 dark:text-blue-200 dark:border-blue-800',
-  maeve: 'bg-green-100 text-green-800 border-green-200 dark:bg-green-900/20 dark:text-green-200 dark:border-green-800',
-  default: 'bg-gray-100 text-gray-800 border-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-700'
+  dolores: 'bg-[--color-paradigm-dolores] text-white',
+  teddy: 'bg-[--color-paradigm-teddy] text-white',
+  bernard: 'bg-[--color-paradigm-bernard] text-white',
+  maeve: 'bg-[--color-paradigm-maeve] text-white',
+  default: 'bg-surface-muted text-text'
 }
 
 export const paradigmDescriptions: Record<Paradigm, string> = {
@@ -15,63 +16,91 @@ export const paradigmDescriptions: Record<Paradigm, string> = {
   maeve: 'Strategy & Power'
 }
 
-// Hex colors for charts and visualizations (e.g., Recharts)
-export const paradigmHexColors: Record<Paradigm, string> = {
-  dolores: '#EF4444',
-  teddy: '#F97316',
-  bernard: '#3B82F6',
-  maeve: '#10B981'
+// Helper to get color values from CSS variables for charts
+export const getParadigmColorValue = (paradigm: Paradigm): string => {
+  if (typeof window === 'undefined') {
+    // Fallback for SSR
+    const fallbacks: Record<Paradigm, string> = {
+      dolores: '#ef4444',
+      teddy: '#f97316',
+      bernard: '#3b82f6',
+      maeve: '#10b981'
+    }
+    return fallbacks[paradigm]
+  }
+  
+  const computedStyle = getComputedStyle(document.documentElement)
+  const cssVar = `--color-paradigm-${paradigm}`
+  const value = computedStyle.getPropertyValue(cssVar).trim()
+  
+  // Convert oklch to hex if needed (for chart libraries)
+  if (value.startsWith('oklch')) {
+    // For now, return fallback - in production, use a proper color conversion library
+    const fallbacks: Record<Paradigm, string> = {
+      dolores: '#ef4444',
+      teddy: '#f97316',
+      bernard: '#3b82f6',
+      maeve: '#10b981'
+    }
+    return fallbacks[paradigm]
+  }
+  
+  return value || '#6B7280'
 }
 
-// Extended paradigm information used by ParadigmDisplay and ResearchHistory
+// Extended paradigm information with CSS variable references
 export const paradigmInfo = {
   dolores: {
     name: 'Dolores (Revolutionary)',
     shortName: 'Dolores',
-    color: 'bg-red-500',
-    borderColor: 'border-red-500',
-    textColor: 'text-red-700',
-    bgLight: 'bg-red-50',
+    color: 'bg-[--color-paradigm-dolores]',
+    borderColor: 'border-[--color-paradigm-dolores]',
+    textColor: 'text-[--color-paradigm-dolores]',
+    bgLight: 'paradigm-bg-dolores',
     description: 'Exposing systemic injustices and power imbalances',
     shortDescription: 'Truth & Justice',
     icon: '⚔️',
-    focus: 'Revolutionary perspective focused on exposing hidden truths'
+    focus: 'Revolutionary perspective focused on exposing hidden truths',
+    cssVar: '--color-paradigm-dolores'
   },
   teddy: {
     name: 'Teddy (Devotion)',
     shortName: 'Teddy',
-    color: 'bg-orange-500',
-    borderColor: 'border-orange-500',
-    textColor: 'text-orange-700',
-    bgLight: 'bg-orange-50',
+    color: 'bg-[--color-paradigm-teddy]',
+    borderColor: 'border-[--color-paradigm-teddy]',
+    textColor: 'text-[--color-paradigm-teddy]',
+    bgLight: 'paradigm-bg-teddy',
     description: 'Protecting and supporting vulnerable communities',
     shortDescription: 'Care & Support',
     icon: '🛡️',
-    focus: 'Compassionate approach emphasizing community care'
+    focus: 'Compassionate approach emphasizing community care',
+    cssVar: '--color-paradigm-teddy'
   },
   bernard: {
     name: 'Bernard (Analytical)',
     shortName: 'Bernard',
-    color: 'bg-blue-500',
-    borderColor: 'border-blue-500',
-    textColor: 'text-blue-700',
-    bgLight: 'bg-blue-50',
+    color: 'bg-[--color-paradigm-bernard]',
+    borderColor: 'border-[--color-paradigm-bernard]',
+    textColor: 'text-[--color-paradigm-bernard]',
+    bgLight: 'paradigm-bg-bernard',
     description: 'Providing objective analysis and empirical evidence',
     shortDescription: 'Analysis & Logic',
     icon: '🔬',
-    focus: 'Data-driven analysis with empirical foundations'
+    focus: 'Data-driven analysis with empirical foundations',
+    cssVar: '--color-paradigm-bernard'
   },
   maeve: {
     name: 'Maeve (Strategic)',
     shortName: 'Maeve',
-    color: 'bg-green-500',
-    borderColor: 'border-green-500',
-    textColor: 'text-green-700',
-    bgLight: 'bg-green-50',
+    color: 'bg-[--color-paradigm-maeve]',
+    borderColor: 'border-[--color-paradigm-maeve]',
+    textColor: 'text-[--color-paradigm-maeve]',
+    bgLight: 'paradigm-bg-maeve',
     description: 'Delivering actionable strategies and competitive advantage',
     shortDescription: 'Strategy & Power',
     icon: '♟️',
-    focus: 'Strategic planning for sustainable power dynamics'
+    focus: 'Strategic planning for sustainable power dynamics',
+    cssVar: '--color-paradigm-maeve'
   }
 } as const
 
@@ -81,7 +110,17 @@ export function isValidParadigm(value: string): value is Paradigm {
 }
 
 // Helper function to get paradigm class
-export function getParadigmClass(paradigm: string): string {
+export function getParadigmClass(paradigm: string, variant: 'full' | 'subtle' = 'full'): string {
+  if (variant === 'subtle') {
+    const subtleClasses: Record<Paradigm | 'default', string> = {
+      dolores: 'paradigm-bg-dolores border border-[--color-paradigm-dolores]/20 text-[--color-paradigm-dolores]',
+      teddy: 'paradigm-bg-teddy border border-[--color-paradigm-teddy]/20 text-[--color-paradigm-teddy]',
+      bernard: 'paradigm-bg-bernard border border-[--color-paradigm-bernard]/20 text-[--color-paradigm-bernard]',
+      maeve: 'paradigm-bg-maeve border border-[--color-paradigm-maeve]/20 text-[--color-paradigm-maeve]',
+      default: 'bg-surface-muted text-text-muted border border-border'
+    }
+    return subtleClasses[paradigm as Paradigm] || subtleClasses.default
+  }
   return paradigmColors[paradigm as Paradigm] || paradigmColors.default
 }
 
@@ -90,15 +129,18 @@ export function getParadigmDescription(paradigm: string): string {
   return paradigmDescriptions[paradigm as Paradigm] || paradigm
 }
 
-// Helper function to get paradigm hex color
+// Helper function to get paradigm hex color (for charts)
 export function getParadigmHexColor(paradigm: string): string {
-  return paradigmHexColors[paradigm as Paradigm] || '#6B7280'
+  return getParadigmColorValue(paradigm as Paradigm)
 }
 
-// Hover colors for navigation and interactive elements
-export const paradigmHoverColors: Record<Paradigm, string> = {
-  dolores: 'hover:text-red-600 dark:hover:text-red-400',
-  teddy: 'hover:text-orange-600 dark:hover:text-orange-400',
-  bernard: 'hover:text-blue-600 dark:hover:text-blue-400',
-  maeve: 'hover:text-green-600 dark:hover:text-green-400'
+// Helper to get button class for paradigm
+export function getParadigmButtonClass(paradigm: Paradigm): string {
+  const buttonClasses: Record<Paradigm, string> = {
+    dolores: 'btn-paradigm-dolores',
+    teddy: 'btn-paradigm-teddy',
+    bernard: 'btn-paradigm-bernard',
+    maeve: 'btn-paradigm-maeve'
+  }
+  return buttonClasses[paradigm] || 'btn-primary'
 }

@@ -121,7 +121,7 @@ export const ResearchHistory: React.FC = () => {
         <p className="text-gray-600 dark:text-gray-400 mb-6">Start exploring and your research queries will appear here</p>
         <button
           onClick={() => navigate('/')}
-          className="px-6 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 hover:shadow-lg"
+          className="px-6 py-2 bg-linear-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 hover:shadow-lg"
         >
           Start Researching
         </button>
@@ -151,7 +151,7 @@ export const ResearchHistory: React.FC = () => {
               key={item.research_id}
               className={`relative border-2 ${paradigm ? paradigm.borderColor : 'border-gray-200 dark:border-gray-700'} rounded-xl p-4 transition-all duration-300 cursor-pointer transform ${
                 isHovered ? 'scale-[1.02] shadow-xl -translate-y-1' : 'hover:shadow-lg'
-              } animate-slide-up bg-gradient-to-r from-transparent ${
+              } animate-slide-up bg-linear-to-r from-transparent ${
                 paradigm ? `to-${item.paradigm}-50 dark:to-${item.paradigm}-900/10` : 'to-gray-50 dark:to-gray-900/10'
               }`}
               onClick={() => handleViewResult(item.research_id)}
@@ -220,7 +220,7 @@ export const ResearchHistory: React.FC = () => {
               {item.processing_time && (
                 <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200 dark:bg-gray-700 rounded-b-xl overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-1000 ease-out"
+                    className="h-full bg-linear-to-r from-blue-500 to-blue-600 transition-all duration-1000 ease-out"
                     style={{
                       width: `${Math.min((item.processing_time / 10) * 100, 100)}%`,
                       animationDelay: `${index * 100}ms`
@@ -238,7 +238,7 @@ export const ResearchHistory: React.FC = () => {
           <button
             onClick={loadHistory}
             disabled={isLoading}
-            className="px-6 py-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 mx-auto"
+            className="px-6 py-2 bg-linear-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 mx-auto"
           >
             {isLoading ? (
               <>

@@ -1,5 +1,24 @@
 /* Animation utilities and micro-interactions */
 
+/* Button ripple effect */
+@layer utilities {
+  .ripple {
+    position: absolute;
+    border-radius: 50%;
+    transform: scale(0);
+    animation: ripple-animation 0.6s ease-out;
+    background-color: rgb(255 255 255 / 0.3);
+    pointer-events: none;
+  }
+}
+
+@keyframes ripple-animation {
+  to {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
 /* Keyframe animations */
 @keyframes slide-up {
   from {
@@ -178,122 +197,81 @@
 }
 
 /* Animation classes */
-.animate-slide-up {
-  animation: slide-up 0.3s ease-out;
-}
+@layer utilities {
+  .animate-slide-up {
+    animation: slide-up 0.3s ease-out;
+  }
 
-.animate-slide-down {
-  animation: slide-down 0.3s ease-out;
-}
+  .animate-slide-down {
+    animation: slide-down 0.3s ease-out;
+  }
 
-.animate-fade-in {
-  animation: fade-in 0.4s ease-out;
-}
+  .animate-fade-in {
+    animation: fade-in 0.4s ease-out;
+  }
 
-.animate-scale-in {
-  animation: scale-in 0.3s ease-out;
-}
+  .animate-scale-in {
+    animation: scale-in 0.3s ease-out;
+  }
 
-.animate-shimmer {
-  background: linear-gradient(
-      90deg,
-      rgba(255,255,255,0) 0%,
-      rgba(255,255,255,0.2) 20%,
-      rgba(255,255,255,0.5) 60%,
-      rgba(255,255,255,0)
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
-}
-
-.dark .animate-shimmer{
+  .animate-shimmer {
     background: linear-gradient(
         90deg,
-        rgba(255,255,255,0) 0%,
-        rgba(255,255,255,0.1) 20%,
-        rgba(255,255,255,0.2) 60%,
-        rgba(255,255,255,0)
+        rgb(255 255 255 / 0) 0%,
+        rgb(255 255 255 / 0.2) 20%,
+        rgb(255 255 255 / 0.5) 60%,
+        rgb(255 255 255 / 0)
     );
-}
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
 
-.animate-success-check {
-  animation: success-check 0.6s ease-out forwards;
-  stroke-dasharray: 100;
-}
+  .dark .animate-shimmer {
+    background: linear-gradient(
+        90deg,
+        rgb(255 255 255 / 0) 0%,
+        rgb(255 255 255 / 0.1) 20%,
+        rgb(255 255 255 / 0.2) 60%,
+        rgb(255 255 255 / 0)
+    );
+  }
 
-.animate-error-shake {
-  animation: error-shake 0.5s ease-in-out;
-}
+  .animate-success-check {
+    animation: success-check 0.6s ease-out forwards;
+    stroke-dasharray: 100;
+  }
 
-.animate-pulse-border {
-  animation: pulse-border 1.5s ease-in-out;
-}
+  .animate-shake {
+    animation: error-shake 0.5s ease-in-out;
+  }
 
-.animate-bounce-in {
-  animation: bounce-in 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-}
+  .animate-pulse-border {
+    animation: pulse-border 1.5s ease-in-out;
+  }
 
-.animate-slide-in-right {
-  animation: slide-in-right 0.4s ease-out;
-}
+  .animate-bounce-in {
+    animation: bounce-in 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  }
 
-.animate-slide-in-left {
-  animation: slide-in-left 0.4s ease-out;
-}
+  .animate-slide-in-right {
+    animation: slide-in-right 0.4s ease-out;
+  }
 
-.animate-fade-in-up {
-  animation: fade-in-up 0.5s ease-out;
-}
+  .animate-slide-in-left {
+    animation: slide-in-left 0.4s ease-out;
+  }
 
-/* Transition utilities */
-.transition-smooth {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.transition-bounce {
-  transition: all 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-}
-
-/* Skeleton loading */
-.skeleton {
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-}
-
-.skeleton-text {
-  height: 1rem;
-  border-radius: 0.25rem;
-  margin-bottom: 0.5rem;
-}
-
-.skeleton-button {
-  height: 2.5rem;
-  border-radius: 0.375rem;
-}
-
-/* Hover effects */
-.hover-lift {
-  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
-}
-
-.hover-lift:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-/* Focus effects */
-.focus-ring-animated:focus {
-  outline: none;
-  animation: pulse-border 1.5s ease-in-out;
+  .animate-fade-in-up {
+    animation: fade-in-up 0.5s ease-out;
+  }
 }
 
 /* Loading states */
-.loading-dots::after {
-  content: '';
-  animation: loading-dots 1.5s infinite;
+@layer utilities {
+  .loading-dots::after {
+    content: '';
+    animation: loading-dots 1.5s infinite;
+  }
 }
 
 @keyframes loading-dots {
@@ -315,61 +293,112 @@
 }
 
 /* Success and error states */
-.success-glow {
-  box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
-  transition: box-shadow 0.3s ease-out;
-}
+@layer utilities {
+  .success-glow {
+    box-shadow: 0 0 20px rgb(16 185 129 / 0.3);
+    transition: box-shadow 0.3s ease-out;
+  }
 
-.error-glow {
-  box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
-  transition: box-shadow 0.3s ease-out;
-}
+  .error-glow {
+    box-shadow: 0 0 20px rgb(239 68 68 / 0.3);
+    transition: box-shadow 0.3s ease-out;
+  }
 
-/* Stagger animations for lists */
-.stagger-animation>* {
-  animation: fade-in-up 0.5s ease-out both;
-}
+  /* Stagger animations for lists */
+  .stagger-animation > * {
+    animation: fade-in-up 0.5s ease-out both;
+  }
 
-.stagger-animation>*:nth-child(1) {
-  animation-delay: 0.05s;
-}
+  .stagger-animation > *:nth-child(1) {
+    animation-delay: 0.05s;
+  }
 
-.stagger-animation>*:nth-child(2) {
-  animation-delay: 0.1s;
-}
+  .stagger-animation > *:nth-child(2) {
+    animation-delay: 0.1s;
+  }
 
-.stagger-animation>*:nth-child(3) {
-  animation-delay: 0.15s;
-}
+  .stagger-animation > *:nth-child(3) {
+    animation-delay: 0.15s;
+  }
 
-.stagger-animation>*:nth-child(4) {
-  animation-delay: 0.2s;
-}
+  .stagger-animation > *:nth-child(4) {
+    animation-delay: 0.2s;
+  }
 
-.stagger-animation>*:nth-child(5) {
-  animation-delay: 0.25s;
-}
+  .stagger-animation > *:nth-child(5) {
+    animation-delay: 0.25s;
+  }
 
-.stagger-animation>*:nth-child(6) {
-  animation-delay: 0.3s;
-}
+  .stagger-animation > *:nth-child(6) {
+    animation-delay: 0.3s;
+  }
 
-.stagger-animation>*:nth-child(7) {
-  animation-delay: 0.35s;
-}
+  .stagger-animation > *:nth-child(7) {
+    animation-delay: 0.35s;
+  }
 
-.stagger-animation>*:nth-child(8) {
-  animation-delay: 0.4s;
+  .stagger-animation > *:nth-child(8) {
+    animation-delay: 0.4s;
+  }
+
+  /* For more than 8 children, use a general pattern */
+  .stagger-animation > *:nth-child(n+9) {
+    animation-delay: calc(0.4s + (0.05s * (n - 9)));
+  }
 }
 
 /* Prefers reduced motion */
 @media (prefers-reduced-motion: reduce) {
-
   *,
   ::before,
   ::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Remove animations from specific components */
+  .animate-slide-up,
+  .animate-slide-down,
+  .animate-fade-in,
+  .animate-scale-in,
+  .animate-bounce-in,
+  .animate-slide-in-right,
+  .animate-slide-in-left,
+  .animate-fade-in-up,
+  .animate-shake,
+  .animate-pulse-border {
+    animation: none !important;
+  }
+
+  /* Disable hover transforms */
+  .hover-lift:hover,
+  .card-interactive:hover,
+  .paradigm-card:hover,
+  .btn:hover {
+    transform: none !important;
+  }
+
+  /* Disable ripple effect */
+  .ripple {
+    display: none !important;
+  }
+
+  /* Disable shimmer effect */
+  .animate-shimmer,
+  .card-interactive::after,
+  .paradigm-card::before {
+    animation: none !important;
+  }
+
+  /* Disable gradient animations */
+  .gradient-shift {
+    animation: none !important;
+  }
+
+  /* Keep essential loading indicators but make them simpler */
+  .loading-spinner {
+    animation: spin 1.5s linear infinite !important;
   }
 }
