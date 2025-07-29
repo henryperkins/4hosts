@@ -24,6 +24,20 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     : results.answer;
   const { integrated_synthesis } = results;
 
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+
+    if (dropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [dropdownOpen])
+
   // If there's no answer data, show error state
   if (!answer) {
     return (
@@ -50,20 +64,6 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       </div>
     )
   }
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setDropdownOpen(false)
-      }
-    }
-
-    if (dropdownOpen) {
-      document.addEventListener('mousedown', handleClickOutside)
-      return () => document.removeEventListener('mousedown', handleClickOutside)
-    }
-  }, [dropdownOpen])
 
   const toggleSection = (index: number) => {
     setExpandedSections(prev => {
