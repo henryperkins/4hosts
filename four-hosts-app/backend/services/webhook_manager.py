@@ -36,6 +36,7 @@ class WebhookEvent(str, Enum):
     RESEARCH_PROGRESS = "research.progress"
     RESEARCH_COMPLETED = "research.completed"
     RESEARCH_FAILED = "research.failed"
+    RESEARCH_CANCELLED = "research.cancelled"
     CLASSIFICATION_COMPLETED = "classification.completed"
     SYNTHESIS_COMPLETED = "synthesis.completed"
     EXPORT_READY = "export.ready"

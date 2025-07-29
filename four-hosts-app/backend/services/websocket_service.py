@@ -278,6 +278,35 @@ class ConnectionManager:
             },
         }
 
+    async def disconnect_all(self):
+        """Disconnect all active WebSocket connections"""
+        logger.info("Disconnecting all WebSocket connections...")
+        
+        # Create a list of all connections to disconnect
+        all_connections = []
+        for user_connections in self.active_connections.values():
+            all_connections.extend(user_connections)
+        
+        # Disconnect each connection
+        for websocket in all_connections:
+            try:
+                await self.disconnect(websocket)
+                # Try to close the websocket properly
+                try:
+                    await websocket.close(code=1001, reason="Server shutdown")
+                except:
+                    pass
+            except Exception as e:
+                logger.error(f"Error disconnecting websocket: {e}")
+        
+        # Clear all data structures
+        self.active_connections.clear()
+        self.connection_metadata.clear()
+        self.research_subscriptions.clear()
+        self.message_history.clear()
+        
+        logger.info("All WebSocket connections disconnected")
+
 
 # --- Progress Tracker ---
 

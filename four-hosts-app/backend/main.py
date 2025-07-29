@@ -170,6 +170,97 @@ HOST_TO_MAIN_PARADIGM = {
     HostParadigm.BERNARD: Paradigm.BERNARD,
     HostParadigm.MAEVE: Paradigm.MAEVE,
 }
+# ---------------------------------------------------------------------------
+# Paradigm explanation data & management endpoints
+# ---------------------------------------------------------------------------
+
+# Detailed paradigm explanations (extend as the knowledge base grows)
+PARADIGM_EXPLANATIONS: Dict[Paradigm, Dict[str, Any]] = {
+    Paradigm.DOLORES: {
+        "paradigm": "dolores",
+        "name": "Revolutionary Paradigm",
+        "description": "Expose systemic issues and empower transformative change."
+    },
+    Paradigm.TEDDY: {
+        "paradigm": "teddy",
+        "name": "Devotion Paradigm",
+        "description": "Provide compassionate support and protective measures."
+    },
+    Paradigm.BERNARD: {
+        "paradigm": "bernard",
+        "name": "Analytical Paradigm",
+        "description": "Focus on empirical, data-driven analysis."
+    },
+    Paradigm.MAEVE: {
+        "paradigm": "maeve",
+        "name": "Strategic Paradigm",
+        "description": "Deliver actionable strategies and optimization."
+    },
+}
+
+class ParadigmOverrideRequest(BaseModel):
+    """Request model to force a different paradigm for an in-flight research job"""
+    research_id: str
+    paradigm: Paradigm
+    reason: Optional[str] = None
+
+
+# Authentication dependency
+# Accept token from Authorization header, cookies, or `access_token` query param
+async def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(
+        HTTPBearer(auto_error=False)
+    ),
+):
+    """Resolve the current authenticated user.
+
+    Priority of token lookup:
+    1. Standard Authorization header processed by FastAPI's HTTPBearer
+    2. Raw `Authorization` header (if auto_error=False disabled automatic 401)
+    3. Cookie named `access_token`
+    4. Query string param `access_token`
+    """
+    token: Optional[str] = None
+
+    # 1. Token provided via normal HTTPBearer dependency
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+
+    # 2. Manually inspect Authorization header if not captured
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+
+    # 3. Check cookie
+    if not token:
+        token = request.cookies.get("access_token")
+
+    # 4. Check query param
+    if not token:
+        token = request.query_params.get("access_token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing authentication token")
+
+    # Re-use the auth service's validator
+    bearer_credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer", credentials=token
+    )
+    token_data = await auth_get_current_user(bearer_credentials)
+
+    # Map to lightweight user object
+    user = SimpleNamespace(
+        id=token_data.user_id,
+        email=token_data.email,
+        role=(
+            UserRole(token_data.role)
+            if isinstance(token_data.role, str)
+            else token_data.role
+        ),
+    )
+    return user
 
 
 class ResearchDepth(str, Enum):
@@ -337,11 +428,8 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Research orchestrator cleaned up")
 
     # Cleanup connections
-    if hasattr(connection_manager, "disconnect_all"):
-        await connection_manager.disconnect_all()
-    else:
-        # Fallback if method doesn't exist
-        pass
+    await connection_manager.disconnect_all()
+    logger.info("✓ WebSocket connections cleaned up")
 
     logger.info("👋 Shutdown complete")
 
@@ -416,64 +504,6 @@ async def request_id_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
     return response
-
-
-# Authentication dependency
-# Accept token from Authorization header, cookies, or `access_token` query param
-async def get_current_user(
-    request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Security(
-        HTTPBearer(auto_error=False)
-    ),
-):
-    """Resolve the current authenticated user.
-
-    Priority of token lookup:
-    1. Standard Authorization header processed by FastAPI's HTTPBearer
-    2. Raw `Authorization` header (if auto_error=False disabled automatic 401)
-    3. Cookie named `access_token`
-    4. Query string param `access_token`
-    """
-    token: Optional[str] = None
-
-    # 1. Token provided via normal HTTPBearer dependency
-    if credentials and credentials.credentials:
-        token = credentials.credentials
-
-    # 2. Manually inspect Authorization header if not captured
-    if not token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.lower().startswith("bearer "):
-            token = auth_header[7:]
-
-    # 3. Check cookie
-    if not token:
-        token = request.cookies.get("access_token")
-
-    # 4. Check query param
-    if not token:
-        token = request.query_params.get("access_token")
-
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing authentication token")
-
-    # Re-use the auth service’s validator
-    bearer_credentials = HTTPAuthorizationCredentials(
-        scheme="Bearer", credentials=token
-    )
-    token_data = await auth_get_current_user(bearer_credentials)
-
-    # Map to lightweight user object
-    user = SimpleNamespace(
-        id=token_data.user_id,
-        email=token_data.email,
-        role=(
-            UserRole(token_data.role)
-            if isinstance(token_data.role, str)
-            else token_data.role
-        ),
-    )
-    return user
 
 
 # Root Endpoint
@@ -752,13 +782,64 @@ async def classify_paradigm(query: str, current_user: User = Depends(get_current
         raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
 
 
+# Paradigm Management Endpoints
+@app.post("/paradigms/override", tags=["paradigms"])
+async def override_paradigm(
+    payload: ParadigmOverrideRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Force a specific paradigm for an existing research request and restart processing.
+    """
+    research = await research_store.get(payload.research_id)
+    if not research:
+        raise HTTPException(status_code=404, detail="Research not found")
+
+    # Ownership / permission check
+    if (research["user_id"] != str(current_user.id)) and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Update paradigm and reset status
+    await research_store.update_field(payload.research_id, "override_paradigm", payload.paradigm.value)
+    await research_store.update_field(payload.research_id, "status", ResearchStatus.PROCESSING)
+
+    # Re-queue research execution with same query/options
+    try:
+        research_query = ResearchQuery(
+            query=research["query"],
+            options=ResearchOptions(**research["options"]),
+        )
+        background_tasks.add_task(
+            execute_real_research, payload.research_id, research_query, str(current_user.id)
+        )
+    except Exception as e:
+        logger.warning(f"Failed to re-queue research {payload.research_id}: {e}")
+
+    return {
+        "success": True,
+        "research_id": payload.research_id,
+        "new_paradigm": payload.paradigm.value,
+        "status": "re-processing",
+    }
+
+
+@app.get("/paradigms/explanation/{paradigm}", tags=["paradigms"])
+async def get_paradigm_explanation(paradigm: Paradigm):
+    """Return a detailed explanation of the selected paradigm"""
+    explanation = PARADIGM_EXPLANATIONS.get(paradigm)
+    if not explanation:
+        raise HTTPException(status_code=404, detail="Paradigm not found")
+    return explanation
+
+
 # Research Endpoints
 @app.post("/research/query", tags=["research"])
 async def submit_research(
     research: ResearchQuery,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    request: Request = None,
+    request: Optional[Request] = None,
 ):
     """Submit a research query for paradigm-based analysis"""
     if not system_initialized:
@@ -887,7 +968,7 @@ async def get_research_status(
         "progress": research.get("progress", {}),
         "cost_info": research.get("cost_info"),
     }
-    
+
     # Add status-specific information
     if research["status"] == ResearchStatus.FAILED:
         status_response["error"] = research.get("error", "Research execution failed")
@@ -903,7 +984,7 @@ async def get_research_status(
     elif research["status"] in [ResearchStatus.PROCESSING, ResearchStatus.IN_PROGRESS]:
         status_response["can_cancel"] = True
         status_response["message"] = f"Research is {research['status']}. Please wait for completion or cancel if needed."
-    
+
     return status_response
 
 
@@ -1042,7 +1123,7 @@ async def cancel_research(
             active_research.dec()
         except Exception as e:
             logger.warning(f"Failed to decrement active research counter: {e}")
-            
+
     except Exception as e:
         logger.error(f"Failed to cancel research {research_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to cancel research")
@@ -1108,7 +1189,7 @@ async def get_research_history(
 
         # Apply pagination
         total = len(user_research)
-        paginated = user_research[offset : offset + limit]
+        paginated = user_research[offset: offset + limit]
 
         # Format the response
         history = []
@@ -1224,7 +1305,7 @@ async def websocket_research_progress(websocket: WebSocket, research_id: str):
             # Keep connection alive
             await asyncio.sleep(1)
     except WebSocketDisconnect:
-        connection_manager.disconnect(research_id)
+        await connection_manager.disconnect(websocket)
         websocket_connections.dec()
 
 
@@ -1277,7 +1358,7 @@ async def execute_real_research(
     research_id: str, research: ResearchQuery, user_id: str
 ):
     """Execute real research using the complete pipeline"""
-    
+
     async def check_cancellation():
         """Check if research has been cancelled"""
         research_data = await research_store.get(research_id)
@@ -1285,12 +1366,12 @@ async def execute_real_research(
             logger.info(f"Research {research_id} was cancelled, stopping execution")
             return True
         return False
-    
+
     try:
         # Check for cancellation before starting
         if await check_cancellation():
             return
-            
+
         # Update status
         await research_store.update_field(
             research_id, "status", ResearchStatus.IN_PROGRESS
