@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 
 echo "📁 Project root: $PROJECT_ROOT"
+echo "🔄 Running in background mode"
 
 # Function to cleanup on exit
 cleanup() {
@@ -130,7 +131,11 @@ echo "=================================="
 echo "Backend:  http://localhost:8000"
 echo "API Docs: http://localhost:8000/docs"
 echo "Frontend: http://localhost:$PORT"
-echo -e "\nPress Ctrl+C to stop all services"
 
-# Wait for both processes
-wait $BACKEND_PID $FRONTEND_PID
+echo -e "\n🔧 Services started in background mode"
+echo "Backend PID: $BACKEND_PID"
+echo "Frontend PID: $FRONTEND_PID"
+echo -e "\nTo stop services, run:"
+echo "  ./stop-app.sh"
+echo "  or: kill $BACKEND_PID $FRONTEND_PID"
+echo "  or: pkill -f 'uvicorn\|vite'"
