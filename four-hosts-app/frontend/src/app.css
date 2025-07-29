@@ -2,7 +2,7 @@
 @import "tailwindcss";
 
 /* Tailwind CSS v4 Theme Configuration */
-@theme {
+@theme extend {
   /* Design System Colors */
   --color-paradigm-dolores: oklch(0.629 0.237 24.8);
   --color-paradigm-teddy: oklch(0.7 0.193 42.7);
