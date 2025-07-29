@@ -47,7 +47,7 @@ pip install -r requirements.txt > /dev/null 2>&1
 export ENVIRONMENT=development
 
 # Start backend without watching venv directory
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --reload --reload-exclude "venv/*" --reload-exclude "__pycache__/*" --reload-exclude "*.pyc" &
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --reload --reload-dir . --reload-exclude venv --reload-exclude __pycache__ --reload-exclude "*.pyc" --reload-exclude "*.log" --reload-exclude "test_*" &
 BACKEND_PID=$!
 echo "✅ Backend started (PID: $BACKEND_PID)"
 echo "   Available at: http://localhost:8000"
@@ -89,7 +89,7 @@ echo "   Available at: http://localhost:$PORT"
 echo -e "\n✨ Four Hosts Application is running!"
 echo "=================================="
 echo "Backend:  http://localhost:8000"
-echo "API Docs: http://localhost:8000/docs" 
+echo "API Docs: http://localhost:8000/docs"
 echo "Frontend: http://localhost:$PORT"
 echo -e "\nPress Ctrl+C to stop all services"
 

@@ -1,3 +1,6 @@
+/* Import Tailwind CSS v4 first */
+@import "tailwindcss";
+
 /* Tailwind CSS v4 Theme Configuration */
 @theme {
   /* Design System Colors */
@@ -60,6 +63,21 @@
   color-scheme: light;
 }
 
+/* Support system dark mode preference */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    color-scheme: dark;
+    
+    --color-surface: oklch(0.15 0.02 240);
+    --color-surface-subtle: oklch(0.18 0.015 240);
+    --color-surface-muted: oklch(0.22 0.01 240);
+    --color-border: oklch(0.3 0.01 240);
+    --color-border-subtle: oklch(0.25 0.005 240);
+    --color-text: oklch(0.95 0.01 240);
+    --color-text-muted: oklch(0.7 0.01 240);
+  }
+}
+
 .dark {
   color-scheme: dark;
   
@@ -72,178 +90,16 @@
   --color-text-muted: oklch(0.7 0.01 240);
 }
 
-/* Import Tailwind CSS v4 */
-@import "tailwindcss";
-
-/* Import animations */
-@import "./styles/animations.css";
-
-/* Import theme transitions */
-@import "./styles/theme-transitions.css";
-
-/* Component Classes - properly layered */
-@layer components {
-  /* Card Component */
-  .card {
-    @apply bg-surface rounded-xl shadow-md p-6;
-    @apply transition-shadow duration-200 ease-smooth;
-    @apply hover:shadow-lg;
-    @apply dark:bg-surface-subtle;
-  }
-
-  .card-interactive {
-    @apply card cursor-pointer;
-    @apply hover:shadow-xl hover:-translate-y-1;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .card-interactive::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.1), transparent);
-    transition: left 0.5s var(--ease-smooth);
-  }
-
-  .card-interactive:hover::after {
-    left: 100%;
-  }
-
-  /* Button Component */
-  .btn {
-    @apply px-4 py-2 rounded-md font-medium;
-    @apply transition-all duration-200 ease-out;
-    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2;
-    @apply disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0;
-    @apply active:translate-y-0;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .btn-primary {
-    @apply btn bg-blue-600 text-white;
-    @apply hover:bg-blue-700 hover:shadow-lg hover:-translate-y-0.5;
-    @apply active:shadow-md;
-    @apply focus-visible:ring-blue-500;
-    @apply dark:bg-blue-500 dark:hover:bg-blue-600;
-  }
-
-  .btn-secondary {
-    @apply btn bg-surface-muted text-text;
-    @apply hover:bg-surface-subtle hover:shadow-md hover:-translate-y-0.5;
-    @apply active:shadow-sm;
-    @apply focus-visible:ring-gray-500;
-    @apply dark:bg-surface-subtle dark:hover:bg-surface-muted;
-  }
-
-  /* Paradigm Button Variants */
-  .btn-paradigm-dolores {
-    @apply btn bg-paradigm-dolores text-white;
-    @apply hover:brightness-110 hover:shadow-lg hover:-translate-y-0.5;
-    @apply focus-visible:ring-paradigm-dolores;
-  }
-
-  .btn-paradigm-teddy {
-    @apply btn bg-paradigm-teddy text-white;
-    @apply hover:brightness-110 hover:shadow-lg hover:-translate-y-0.5;
-    @apply focus-visible:ring-paradigm-teddy;
-  }
-
-  .btn-paradigm-bernard {
-    @apply btn bg-paradigm-bernard text-white;
-    @apply hover:brightness-110 hover:shadow-lg hover:-translate-y-0.5;
-    @apply focus-visible:ring-paradigm-bernard;
-  }
-
-  .btn-paradigm-maeve {
-    @apply btn bg-paradigm-maeve text-white;
-    @apply hover:brightness-110 hover:shadow-lg hover:-translate-y-0.5;
-    @apply focus-visible:ring-paradigm-maeve;
-  }
-
-  /* Form Input Components */
-  .input-field {
-    @apply w-full px-3 py-2 border border-border rounded-md;
-    @apply bg-surface text-text;
-    @apply transition-all duration-200 ease-out;
-    @apply focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none;
-    @apply hover:border-border-subtle;
-    @apply placeholder:text-text-muted;
-    @apply dark:bg-surface-subtle;
-  }
-
-  .input-error {
-    @apply border-red-500 focus:border-red-500 focus:ring-red-500/20;
-    @apply dark:border-red-400 dark:focus:border-red-400 dark:focus:ring-red-400/20;
-  }
-
-  .input-success {
-    @apply border-green-500 focus:border-green-500 focus:ring-green-500/20;
-    @apply dark:border-green-400 dark:focus:border-green-400 dark:focus:ring-green-400/20;
-  }
-
-  /* Paradigm Card Components */
-  .paradigm-card {
-    @apply card relative overflow-hidden;
-    @apply transition-all duration-300 ease-out;
-    @apply hover:shadow-2xl hover:scale-[1.02];
-  }
-
-  .paradigm-card::before {
-    content: '';
-    @apply absolute inset-0 opacity-0;
-    @apply transition-opacity duration-300;
-    background: linear-gradient(135deg, rgb(255 255 255 / 0.1) 0%, rgb(255 255 255 / 0) 100%);
-  }
-
-  .paradigm-card:hover::before {
-    @apply opacity-100;
-  }
-
-  /* Paradigm-specific borders */
-  .paradigm-border-dolores { @apply border-2 border-[--color-paradigm-dolores]; }
-  .paradigm-border-teddy { @apply border-2 border-[--color-paradigm-teddy]; }
-  .paradigm-border-bernard { @apply border-2 border-[--color-paradigm-bernard]; }
-  .paradigm-border-maeve { @apply border-2 border-[--color-paradigm-maeve]; }
-  
-  /* Paradigm-specific backgrounds */
-  .paradigm-bg-dolores {
-    @apply bg-linear-to-br from-red-50 to-red-100;
-    @apply dark:from-red-900/20 dark:to-red-800/20;
-  }
-
-  .paradigm-bg-teddy {
-    @apply bg-linear-to-br from-orange-50 to-orange-100;
-    @apply dark:from-orange-900/20 dark:to-orange-800/20;
-  }
-
-  .paradigm-bg-bernard {
-    @apply bg-linear-to-br from-blue-50 to-blue-100;
-    @apply dark:from-blue-900/20 dark:to-blue-800/20;
-  }
-
-  .paradigm-bg-maeve {
-    @apply bg-linear-to-br from-green-50 to-green-100;
-    @apply dark:from-green-900/20 dark:to-green-800/20;
-  }
-}
-
-/* Utility Classes */
+/* Utility Classes - properly layered */
 @layer utilities {
-  /* Loading States */
-  .loading-spinner {
-    @apply inline-block size-4 border-2 border-current border-t-transparent rounded-full;
-    animation: spin 0.8s linear infinite;
-  }
-
   /* Hover Effects */
   .hover-lift {
-    @apply transition-transform duration-200 ease-out;
-    @apply hover:-translate-y-1 hover:shadow-lg;
+    transition: transform 200ms var(--ease-smooth), box-shadow 200ms var(--ease-smooth);
+  }
+  
+  .hover-lift:hover {
+    transform: translateY(-0.25rem);
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   }
 
   /* Focus Effects */

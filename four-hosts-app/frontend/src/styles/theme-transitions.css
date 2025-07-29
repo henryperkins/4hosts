@@ -1,8 +1,9 @@
-/* Smooth theme transitions */
-.theme-transition * {
-    transition: background-color 300ms ease-in-out,
-        border-color 300ms ease-in-out,
-        color 300ms ease-in-out !important;
+/* Optimized theme transitions - only transition essential properties */
+html.theme-transition,
+html.theme-transition * {
+    transition: color 300ms ease-in-out,
+        background-color 300ms ease-in-out,
+        border-color 300ms ease-in-out !important;
 }
 
 /* Paradigm-specific animations */
@@ -40,64 +41,55 @@
     animation-delay: 2.25s;
 }
 
-/* Enhanced micro-interactions */
+/* Enhanced micro-interactions with performance optimization */
 @keyframes float {
-
-    0%,
-    100% {
+    0%, 100% {
         transform: translateY(0px);
     }
-
     50% {
         transform: translateY(-10px);
     }
 }
 
 .hover-float:hover {
-    animation: float 2s ease-in-out infinite;
+    animation: float 2s ease-in-out 3;
+    animation-fill-mode: forwards;
 }
 
-/* New micro-interactions */
+/* New micro-interactions with finite iterations */
 @keyframes wiggle {
-
-    0%,
-    100% {
+    0%, 100% {
         transform: rotate(-3deg);
     }
-
     50% {
         transform: rotate(3deg);
     }
 }
 
 .hover-wiggle:hover {
-    animation: wiggle 0.5s ease-in-out infinite;
+    animation: wiggle 0.5s ease-in-out 2;
 }
 
 @keyframes heartbeat {
     0% {
         transform: scale(1);
     }
-
     14% {
         transform: scale(1.05);
     }
-
     28% {
         transform: scale(1);
     }
-
     42% {
         transform: scale(1.05);
     }
-
     70% {
         transform: scale(1);
     }
 }
 
 .hover-heartbeat:hover {
-    animation: heartbeat 1.3s ease-in-out infinite;
+    animation: heartbeat 1.3s ease-in-out 2;
 }
 
 /* Enhanced button press effect */

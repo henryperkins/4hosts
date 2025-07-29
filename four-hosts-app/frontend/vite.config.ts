@@ -9,18 +9,28 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
-  
+
   // Resolve configuration
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
   },
-  
+
   // Server configuration
   server: {
     port: 5173,
     host: true,
+    watch: {
+      // Exclude directories that contain many files
+      ignored: [
+        '**/node_modules/**',
+        '**/dist/**',
+        '**/.git/**',
+        '**/coverage/**',
+        '**/build/**'
+      ]
+    },
     proxy: {
       // Proxy API requests to backend
       '/api': {
@@ -36,7 +46,7 @@ export default defineConfig({
       },
     },
   },
-  
+
   // Build configuration
   build: {
     outDir: 'dist',
@@ -52,12 +62,12 @@ export default defineConfig({
       },
     },
   },
-  
+
   // Define global constants
   define: {
     __APP_VERSION__: JSON.stringify(process.env.npm_package_version),
   },
-  
+
   // Optimize dependencies
   optimizeDeps: {
     include: ['react', 'react-dom', 'react-router-dom', 'recharts', 'lucide-react'],

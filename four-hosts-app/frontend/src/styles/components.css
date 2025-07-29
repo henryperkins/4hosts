@@ -1,0 +1,414 @@
+/* Component Classes for Tailwind v4 */
+@layer components {
+  /* Card Component */
+  .card {
+    background-color: var(--color-surface);
+    border-radius: 0.75rem;
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    padding: 1.5rem;
+    transition: box-shadow 200ms var(--ease-smooth);
+  }
+  
+  .card:hover {
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  }
+  
+  .dark .card {
+    background-color: var(--color-surface-subtle);
+  }
+
+  .card-interactive {
+    background-color: var(--color-surface);
+    border-radius: 0.75rem;
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    padding: 1.5rem;
+    transition: all 200ms var(--ease-smooth);
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .card-interactive:hover {
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+    transform: translateY(-0.25rem);
+  }
+  
+  .dark .card-interactive {
+    background-color: var(--color-surface-subtle);
+  }
+
+  .card-interactive::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.1), transparent);
+    transition: left 0.5s var(--ease-smooth);
+  }
+
+  .card-interactive:hover::after {
+    left: 100%;
+  }
+
+  /* Button Component */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition: all 200ms var(--ease-smooth);
+    position: relative;
+    overflow: hidden;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+  
+  .btn:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px rgb(59 130 246);
+  }
+  
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none !important;
+  }
+  
+  .btn:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  .btn-primary {
+    background-color: rgb(37 99 235);
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition: all 200ms var(--ease-smooth);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .btn-primary:hover:not(:disabled) {
+    background-color: rgb(29 78 216);
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    transform: translateY(-0.125rem);
+  }
+  
+  .btn-primary:active:not(:disabled) {
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    transform: translateY(0);
+  }
+  
+  .btn-primary:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px rgb(59 130 246);
+  }
+  
+  .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none !important;
+  }
+  
+  .dark .btn-primary {
+    background-color: rgb(59 130 246);
+  }
+  
+  .dark .btn-primary:hover:not(:disabled) {
+    background-color: rgb(37 99 235);
+  }
+
+  .btn-secondary {
+    background-color: var(--color-surface-muted);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition: all 200ms var(--ease-smooth);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .btn-secondary:hover:not(:disabled) {
+    background-color: var(--color-surface-subtle);
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    transform: translateY(-0.125rem);
+  }
+  
+  .btn-secondary:active:not(:disabled) {
+    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    transform: translateY(0);
+  }
+  
+  .btn-secondary:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px rgb(156 163 175);
+  }
+  
+  .btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none !important;
+  }
+  
+  .dark .btn-secondary {
+    background-color: var(--color-surface-subtle);
+  }
+  
+  .dark .btn-secondary:hover:not(:disabled) {
+    background-color: var(--color-surface-muted);
+  }
+
+  /* Paradigm Cards */
+  .paradigm-card {
+    background-color: var(--color-surface);
+    border-radius: 0.75rem;
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    padding: 1.5rem;
+    transition: all 300ms var(--ease-smooth);
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .paradigm-card:hover {
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+    transform: scale(1.02);
+  }
+  
+  .dark .paradigm-card {
+    background-color: var(--color-surface-subtle);
+  }
+
+  .paradigm-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    transition: opacity 300ms;
+    background: linear-gradient(135deg, rgb(255 255 255 / 0.1) 0%, rgb(255 255 255 / 0) 100%);
+  }
+
+  .paradigm-card:hover::before {
+    opacity: 1;
+  }
+
+  /* Input Field */
+  .input-field {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    border: 1px solid var(--color-border);
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    transition: all 200ms var(--ease-smooth);
+  }
+  
+  .input-field:hover:not(:disabled) {
+    border-color: var(--color-border-subtle);
+  }
+  
+  .input-field:focus {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    border-color: rgb(59 130 246);
+    box-shadow: 0 0 0 3px rgb(59 130 246 / 0.1);
+  }
+  
+  .input-field:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  .dark .input-field {
+    background-color: var(--color-surface-subtle);
+  }
+  
+  .input-field::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  /* Loading Spinner */
+  .loading-spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+  }
+
+  /* Paradigm-specific borders */
+  .paradigm-border-dolores { 
+    border: 2px solid var(--color-paradigm-dolores);
+  }
+  
+  .paradigm-border-teddy { 
+    border: 2px solid var(--color-paradigm-teddy);
+  }
+  
+  .paradigm-border-bernard { 
+    border: 2px solid var(--color-paradigm-bernard);
+  }
+  
+  .paradigm-border-maeve { 
+    border: 2px solid var(--color-paradigm-maeve);
+  }
+  
+  /* Paradigm-specific backgrounds */
+  .paradigm-bg-dolores {
+    background: linear-gradient(to bottom right, rgb(254 242 242), rgb(254 226 226));
+  }
+  
+  .dark .paradigm-bg-dolores {
+    background: linear-gradient(to bottom right, rgb(127 29 29 / 0.2), rgb(153 27 27 / 0.2));
+  }
+
+  .paradigm-bg-teddy {
+    background: linear-gradient(to bottom right, rgb(255 247 237), rgb(255 237 213));
+  }
+  
+  .dark .paradigm-bg-teddy {
+    background: linear-gradient(to bottom right, rgb(154 52 18 / 0.2), rgb(124 45 18 / 0.2));
+  }
+
+  .paradigm-bg-bernard {
+    background: linear-gradient(to bottom right, rgb(239 246 255), rgb(219 234 254));
+  }
+  
+  .dark .paradigm-bg-bernard {
+    background: linear-gradient(to bottom right, rgb(30 58 138 / 0.2), rgb(30 64 175 / 0.2));
+  }
+
+  .paradigm-bg-maeve {
+    background: linear-gradient(to bottom right, rgb(240 253 244), rgb(220 252 231));
+  }
+  
+  .dark .paradigm-bg-maeve {
+    background: linear-gradient(to bottom right, rgb(20 83 45 / 0.2), rgb(21 128 61 / 0.2));
+  }
+
+  /* Paradigm button variants */
+  .btn-paradigm-dolores,
+  .btn-paradigm-teddy,
+  .btn-paradigm-bernard,
+  .btn-paradigm-maeve {
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition: all 200ms var(--ease-smooth);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .btn-paradigm-dolores {
+    background-color: var(--color-paradigm-dolores);
+  }
+  
+  .btn-paradigm-teddy {
+    background-color: var(--color-paradigm-teddy);
+  }
+  
+  .btn-paradigm-bernard {
+    background-color: var(--color-paradigm-bernard);
+  }
+  
+  .btn-paradigm-maeve {
+    background-color: var(--color-paradigm-maeve);
+  }
+  
+  .btn-paradigm-dolores:hover:not(:disabled),
+  .btn-paradigm-teddy:hover:not(:disabled),
+  .btn-paradigm-bernard:hover:not(:disabled),
+  .btn-paradigm-maeve:hover:not(:disabled) {
+    filter: brightness(1.1);
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    transform: translateY(-0.125rem);
+  }
+  
+  .btn-paradigm-dolores:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-paradigm-dolores);
+  }
+  
+  .btn-paradigm-teddy:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-paradigm-teddy);
+  }
+  
+  .btn-paradigm-bernard:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-paradigm-bernard);
+  }
+  
+  .btn-paradigm-maeve:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-paradigm-maeve);
+  }
+
+  /* Input error and success states */
+  .input-error {
+    border-color: rgb(239 68 68);
+  }
+  
+  .input-error:focus {
+    border-color: rgb(239 68 68);
+    box-shadow: 0 0 0 3px rgb(239 68 68 / 0.2);
+  }
+  
+  .dark .input-error {
+    border-color: rgb(248 113 113);
+  }
+  
+  .dark .input-error:focus {
+    border-color: rgb(248 113 113);
+    box-shadow: 0 0 0 3px rgb(248 113 113 / 0.2);
+  }
+
+  .input-success {
+    border-color: rgb(34 197 94);
+  }
+  
+  .input-success:focus {
+    border-color: rgb(34 197 94);
+    box-shadow: 0 0 0 3px rgb(34 197 94 / 0.2);
+  }
+  
+  .dark .input-success {
+    border-color: rgb(74 222 128);
+  }
+  
+  .dark .input-success:focus {
+    border-color: rgb(74 222 128);
+    box-shadow: 0 0 0 3px rgb(74 222 128 / 0.2);
+  }
+}

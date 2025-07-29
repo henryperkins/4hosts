@@ -38,9 +38,9 @@ export const LoginForm: React.FC = () => {
       setError(error instanceof Error ? error.message : 'Login failed')
       // Add error shake animation
       if (formRef.current) {
-        formRef.current.classList.add('animate-error-shake')
+        formRef.current.classList.add('animate-shake')
         setTimeout(() => {
-          formRef.current?.classList.remove('animate-error-shake')
+          formRef.current?.classList.remove('animate-shake')
         }, ERROR_SHAKE_DURATION)
       }
     } finally {
@@ -88,27 +88,27 @@ export const LoginForm: React.FC = () => {
 
   const usernameStatus = (getInputStatus('username') as 'error' | 'success') || undefined
   const pwdRaw = getInputStatus('password')
-  const passwordStatus: 'error' | 'success' | undefined = 
+  const passwordStatus: 'error' | 'success' | undefined =
     pwdRaw === 'error' ? 'error' : pwdRaw ? 'success' : undefined
   const pwdIconOk = pwdRaw === 'success' || pwdRaw === 'strong'
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8 transition-colors duration-200">
+    <div className="min-h-screen flex items-center justify-center bg-surface py-12 px-4 sm:px-6 lg:px-8 transition-colors duration-200">
       <div className="max-w-md w-full space-y-8 animate-fade-in">
         <div>
-          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900 dark:text-gray-100">
+          <h2 className="mt-6 text-center text-3xl font-extrabold text-text">
             Sign in to your account
           </h2>
-          <p className="mt-2 text-center text-sm text-gray-600 dark:text-gray-400">
+          <p className="mt-2 text-center text-sm text-text-muted">
             Or{' '}
-            <Link to="/register" className="font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300 transition-colors duration-200">
+            <Link to="/register" className="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-colors duration-200">
               create a new account
             </Link>
           </p>
         </div>
         <form ref={formRef} className="mt-8 space-y-6" onSubmit={handleSubmit}>
           {error && (
-            <div className="rounded-md bg-red-50 dark:bg-red-900/20 p-4 animate-slide-down error-glow border border-red-200 dark:border-red-800">
+            <div className="rounded-md bg-red-50 dark:bg-red-950/20 p-4 animate-slide-down error-glow border border-red-200 dark:border-red-800">
               <div className="flex items-center">
                 <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-2 shrink-0" />
                 <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
@@ -116,7 +116,7 @@ export const LoginForm: React.FC = () => {
             </div>
           )}
           {loginSuccess && (
-            <div className="rounded-md bg-green-50 dark:bg-green-900/20 p-4 animate-slide-down success-glow border border-green-200 dark:border-green-800">
+            <div className="rounded-md bg-green-50 dark:bg-green-950/20 p-4 animate-slide-down success-glow border border-green-200 dark:border-green-800">
               <div className="flex items-center">
                 <Check className="h-5 w-5 text-green-600 dark:text-green-400 mr-2 animate-scale-in" />
                 <p className="text-sm text-green-800 dark:text-green-200">
@@ -131,11 +131,11 @@ export const LoginForm: React.FC = () => {
                 Email or Username
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none z-10" style={{ paddingLeft: '1rem' }}>
+                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none z-10 pl-4">
                   <Mail className={`h-5 w-5 transition-colors duration-200 ${
-                    usernameStatus === 'error' ? 'text-red-500 dark:text-red-400' :
-                    usernameStatus === 'success' ? 'text-green-500 dark:text-green-400' :
-                    'text-gray-400 dark:text-gray-500'
+                    usernameStatus === 'error' ? 'text-red-500' :
+                    usernameStatus === 'success' ? 'text-green-500' :
+                    'text-text-muted'
                   }`} />
                 </div>
                 <InputField
@@ -145,7 +145,7 @@ export const LoginForm: React.FC = () => {
                   autoComplete="username"
                   required
                   status={(getInputStatus('username') as 'error' | 'success') || undefined}
-                  className="pl-14 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
+                  className="pl-14"
                   placeholder="Email or Username"
                   value={username}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
@@ -153,13 +153,13 @@ export const LoginForm: React.FC = () => {
                 />
               </div>
               {formTouched.username && username && !validateInput(username) && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 animate-slide-down flex items-center">
+                <p className="mt-1 text-sm text-red-600 animate-slide-down flex items-center">
                   <AlertCircle className="h-4 w-4 mr-1" />
                   Please enter a valid email address or username
                 </p>
               )}
               {formTouched.username && username && validateInput(username) && (
-                <p className="mt-1 text-sm text-green-600 dark:text-green-400 animate-slide-down flex items-center">
+                <p className="mt-1 text-sm text-green-600 animate-slide-down flex items-center">
                   <Check className="h-4 w-4 mr-1" />
                   Valid input
                 </p>
@@ -170,11 +170,11 @@ export const LoginForm: React.FC = () => {
                 Password
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none z-10" style={{ paddingLeft: '1rem' }}>
+                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none z-10 pl-4">
                   <Lock className={`h-5 w-5 transition-colors duration-200 ${
-                    passwordStatus === 'error' ? 'text-red-500 dark:text-red-400' :
-                    pwdIconOk ? 'text-green-500 dark:text-green-400' :
-                    'text-gray-400 dark:text-gray-500'
+                    passwordStatus === 'error' ? 'text-red-500' :
+                    pwdIconOk ? 'text-green-500' :
+                    'text-text-muted'
                   }`} />
                 </div>
                 <InputField
@@ -184,7 +184,7 @@ export const LoginForm: React.FC = () => {
                   autoComplete="current-password"
                   required
                   status={passwordStatus}
-                  className="pl-14 pr-10 transition-all duration-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
+                  className="pl-14 pr-10"
                   placeholder="Password"
                   value={password}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
@@ -197,28 +197,28 @@ export const LoginForm: React.FC = () => {
                   aria-label={showPassword ? "Hide password" : "Show password"}
                 >
                   {showPassword ? (
-                    <EyeOff className="h-5 w-5 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors duration-200" />
+                    <EyeOff className="h-5 w-5 text-text-muted hover:text-text transition-colors duration-200" />
                   ) : (
-                    <Eye className="h-5 w-5 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors duration-200" />
+                    <Eye className="h-5 w-5 text-text-muted hover:text-text transition-colors duration-200" />
                   )}
                 </button>
               </div>
               {formTouched.password && password && (
                 <div className="mt-1 space-y-1">
                   {password.length < 6 && (
-                    <p className="text-sm text-red-600 dark:text-red-400 animate-slide-down flex items-center">
+                    <p className="text-sm text-red-600 animate-slide-down flex items-center">
                       <AlertCircle className="h-4 w-4 mr-1" />
                       Password must be at least 6 characters
                     </p>
                   )}
                   {password.length >= 6 && password.length < 8 && (
-                    <p className="text-sm text-yellow-600 dark:text-yellow-400 animate-slide-down flex items-center">
+                    <p className="text-sm text-yellow-600 animate-slide-down flex items-center">
                       <AlertCircle className="h-4 w-4 mr-1" />
                       Consider using at least 8 characters
                     </p>
                   )}
                   {pwdRaw === 'strong' && (
-                    <p className="text-sm text-green-600 dark:text-green-400 animate-slide-down flex items-center">
+                    <p className="text-sm text-green-600 animate-slide-down flex items-center">
                       <Check className="h-4 w-4 mr-1" />
                       Strong password
                     </p>
