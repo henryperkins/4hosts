@@ -60,6 +60,15 @@ sleep 2
 echo -e "\n🎨 Starting Frontend Service..."
 cd /home/azureuser/4hosts/four-hosts-app/frontend
 
+# Verify package.json exists
+if [ ! -f "package.json" ]; then
+    echo "❌ Error: package.json not found in /home/azureuser/4hosts/four-hosts-app/frontend"
+    echo "   Please ensure the frontend project is properly set up"
+    exit 1
+fi
+
+echo "✅ Frontend package.json verified"
+
 # Check if .env exists, if not create from example
 if [ ! -f .env ] && [ -f .env.example ]; then
     echo "Creating .env file from .env.example..."
