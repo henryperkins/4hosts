@@ -5,7 +5,7 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { Activity, TrendingUp, Users, Clock, Database, AlertCircle } from 'lucide-react'
 import api from '../services/api'
 import type { SystemStats } from '../services/api'
-import { paradigmHexColors } from '../constants/paradigm'
+import { getParadigmHexColor } from '../constants/paradigm'
 
 export const MetricsDashboard: React.FC = () => {
   const [stats, setStats] = useState<SystemStats | null>(null)
@@ -54,7 +54,7 @@ export const MetricsDashboard: React.FC = () => {
   const paradigmData = Object.entries(stats.paradigm_distribution).map(([paradigm, count]) => ({
     name: paradigm.charAt(0).toUpperCase() + paradigm.slice(1),
     value: count,
-    paradigm: paradigm as keyof typeof paradigmHexColors,
+    paradigm: paradigm,
   }))
 
   const healthColor = {
@@ -128,7 +128,7 @@ export const MetricsDashboard: React.FC = () => {
                 dataKey="value"
               >
                 {paradigmData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={paradigmHexColors[entry.paradigm]} />
+                  <Cell key={`cell-${index}`} fill={getParadigmHexColor(entry.paradigm)} />
                 ))}
               </Pie>
               <Tooltip />

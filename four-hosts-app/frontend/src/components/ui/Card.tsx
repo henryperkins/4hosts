@@ -1,4 +1,4 @@
-import React, { forwardRef } from 'react'
+import { forwardRef } from 'react'
 import type { HTMLAttributes } from 'react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -17,10 +17,14 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(
     className = '',
     ...props 
   }, ref) => {
-    const variants = {
-      default: 'card',
-      interactive: 'card-interactive',
-      paradigm: paradigm ? `paradigm-card paradigm-bg-${paradigm}` : 'card'
+    const getVariantClass = () => {
+      if (variant === 'paradigm' && paradigm) {
+        return `paradigm-card paradigm-bg-${paradigm}`
+      }
+      if (variant === 'interactive' && paradigm) {
+        return `card-interactive paradigm-border-${paradigm}`
+      }
+      return variant === 'interactive' ? 'card-interactive' : 'card'
     }
 
     const elevationClass = elevated ? 'shadow-xl hover:shadow-2xl' : ''
@@ -28,7 +32,7 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(
     return (
       <div
         ref={ref}
-        className={`${variants[variant]} ${elevationClass} ${className}`.trim()}
+        className={`${getVariantClass()} ${elevationClass} ${className}`.trim()}
         {...props}
       >
         {children}

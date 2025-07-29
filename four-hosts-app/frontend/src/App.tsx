@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useParams, useLocation } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
-import { Home, History, User, BarChart3, Menu, X, Sun, Moon, AlertCircle, Loader2 } from 'lucide-react'
+import { Home, History, User, BarChart3, Menu, X, AlertCircle, Loader2 } from 'lucide-react'
 import { PageTransition } from './components/ui/PageTransition'
+import { ToggleSwitch } from './components/ui/ToggleSwitch'
 
 // Context providers
 import { AuthProvider } from './contexts/AuthContext'
@@ -52,27 +53,27 @@ const Navigation = () => {
   const getParadigmHoverClass = (paradigm?: string) => {
     if (!paradigm) return ''
     const paradigmHoverColors: Record<string, string> = {
-      dolores: 'hover:text-red-600 dark:hover:text-red-400',
-      bernard: 'hover:text-blue-600 dark:hover:text-blue-400',
-      teddy: 'hover:text-orange-600 dark:hover:text-orange-400',
-      maeve: 'hover:text-green-600 dark:hover:text-green-400'
+      dolores: 'hover:text-[--color-paradigm-dolores]',
+      bernard: 'hover:text-[--color-paradigm-bernard]',
+      teddy: 'hover:text-[--color-paradigm-teddy]',
+      maeve: 'hover:text-[--color-paradigm-maeve]'
     }
     return paradigmHoverColors[paradigm] || ''
   }
 
   return (
-    <nav className="bg-white dark:bg-gray-800 shadow-lg border-b border-gray-200 dark:border-gray-700 animate-slide-down transition-all duration-300 backdrop-blur-sm bg-opacity-95 dark:bg-opacity-95">
+    <nav className="bg-surface shadow-lg border-b border-border animate-slide-down transition-all duration-300 backdrop-blur-sm bg-opacity-95 dark:bg-opacity-95">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           <div className="flex items-center gap-8">
             <Link
               to="/"
-              className="text-xl font-bold text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition-all duration-300 flex items-center gap-2 group"
+              className="text-xl font-bold text-text hover:text-blue-600 dark:hover:text-blue-400 transition-all duration-300 flex items-center gap-2 group"
               onClick={closeMobileMenu}
             >
               <span className="text-2xl group-hover:rotate-12 transition-transform duration-300 inline-block" role="img" aria-label="Theater masks">🎭</span>
-              <span className="hidden sm:inline bg-linear-to-r from-red-600 via-blue-600 to-green-600 dark:from-red-400 dark:via-blue-400 dark:to-green-400 bg-clip-text text-transparent">Four Hosts Research</span>
-              <span className="sm:hidden bg-linear-to-r from-red-600 via-blue-600 to-green-600 dark:from-red-400 dark:via-blue-400 dark:to-green-400 bg-clip-text text-transparent">4H Research</span>
+              <span className="hidden sm:inline gradient-brand bg-clip-text text-transparent">Four Hosts Research</span>
+              <span className="sm:hidden gradient-brand bg-clip-text text-transparent">4H Research</span>
             </Link>
             <div className="hidden md:flex items-center gap-2">
               {navItems.map(({ path, icon: Icon, label, paradigm }) => {
@@ -80,10 +81,10 @@ const Navigation = () => {
                   <Link
                     key={path}
                     to={path}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 ${
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 hover-lift focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                       isActive(path)
                         ? 'bg-linear-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300 shadow-lg scale-105'
-                        : `text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 ${getParadigmHoverClass(paradigm)}`
+                        : `text-text-muted hover:bg-surface-subtle ${getParadigmHoverClass(paradigm)}`
                     }`}
                     aria-current={isActive(path) ? 'page' : undefined}
                   >
@@ -96,28 +97,25 @@ const Navigation = () => {
           </div>
 
           <div className="flex items-center gap-2 md:gap-4">
-            <span className="hidden md:block text-sm text-gray-600 dark:text-gray-400 animate-fade-in">
-              Welcome, <span className="font-medium text-transparent bg-clip-text bg-linear-to-r from-purple-600 to-pink-600 dark:from-purple-400 dark:to-pink-400">{user?.username}</span>
+            <span className="hidden md:block text-sm text-text-muted animate-fade-in">
+              Welcome, <span className="font-medium text-transparent bg-clip-text gradient-accent">{user?.username}</span>
             </span>
 
-            {/* Dark mode toggle with animation */}
-            <button
-              onClick={toggleDarkMode}
-              className="p-2 rounded-lg text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300 transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
+            {/* Dark mode toggle */}
+            <ToggleSwitch
+              checked={darkMode}
+              onChange={toggleDarkMode}
               aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-            >
-              <div className="relative w-5 h-5">
-                <Sun className={`absolute inset-0 h-5 w-5 transform transition-all duration-300 ${darkMode ? 'opacity-0 rotate-90 scale-0' : 'opacity-100 rotate-0 scale-100'}`} />
-                <Moon className={`absolute inset-0 h-5 w-5 transform transition-all duration-300 ${darkMode ? 'opacity-100 rotate-0 scale-100' : 'opacity-0 -rotate-90 scale-0'}`} />
-              </div>
-            </button>
+              size="sm"
+              className="hidden md:inline-flex"
+            />
 
             <Link
               to="/profile"
-              className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 hover-lift focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 ${
+              className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 hover-lift focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                 isActive('/profile')
                   ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 shadow-md'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700'
+                  : 'text-text-muted hover:text-text hover:bg-surface-subtle'
               }`}
               aria-current={isActive('/profile') ? 'page' : undefined}
             >
@@ -128,7 +126,7 @@ const Navigation = () => {
             {/* Mobile menu button */}
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden p-2 rounded-lg text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
+              className="md:hidden p-2 rounded-lg text-text-muted hover:text-text hover:bg-surface-subtle transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               aria-label="Toggle menu"
               aria-expanded={mobileMenuOpen}
             >
@@ -154,19 +152,28 @@ const Navigation = () => {
                 className={`block px-4 py-2 transition-all duration-300 transform hover:translate-x-2 ${
                   isActive(path)
                   ? 'bg-linear-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300'
-                    : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                }`}
-                style={{ animationDelay: `${index * 50}ms` }}
+                    : 'text-text-muted hover:bg-surface-subtle'
+                } stagger-delay-${index * 50}`}
               >
                 {label}
               </Link>
             ))}
+            <div className="px-4 py-2 border-t border-border mt-2 pt-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-text-muted">Dark Mode</span>
+                <ToggleSwitch
+                  checked={darkMode}
+                  onChange={toggleDarkMode}
+                  size="sm"
+                />
+              </div>
+            </div>
             <button
               onClick={() => {
                 logout()
                 closeMobileMenu()
               }}
-              className="block w-full text-left px-4 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-200"
+              className="block w-full text-left px-4 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-200 stagger-delay-150"
             >
               Logout
             </button>
@@ -231,10 +238,10 @@ const ResearchPage = () => {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-fade-in">
       <div className="mb-8 text-center animate-slide-down">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">
+        <h1 className="text-3xl font-bold text-text mb-2">
           Discover Insights Through Four Perspectives
         </h1>
-        <p className="text-gray-600 dark:text-gray-400">
+        <p className="text-text-muted">
           Let our AI hosts guide your research with their unique paradigms
         </p>
       </div>
@@ -293,8 +300,8 @@ const ResearchResultPage = () => {
         const data = await api.getResearchResults(id)
         
         // Check if this is a failed/cancelled research response
-        if (data.status === 'failed' || data.status === 'cancelled') {
-          setError(data.message || `Research ${data.status}`)
+        if ('status' in data && (data.status === 'failed' || data.status === 'cancelled')) {
+          setError(`Research ${data.status}`)
           return
         }
         
@@ -321,7 +328,7 @@ const ResearchResultPage = () => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex flex-col items-center justify-center py-12">
           <Loader2 className="h-12 w-12 text-blue-600 dark:text-blue-400 animate-spin mb-4" />
-          <p className="text-gray-600 dark:text-gray-400">Loading research results...</p>
+          <p className="text-text-muted">Loading research results...</p>
         </div>
       </div>
     )
@@ -330,24 +337,24 @@ const ResearchResultPage = () => {
   if (error || !results) {
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center">
+        <div className="card p-8 text-center">
           <AlertCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          <h2 className="text-xl font-semibold text-text mb-2">
             Research Unavailable
           </h2>
-          <p className="text-gray-600 dark:text-gray-400 mb-6">
+          <p className="text-text-muted mb-6">
             {error || 'Results not found'}
           </p>
           <div className="flex gap-4 justify-center">
             <button
               onClick={() => window.history.back()}
-              className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+              className="btn-secondary"
             >
               Go Back
             </button>
             <button
               onClick={() => window.location.href = '/history'}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              className="btn-primary"
             >
               View History
             </button>
@@ -396,7 +403,7 @@ function App() {
     <ThemeContext.Provider value={{ darkMode, toggleDarkMode }}>
       <AuthProvider>
         <Router>
-          <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
+          <div className="min-h-screen bg-surface transition-colors duration-200">
             <Toaster
               position="top-right"
               toastOptions={{
@@ -454,7 +461,7 @@ function App() {
                 <ProtectedRoute>
                   <PageTransition>
                     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6 animate-slide-down">System Metrics</h1>
+                      <h1 className="text-2xl font-bold text-text mb-6 animate-slide-down">System Metrics</h1>
                       <MetricsDashboard />
                     </div>
                   </PageTransition>

@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from 'react'
-import { Clock, Search, CheckCircle, XCircle, Loader, TrendingUp, Eye, Calendar, ChevronRight, X } from 'lucide-react'
+import { Clock, Search, TrendingUp, Eye, Calendar, ChevronRight, X } from 'lucide-react'
 import { format, formatDistanceToNow } from 'date-fns'
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
 import type { ResearchHistoryItem } from '../types'
 import { paradigmInfo, getParadigmClass, type Paradigm } from '../constants/paradigm'
 import { Button } from './ui/Button'
+import { Card } from './ui/Card'
+import { StatusIcon, type StatusType } from './ui/StatusIcon'
+import { ProgressBar } from './ui/ProgressBar'
+import { LoadingSpinner } from './ui/LoadingSpinner'
 
 export const ResearchHistory: React.FC = () => {
   const [history, setHistory] = useState<ResearchHistoryItem[]>([])
@@ -85,58 +89,58 @@ export const ResearchHistory: React.FC = () => {
     return status === 'processing' || status === 'pending'
   }
 
-  const getStatusIcon = (status: string) => {
+  const getStatusType = (status: string): StatusType => {
     switch (status) {
       case 'completed':
-        return <CheckCircle className="h-4 w-4 text-green-500 animate-scale-in" />
+        return 'completed'
       case 'failed':
-        return <XCircle className="h-4 w-4 text-red-500 animate-pulse" />
+        return 'failed'
       case 'cancelled':
-        return <XCircle className="h-4 w-4 text-orange-500 animate-scale-in" />
+        return 'cancelled'
       case 'processing':
-        return <Loader className="h-4 w-4 text-blue-500 animate-spin" />
+        return 'processing'
       default:
-        return <Clock className="h-4 w-4 text-gray-500" />
+        return 'pending'
     }
   }
 
   if (isLoading && history.length === 0) {
     return (
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-8 animate-pulse">
-        <div className="flex items-center justify-center">
-          <div className="relative">
-            <Loader className="h-12 w-12 text-blue-600 dark:text-blue-400 animate-spin" />
-            <div className="absolute inset-0 h-12 w-12 bg-blue-600 dark:bg-blue-400 rounded-full opacity-20 animate-ping"></div>
-          </div>
-        </div>
-      </div>
+      <Card className="p-8">
+        <LoadingSpinner 
+          size="xl" 
+          variant="primary" 
+          text="Loading research history..."
+          icon="ring"
+        />
+      </Card>
     )
   }
 
   if (history.length === 0) {
     return (
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-12 text-center animate-fade-in">
-        <Search className="h-16 w-16 text-gray-400 dark:text-gray-600 mx-auto mb-4 animate-pulse" />
-        <h3 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">No research history yet</h3>
-        <p className="text-gray-600 dark:text-gray-400 mb-6">Start exploring and your research queries will appear here</p>
-        <button
+      <Card className="p-12 text-center animate-fade-in">
+        <Search className="h-16 w-16 text-text-muted mx-auto mb-4 animate-pulse" />
+        <h3 className="text-xl font-semibold text-text mb-2">No research history yet</h3>
+        <p className="text-text-muted mb-6">Start exploring and your research queries will appear here</p>
+        <Button
           onClick={() => navigate('/')}
-          className="px-6 py-2 bg-linear-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 hover:shadow-lg"
+          variant="primary"
         >
           Start Researching
-        </button>
-      </div>
+        </Button>
+      </Card>
     )
   }
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 animate-fade-in">
+    <Card className="p-6 animate-fade-in">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+        <h2 className="text-2xl font-bold text-text flex items-center gap-2">
           <Clock className="h-6 w-6 text-blue-600 dark:text-blue-400" />
           Research History
         </h2>
-        <span className="text-sm text-gray-600 dark:text-gray-400">
+        <span className="text-sm text-text-muted">
           {history.length} research{history.length !== 1 ? 'es' : ''}
         </span>
       </div>
@@ -147,28 +151,30 @@ export const ResearchHistory: React.FC = () => {
           const isHovered = hoveredItem === item.research_id
 
           return (
-            <div
+            <Card
               key={item.research_id}
-              className={`relative border-2 ${paradigm ? paradigm.borderColor : 'border-gray-200 dark:border-gray-700'} rounded-xl p-4 transition-all duration-300 cursor-pointer transform ${
-                isHovered ? 'scale-[1.02] shadow-xl -translate-y-1' : 'hover:shadow-lg'
-              } animate-slide-up bg-linear-to-r from-transparent ${
-                paradigm ? `to-${item.paradigm}-50 dark:to-${item.paradigm}-900/10` : 'to-gray-50 dark:to-gray-900/10'
-              }`}
+              variant="interactive"
+              paradigm={item.paradigm as Paradigm}
+              className={`relative transition-all duration-300 cursor-pointer transform ${
+                isHovered ? 'scale-[1.02] shadow-xl -translate-y-1' : ''
+              } animate-slide-up stagger-delay-${index * 50}`}
               onClick={() => handleViewResult(item.research_id)}
               onMouseEnter={() => setHoveredItem(item.research_id)}
               onMouseLeave={() => setHoveredItem(null)}
-              style={{ animationDelay: `${index * 50}ms` }}
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
-                    {getStatusIcon(item.status)}
-                    <h3 className="font-semibold text-gray-900 dark:text-gray-100 line-clamp-1 text-lg">
+                    <StatusIcon 
+                      status={getStatusType(item.status)}
+                      size="sm"
+                    />
+                    <h3 className="font-semibold text-text line-clamp-1 text-lg">
                       {item.query}
                     </h3>
                   </div>
 
-                  <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
+                  <div className="flex items-center gap-4 text-sm text-text-muted">
                     <span className="flex items-center gap-1">
                       <Calendar className="h-3 w-3" />
                       {format(new Date(item.created_at), 'MMM d, yyyy')}
@@ -211,49 +217,43 @@ export const ResearchHistory: React.FC = () => {
                       {cancellingItems.has(item.research_id) ? 'Cancelling...' : 'Cancel'}
                     </Button>
                   )}
-                  <Eye className="h-5 w-5 text-gray-400 dark:text-gray-500" />
-                  <ChevronRight className="h-5 w-5 text-gray-400 dark:text-gray-500" />
+                  <Eye className="h-5 w-5 text-text-muted" />
+                  <ChevronRight className="h-5 w-5 text-text-muted" />
                 </div>
               </div>
 
               {/* Progress bar for processing time */}
               {item.processing_time && (
-                <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200 dark:bg-gray-700 rounded-b-xl overflow-hidden">
-                  <div
-                    className="h-full bg-linear-to-r from-blue-500 to-blue-600 transition-all duration-1000 ease-out"
-                    style={{
-                      width: `${Math.min((item.processing_time / 10) * 100, 100)}%`,
-                      animationDelay: `${index * 100}ms`
-                    }}
+                <div className="absolute bottom-0 left-0 right-0 rounded-b-xl overflow-hidden">
+                  <ProgressBar
+                    value={item.processing_time}
+                    max={10}
+                    size="sm"
+                    variant="info"
+                    animated={false}
+                    className="rounded-none"
                   />
                 </div>
               )}
-            </div>
+            </Card>
           )
         })}
       </div>
 
       {hasMore && (
         <div className="mt-6 text-center animate-fade-in">
-          <button
+          <Button
             onClick={loadHistory}
+            loading={isLoading}
             disabled={isLoading}
-            className="px-6 py-2 bg-linear-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 mx-auto"
+            variant="primary"
+            icon={Clock}
+            className="mx-auto"
           >
-            {isLoading ? (
-              <>
-                <Loader className="h-4 w-4 animate-spin" />
-                Loading...
-              </>
-            ) : (
-              <>
-                <Clock className="h-4 w-4" />
-                Load More History
-              </>
-            )}
-          </button>
+            {isLoading ? 'Loading...' : 'Load More History'}
+          </Button>
         </div>
       )}
-    </div>
+    </Card>
   )
 }

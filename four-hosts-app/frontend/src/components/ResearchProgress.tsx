@@ -1,7 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { Activity, CheckCircle, AlertCircle, Clock, Loader2, X, XCircle } from 'lucide-react'
+import { Clock, X } from 'lucide-react'
 import { format } from 'date-fns'
 import { Button } from './ui/Button'
+import { Card } from './ui/Card'
+import { StatusBadge, type StatusType } from './ui/StatusIcon'
+import { ProgressBar } from './ui/ProgressBar'
+import { LoadingSpinner } from './ui/LoadingSpinner'
 
 interface ResearchProgressProps {
   researchId: string
@@ -94,42 +98,32 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     }
   }
 
-  const getStatusIcon = () => {
+  const getStatusType = (): StatusType => {
     if (isConnecting) {
-      return <Loader2 className="h-5 w-5 text-gray-500 dark:text-gray-400 animate-spin" />
+      return 'processing'
     }
     
     switch (currentStatus) {
       case 'pending':
-        return <Clock className="h-5 w-5 text-gray-500 dark:text-gray-400 animate-pulse" />
+        return 'pending'
       case 'processing':
-        return <Activity className="h-5 w-5 text-blue-500 dark:text-blue-400 animate-spin" />
+        return 'processing'
       case 'completed':
-        return <CheckCircle className="h-5 w-5 text-green-500 dark:text-green-400" />
+        return 'completed'
       case 'failed':
-        return <AlertCircle className="h-5 w-5 text-red-500 dark:text-red-400" />
+        return 'failed'
       case 'cancelled':
-        return <XCircle className="h-5 w-5 text-orange-500 dark:text-orange-400" />
+        return 'cancelled'
+      default:
+        return 'pending'
     }
   }
 
-  const getStatusColor = () => {
+  const getStatusLabel = () => {
     if (isConnecting) {
-      return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
+      return 'Connecting...'
     }
-    
-    switch (currentStatus) {
-      case 'pending':
-        return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
-      case 'processing':
-        return 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-200'
-      case 'completed':
-        return 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-200'
-      case 'failed':
-        return 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-200'
-      case 'cancelled':
-        return 'bg-orange-100 text-orange-800 dark:bg-orange-900/20 dark:text-orange-200'
-    }
+    return currentStatus.charAt(0).toUpperCase() + currentStatus.slice(1)
   }
 
   const canCancel = () => {
@@ -137,9 +131,9 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   }
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mt-6 transition-colors duration-200 animate-slide-up">
+    <Card className="p-6 mt-6 animate-slide-up">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Research Progress</h3>
+        <h3 className="text-lg font-semibold text-text">Research Progress</h3>
         <div className="flex items-center gap-3">
           {canCancel() && (
             <Button
@@ -153,35 +147,30 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               {isCancelling ? 'Cancelling...' : 'Cancel'}
             </Button>
           )}
-          <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm transition-all duration-300 ${getStatusColor()}`}>
-            {getStatusIcon()}
-            <span className="capitalize">
-              {isConnecting ? 'Connecting...' : currentStatus}
-            </span>
-          </div>
+          <StatusBadge
+            status={getStatusType()}
+            label={getStatusLabel()}
+            variant="subtle"
+            size="md"
+          />
         </div>
       </div>
 
       {progress > 0 && currentStatus === 'processing' && (
-        <div className="mb-4">
-          <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400 mb-1">
-            <span>Progress</span>
-            <span className="font-medium">{Math.round(progress)}%</span>
-          </div>
-          <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-blue-600 dark:bg-blue-500 h-2 rounded-full transition-all duration-500 ease-out relative"
-              style={{ width: `${progress}%` }}
-            >
-              <div className="absolute inset-0 bg-linear-to-r from-transparent to-white/20 animate-shimmer" />
-            </div>
-          </div>
-        </div>
+        <ProgressBar
+          value={progress}
+          max={100}
+          variant="default"
+          showLabel
+          label="Progress"
+          shimmer
+          className="mb-4"
+        />
       )}
 
       <div 
         ref={updatesContainerRef}
-        className="space-y-2 max-h-64 overflow-y-auto scroll-smooth scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
+        className="space-y-2 max-h-64 overflow-y-auto scroll-smooth scrollbar-thin"
         role="log"
         aria-label="Research progress updates"
         aria-live="polite"
@@ -189,13 +178,12 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         {updates.map((update, index) => (
           <div
             key={index}
-            className="flex items-start gap-3 text-sm py-2 border-b border-gray-100 dark:border-gray-700 last:border-0 animate-slide-up"
-            style={{ animationDelay: `${index * 0.05}s` }}
+            className={`flex items-start gap-3 text-sm py-2 border-b border-border last:border-0 animate-slide-up stagger-delay-${Math.min(index * 50, 300)}`}
           >
-            <span className="text-gray-500 dark:text-gray-500 text-xs whitespace-nowrap font-mono">
+            <span className="text-text-muted text-xs whitespace-nowrap font-mono">
               {format(new Date(update.timestamp), 'HH:mm:ss')}
             </span>
-            <p className="text-gray-700 dark:text-gray-300 flex-1">
+            <p className="text-text flex-1">
               {update.message || `Status: ${update.status}`}
             </p>
           </div>
@@ -204,21 +192,22 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
 
       {updates.length === 0 && !isConnecting && (
         <div className="text-center py-8 animate-fade-in">
-          <Clock className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-          <p className="text-gray-500 dark:text-gray-400">
+          <Clock className="h-12 w-12 text-text-muted/30 mx-auto mb-3" />
+          <p className="text-text-muted">
             Waiting for updates...
           </p>
         </div>
       )}
       
       {updates.length === 0 && isConnecting && (
-        <div className="text-center py-8 animate-fade-in">
-          <Loader2 className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-3 animate-spin" />
-          <p className="text-gray-500 dark:text-gray-400">
-            Connecting to research stream...
-          </p>
+        <div className="text-center py-8">
+          <LoadingSpinner
+            size="xl"
+            variant="primary"
+            text="Connecting to research stream..."
+          />
         </div>
       )}
-    </div>
+    </Card>
   )
 }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Settings2, Sparkles, Users, AlertCircle } from 'lucide-react'
+import { Settings2, Sparkles, Users } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import type { ResearchOptions } from '../types'
 import { Button } from './ui/Button'
@@ -126,7 +126,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
 
         {/* Depth Selection */}
         <div className="animate-fade-in-up" style={{ animationDelay: '0.3s' }}>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+          <label className="block text-sm font-medium text-text mb-3">
             Research Depth
           </label>
           <div className="flex gap-3">
@@ -143,12 +143,12 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                 className={`flex-1 p-3 rounded-xl border-2 transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800
                   ${depth === option.value
                     ? 'border-blue-500 dark:border-blue-400 bg-blue-50 dark:bg-blue-900/30 shadow-lg scale-105'
-                    : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-800'
+                    : 'border-border hover:border-border-subtle bg-surface'
                   }
                   ${isLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
               >
-                <div className="font-medium text-gray-900 dark:text-gray-100">{option.label}</div>
-                <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">{option.description}</div>
+                <div className="font-medium text-text">{option.label}</div>
+                <div className="text-xs text-text-muted mt-1">{option.description}</div>
               </button>
             ))}
           </div>
@@ -168,7 +168,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
 
         {/* Advanced Options */}
         {showAdvanced && (
-          <div className="animate-fade-in-up space-y-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+          <div className="animate-fade-in-up space-y-4 p-4 bg-surface-subtle rounded-xl">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="flex items-center cursor-pointer group">
@@ -176,16 +176,16 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                     type="checkbox"
                     checked={options.enable_ai_classification}
                     onChange={(e) => setOptions({ ...options, enable_ai_classification: e.target.checked })}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-700 transition-transform duration-200 group-hover:scale-110"
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-border rounded transition-transform duration-200 group-hover:scale-110"
                   />
-                  <span className="ml-2 text-sm text-gray-700 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-gray-100 transition-colors duration-200">
+                  <span className="ml-2 text-sm text-text group-hover:text-text transition-colors duration-200">
                     Enable AI classification
                   </span>
                 </label>
               </div>
 
               <div>
-                <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">
+                <label className="block text-sm text-text mb-1">
                   Max sources
                 </label>
                 <InputField
@@ -194,7 +194,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                   max="200"
                   value={options.max_sources || 100}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOptions({ ...options, max_sources: parseInt(e.target.value) })}
-                  className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-700 dark:text-white transition-colors duration-200"
+                  className="px-3 py-1 text-sm border border-border rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-surface transition-colors duration-200"
                 />
               </div>
             </div>

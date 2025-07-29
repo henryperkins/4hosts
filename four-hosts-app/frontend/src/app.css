@@ -204,6 +204,12 @@
     @apply opacity-100;
   }
 
+  /* Paradigm-specific borders */
+  .paradigm-border-dolores { @apply border-2 border-[--color-paradigm-dolores]; }
+  .paradigm-border-teddy { @apply border-2 border-[--color-paradigm-teddy]; }
+  .paradigm-border-bernard { @apply border-2 border-[--color-paradigm-bernard]; }
+  .paradigm-border-maeve { @apply border-2 border-[--color-paradigm-maeve]; }
+  
   /* Paradigm-specific backgrounds */
   .paradigm-bg-dolores {
     @apply bg-linear-to-br from-red-50 to-red-100;
@@ -271,6 +277,38 @@
   .gradient-shift {
     background-size: 200% 200%;
     animation: gradient-shift 3s ease infinite;
+  }
+  
+  /* Animation Delays */
+  .delay-100 { animation-delay: 100ms; }
+  .delay-200 { animation-delay: 200ms; }
+  .delay-300 { animation-delay: 300ms; }
+  .delay-400 { animation-delay: 400ms; }
+  .delay-500 { animation-delay: 500ms; }
+  
+  /* Stagger Delays for lists */
+  .stagger-delay-0 { animation-delay: 0ms; }
+  .stagger-delay-50 { animation-delay: 50ms; }
+  .stagger-delay-100 { animation-delay: 100ms; }
+  .stagger-delay-150 { animation-delay: 150ms; }
+  .stagger-delay-200 { animation-delay: 200ms; }
+  .stagger-delay-250 { animation-delay: 250ms; }
+  .stagger-delay-300 { animation-delay: 300ms; }
+  
+  /* Brand Gradients */
+  .gradient-brand {
+    background: linear-gradient(to right, 
+      oklch(0.629 0.237 24.8),  /* Dolores */
+      oklch(0.598 0.216 252.1), /* Bernard */
+      oklch(0.671 0.186 157.6)  /* Maeve */
+    );
+  }
+  
+  .gradient-accent {
+    background: linear-gradient(to right, 
+      oklch(0.65 0.24 328),     /* Purple */
+      oklch(0.65 0.24 0)        /* Pink */
+    );
   }
 }
 

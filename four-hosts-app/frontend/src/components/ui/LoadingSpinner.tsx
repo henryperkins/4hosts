@@ -1,5 +1,5 @@
 import React from 'react'
-import { Loader, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 
 interface LoadingSpinnerProps {
   size?: 'sm' | 'md' | 'lg' | 'xl'
@@ -181,7 +181,6 @@ interface InlineLoadingProps {
 }
 
 export const InlineLoading: React.FC<InlineLoadingProps> = ({ 
-  size = 'sm', 
   className = '' 
 }) => {
   return (
