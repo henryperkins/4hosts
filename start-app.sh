@@ -3,6 +3,12 @@
 echo "🚀 Starting Four Hosts Application"
 echo "=================================="
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+
+echo "📁 Project root: $PROJECT_ROOT"
+
 # Function to cleanup on exit
 cleanup() {
     echo -e "\n\n🛑 Shutting down services..."
@@ -24,14 +30,26 @@ fi
 
 # Kill any existing processes on our ports
 echo -e "\n🔍 Checking for existing processes..."
-lsof -ti:8000 | xargs -r kill -9 2>/dev/null
-lsof -ti:5173 | xargs -r kill -9 2>/dev/null
-lsof -ti:5174 | xargs -r kill -9 2>/dev/null
-echo "✅ Ports cleared"
+if command -v lsof >/dev/null 2>&1; then
+    lsof -ti:8000 | xargs -r kill -9 2>/dev/null
+    lsof -ti:5173 | xargs -r kill -9 2>/dev/null
+    lsof -ti:5174 | xargs -r kill -9 2>/dev/null
+    echo "✅ Ports cleared"
+else
+    echo "⚠️  lsof not available, skipping port cleanup"
+fi
 
 # Start Backend
 echo -e "\n📡 Starting Backend Service..."
-cd /home/azureuser/4hosts/four-hosts-app/backend
+BACKEND_DIR="$PROJECT_ROOT/four-hosts-app/backend"
+
+if [ ! -d "$BACKEND_DIR" ]; then
+    echo "❌ Error: Backend directory not found at $BACKEND_DIR"
+    echo "   Please ensure the project structure is correct"
+    exit 1
+fi
+
+cd "$BACKEND_DIR"
 
 # Check if virtual environment exists
 if [ ! -d "venv" ]; then
@@ -58,11 +76,19 @@ sleep 2
 
 # Start Frontend
 echo -e "\n🎨 Starting Frontend Service..."
-cd /home/azureuser/4hosts/four-hosts-app/frontend
+FRONTEND_DIR="$PROJECT_ROOT/four-hosts-app/frontend"
+
+if [ ! -d "$FRONTEND_DIR" ]; then
+    echo "❌ Error: Frontend directory not found at $FRONTEND_DIR"
+    echo "   Please ensure the project structure is correct"
+    exit 1
+fi
+
+cd "$FRONTEND_DIR"
 
 # Verify package.json exists
 if [ ! -f "package.json" ]; then
-    echo "❌ Error: package.json not found in /home/azureuser/4hosts/four-hosts-app/frontend"
+    echo "❌ Error: package.json not found in $FRONTEND_DIR"
     echo "   Please ensure the frontend project is properly set up"
     exit 1
 fi
@@ -83,9 +109,13 @@ fi
 
 # Check if default port is available, otherwise use 5174
 PORT=5173
-if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null ; then
-    PORT=5174
-    echo "⚠️  Port 5173 is in use, using port $PORT instead"
+if command -v lsof >/dev/null 2>&1; then
+    if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+        PORT=5174
+        echo "⚠️  Port 5173 is in use, using port $PORT instead"
+    fi
+else
+    echo "⚠️  lsof not available, using default port $PORT"
 fi
 
 # Start frontend with explicit port
