@@ -21,12 +21,12 @@ export const Badge: React.FC<BadgeProps> = ({
   className = ''
 }) => {
   const variantClasses = {
-    default: 'bg-surface-muted text-text border border-border',
-    success: 'bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-200 dark:border-green-800',
-    warning: 'bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-200 dark:border-yellow-800',
-    error: 'bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-200 dark:border-red-800',
-    info: 'bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-200 dark:border-blue-800',
-    paradigm: paradigm ? `paradigm-bg-${paradigm} text-[--color-paradigm-${paradigm}] border border-[--color-paradigm-${paradigm}]/20` : 'bg-surface-muted text-text'
+    default: 'badge-default',
+    success: 'badge bg-success/20 text-success border border-success/30',
+    warning: 'badge bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 border border-yellow-500/30',
+    error: 'badge bg-error/20 text-error border border-error/30',
+    info: 'badge bg-primary/20 text-primary border border-primary/30',
+    paradigm: paradigm ? `badge paradigm-bg-${paradigm} text-paradigm-${paradigm} border border-paradigm-${paradigm}/20` : 'badge-default'
   }
 
   const sizeClasses = {
@@ -37,21 +37,18 @@ export const Badge: React.FC<BadgeProps> = ({
 
   return (
     <span
-      className={`
-        inline-flex items-center gap-1.5 
-        font-medium rounded-full
-        transition-all duration-200
-        ${variantClasses[variant]}
-        ${sizeClasses[size]}
-        ${className}
-      `}
+      className={[
+        variantClasses[variant],
+        sizeClasses[size],
+        className
+      ].filter(Boolean).join(' ')}
     >
       {Icon && <Icon className={`${size === 'sm' ? 'h-3 w-3' : size === 'lg' ? 'h-5 w-5' : 'h-4 w-4'}`} />}
       {children}
       {onRemove && (
         <button
           onClick={onRemove}
-          className="ml-1 -mr-1 hover:bg-black/10 dark:hover:bg-white/10 rounded-full p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-blue-500"
+          className="ml-1 -mr-1 hover:bg-black/10 dark:hover:bg-white/10 rounded-full p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-primary"
           aria-label="Remove"
         >
           <svg

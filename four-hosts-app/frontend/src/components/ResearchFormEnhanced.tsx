@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Settings2, Sparkles, Users } from 'lucide-react'
+import { Settings2, Users } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import type { ResearchOptions } from '../types'
 import { Button } from './ui/Button'
@@ -41,24 +41,35 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (query.trim()) {
-      onSubmit(query, { ...options, depth })
+    setError('')
+    
+    const trimmedQuery = query.trim()
+    if (!trimmedQuery) {
+      setError('Please enter a research query')
+      return
     }
+    
+    if (trimmedQuery.length < 3) {
+      setError('Query must be at least 3 characters long')
+      return
+    }
+    
+    onSubmit(trimmedQuery, { ...options, depth })
   }
 
   const paradigmOptions = [
     { value: 'auto', label: 'Auto', icon: '🔮', description: 'Let AI choose', colorClass: 'text-purple-600 dark:text-purple-400' },
-    { value: 'dolores', label: 'Dolores', icon: '🛡️', description: 'Truth & Justice', colorClass: 'text-[--color-paradigm-dolores]' },
-    { value: 'bernard', label: 'Bernard', icon: '🧠', description: 'Analysis & Logic', colorClass: 'text-[--color-paradigm-bernard]' },
-    { value: 'teddy', label: 'Teddy', icon: '❤️', description: 'Care & Support', colorClass: 'text-[--color-paradigm-teddy]' },
-    { value: 'maeve', label: 'Maeve', icon: '📈', description: 'Strategy & Power', colorClass: 'text-[--color-paradigm-maeve]' }
+    { value: 'dolores', label: 'Dolores', icon: '🛡️', description: 'Truth & Justice', colorClass: 'text-paradigm-dolores' },
+    { value: 'bernard', label: 'Bernard', icon: '🧠', description: 'Analysis & Logic', colorClass: 'text-paradigm-bernard' },
+    { value: 'teddy', label: 'Teddy', icon: '❤️', description: 'Care & Support', colorClass: 'text-paradigm-teddy' },
+    { value: 'maeve', label: 'Maeve', icon: '📈', description: 'Strategy & Power', colorClass: 'text-paradigm-maeve' }
   ]
 
   return (
-    <form onSubmit={handleSubmit} className="card rounded-2xl shadow-xl p-8 animate-scale-in">
+    <form onSubmit={handleSubmit} className="card-hover animate-fade-in">
       <div className="space-y-6">
         {/* Query Input */}
-        <div className="animate-fade-in-up" style={{ animationDelay: '0.1s' }}>
+        <div className="animate-slide-up">
           <label htmlFor="query" className="block text-sm font-medium text-text mb-2">
             Research Query
           </label>
@@ -66,7 +77,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             id="query"
             textarea
             value={query}
-            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
+            onChange={(e) => {
               setQuery(e.target.value)
               setError('')
             }}
@@ -76,11 +87,14 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             status={error ? 'error' : undefined}
             errorMessage={error}
             className="border-2"
+            required
+            minLength={3}
+            aria-describedby={error ? "query-error" : undefined}
           />
         </div>
 
         {/* Paradigm Selection */}
-        <div className="animate-fade-in-up" style={{ animationDelay: '0.2s' }}>
+        <div className="animate-slide-up" style={{ animationDelay: '100ms' }}>
           <div className="block text-sm font-medium text-text mb-3" role="group" aria-label="Paradigm Selection">
             Paradigm Selection
           </div>
@@ -91,21 +105,19 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                 type="button"
                 onClick={() => setParadigm(option.value)}
                 disabled={isLoading}
-                className={`relative p-3 rounded-xl border-2 transition-all duration-200 transform hover:scale-105 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-800
+                className={`relative p-3 rounded-lg border transition-colors
                   ${paradigm === option.value
-                    ? `border-blue-500 bg-blue-50 dark:bg-blue-900/30 shadow-lg scale-105 ${
-                        option.value !== 'auto' ? `ring-2 ring-blue-500/50` : ''
-                      }`
-                    : 'border-border hover:border-border-subtle bg-surface dark:bg-surface-subtle'
+                    ? 'border-primary bg-primary/10 shadow-md'
+                    : 'border-border hover:border-text-subtle bg-surface'
                   }
-                  ${isLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+                  ${isLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-lg'}
                   group`}
                 aria-pressed={paradigm === option.value}
                 aria-label={`${option.label}: ${option.description}`}
               >
                 <div className="text-center">
-                  <div className={`text-2xl mb-1 transition-transform duration-200 group-hover:scale-110 ${
-                    paradigm === option.value ? 'animate-bounce-in' : ''
+                  <div className={`text-2xl mb-1 ${
+                    paradigm === option.value ? 'animate-fade-in' : ''
                   }`}>
                     {option.icon}
                   </div>
@@ -117,7 +129,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                   </div>
                 </div>
                 {paradigm === option.value && (
-                  <div className="absolute inset-0 rounded-xl bg-linear-to-r from-transparent to-blue-500/10 dark:to-blue-400/10 pointer-events-none animate-pulse" />
+                  <div className="absolute inset-0 rounded-lg bg-primary/5 pointer-events-none" />
                 )}
               </button>
             ))}
@@ -125,7 +137,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
         </div>
 
         {/* Depth Selection */}
-        <div className="animate-fade-in-up" style={{ animationDelay: '0.3s' }}>
+        <div className="animate-slide-up" style={{ animationDelay: '200ms' }}>
           <label className="block text-sm font-medium text-text mb-3">
             Research Depth
           </label>
@@ -140,12 +152,12 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                 type="button"
                 onClick={() => setDepth(option.value as 'quick' | 'standard' | 'deep')}
                 disabled={isLoading}
-                className={`flex-1 p-3 rounded-xl border-2 transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800
+                className={`flex-1 p-3 rounded-lg border transition-colors
                   ${depth === option.value
-                    ? 'border-blue-500 dark:border-blue-400 bg-blue-50 dark:bg-blue-900/30 shadow-lg scale-105'
-                    : 'border-border hover:border-border-subtle bg-surface'
+                    ? 'border-primary bg-primary/10 shadow-md'
+                    : 'border-border hover:border-text-subtle bg-surface'
                   }
-                  ${isLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                  ${isLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-lg'}`}
               >
                 <div className="font-medium text-text">{option.label}</div>
                 <div className="text-xs text-text-muted mt-1">{option.description}</div>
@@ -155,20 +167,20 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
         </div>
 
         {/* Advanced Options Toggle */}
-        <div className="animate-fade-in-up" style={{ animationDelay: '0.4s' }}>
+        <div className="animate-slide-up" style={{ animationDelay: '300ms' }}>
           <button
             type="button"
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-200"
+            className="flex items-center gap-2 text-sm text-primary hover:text-primary/80 transition-colors"
           >
-            <Settings2 className={`h-4 w-4 transition-transform duration-200 ${showAdvanced ? 'rotate-90' : ''}`} />
+            <Settings2 className={`h-4 w-4 transition-transform ${showAdvanced ? 'rotate-90' : ''}`} />
             {showAdvanced ? 'Hide' : 'Show'} Advanced Options
           </button>
         </div>
 
         {/* Advanced Options */}
         {showAdvanced && (
-          <div className="animate-fade-in-up space-y-4 p-4 bg-surface-subtle rounded-xl">
+          <div className="animate-slide-up space-y-4 p-4 bg-surface-subtle rounded-lg">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="flex items-center cursor-pointer group">
@@ -176,9 +188,9 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                     type="checkbox"
                     checked={options.enable_ai_classification}
                     onChange={(e) => setOptions({ ...options, enable_ai_classification: e.target.checked })}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-border rounded transition-transform duration-200 group-hover:scale-110"
+                    className="h-4 w-4 text-primary focus:ring-primary border-border rounded"
                   />
-                  <span className="ml-2 text-sm text-text group-hover:text-text transition-colors duration-200">
+                  <span className="ml-2 text-sm text-text">
                     Enable AI classification
                   </span>
                 </label>
@@ -193,8 +205,8 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                   min="10"
                   max="200"
                   value={options.max_sources || 100}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOptions({ ...options, max_sources: parseInt(e.target.value) })}
-                  className="px-3 py-1 text-sm border border-border rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-surface transition-colors duration-200"
+                  onChange={(e) => setOptions({ ...options, max_sources: parseInt(e.target.value) })}
+                  className="input text-sm"
                 />
               </div>
             </div>
@@ -202,20 +214,16 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
         )}
 
         {/* Submit Button */}
-        <div className="animate-fade-in-up" style={{ animationDelay: '0.4s' }}>
+        <div className="animate-slide-up" style={{ animationDelay: '400ms' }}>
           <Button
             type="submit"
             disabled={!query.trim()}
             loading={isLoading}
             fullWidth
             icon={Users}
-            className="bg-linear-to-r from-blue-500 to-blue-600 dark:from-blue-600 dark:to-blue-700 hover:from-blue-600 hover:to-blue-700 dark:hover:from-blue-700 dark:hover:to-blue-800 py-3 px-4 rounded-xl font-medium transition-all duration-300 transform hover:scale-[1.02] hover:shadow-lg group relative overflow-hidden"
+            className="btn-primary"
           >
-            <span className="absolute inset-0 bg-linear-to-r from-transparent via-white/20 to-transparent -skew-x-12 translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-700"></span>
-            <span className="flex items-center justify-center relative">
-              {!isLoading && <Sparkles className="h-5 w-5 ml-2 opacity-0 group-hover:opacity-100 transition-all duration-300 transform group-hover:-rotate-12" />}
-              {isLoading ? 'Researching...' : 'Ask the Four Hosts'}
-            </span>
+            {isLoading ? 'Researching...' : 'Ask the Four Hosts'}
           </Button>
         </div>
       </div>

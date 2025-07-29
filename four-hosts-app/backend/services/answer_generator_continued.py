@@ -185,7 +185,7 @@ Maintain academic objectivity and precision.
 """
 
         # Generate content using LLM
-        content = await llm_client.generate_paradigm_content(
+        content = await llm_client.generate_completion(
             prompt=section_prompt,
             paradigm=self.paradigm,
             max_tokens=int(context.max_length * section_def["weight"] * 2),
@@ -518,7 +518,7 @@ Include frameworks, tools, and methodologies where applicable.
 """
 
         # Generate content using LLM
-        content = await llm_client.generate_paradigm_content(
+        content = await llm_client.generate_completion(
             prompt=section_prompt,
             paradigm=self.paradigm,
             max_tokens=int(context.max_length * section_def["weight"] * 2),

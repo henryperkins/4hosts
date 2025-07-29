@@ -38,9 +38,9 @@ export const LoginForm: React.FC = () => {
       setError(error instanceof Error ? error.message : 'Login failed')
       // Add error shake animation
       if (formRef.current) {
-        formRef.current.classList.add('animate-shake')
+        formRef.current.style.animation = 'shake 0.5s'
         setTimeout(() => {
-          formRef.current?.classList.remove('animate-shake')
+          if (formRef.current) formRef.current.style.animation = ''
         }, ERROR_SHAKE_DURATION)
       }
     } finally {
@@ -93,34 +93,34 @@ export const LoginForm: React.FC = () => {
   const pwdIconOk = pwdRaw === 'success' || pwdRaw === 'strong'
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-surface py-12 px-4 sm:px-6 lg:px-8 transition-colors duration-200">
+    <div className="min-h-screen flex items-center justify-center bg-surface py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-md w-full space-y-8 animate-fade-in">
         <div>
-          <h2 className="mt-6 text-center text-3xl font-extrabold text-text">
+          <h2 className="mt-6 text-center text-2xl font-bold text-text">
             Sign in to your account
           </h2>
           <p className="mt-2 text-center text-sm text-text-muted">
             Or{' '}
-            <Link to="/register" className="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-colors duration-200">
+            <Link to="/register" className="font-medium text-primary hover:text-primary/80 transition-colors">
               create a new account
             </Link>
           </p>
         </div>
         <form ref={formRef} className="mt-8 space-y-6" onSubmit={handleSubmit}>
           {error && (
-            <div className="rounded-md bg-red-50 dark:bg-red-950/20 p-4 animate-slide-down error-glow border border-red-200 dark:border-red-800">
+            <div className="rounded-md bg-error/10 p-4 animate-slide-up border border-error/20">
               <div className="flex items-center">
-                <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-2 shrink-0" />
-                <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
+                <AlertCircle className="h-5 w-5 text-error mr-2 shrink-0" />
+                <p className="text-sm text-error">{error}</p>
               </div>
             </div>
           )}
           {loginSuccess && (
-            <div className="rounded-md bg-green-50 dark:bg-green-950/20 p-4 animate-slide-down success-glow border border-green-200 dark:border-green-800">
+            <div className="rounded-md bg-success/10 p-4 animate-slide-up border border-success/20">
               <div className="flex items-center">
-                <Check className="h-5 w-5 text-green-600 dark:text-green-400 mr-2 animate-scale-in" />
-                <p className="text-sm text-green-800 dark:text-green-200">
-                  Login successful! Redirecting<span className="loading-dots"></span>
+                <Check className="h-5 w-5 text-success mr-2 animate-fade-in" />
+                <p className="text-sm text-success">
+                  Login successful! Redirecting...
                 </p>
               </div>
             </div>
@@ -131,10 +131,10 @@ export const LoginForm: React.FC = () => {
                 Email or Username
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none z-10 pl-4">
-                  <Mail className={`h-5 w-5 transition-colors duration-200 ${
-                    usernameStatus === 'error' ? 'text-red-500' :
-                    usernameStatus === 'success' ? 'text-green-500' :
+                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none pl-3">
+                  <Mail className={`h-5 w-5 transition-colors ${
+                    usernameStatus === 'error' ? 'text-error' :
+                    usernameStatus === 'success' ? 'text-success' :
                     'text-text-muted'
                   }`} />
                 </div>
@@ -145,21 +145,21 @@ export const LoginForm: React.FC = () => {
                   autoComplete="username"
                   required
                   status={(getInputStatus('username') as 'error' | 'success') || undefined}
-                  className="pl-14"
+                  className="pl-10"
                   placeholder="Email or Username"
                   value={username}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
+                  onChange={(e) => setUsername(e.target.value)}
                   onBlur={() => setFormTouched(prev => ({ ...prev, username: true }))}
                 />
               </div>
               {formTouched.username && username && !validateInput(username) && (
-                <p className="mt-1 text-sm text-red-600 animate-slide-down flex items-center">
+                <p className="mt-1 text-sm text-error animate-slide-up flex items-center">
                   <AlertCircle className="h-4 w-4 mr-1" />
                   Please enter a valid email address or username
                 </p>
               )}
               {formTouched.username && username && validateInput(username) && (
-                <p className="mt-1 text-sm text-green-600 animate-slide-down flex items-center">
+                <p className="mt-1 text-sm text-success animate-slide-up flex items-center">
                   <Check className="h-4 w-4 mr-1" />
                   Valid input
                 </p>
@@ -170,10 +170,10 @@ export const LoginForm: React.FC = () => {
                 Password
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none z-10 pl-4">
-                  <Lock className={`h-5 w-5 transition-colors duration-200 ${
-                    passwordStatus === 'error' ? 'text-red-500' :
-                    pwdIconOk ? 'text-green-500' :
+                <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none pl-3">
+                  <Lock className={`h-5 w-5 transition-colors ${
+                    passwordStatus === 'error' ? 'text-error' :
+                    pwdIconOk ? 'text-success' :
                     'text-text-muted'
                   }`} />
                 </div>
@@ -184,15 +184,15 @@ export const LoginForm: React.FC = () => {
                   autoComplete="current-password"
                   required
                   status={passwordStatus}
-                  className="pl-14 pr-10"
+                  className="pl-10 pr-10"
                   placeholder="Password"
                   value={password}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+                  onChange={(e) => setPassword(e.target.value)}
                   onBlur={() => setFormTouched(prev => ({ ...prev, password: true }))}
                 />
                 <button
                   type="button"
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center z-10"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
                   onClick={togglePasswordVisibility}
                   aria-label={showPassword ? "Hide password" : "Show password"}
                 >
@@ -206,19 +206,19 @@ export const LoginForm: React.FC = () => {
               {formTouched.password && password && (
                 <div className="mt-1 space-y-1">
                   {password.length < 6 && (
-                    <p className="text-sm text-red-600 animate-slide-down flex items-center">
+                    <p className="text-sm text-error animate-slide-up flex items-center">
                       <AlertCircle className="h-4 w-4 mr-1" />
                       Password must be at least 6 characters
                     </p>
                   )}
                   {password.length >= 6 && password.length < 8 && (
-                    <p className="text-sm text-yellow-600 animate-slide-down flex items-center">
+                    <p className="text-sm text-text-subtle animate-slide-up flex items-center">
                       <AlertCircle className="h-4 w-4 mr-1" />
                       Consider using at least 8 characters
                     </p>
                   )}
                   {pwdRaw === 'strong' && (
-                    <p className="text-sm text-green-600 animate-slide-down flex items-center">
+                    <p className="text-sm text-success animate-slide-up flex items-center">
                       <Check className="h-4 w-4 mr-1" />
                       Strong password
                     </p>
@@ -231,6 +231,7 @@ export const LoginForm: React.FC = () => {
           <div>
             <Button
               type="submit"
+              variant="primary"
               disabled={!username || !password}
               loading={isLoading}
               fullWidth

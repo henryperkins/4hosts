@@ -156,8 +156,13 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         if config.region and config.region.lower() != "global":
             params["gl"] = config.region
             
-        if config.safe_search and config.safe_search in ["active", "moderate", "off"]:
-            params["safe"] = config.safe_search
+        if config.safe_search:
+            # Google Custom Search API only accepts "active" or "off"
+            # Map "moderate" to "active" for compatibility
+            if config.safe_search == "moderate":
+                params["safe"] = "active"
+            elif config.safe_search in ["active", "off"]:
+                params["safe"] = config.safe_search
 
         if config.date_range:
             params["dateRestrict"] = config.date_range

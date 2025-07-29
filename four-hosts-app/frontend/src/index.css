@@ -1,2 +1,532 @@
-@import "./app.css";
-@import "./styles/animations.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme Variables */
+:root {
+  /* Paradigm colors (RGB format for opacity support) */
+  --paradigm-dolores-rgb: 220 83 83;
+  --paradigm-teddy-rgb: 231 148 85;
+  --paradigm-bernard-rgb: 74 122 223;
+  --paradigm-maeve-rgb: 63 181 127;
+
+  /* Legacy hex values for compatibility */
+  --paradigm-dolores: #dc5353;
+  --paradigm-teddy: #e79455;
+  --paradigm-bernard: #4a7adf;
+  --paradigm-maeve: #3fb57f;
+
+  /* Base colors (RGB format for opacity support) */
+  --surface-rgb: 255 255 255;
+  --surface-subtle-rgb: 250 250 250;
+  --surface-muted-rgb: 245 245 245;
+  --border-rgb: 229 229 229;
+  --text-rgb: 23 23 23;
+  --text-subtle-rgb: 115 115 115;
+  --text-muted-rgb: 163 163 163;
+
+  /* Legacy hex values for compatibility */
+  --surface: #ffffff;
+  --surface-subtle: #fafafa;
+  --surface-muted: #f5f5f5;
+  --border: #e5e5e5;
+  --text: #171717;
+  --text-subtle: #737373;
+  --text-muted: #a3a3a3;
+
+  /* Semantic colors (RGB format for opacity support) */
+  --primary-rgb: 59 130 246;
+  --success-rgb: 16 185 129;
+  --error-rgb: 239 68 68;
+
+  /* Legacy hex values for compatibility */
+  --primary: #3b82f6;
+  --success: #10b981;
+  --error: #ef4444;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* RGB values for dark mode */
+    --surface-rgb: 10 10 10;
+    --surface-subtle-rgb: 23 23 23;
+    --surface-muted-rgb: 38 38 38;
+    --border-rgb: 64 64 64;
+    --text-rgb: 250 250 250;
+    --text-subtle-rgb: 163 163 163;
+    --text-muted-rgb: 115 115 115;
+
+    /* Legacy hex values */
+    --surface: #0a0a0a;
+    --surface-subtle: #171717;
+    --surface-muted: #262626;
+    --border: #404040;
+    --text: #fafafa;
+    --text-subtle: #a3a3a3;
+    --text-muted: #737373;
+  }
+}
+
+.dark {
+  /* RGB values for dark mode */
+  --surface-rgb: 10 10 10;
+  --surface-subtle-rgb: 23 23 23;
+  --surface-muted-rgb: 38 38 38;
+  --border-rgb: 64 64 64;
+  --text-rgb: 250 250 250;
+  --text-subtle-rgb: 163 163 163;
+  --text-muted-rgb: 115 115 115;
+
+  /* Legacy hex values */
+  --surface: #0a0a0a;
+  --surface-subtle: #171717;
+  --surface-muted: #262626;
+  --border: #404040;
+  --text: #fafafa;
+  --text-subtle: #a3a3a3;
+  --text-muted: #737373;
+}
+
+/* Base Styles */
+@layer base {
+  body {
+    @apply antialiased;
+    color: var(--text);
+    background-color: var(--surface);
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-offset-2;
+    --tw-ring-color: var(--primary);
+    --tw-ring-offset-color: var(--surface);
+  }
+}
+
+/* Component Styles */
+@layer components {
+  /* Cards */
+  .card {
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    border-width: 1px;
+    background-color: var(--surface);
+    border-color: var(--border);
+  }
+
+  .card-hover {
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    border-width: 1px;
+    background-color: var(--surface);
+    border-color: var(--border);
+    transition-property: box-shadow;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+  }
+  
+  .card-hover:hover {
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  }
+
+  .card-interactive {
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    border-width: 1px;
+    background-color: var(--surface);
+    border-color: var(--border);
+    transition-property: all;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 200ms;
+    cursor: pointer;
+  }
+
+  .card-interactive:hover {
+    border-color: var(--primary);
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    transform: translateY(-2px);
+  }
+
+  /* Paradigm cards */
+  .paradigm-card {
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    border-width: 1px;
+    transition-property: all;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 200ms;
+  }
+
+  /* Paradigm borders */
+  .paradigm-border-dolores {
+    border-color: var(--paradigm-dolores);
+  }
+
+  .paradigm-border-teddy {
+    border-color: var(--paradigm-teddy);
+  }
+
+  .paradigm-border-bernard {
+    border-color: var(--paradigm-bernard);
+  }
+
+  .paradigm-border-maeve {
+    border-color: var(--paradigm-maeve);
+  }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+  }
+  
+  .btn:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+    background-color: var(--primary);
+    color: white;
+  }
+  
+  .btn-primary:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  
+  .btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+    background-color: var(--surface-muted);
+  }
+  
+  .btn-secondary:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  
+  .btn-secondary:hover {
+    background-color: var(--surface-subtle);
+  }
+
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+  }
+  
+  .btn-ghost:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  
+  .btn-ghost:hover {
+    background-color: var(--surface-muted);
+  }
+
+  /* Paradigm buttons */
+  .btn-paradigm-dolores {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+    background-color: var(--paradigm-dolores);
+    color: white;
+  }
+  
+  .btn-paradigm-dolores:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  
+  .btn-paradigm-dolores:hover {
+    filter: brightness(1.1);
+  }
+
+  .btn-paradigm-teddy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+    background-color: var(--paradigm-teddy);
+    color: white;
+  }
+  
+  .btn-paradigm-teddy:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  
+  .btn-paradigm-teddy:hover {
+    filter: brightness(1.1);
+  }
+
+  .btn-paradigm-bernard {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+    background-color: var(--paradigm-bernard);
+    color: white;
+  }
+  
+  .btn-paradigm-bernard:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  
+  .btn-paradigm-bernard:hover {
+    filter: brightness(1.1);
+  }
+
+  .btn-paradigm-maeve {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 150ms;
+    background-color: var(--paradigm-maeve);
+    color: white;
+  }
+  
+  .btn-paradigm-maeve:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  
+  .btn-paradigm-maeve:hover {
+    filter: brightness(1.1);
+  }
+
+  /* Inputs */
+  .input {
+    width: 100%;
+    border-radius: 0.375rem;
+    border-width: 1px;
+    padding: 0.5rem 0.75rem;
+    border-color: var(--border);
+    background-color: var(--surface);
+    color: var(--text);
+  }
+  
+  .input:focus {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--primary);
+  }
+  
+  .input::placeholder {
+    color: var(--text-muted);
+  }
+
+  /* Badges */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 9999px;
+    padding: 0.125rem 0.625rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+  }
+
+  .badge-default {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 9999px;
+    padding: 0.125rem 0.625rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+    background-color: var(--surface-muted);
+    color: var(--text-subtle);
+  }
+
+  /* Loading */
+  .spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border-width: 2px;
+    border-color: currentColor;
+    border-right-color: transparent;
+    border-radius: 9999px;
+    animation: spin 1s linear infinite;
+  }
+}
+
+/* Utility Classes */
+@layer utilities {
+  /* Paradigm backgrounds */
+  .paradigm-bg-dolores {
+    background-color: rgb(220 83 83 / 0.1);
+  }
+
+  .paradigm-bg-teddy {
+    background-color: rgb(231 148 85 / 0.1);
+  }
+
+  .paradigm-bg-bernard {
+    background-color: rgb(74 122 223 / 0.1);
+  }
+
+  .paradigm-bg-maeve {
+    background-color: rgb(63 181 127 / 0.1);
+  }
+
+  /* Text gradients */
+  .text-gradient {
+    background-image: linear-gradient(to right, var(--primary), rgb(59 130 246 / 0.5));
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
+  /* Brand gradients */
+  .gradient-brand {
+    background-image: linear-gradient(to right, var(--primary), var(--paradigm-maeve));
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
+  .gradient-accent {
+    background-image: linear-gradient(to right, var(--paradigm-dolores), var(--paradigm-teddy));
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
+  /* Glass effect */
+  .glass {
+    backdrop-filter: blur(4px);
+    background-color: var(--surface);
+    opacity: 0.8;
+  }
+
+  /* Linear gradient backgrounds */
+  .bg-linear-to-r {
+    background-image: linear-gradient(to right, var(--tw-gradient-from), var(--tw-gradient-to));
+  }
+
+  /* Hover lift effect */
+  .hover-lift {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+
+  /* Theme transition */
+  .theme-transition * {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease !important;
+  }
+
+  /* Animation utilities */
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slide-up 0.3s ease-out;
+  }
+
+  /* Stagger delay utilities */
+  .stagger-delay-50 {
+    animation-delay: 50ms;
+  }
+
+  .stagger-delay-100 {
+    animation-delay: 100ms;
+  }
+
+  .stagger-delay-150 {
+    animation-delay: 150ms;
+  }
+
+  .stagger-delay-200 {
+    animation-delay: 200ms;
+  }
+
+  .stagger-delay-250 {
+    animation-delay: 250ms;
+  }
+
+  .stagger-delay-300 {
+    animation-delay: 300ms;
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

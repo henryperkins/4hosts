@@ -37,15 +37,22 @@ export interface ResearchSubmission {
   research_id: string
   status: string
   paradigm_classification: ParadigmClassification
-  created_at: string
+  created_at?: string
+  estimated_completion?: string
+  websocket_url?: string
 }
 
 export interface ResearchStatus {
   id: string
-  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
-  progress?: number
+  research_id?: string
+  status: 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
+  paradigm?: string
+  started_at?: string
+  progress?: any
+  cost_info?: any
+  error?: string
   message?: string
-  updated_at: string
+  updated_at?: string
   can_cancel?: boolean
   can_retry?: boolean
   cancelled_at?: string
@@ -74,9 +81,12 @@ export interface SystemStats {
 }
 
 export interface WebSocketMessage {
-  type: 'status_update' | 'progress' | 'result' | 'error'
-  research_id: string
+  type: 'status_update' | 'progress' | 'result' | 'error' | 'connected' | 'system_notification' | 'research_started' | 'research_phase_change' | 'research_progress' | 'source_found' | 'source_analyzed' | 'research_completed' | 'research_failed'
+  research_id?: string
   data: unknown
+  id?: string
+  timestamp?: string
+  metadata?: Record<string, any>
 }
 
 class APIService {
@@ -250,7 +260,12 @@ class APIService {
       throw new Error(error.detail || 'Failed to submit research')
     }
 
-    return response.json()
+    const data = await response.json()
+    // Add created_at timestamp if missing from backend
+    if (!data.created_at) {
+      data.created_at = new Date().toISOString()
+    }
+    return data
   }
 
   async getResearchStatus(researchId: string): Promise<ResearchStatus> {
@@ -260,7 +275,24 @@ class APIService {
       throw new Error('Failed to get research status')
     }
 
-    return response.json()
+    const data = await response.json()
+    // Map backend fields to frontend expectations
+    return {
+      id: data.research_id || researchId,
+      research_id: data.research_id,
+      status: data.status,
+      paradigm: data.paradigm,
+      started_at: data.started_at,
+      progress: data.progress,
+      cost_info: data.cost_info,
+      error: data.error,
+      message: data.message,
+      updated_at: data.updated_at || data.started_at || new Date().toISOString(),
+      can_cancel: data.can_retry,
+      can_retry: data.can_retry,
+      cancelled_at: data.cancelled_at,
+      cancelled_by: data.cancelled_by
+    }
   }
 
   async getResearchResults(researchId: string): Promise<ResearchResult> {
@@ -276,7 +308,7 @@ class APIService {
     return response.json()
   }
 
-  async cancelResearch(researchId: string): Promise<{ message: string; cancelled: boolean }> {
+  async cancelResearch(researchId: string): Promise<{ message: string; cancelled: boolean; cancelled_at?: string; status?: string; research_id?: string }> {
     const response = await this.fetchWithAuth(`/research/cancel/${researchId}`, {
       method: 'POST',
     })
@@ -360,7 +392,12 @@ class APIService {
       return
     }
 
-    const wsUrl = API_BASE_URL.replace('http', 'ws')
+    // If API_BASE_URL is an absolute URL (starts with http/https) convert it to ws/wss.
+    // Otherwise (relative like "/api"), leave blank so the client connects to same origin
+    // and lets the Vite proxy `/ws` rule forward the request.
+    const wsUrl = API_BASE_URL.startsWith('http')
+      ? API_BASE_URL.replace(/^http/, 'ws')
+      : ''
     const token = this.authToken ? `?token=${this.authToken}` : ''
     this.wsConnection = new WebSocket(`${wsUrl}/ws/research/${researchId}${token}`)
 
@@ -376,9 +413,18 @@ class APIService {
     this.wsConnection.onmessage = (event) => {
       try {
         const message: WebSocketMessage = JSON.parse(event.data)
-        const handler = this.wsHandlers.get(message.research_id)
+        // Extract research_id from data if not at top level
+        const researchIdToUse = message.research_id || (message.data as any)?.research_id || researchId
+        
+        // Ensure research_id is present for handler routing
+        const messageWithId = {
+          ...message,
+          research_id: researchIdToUse
+        }
+        
+        const handler = this.wsHandlers.get(researchIdToUse)
         if (handler) {
-          handler(message)
+          handler(messageWithId)
         }
       } catch (error) {
         console.error('Failed to parse WebSocket message:', error)

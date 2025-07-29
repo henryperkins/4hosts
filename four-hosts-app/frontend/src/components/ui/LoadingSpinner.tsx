@@ -35,8 +35,8 @@ export const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
   }
 
   const variantClasses = {
-    primary: 'text-blue-600 dark:text-blue-400',
-    secondary: 'text-gray-600 dark:text-gray-400',
+    primary: 'text-primary',
+    secondary: 'text-text-subtle',
     white: 'text-white',
     current: 'text-current'
   }
@@ -69,7 +69,6 @@ export const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
       {text && (
         <span className={`${textSizeClasses[size]} ${variantClasses[variant]} font-medium`}>
           {text}
-          <span className="loading-dots"></span>
         </span>
       )}
       <span className="sr-only">Loading...</span>

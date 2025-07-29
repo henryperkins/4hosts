@@ -1,11 +1,11 @@
 export type Paradigm = 'dolores' | 'teddy' | 'bernard' | 'maeve'
 
-// Use CSS variables for colors to maintain single source of truth
+// Paradigm color classes
 export const paradigmColors: Record<Paradigm | 'default', string> = {
-  dolores: 'bg-[--color-paradigm-dolores] text-white',
-  teddy: 'bg-[--color-paradigm-teddy] text-white',
-  bernard: 'bg-[--color-paradigm-bernard] text-white',
-  maeve: 'bg-[--color-paradigm-maeve] text-white',
+  dolores: 'bg-paradigm-dolores text-white',
+  teddy: 'bg-paradigm-teddy text-white',
+  bernard: 'bg-paradigm-bernard text-white',
+  maeve: 'bg-paradigm-maeve text-white',
   default: 'bg-surface-muted text-text'
 }
 
@@ -16,91 +16,66 @@ export const paradigmDescriptions: Record<Paradigm, string> = {
   maeve: 'Strategy & Power'
 }
 
-// Helper to get color values from CSS variables for charts
+// Helper to get color values for charts
 export const getParadigmColorValue = (paradigm: Paradigm): string => {
-  if (typeof window === 'undefined') {
-    // Fallback for SSR
-    const fallbacks: Record<Paradigm, string> = {
-      dolores: '#ef4444',
-      teddy: '#f97316',
-      bernard: '#3b82f6',
-      maeve: '#10b981'
-    }
-    return fallbacks[paradigm]
+  const colors: Record<Paradigm, string> = {
+    dolores: '#dc5353',
+    teddy: '#e79455',
+    bernard: '#4a7adf',
+    maeve: '#3fb57f'
   }
-  
-  const computedStyle = getComputedStyle(document.documentElement)
-  const cssVar = `--color-paradigm-${paradigm}`
-  const value = computedStyle.getPropertyValue(cssVar).trim()
-  
-  // Convert oklch to hex if needed (for chart libraries)
-  if (value.startsWith('oklch')) {
-    // For now, return fallback - in production, use a proper color conversion library
-    const fallbacks: Record<Paradigm, string> = {
-      dolores: '#ef4444',
-      teddy: '#f97316',
-      bernard: '#3b82f6',
-      maeve: '#10b981'
-    }
-    return fallbacks[paradigm]
-  }
-  
-  return value || '#6B7280'
+  return colors[paradigm] || '#6B7280'
 }
 
-// Extended paradigm information with CSS variable references
+// Extended paradigm information
 export const paradigmInfo = {
   dolores: {
     name: 'Dolores (Revolutionary)',
     shortName: 'Dolores',
-    color: 'bg-[--color-paradigm-dolores]',
-    borderColor: 'border-[--color-paradigm-dolores]',
-    textColor: 'text-[--color-paradigm-dolores]',
+    color: 'bg-paradigm-dolores',
+    borderColor: 'border-paradigm-dolores',
+    textColor: 'text-paradigm-dolores',
     bgLight: 'paradigm-bg-dolores',
     description: 'Exposing systemic injustices and power imbalances',
     shortDescription: 'Truth & Justice',
     icon: '⚔️',
-    focus: 'Revolutionary perspective focused on exposing hidden truths',
-    cssVar: '--color-paradigm-dolores'
+    focus: 'Revolutionary perspective focused on exposing hidden truths'
   },
   teddy: {
     name: 'Teddy (Devotion)',
     shortName: 'Teddy',
-    color: 'bg-[--color-paradigm-teddy]',
-    borderColor: 'border-[--color-paradigm-teddy]',
-    textColor: 'text-[--color-paradigm-teddy]',
+    color: 'bg-paradigm-teddy',
+    borderColor: 'border-paradigm-teddy',
+    textColor: 'text-paradigm-teddy',
     bgLight: 'paradigm-bg-teddy',
     description: 'Protecting and supporting vulnerable communities',
     shortDescription: 'Care & Support',
     icon: '🛡️',
-    focus: 'Compassionate approach emphasizing community care',
-    cssVar: '--color-paradigm-teddy'
+    focus: 'Compassionate approach emphasizing community care'
   },
   bernard: {
     name: 'Bernard (Analytical)',
     shortName: 'Bernard',
-    color: 'bg-[--color-paradigm-bernard]',
-    borderColor: 'border-[--color-paradigm-bernard]',
-    textColor: 'text-[--color-paradigm-bernard]',
+    color: 'bg-paradigm-bernard',
+    borderColor: 'border-paradigm-bernard',
+    textColor: 'text-paradigm-bernard',
     bgLight: 'paradigm-bg-bernard',
     description: 'Providing objective analysis and empirical evidence',
     shortDescription: 'Analysis & Logic',
     icon: '🔬',
-    focus: 'Data-driven analysis with empirical foundations',
-    cssVar: '--color-paradigm-bernard'
+    focus: 'Data-driven analysis with empirical foundations'
   },
   maeve: {
     name: 'Maeve (Strategic)',
     shortName: 'Maeve',
-    color: 'bg-[--color-paradigm-maeve]',
-    borderColor: 'border-[--color-paradigm-maeve]',
-    textColor: 'text-[--color-paradigm-maeve]',
+    color: 'bg-paradigm-maeve',
+    borderColor: 'border-paradigm-maeve',
+    textColor: 'text-paradigm-maeve',
     bgLight: 'paradigm-bg-maeve',
     description: 'Delivering actionable strategies and competitive advantage',
     shortDescription: 'Strategy & Power',
     icon: '♟️',
-    focus: 'Strategic planning for sustainable power dynamics',
-    cssVar: '--color-paradigm-maeve'
+    focus: 'Strategic planning for sustainable power dynamics'
   }
 } as const
 
@@ -113,11 +88,11 @@ export function isValidParadigm(value: string): value is Paradigm {
 export function getParadigmClass(paradigm: string, variant: 'full' | 'subtle' = 'full'): string {
   if (variant === 'subtle') {
     const subtleClasses: Record<Paradigm | 'default', string> = {
-      dolores: 'paradigm-bg-dolores border border-[--color-paradigm-dolores]/20 text-[--color-paradigm-dolores]',
-      teddy: 'paradigm-bg-teddy border border-[--color-paradigm-teddy]/20 text-[--color-paradigm-teddy]',
-      bernard: 'paradigm-bg-bernard border border-[--color-paradigm-bernard]/20 text-[--color-paradigm-bernard]',
-      maeve: 'paradigm-bg-maeve border border-[--color-paradigm-maeve]/20 text-[--color-paradigm-maeve]',
-      default: 'bg-surface-muted text-text-muted border border-border'
+      dolores: 'paradigm-bg-dolores text-paradigm-dolores',
+      teddy: 'paradigm-bg-teddy text-paradigm-teddy',
+      bernard: 'paradigm-bg-bernard text-paradigm-bernard',
+      maeve: 'paradigm-bg-maeve text-paradigm-maeve',
+      default: 'bg-surface-muted text-text-muted'
     }
     return subtleClasses[paradigm as Paradigm] || subtleClasses.default
   }

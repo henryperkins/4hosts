@@ -53,10 +53,10 @@ const Navigation = () => {
   const getParadigmHoverClass = (paradigm?: string) => {
     if (!paradigm) return ''
     const paradigmHoverColors: Record<string, string> = {
-      dolores: 'hover:text-[--color-paradigm-dolores]',
-      bernard: 'hover:text-[--color-paradigm-bernard]',
-      teddy: 'hover:text-[--color-paradigm-teddy]',
-      maeve: 'hover:text-[--color-paradigm-maeve]'
+      dolores: 'hover:text-paradigm-dolores',
+      bernard: 'hover:text-paradigm-bernard',
+      teddy: 'hover:text-paradigm-teddy',
+      maeve: 'hover:text-paradigm-maeve'
     }
     return paradigmHoverColors[paradigm] || ''
   }
@@ -72,8 +72,8 @@ const Navigation = () => {
               onClick={closeMobileMenu}
             >
               <span className="text-2xl group-hover:rotate-12 transition-transform duration-300 inline-block" role="img" aria-label="Theater masks">🎭</span>
-              <span className="hidden sm:inline gradient-brand bg-clip-text text-transparent">Four Hosts Research</span>
-              <span className="sm:hidden gradient-brand bg-clip-text text-transparent">4H Research</span>
+              <span className="hidden sm:inline gradient-brand">Four Hosts Research</span>
+              <span className="sm:hidden gradient-brand">4H Research</span>
             </Link>
             <div className="hidden md:flex items-center gap-2">
               {navItems.map(({ path, icon: Icon, label, paradigm }) => {
@@ -98,7 +98,7 @@ const Navigation = () => {
 
           <div className="flex items-center gap-2 md:gap-4">
             <span className="hidden md:block text-sm text-text-muted animate-fade-in">
-              Welcome, <span className="font-medium text-transparent bg-clip-text gradient-accent">{user?.username}</span>
+              Welcome, <span className="font-medium gradient-accent">{user?.username}</span>
             </span>
 
             {/* Dark mode toggle */}
