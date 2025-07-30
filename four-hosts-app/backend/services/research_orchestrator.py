@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+import re
 
 from .search_apis import SearchResult, SearchConfig, create_search_manager
 from .paradigm_search import get_search_strategy, SearchContext
@@ -155,6 +156,85 @@ class ResultDeduplicator:
         return overall_similarity
 
 
+class EarlyRelevanceFilter:
+    """Early-stage relevance filtering to remove obviously irrelevant results"""
+    
+    def __init__(self):
+        self.spam_indicators = {
+            'viagra', 'cialis', 'casino', 'poker', 'lottery',
+            'weight loss', 'get rich quick', 'work from home',
+            'singles in your area', 'hot deals', 'limited time offer'
+        }
+        
+        self.low_quality_domains = {
+            'ezinearticles.com', 'articlesbase.com', 'squidoo.com',
+            'hubpages.com', 'buzzle.com', 'ehow.com'
+        }
+        
+    def is_relevant(self, result: SearchResult, query: str, paradigm: str) -> bool:
+        """Check if a result meets minimum relevance criteria"""
+        
+        # 1. Check for spam content
+        combined_text = f"{result.title} {result.snippet}".lower()
+        if any(spam in combined_text for spam in self.spam_indicators):
+            return False
+            
+        # 2. Check for low-quality domains
+        if result.domain in self.low_quality_domains:
+            return False
+            
+        # 3. Minimum content check
+        if not result.title or len(result.title.strip()) < 10:
+            return False
+        if not result.snippet or len(result.snippet.strip()) < 20:
+            return False
+            
+        # 4. Language detection (basic check for non-English)
+        # Check for excessive non-ASCII characters which might indicate non-English
+        non_ascii_count = sum(1 for c in combined_text if ord(c) > 127)
+        if non_ascii_count > len(combined_text) * 0.3:  # More than 30% non-ASCII
+            return False
+            
+        # 5. Query relevance check - at least one query term should appear
+        query_terms = [term.lower() for term in query.split() if len(term) > 3]
+        if query_terms:
+            has_query_term = any(term in combined_text for term in query_terms)
+            if not has_query_term:
+                return False
+                
+        # 6. Check for duplicate/mirror sites
+        if self._is_likely_duplicate_site(result.domain):
+            return False
+            
+        # 7. Paradigm-specific early filters
+        if paradigm == "bernard" and result.result_type == "web":
+            # For Bernard, filter out non-authoritative web results early
+            authoritative_indicators = ['.edu', '.gov', 'journal', 'research', 'study', 'analysis']
+            if not any(indicator in result.domain.lower() or indicator in combined_text for indicator in authoritative_indicators):
+                # Give it a second chance if it has academic language
+                academic_terms = ['methodology', 'hypothesis', 'conclusion', 'abstract', 'citation']
+                if not any(term in combined_text for term in academic_terms):
+                    return False
+                    
+        return True
+        
+    def _is_likely_duplicate_site(self, domain: str) -> bool:
+        """Check if domain is likely a duplicate/mirror site"""
+        # Common patterns for duplicate sites
+        duplicate_patterns = [
+            r'.*-mirror\.', r'.*-cache\.', r'.*-proxy\.',
+            r'.*\.mirror\.', r'.*\.cache\.', r'.*\.proxy\.',
+            r'webcache\.', r'cached\.', r'.*\.cc$'  # Many spam sites use .cc
+        ]
+        
+        import re
+        for pattern in duplicate_patterns:
+            if re.match(pattern, domain.lower()):
+                return True
+                
+        return False
+
+
 class CostMonitor:
     """Monitors and tracks API costs"""
 
@@ -212,6 +292,7 @@ class ParadigmAwareSearchOrchestrator:
         self.search_manager = None
         self.deduplicator = ResultDeduplicator()
         self.cost_monitor = CostMonitor()
+        self.early_filter = EarlyRelevanceFilter()
 
         # Performance tracking
         self.execution_history = []
@@ -400,9 +481,17 @@ class ParadigmAwareSearchOrchestrator:
                 research_id, len(combined_results), len(deduplicated_results)
             )
 
+        # Apply early-stage content filtering based on relevance
+        # This happens before paradigm-specific filtering
+        early_filtered_results = self._apply_early_relevance_filter(
+            deduplicated_results, original_query, paradigm
+        )
+        
+        logger.info(f"Early filtering: {len(deduplicated_results)} -> {len(early_filtered_results)} results")
+        
         # Apply paradigm-specific filtering and ranking
         filtered_results = await strategy.filter_and_rank_results(
-            deduplicated_results, search_context
+            early_filtered_results, search_context
         )
 
         # Update progress for credibility analysis
@@ -502,6 +591,23 @@ class ParadigmAwareSearchOrchestrator:
         logger.info(f"Final results: {len(final_results)} sources")
 
         return result
+    
+    def _apply_early_relevance_filter(self, results: List[SearchResult], query: str, paradigm: str) -> List[SearchResult]:
+        """Apply early-stage relevance filtering to remove obviously irrelevant results"""
+        filtered = []
+        removed_count = 0
+        
+        for result in results:
+            if self.early_filter.is_relevant(result, query, paradigm):
+                filtered.append(result)
+            else:
+                removed_count += 1
+                logger.debug(f"Filtered out: {result.domain} - {result.title[:50]}...")
+        
+        if removed_count > 0:
+            logger.info(f"Early relevance filter removed {removed_count} irrelevant results")
+        
+        return filtered
 
     async def execute_deep_research(
         self,

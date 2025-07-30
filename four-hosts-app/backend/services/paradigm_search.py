@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import quote_plus
+import re
 
 from .search_apis import (
     SearchResult,
@@ -105,11 +106,14 @@ class DoloresSearchStrategy:
         """Generate Dolores-specific search queries"""
         base_query = context.original_query
         queries = []
+        
+        # Clean up base query - remove common fluff words
+        cleaned_query = self._clean_query(base_query)
 
         # Original query with investigative angle
         queries.append(
             {
-                "query": base_query,
+                "query": cleaned_query,
                 "type": "original",
                 "weight": 1.0,
                 "paradigm": self.paradigm,
@@ -117,9 +121,15 @@ class DoloresSearchStrategy:
             }
         )
 
-        # Add controversy/scandal angle
-        for modifier in self.query_modifiers[:3]:
-            modified_query = f"{base_query} {modifier}"
+        # Add targeted controversy/scandal angles based on query content
+        relevant_modifiers = self._select_relevant_modifiers(cleaned_query, self.query_modifiers)
+        for modifier in relevant_modifiers[:3]:
+            # Use more sophisticated query construction
+            if len(cleaned_query.split()) > 5:
+                # For long queries, insert modifier strategically
+                modified_query = self._insert_modifier_strategically(cleaned_query, modifier)
+            else:
+                modified_query = f"{cleaned_query} {modifier}"
             queries.append(
                 {
                     "query": modified_query,
@@ -130,12 +140,8 @@ class DoloresSearchStrategy:
                 }
             )
 
-        # Specific investigative queries
-        investigative_patterns = [
-            f'"{base_query}" corruption',
-            f'"{base_query}" scandal investigation',
-            f'"{base_query}" whistleblower',
-        ]
+        # Specific investigative queries with better targeting
+        investigative_patterns = self._generate_investigative_patterns(cleaned_query)
 
         for pattern in investigative_patterns:
             queries.append(
@@ -149,6 +155,83 @@ class DoloresSearchStrategy:
             )
 
         return queries[:8]  # Limit to 8 queries
+    
+    def _clean_query(self, query: str) -> str:
+        """Remove common fluff words to improve search relevance"""
+        fluff_words = {
+            'please', 'help', 'me', 'find', 'information', 'about',
+            'can', 'you', 'tell', 'what', 'is', 'are', 'the'
+        }
+        words = query.split()
+        cleaned = [w for w in words if w.lower() not in fluff_words]
+        # Keep original if cleaning removes too much
+        if len(cleaned) < len(words) / 2:
+            return query
+        return ' '.join(cleaned)
+    
+    def _select_relevant_modifiers(self, query: str, modifiers: List[str]) -> List[str]:
+        """Select modifiers most relevant to the query content"""
+        query_lower = query.lower()
+        
+        # Score modifiers by relevance
+        scored_modifiers = []
+        for modifier in modifiers:
+            score = 0
+            # Check for semantic relevance
+            if 'company' in query_lower or 'corporation' in query_lower:
+                if modifier in ['corrupt', 'scandal', 'expose']:
+                    score += 2
+            if 'government' in query_lower or 'policy' in query_lower:
+                if modifier in ['cover-up', 'leak', 'whistleblower']:
+                    score += 2
+            if 'system' in query_lower or 'institution' in query_lower:
+                if modifier in ['systemic', 'injustice', 'inequality']:
+                    score += 2
+            
+            scored_modifiers.append((modifier, score))
+        
+        # Sort by score and return
+        scored_modifiers.sort(key=lambda x: x[1], reverse=True)
+        return [m[0] for m in scored_modifiers]
+    
+    def _insert_modifier_strategically(self, query: str, modifier: str) -> str:
+        """Insert modifier at strategic position in query"""
+        words = query.split()
+        # Find noun phrases or key terms
+        for i, word in enumerate(words):
+            if word.lower() in ['company', 'corporation', 'government', 'system', 'industry']:
+                # Insert modifier before the key noun
+                words.insert(i, modifier)
+                return ' '.join(words)
+        # Default: append at end
+        return f"{query} {modifier}"
+    
+    def _generate_investigative_patterns(self, query: str) -> List[str]:
+        """Generate investigative search patterns based on query content"""
+        patterns = []
+        
+        # Analyze query for entity types
+        if any(term in query.lower() for term in ['company', 'corporation', 'inc', 'llc']):
+            patterns.extend([
+                f'"{query}" "internal documents"',
+                f'"{query}" lawsuit allegations',
+                f'{query} "regulatory violations"'
+            ])
+        elif any(term in query.lower() for term in ['government', 'agency', 'department']):
+            patterns.extend([
+                f'"{query}" "freedom of information"',
+                f'"{query}" oversight investigation',
+                f'{query} accountability report'
+            ])
+        else:
+            # Generic investigative patterns
+            patterns.extend([
+                f'"{query}" investigation reveals',
+                f'"{query}" "hidden truth"',
+                f'{query} exposed documents'
+            ])
+        
+        return patterns[:3]
 
     async def filter_and_rank_results(
         self, results: List[SearchResult], context: SearchContext
@@ -261,11 +344,14 @@ class TeddySearchStrategy:
         """Generate Teddy-specific search queries"""
         base_query = context.original_query
         queries = []
+        
+        # Clean and prepare base query
+        cleaned_query = self._clean_query_for_support(base_query)
 
         # Original query
         queries.append(
             {
-                "query": base_query,
+                "query": cleaned_query,
                 "type": "original",
                 "weight": 1.0,
                 "paradigm": self.paradigm,
@@ -273,11 +359,12 @@ class TeddySearchStrategy:
             }
         )
 
-        # Support-focused queries
-        for modifier in self.query_modifiers[:3]:
+        # Support-focused queries with context-aware modifiers
+        relevant_modifiers = self._select_support_modifiers(cleaned_query)
+        for modifier in relevant_modifiers[:3]:
             queries.append(
                 {
-                    "query": f"{base_query} {modifier}",
+                    "query": f"{cleaned_query} {modifier}",
                     "type": "support_focused",
                     "weight": 0.9,
                     "paradigm": self.paradigm,
@@ -285,13 +372,8 @@ class TeddySearchStrategy:
                 }
             )
 
-        # Resource and service queries
-        resource_patterns = [
-            f'"{base_query}" resources available',
-            f"help with {base_query}",
-            f"{base_query} support services",
-            f"{base_query} community programs",
-        ]
+        # Generate context-specific resource patterns
+        resource_patterns = self._generate_resource_patterns(cleaned_query)
 
         for pattern in resource_patterns:
             queries.append(
@@ -305,6 +387,77 @@ class TeddySearchStrategy:
             )
 
         return queries[:8]
+    
+    def _clean_query_for_support(self, query: str) -> str:
+        """Clean query for support-focused searches"""
+        # Remove emotional or vague terms that don't help with finding resources
+        unhelpful_terms = {
+            'struggling', 'need', 'help', 'please', 'urgent', 'desperate',
+            'looking', 'for', 'find', 'someone', 'anyone'
+        }
+        words = query.split()
+        cleaned = [w for w in words if w.lower() not in unhelpful_terms]
+        # Keep at least core terms
+        if len(cleaned) < 2:
+            return query
+        return ' '.join(cleaned)
+    
+    def _select_support_modifiers(self, query: str) -> List[str]:
+        """Select support modifiers based on query context"""
+        query_lower = query.lower()
+        
+        # Prioritize modifiers based on detected need type
+        if any(term in query_lower for term in ['mental', 'depression', 'anxiety', 'therapy']):
+            return ['mental health support', 'counseling services', 'therapy resources']
+        elif any(term in query_lower for term in ['food', 'hunger', 'meal', 'pantry']):
+            return ['food assistance', 'food bank', 'meal programs']
+        elif any(term in query_lower for term in ['housing', 'homeless', 'shelter', 'rent']):
+            return ['housing assistance', 'shelter services', 'rental help']
+        elif any(term in query_lower for term in ['medical', 'health', 'doctor', 'clinic']):
+            return ['free clinic', 'healthcare services', 'medical assistance']
+        else:
+            # Generic support modifiers
+            return self.query_modifiers[:5]
+    
+    def _generate_resource_patterns(self, query: str) -> List[str]:
+        """Generate resource search patterns based on need type"""
+        patterns = []
+        query_lower = query.lower()
+        
+        # Location-aware patterns (if location is mentioned)
+        location_terms = self._extract_location(query)
+        location_suffix = f" {location_terms}" if location_terms else ""
+        
+        # Need-specific patterns
+        if 'emergency' in query_lower:
+            patterns.extend([
+                f'emergency {query} hotline{location_suffix}',
+                f'24/7 {query} crisis support{location_suffix}',
+                f'immediate {query} help{location_suffix}'
+            ])
+        else:
+            patterns.extend([
+                f'"{query}" nonprofit organizations{location_suffix}',
+                f'{query} "free services"{location_suffix}',
+                f'{query} community support groups{location_suffix}',
+                f'how to get help with {query}{location_suffix}'
+            ])
+        
+        return patterns[:4]
+    
+    def _extract_location(self, query: str) -> str:
+        """Extract location information from query if present"""
+        # Simple location extraction - could be enhanced
+        common_location_indicators = ['in', 'near', 'around', 'at']
+        words = query.split()
+        
+        for i, word in enumerate(words):
+            if word.lower() in common_location_indicators and i + 1 < len(words):
+                # Return the next 1-2 words as location
+                location_parts = words[i+1:i+3]
+                return ' '.join(location_parts)
+        
+        return ""
 
     async def filter_and_rank_results(
         self, results: List[SearchResult], context: SearchContext
@@ -416,11 +569,14 @@ class BernardSearchStrategy:
         """Generate Bernard-specific search queries"""
         base_query = context.original_query
         queries = []
+        
+        # Extract key academic concepts
+        academic_query = self._prepare_academic_query(base_query)
 
         # Original query
         queries.append(
             {
-                "query": base_query,
+                "query": academic_query,
                 "type": "original",
                 "weight": 1.0,
                 "paradigm": self.paradigm,
@@ -428,11 +584,12 @@ class BernardSearchStrategy:
             }
         )
 
-        # Academic-focused queries
-        for modifier in self.query_modifiers[:3]:
+        # Academic-focused queries with field-specific modifiers
+        field_modifiers = self._identify_research_field_modifiers(academic_query)
+        for modifier in field_modifiers[:3]:
             queries.append(
                 {
-                    "query": f"{base_query} {modifier}",
+                    "query": f"{academic_query} {modifier}",
                     "type": "academic_focused",
                     "weight": 0.95,
                     "paradigm": self.paradigm,
@@ -440,13 +597,8 @@ class BernardSearchStrategy:
                 }
             )
 
-        # Research-specific patterns
-        research_patterns = [
-            f'"{base_query}" peer reviewed research',
-            f"{base_query} systematic review",
-            f"{base_query} meta-analysis",
-            f'"{base_query}" empirical study',
-        ]
+        # Generate sophisticated research patterns
+        research_patterns = self._generate_academic_patterns(academic_query)
 
         for pattern in research_patterns:
             queries.append(
@@ -458,8 +610,96 @@ class BernardSearchStrategy:
                     "source_filter": "journal",
                 }
             )
+            
+        # Add citation-based queries for important topics
+        if self._is_established_research_topic(academic_query):
+            queries.append({
+                "query": f'{academic_query} "highly cited" OR "seminal work"',
+                "type": "citation_focused",
+                "weight": 0.85,
+                "paradigm": self.paradigm,
+                "source_filter": "academic",
+            })
 
         return queries[:10]  # More queries for comprehensive research
+    
+    def _prepare_academic_query(self, query: str) -> str:
+        """Prepare query for academic search by removing colloquialisms"""
+        # Remove informal language
+        informal_terms = {
+            'stuff', 'things', 'basically', 'kind of', 'sort of',
+            'really', 'very', 'super', 'totally', 'actually'
+        }
+        words = query.split()
+        cleaned = [w for w in words if w.lower() not in informal_terms]
+        
+        # Replace colloquial terms with academic equivalents
+        academic_replacements = {
+            'kids': 'children',
+            'teens': 'adolescents',
+            'old people': 'elderly',
+            'smart': 'intelligent',
+            'dumb': 'cognitive impairment'
+        }
+        
+        result = ' '.join(cleaned)
+        for colloquial, academic in academic_replacements.items():
+            result = result.replace(colloquial, academic)
+        
+        return result
+    
+    def _identify_research_field_modifiers(self, query: str) -> List[str]:
+        """Identify research field and return appropriate modifiers"""
+        query_lower = query.lower()
+        
+        # Field-specific modifiers
+        if any(term in query_lower for term in ['psychology', 'behavior', 'cognitive', 'mental']):
+            return ['psychological research', 'behavioral study', 'cognitive science']
+        elif any(term in query_lower for term in ['medical', 'disease', 'treatment', 'clinical']):
+            return ['clinical trial', 'medical research', 'therapeutic study']
+        elif any(term in query_lower for term in ['social', 'society', 'cultural', 'demographic']):
+            return ['sociological study', 'social research', 'demographic analysis']
+        elif any(term in query_lower for term in ['economic', 'market', 'financial', 'business']):
+            return ['economic analysis', 'market research', 'financial study']
+        elif any(term in query_lower for term in ['environment', 'climate', 'ecology', 'sustainability']):
+            return ['environmental research', 'ecological study', 'climate science']
+        else:
+            # Generic academic modifiers
+            return self.query_modifiers[:5]
+    
+    def _generate_academic_patterns(self, query: str) -> List[str]:
+        """Generate sophisticated academic search patterns"""
+        patterns = []
+        
+        # Methodological patterns
+        patterns.extend([
+            f'"{query}" quantitative analysis',
+            f'"{query}" "research methodology"',
+            f'{query} "empirical evidence"'
+        ])
+        
+        # Recent research patterns
+        current_year = datetime.now().year
+        patterns.append(f'"{query}" "{current_year - 2}..{current_year}"')
+        
+        # Review and meta-analysis patterns
+        patterns.extend([
+            f'"systematic review" {query}',
+            f'meta-analysis {query}',
+            f'"literature review" {query} recent'
+        ])
+        
+        return patterns[:5]
+    
+    def _is_established_research_topic(self, query: str) -> bool:
+        """Check if query relates to established research topics"""
+        established_topics = [
+            'climate change', 'artificial intelligence', 'machine learning',
+            'covid', 'cancer', 'alzheimer', 'quantum', 'genetic',
+            'renewable energy', 'sustainable', 'neural network'
+        ]
+        query_lower = query.lower()
+        return any(topic in query_lower for topic in established_topics)
 
     async def filter_and_rank_results(
         self, results: List[SearchResult], context: SearchContext
@@ -578,11 +818,14 @@ class MaeveSearchStrategy:
         """Generate Maeve-specific search queries"""
         base_query = context.original_query
         queries = []
+        
+        # Transform query for strategic focus
+        strategic_query = self._prepare_strategic_query(base_query)
 
         # Original query
         queries.append(
             {
-                "query": base_query,
+                "query": strategic_query,
                 "type": "original",
                 "weight": 1.0,
                 "paradigm": self.paradigm,
@@ -590,11 +833,12 @@ class MaeveSearchStrategy:
             }
         )
 
-        # Strategy-focused queries
-        for modifier in self.query_modifiers[:3]:
+        # Industry-specific strategic queries
+        industry_modifiers = self._identify_industry_modifiers(strategic_query)
+        for modifier in industry_modifiers[:3]:
             queries.append(
                 {
-                    "query": f"{base_query} {modifier}",
+                    "query": f"{strategic_query} {modifier}",
                     "type": "strategy_focused",
                     "weight": 0.9,
                     "paradigm": self.paradigm,
@@ -602,13 +846,8 @@ class MaeveSearchStrategy:
                 }
             )
 
-        # Business-specific patterns
-        business_patterns = [
-            f'"{base_query}" competitive strategy',
-            f"{base_query} market analysis",
-            f"{base_query} business case study",
-            f"how to {base_query} effectively",
-        ]
+        # Generate actionable business patterns
+        business_patterns = self._generate_strategic_patterns(strategic_query)
 
         for pattern in business_patterns:
             queries.append(
@@ -622,6 +861,71 @@ class MaeveSearchStrategy:
             )
 
         return queries[:8]
+    
+    def _prepare_strategic_query(self, query: str) -> str:
+        """Prepare query for strategic/business search"""
+        # Remove vague business jargon
+        jargon_terms = {
+            'synergy', 'leverage', 'paradigm', 'proactive', 'holistic',
+            'basically', 'essentially', 'innovative', 'disruptive'
+        }
+        words = query.split()
+        cleaned = [w for w in words if w.lower() not in jargon_terms]
+        
+        # Add strategic context if missing
+        strategic_keywords = ['strategy', 'market', 'competitive', 'business', 'industry']
+        if not any(keyword in ' '.join(cleaned).lower() for keyword in strategic_keywords):
+            # Add appropriate context based on query
+            if 'company' in query.lower() or 'product' in query.lower():
+                cleaned.append('strategy')
+            elif 'improve' in query.lower() or 'increase' in query.lower():
+                cleaned.append('optimization')
+        
+        return ' '.join(cleaned)
+    
+    def _identify_industry_modifiers(self, query: str) -> List[str]:
+        """Identify industry context and return appropriate modifiers"""
+        query_lower = query.lower()
+        
+        # Industry-specific modifiers
+        if any(term in query_lower for term in ['tech', 'software', 'saas', 'digital']):
+            return ['digital transformation', 'tech strategy', 'SaaS metrics']
+        elif any(term in query_lower for term in ['retail', 'ecommerce', 'consumer']):
+            return ['retail strategy', 'consumer behavior', 'omnichannel']
+        elif any(term in query_lower for term in ['finance', 'banking', 'investment']):
+            return ['financial strategy', 'risk management', 'ROI analysis']
+        elif any(term in query_lower for term in ['healthcare', 'medical', 'pharma']):
+            return ['healthcare market', 'medical device strategy', 'pharma trends']
+        elif any(term in query_lower for term in ['manufacturing', 'supply chain', 'logistics']):
+            return ['supply chain optimization', 'lean manufacturing', 'logistics strategy']
+        else:
+            # Generic strategic modifiers
+            return ['competitive advantage', 'market positioning', 'growth strategy']
+    
+    def _generate_strategic_patterns(self, query: str) -> List[str]:
+        """Generate actionable strategic search patterns"""
+        patterns = []
+        
+        # ROI and metrics focused
+        patterns.append(f'"{query}" ROI "case study"')
+        
+        # Implementation focused
+        patterns.append(f'"how to implement" {query} "best practices"')
+        
+        # Competitive intelligence
+        patterns.append(f'{query} "competitive analysis" benchmark')
+        
+        # Success stories and failures
+        patterns.append(f'{query} "success factors" OR "failure analysis"')
+        
+        # Framework patterns
+        patterns.append(f'{query} framework "step by step"')
+        
+        # Industry reports
+        current_year = datetime.now().year
+        patterns.append(f'{query} "industry report" {current_year}')
+        
+        return patterns[:5]
 
     async def filter_and_rank_results(
         self, results: List[SearchResult], context: SearchContext
