@@ -16,11 +16,41 @@ import os
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
 
+from bs4 import BeautifulSoup
+
+import fitz  # PyMuPDF
+
 # Load environment variables
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
+    """Fetch URL content and parse it to remove HTML tags or extract text from PDF"""
+    try:
+        async with session.get(url, timeout=10) as response:
+            if response.status == 200:
+                content_type = response.headers.get("Content-Type", "").lower()
+                if "application/pdf" in content_type:
+                    pdf_content = await response.read()
+                    with fitz.open(stream=pdf_content, filetype="pdf") as doc:
+                        text = "".join(page.get_text() for page in doc)
+                    return text
+                else:
+                    html_content = await response.text()
+                    soup = BeautifulSoup(html_content, "html.parser")
+                    # Remove script and style elements
+                    for script in soup(["script", "style"]):
+                        script.extract()
+                    return soup.get_text(separator=" ", strip=True)
+            else:
+                logger.warning(f"Failed to fetch {url}, status: {response.status}")
+                return ""
+    except Exception as e:
+        logger.error(f"Error fetching or parsing {url}: {e}")
+        return ""
 
 
 @dataclass
@@ -36,6 +66,7 @@ class SearchResult:
     credibility_score: float = 0.0
     bias_rating: Optional[str] = None
     result_type: str = "web"  # web, academic, news
+    content: Optional[str] = None
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -630,6 +661,10 @@ class SearchAPIManager:
         for name, task in tasks:
             try:
                 api_results = await task
+                # Fetch full content for each result
+                for result in api_results:
+                    if result.url:
+                        result.content = await fetch_and_parse_url(self.apis[name].session, result.url)
                 results[name] = api_results
                 logger.info(f"{name}: {len(api_results)} results")
             except Exception as e:
@@ -680,6 +715,10 @@ class SearchAPIManager:
                         logger.info(
                             f"Used {api_name} for search, got {len(results)} results"
                         )
+                        # Fetch full content for each result
+                        for result in results:
+                            if result.url:
+                                result.content = await fetch_and_parse_url(api.session, result.url)
                         return results
                 except Exception as e:
                     logger.warning(f"{api_name} failed, trying next: {str(e)}")

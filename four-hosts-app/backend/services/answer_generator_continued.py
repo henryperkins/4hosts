@@ -207,22 +207,7 @@ Maintain academic objectivity and precision.
             key_insights=insights,
         )
 
-    async def _mock_generate_content(
-        self, prompt: str, section_def: Dict[str, Any]
-    ) -> str:
-        """Mock content generation (replace with actual LLM call)"""
-        # Simulate processing time
-        await asyncio.sleep(0.1)
-
-        templates = {
-            "Executive Summary": """Analysis of available data reveals statistically significant patterns with p<0.05 confidence levels. Meta-analysis of 47 studies (n=12,847) indicates strong correlations between key variables. Effect sizes range from moderate (d=0.5) to large (d=0.8), suggesting meaningful practical significance. However, heterogeneity across studies (I²=72%) necessitates careful interpretation of aggregate findings.""",
-            "Data Analysis": """Quantitative analysis reveals three primary clusters of findings: (1) Linear regression models show R²=0.67 explanatory power for primary outcomes, with β coefficients ranging from 0.23 to 0.58. (2) Time-series analysis indicates cyclical patterns with 18-month periodicity (ARIMA model AIC=1247.3). (3) Multivariate analysis identifies interaction effects between variables X₁ and X₂ (F(3,296)=14.7, p<0.001). Bootstrap resampling confirms robustness of findings across 10,000 iterations.""",
-            "Causal Relationships": """Instrumental variable analysis supports causal interpretation for 3 of 5 hypothesized relationships. Granger causality tests indicate temporal precedence (χ²=23.4, p<0.01). However, unmeasured confounders may account for up to 15% of observed variance based on sensitivity analysis. Mediation analysis reveals indirect effects through intermediate variables M₁ (ab=0.31, 95% CI [0.18, 0.44]) and M₂ (ab=0.22, 95% CI [0.09, 0.35]).""",
-            "Research Methodology": """Studies employed mixed methodologies: 62% quantitative (RCTs, quasi-experimental), 23% qualitative (ethnographic, phenomenological), 15% mixed-methods. Sample sizes ranged from n=12 to n=4,831 (median=287). Geographic distribution spans 23 countries with overrepresentation of WEIRD populations (78%). Publication bias assessment (Egger's test p=0.08) suggests minimal systematic bias. Inter-rater reliability for coded variables averaged κ=0.84.""",
-            "Future Research Directions": """Critical gaps remain in understanding long-term effects (studies >5 years: n=3) and cross-cultural validity. Recommended priorities: (1) Longitudinal cohort studies with minimum 10-year follow-up, (2) Replication in non-WEIRD contexts, (3) Investigation of moderating variables using machine learning approaches, (4) Development of standardized measurement instruments with established psychometric properties. Estimated sample size for adequate power (0.80): n=850 per condition.""",
-        }
-
-        return templates.get(section_def["title"], "Content generation in progress...")
+    
 
     def _filter_results_for_section(
         self, results: List[Dict[str, Any]], section_def: Dict[str, Any]
@@ -268,9 +253,20 @@ Maintain academic objectivity and precision.
         self, context: SynthesisContext, sections: List[AnswerSection]
     ) -> str:
         """Generate executive summary"""
-        return f"""Systematic analysis of {context.query} based on {len(context.search_results)} sources reveals statistically significant findings.
-Evidence supports moderate to strong effects across primary outcome variables with acceptable confidence intervals.
-Methodological rigor varies across studies, necessitating cautious interpretation of aggregate results."""
+        summary_prompt = f"""Synthesize the following sections into an objective, data-driven summary (3-4 sentences) for the query: '{context.query}'.
+
+Sections:
+"""
+        for s in sections:
+            summary_prompt += f"- {s.title}: {s.key_insights[0] if s.key_insights else s.content[:100]}...\n"
+
+        summary = await llm_client.generate_paradigm_content(
+            prompt=summary_prompt,
+            paradigm=self.paradigm,
+            max_tokens=250,
+            temperature=0.4,  # Lower temperature for analytical summary
+        )
+        return summary
 
     def _generate_action_items(self, context: SynthesisContext) -> List[Dict[str, Any]]:
         """Generate paradigm-specific action items"""
@@ -540,22 +536,7 @@ Include frameworks, tools, and methodologies where applicable.
             key_insights=insights,
         )
 
-    async def _mock_generate_content(
-        self, prompt: str, section_def: Dict[str, Any]
-    ) -> str:
-        """Mock content generation (replace with actual LLM call)"""
-        # Simulate processing time
-        await asyncio.sleep(0.1)
-
-        templates = {
-            "Strategic Overview": """The competitive landscape reveals three critical opportunity windows: (1) Market disruption through technology arbitrage - competitors remain locked in legacy approaches, (2) Customer segment underserved by current solutions - 47% express dissatisfaction with status quo, (3) Regulatory changes creating first-mover advantages for prepared organizations. Strategic positioning should exploit asymmetric capabilities while building defensive moats around core competencies.""",
-            "Tactical Approaches": """Implement a three-pronged tactical framework: Phase 1 - Rapid prototyping using agile methodologies to test market assumptions (Sprint 0-4). Phase 2 - Scale successful experiments using portfolio approach, killing underperformers quickly (Month 2-6). Phase 3 - Consolidate gains through operational excellence and process optimization (Month 6+). Key tactics include: A/B testing all customer touchpoints, leveraging partnerships for non-core capabilities, and maintaining optionality through modular architecture.""",
-            "Resource Optimization": """Apply 80/20 principle rigorously: 20% of initiatives will drive 80% of value. Resource allocation framework: 60% to core revenue drivers, 30% to emerging opportunities, 10% to experimental ventures. Leverage points identified: (1) Technology infrastructure - 3x multiplier effect, (2) Human capital in key roles - 5x performance differential, (3) Strategic partnerships - access to $10M+ value pools. Implement zero-based budgeting to eliminate resource drag.""",
-            "Success Metrics": """Define cascading KPIs aligned to strategic objectives: Tier 1 - Revenue growth (target: 35% YoY), Market share gain (+5 points), EBITDA margin (>25%). Tier 2 - Customer acquisition cost (<$100), Lifetime value (>$1000), Net promoter score (>50). Tier 3 - Employee productivity (+20%), Innovation pipeline (10 initiatives), Time-to-market (<90 days). Implement real-time dashboards with exception-based reporting for rapid course correction.""",
-            "Implementation Roadmap": """Week 1-2: Establish tiger team, secure executive sponsorship, baseline current state. Week 3-4: Develop detailed project charter, identify quick wins for momentum. Month 2: Launch pilot programs in controlled environment, gather rapid feedback. Month 3-4: Scale successful pilots, sunset failures, refine approach. Month 5-6: Full rollout with continuous optimization. Critical path dependencies: Technology platform (Week 2), Key hire completion (Week 4), Partner agreements (Month 2).""",
-        }
-
-        return templates.get(section_def["title"], "Content generation in progress...")
+    
 
     def _filter_results_for_section(
         self, results: List[Dict[str, Any]], section_def: Dict[str, Any]
@@ -601,9 +582,20 @@ Include frameworks, tools, and methodologies where applicable.
         self, context: SynthesisContext, sections: List[AnswerSection]
     ) -> str:
         """Generate executive summary"""
-        return f"""Strategic analysis of {context.query} identifies high-impact opportunities for competitive advantage.
-Clear tactical pathways exist with quantifiable ROI potential exceeding 3x investment within 12 months.
-Implementation requires focused execution on prioritized initiatives with rigorous performance tracking."""
+        summary_prompt = f"""Synthesize the following sections into an actionable, strategic summary (3-4 sentences) for the query: '{context.query}'.
+
+Sections:
+"""
+        for s in sections:
+            summary_prompt += f"- {s.title}: {s.key_insights[0] if s.key_insights else s.content[:100]}...\n"
+
+        summary = await llm_client.generate_paradigm_content(
+            prompt=summary_prompt,
+            paradigm=self.paradigm,
+            max_tokens=250,
+            temperature=0.6,
+        )
+        return summary
 
     def _generate_action_items(self, context: SynthesisContext) -> List[Dict[str, Any]]:
         """Generate paradigm-specific action items"""

@@ -47,11 +47,20 @@ class WSEventType(str, Enum):
     SOURCE_FOUND = "source.found"
     SOURCE_ANALYZING = "source.analyzing"
     SOURCE_ANALYZED = "source.analyzed"
+    
+    # Search events
+    SEARCH_STARTED = "search.started"
+    SEARCH_COMPLETED = "search.completed"
+    SEARCH_RETRY = "search.retry"
 
     # Synthesis events
     SYNTHESIS_STARTED = "synthesis.started"
     SYNTHESIS_PROGRESS = "synthesis.progress"
     SYNTHESIS_COMPLETED = "synthesis.completed"
+    
+    # Analysis events
+    CREDIBILITY_CHECK = "credibility.check"
+    DEDUPLICATION = "deduplication.progress"
 
     # System events
     RATE_LIMIT_WARNING = "rate_limit.warning"
@@ -409,7 +418,11 @@ class ProgressTracker:
     async def report_source_found(self, research_id: str, source: Dict[str, Any]):
         """Report a new source found"""
         if research_id not in self.research_progress:
-            return
+            # Initialize if not exists
+            self.research_progress[research_id] = {
+                "sources_found": 0,
+                "sources_analyzed": 0
+            }
 
         self.research_progress[research_id]["sources_found"] += 1
 
@@ -512,7 +525,83 @@ class ProgressTracker:
 class ResearchProgressTracker(ProgressTracker):
     """Alias for ProgressTracker to maintain compatibility with imports"""
 
-    pass
+    async def update_progress(self, research_id: str, message: str, progress: int):
+        """Simple update method for compatibility with main.py"""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.RESEARCH_PROGRESS,
+                data={
+                    "research_id": research_id,
+                    "message": message,
+                    "progress": progress,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+        )
+    
+    async def report_search_started(self, research_id: str, query: str, engine: str, index: int, total: int):
+        """Report that a search has started"""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.SEARCH_STARTED,
+                data={
+                    "research_id": research_id,
+                    "query": query[:50] + "..." if len(query) > 50 else query,
+                    "engine": engine,
+                    "index": index,
+                    "total": total,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+        )
+    
+    async def report_search_completed(self, research_id: str, query: str, results_count: int):
+        """Report that a search has completed"""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.SEARCH_COMPLETED,
+                data={
+                    "research_id": research_id,
+                    "query": query[:50] + "..." if len(query) > 50 else query,
+                    "results_count": results_count,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+        )
+    
+    async def report_credibility_check(self, research_id: str, domain: str, score: float):
+        """Report credibility check progress"""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.CREDIBILITY_CHECK,
+                data={
+                    "research_id": research_id,
+                    "domain": domain,
+                    "score": score,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+        )
+    
+    async def report_deduplication(self, research_id: str, before_count: int, after_count: int):
+        """Report deduplication progress"""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.DEDUPLICATION,
+                data={
+                    "research_id": research_id,
+                    "before_count": before_count,
+                    "after_count": after_count,
+                    "removed": before_count - after_count,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+        )
 
 
 # --- WebSocket Authentication ---

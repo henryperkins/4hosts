@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 
 # Import from classification engine
 from .classification_engine import HostParadigm, ClassificationResult, QueryFeatures
+from . import paradigm_search
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -376,19 +377,25 @@ class SelectLayer(ContextLayer):
         write_output = previous_outputs.get("write") if previous_outputs else None
 
         # Generate enhanced search queries
-        search_queries = self._generate_search_queries(
-            classification, strategy, write_output
+        search_strategy = paradigm_search.get_search_strategy(paradigm.value)
+        search_context = paradigm_search.SearchContext(
+            original_query=classification.query,
+            paradigm=paradigm.value,
+            secondary_paradigm=classification.secondary_paradigm.value
+            if classification.secondary_paradigm
+            else None,
         )
+        search_queries = await search_strategy.generate_search_queries(search_context)
 
         # Add secondary paradigm queries if significant
-        if (
-            classification.secondary_paradigm
-            and classification.distribution[classification.secondary_paradigm] > 0.25
-        ):
-            secondary_queries = self._generate_secondary_queries(
-                classification, classification.secondary_paradigm
-            )
-            search_queries.extend(secondary_queries[:3])  # Add top 3
+        # if (
+        #     classification.secondary_paradigm
+        #     and classification.distribution[classification.secondary_paradigm] > 0.25
+        # ):
+        #     secondary_queries = self._generate_secondary_queries(
+        #         classification, classification.secondary_paradigm
+        #     )
+        #     search_queries.extend(secondary_queries[:3])  # Add top 3
 
         output = SelectLayerOutput(
             paradigm=paradigm,
@@ -407,88 +414,7 @@ class SelectLayer(ContextLayer):
 
         return output
 
-    def _generate_search_queries(
-        self,
-        classification: ClassificationResult,
-        strategy: Dict[str, Any],
-        write_output: Optional[WriteLayerOutput],
-    ) -> List[Dict[str, Any]]:
-        """Generate paradigm-specific search queries"""
-        base_query = classification.query
-        queries = []
-
-        # Base query
-        queries.append(
-            {
-                "query": base_query,
-                "type": "original",
-                "weight": 1.0,
-                "source_filter": None,
-            }
-        )
-
-        # Modified queries with paradigm terms
-        for modifier in strategy["query_modifiers"][:3]:
-            modified = f"{base_query} {modifier}"
-            queries.append(
-                {
-                    "query": modified,
-                    "type": "paradigm_modified",
-                    "weight": 0.8,
-                    "source_filter": (
-                        strategy["source_types"][0]
-                        if strategy["source_types"]
-                        else None
-                    ),
-                }
-            )
-
-        # Theme-based queries from Write layer
-        if write_output and write_output.key_themes:
-            for theme in write_output.key_themes[:2]:
-                theme_query = f"{theme} {base_query}"
-                queries.append(
-                    {
-                        "query": theme_query,
-                        "type": "theme_enhanced",
-                        "weight": 0.7,
-                        "source_filter": None,
-                    }
-                )
-
-        # Entity-focused queries
-        for entity in classification.features.entities[:2]:
-            if classification.features.tokens:
-                entity_query = f'"{entity}" {classification.features.tokens[0]}'
-                queries.append(
-                    {
-                        "query": entity_query,
-                        "type": "entity_focused",
-                        "weight": 0.6,
-                        "source_filter": None,
-                    }
-                )
-
-        return queries[:10]  # Limit to 10 queries
-
-    def _generate_secondary_queries(
-        self, classification: ClassificationResult, secondary_paradigm: HostParadigm
-    ) -> List[Dict[str, Any]]:
-        """Generate queries for secondary paradigm"""
-        strategy = self.selection_strategies[secondary_paradigm]
-
-        queries = []
-        for modifier in strategy["query_modifiers"][:1]:
-            queries.append(
-                {
-                    "query": f"{classification.query} {modifier}",
-                    "type": "secondary_paradigm",
-                    "weight": 0.5,
-                    "source_filter": strategy["source_types"][0],
-                }
-            )
-
-        return queries
+    
 
 
 # --- Compress Layer Implementation ---

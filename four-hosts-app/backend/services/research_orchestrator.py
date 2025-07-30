@@ -223,7 +223,7 @@ class ParadigmAwareSearchOrchestrator:
             logger.info("Search manager cleaned up")
 
     async def execute_paradigm_research(
-        self, context_engineered_query, max_results: int = 100
+        self, context_engineered_query, max_results: int = 100, progress_tracker=None, research_id: str = None
     ) -> ResearchExecutionResult:
         """
         Execute research using Context Engineering Pipeline output
@@ -279,7 +279,7 @@ class ParadigmAwareSearchOrchestrator:
         all_results = {}
         cost_breakdown = {}
 
-        for query_data in search_queries:
+        for idx, query_data in enumerate(search_queries):
             query = query_data["query"]
             query_type = query_data["type"]
             weight = query_data["weight"]
@@ -294,7 +294,26 @@ class ParadigmAwareSearchOrchestrator:
             if cached_results:
                 all_results[f"{query_type}_{query[:30]}"] = cached_results
                 logger.info(f"Using cached results for: {query[:50]}...")
+                
+                # Report search completion from cache
+                if progress_tracker and research_id:
+                    await progress_tracker.report_search_completed(
+                        research_id, query, len(cached_results)
+                    )
             else:
+                # Report search starting
+                if progress_tracker and research_id:
+                    await progress_tracker.report_search_started(
+                        research_id, query, "mixed", idx + 1, len(search_queries)
+                    )
+                    # Update overall progress (30-50% range for searches)
+                    search_progress = 30 + int((idx / len(search_queries)) * 20)
+                    await progress_tracker.update_progress(
+                        research_id, 
+                        f"Searching: {query[:40]}...", 
+                        search_progress
+                    )
+                
                 # Execute real search
                 config = SearchConfig(
                     max_results=min(max_results, 50), language="en", region="us"
@@ -326,6 +345,25 @@ class ParadigmAwareSearchOrchestrator:
                     all_results[f"{query_type}_{query[:30]}"] = api_results
 
                     logger.info(f"Got {len(api_results)} results for: {query[:50]}...")
+                    
+                    # Report search completion
+                    if progress_tracker and research_id:
+                        await progress_tracker.report_search_completed(
+                            research_id, query, len(api_results)
+                        )
+                        
+                        # Report top sources found
+                        for result in api_results[:3]:  # Report top 3 sources
+                            await progress_tracker.report_source_found(
+                                research_id,
+                                {
+                                    "title": result.title,
+                                    "url": result.url,
+                                    "domain": result.domain,
+                                    "snippet": result.snippet[:200] if result.snippet else "",
+                                    "credibility_score": getattr(result, "credibility_score", 0.5)
+                                }
+                            )
 
                 except Exception as e:
                     logger.error(f"Search failed for '{query}': {str(e)}")
@@ -338,22 +376,47 @@ class ParadigmAwareSearchOrchestrator:
 
         logger.info(f"Combined {len(combined_results)} total results")
 
+        # Update progress for deduplication
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id, "Removing duplicate results...", 52
+            )
+        
         # Deduplicate results
         dedup_result = await self.deduplicator.deduplicate_results(combined_results)
         deduplicated_results = dedup_result.unique_results
+        
+        # Report deduplication stats
+        if progress_tracker and research_id:
+            await progress_tracker.report_deduplication(
+                research_id, len(combined_results), len(deduplicated_results)
+            )
 
         # Apply paradigm-specific filtering and ranking
         filtered_results = await strategy.filter_and_rank_results(
             deduplicated_results, search_context
         )
 
+        # Update progress for credibility analysis
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id, "Evaluating source credibility...", 55
+            )
+        
         # Calculate credibility scores
         credibility_scores = {}
-        for result in filtered_results[:20]:  # Top 20 results
+        top_results = filtered_results[:20]  # Top 20 results
+        for idx, result in enumerate(top_results):
             try:
                 credibility = await get_source_credibility(result.domain, paradigm)
                 credibility_scores[result.domain] = credibility.overall_score
                 result.credibility_score = credibility.overall_score
+                
+                # Report credibility check
+                if progress_tracker and research_id and idx % 5 == 0:  # Report every 5th check
+                    await progress_tracker.report_credibility_check(
+                        research_id, result.domain, credibility.overall_score
+                    )
             except Exception as e:
                 logger.warning(
                     f"Credibility check failed for {result.domain}: {str(e)}"

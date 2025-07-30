@@ -403,11 +403,8 @@ class APIService {
 
     this.wsConnection.onopen = () => {
       console.log('WebSocket connected')
-      // Subscribe to specific research ID
-      this.wsConnection?.send(JSON.stringify({
-        action: 'subscribe',
-        research_id: researchId
-      }))
+      // Connection is already tied to research_id from the URL path
+      // No need to send subscription message
     }
 
     this.wsConnection.onmessage = (event) => {

@@ -96,7 +96,13 @@ class LLMClient:
 
     def __init__(self) -> None:
         self.openai_client = None
-        self._init_clients()
+        self._initialized = False
+        # Try to initialize, but don't fail at import time
+        try:
+            self._init_clients()
+            self._initialized = True
+        except Exception as e:
+            logger.warning(f"LLM client initialization deferred: {e}")
 
     # ─────────── client initialisation ───────────
     def _init_clients(self) -> None:
@@ -107,6 +113,12 @@ class LLMClient:
             logger.info("✓ OpenAI client initialised")
         else:
             raise RuntimeError("OPENAI_API_KEY environment variable not set")
+    
+    def _ensure_initialized(self) -> None:
+        """Ensure client is initialized before use."""
+        if not self._initialized:
+            self._init_clients()
+            self._initialized = True
 
     # ─────────── utility helpers ───────────
     @staticmethod
@@ -159,6 +171,7 @@ class LLMClient:
         Chat-style completion with optional SSE stream support.
         Returns either the full response string or an async iterator of tokens.
         """
+        self._ensure_initialized()
         model_name = _select_model(paradigm, model)
 
         # Build shared message list
@@ -262,6 +275,7 @@ class LLMClient:
         paradigm: str = "bernard",
     ) -> Dict[str, Any]:
         """Invoke model with tool-calling enabled and return content + tool_calls."""
+        self._ensure_initialized()
         model_name = _select_model(paradigm, model)
         result: Dict[str, Any] | None = None
 
@@ -364,5 +378,15 @@ llm_client = LLMClient()
 
 async def initialise_llm_client() -> bool:
     """FastAPI startup hook convenience."""
-    logger.info("LLM client already initialised at import-time")
-    return True
+    global llm_client
+    try:
+        if not llm_client._initialized:
+            llm_client._init_clients()
+            llm_client._initialized = True
+            logger.info("✓ LLM client initialized successfully")
+        else:
+            logger.info("LLM client already initialized")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize LLM client: {e}")
+        return False

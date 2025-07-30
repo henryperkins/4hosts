@@ -212,12 +212,31 @@ const ResearchPage = () => {
       const pollInterval = setInterval(async () => {
         try {
           const resultsData = await api.getResearchResults(data.research_id)
-          setResults(resultsData)
-          setIsLoading(false)
-          setShowProgress(false)
-          clearInterval(pollInterval)
-        } catch {
-          // Continue polling if not ready
+          
+          // Check if research is still in progress
+          if (resultsData.status && resultsData.status !== 'completed' && resultsData.status !== 'failed' && resultsData.status !== 'cancelled') {
+            // Still processing, continue polling
+            if (retries >= maxRetries) {
+              setError('Research timeout - please try again')
+              setIsLoading(false)
+              setShowProgress(false)
+              clearInterval(pollInterval)
+            }
+          } else if (resultsData.status === 'failed' || resultsData.status === 'cancelled') {
+            // Research failed or was cancelled
+            setError(`Research ${resultsData.status}: ${resultsData.message || 'Please try again'}`)
+            setIsLoading(false)
+            setShowProgress(false)
+            clearInterval(pollInterval)
+          } else {
+            // Research completed successfully
+            setResults(resultsData)
+            setIsLoading(false)
+            setShowProgress(false)
+            clearInterval(pollInterval)
+          }
+        } catch (error) {
+          // API error - continue polling if not at max retries
           if (retries >= maxRetries) {
             setError('Research timeout - please try again')
             setIsLoading(false)
@@ -306,8 +325,9 @@ const ResearchResultPage = () => {
         }
         
         // Check if this is a still-processing research
-        if (data.status && data.status !== 'completed') {
-          setError(`Research is still ${data.status}. Please wait for completion.`)
+        if (data.status && data.status !== 'completed' && data.status !== 'failed' && data.status !== 'cancelled') {
+          // Research is still in progress, redirect to home page to show progress
+          navigate('/')
           return
         }
         

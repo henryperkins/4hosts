@@ -743,7 +743,7 @@ Return as JSON with this structure:
 class ClassificationEngine:
     """Main interface for the classification system"""
 
-    def __init__(self, use_llm: bool = False, cache_enabled: bool = True):
+    def __init__(self, use_llm: bool = True, cache_enabled: bool = True):
         self.analyzer = QueryAnalyzer()
         # Only enable LLM if it's available and requested
         actual_use_llm = use_llm and LLM_AVAILABLE

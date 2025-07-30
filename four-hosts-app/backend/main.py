@@ -564,7 +564,7 @@ async def health_check():
 
 # Authentication Endpoints
 @app.post("/auth/register", response_model=Token, tags=["authentication"])
-async def register(user_data: UserCreate, request: Request):
+async def register(user_data: UserCreate):
     """Register a new user"""
     # Convert to auth module's UserCreate model
     from services.auth import UserCreate as AuthUserCreate
@@ -599,7 +599,7 @@ async def register(user_data: UserCreate, request: Request):
 
 
 @app.post("/auth/login", response_model=Token, tags=["authentication"])
-async def login(login_data: UserLogin, request: Request):
+async def login(login_data: UserLogin):
     """Login with email and password"""
     # Convert to auth module's UserLogin model
     from services.auth import UserLogin as AuthUserLogin
@@ -629,7 +629,7 @@ async def login(login_data: UserLogin, request: Request):
 
 
 @app.post("/auth/refresh", response_model=Token, tags=["authentication"])
-async def refresh_token(refresh_token: str, request: Request):
+async def refresh_token(refresh_token: str):
     """Refresh access token using secure token rotation"""
     # Validate and rotate refresh token
     token_result = await token_manager.rotate_refresh_token(refresh_token)
@@ -839,7 +839,6 @@ async def submit_research(
     research: ResearchQuery,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    request: Optional[Request] = None,
 ):
     """Submit a research query for paradigm-based analysis"""
     if not system_initialized:
@@ -1421,7 +1420,7 @@ async def execute_real_research(
 
         # Execute research with context-engineered query
         execution_result = await research_orchestrator.execute_paradigm_research(
-            context_engineered_query, research.options.max_sources
+            context_engineered_query, research.options.max_sources, progress_tracker, research_id
         )
 
         # Update progress

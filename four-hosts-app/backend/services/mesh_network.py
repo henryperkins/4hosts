@@ -102,56 +102,70 @@ class MeshNetworkService:
         self.integration_history.append(integrated_synthesis)
         return integrated_synthesis
 
-    def _identify_conflicts(
+    async def _identify_conflicts(
         self, primary: GeneratedAnswer, secondary: GeneratedAnswer
     ) -> List[Conflict]:
         """
         Identifies conflicts between two generated answers.
         This is a simplified implementation. A real implementation would use more advanced NLP.
         """
-        conflicts = []
+        prompt = f"""Analyze the following two summaries from different perspectives and identify any potential conflicts in their approach, findings, or conclusions.
 
-        # Example: Check for conflicting action items
-        primary_actions = {item["action"].lower() for item in primary.action_items}
-        secondary_actions = {item["action"].lower() for item in secondary.action_items}
+Perspective 1 ({primary.paradigm}): {primary.summary}
 
-        # This is a very basic check. A real system would need semantic analysis.
-        if primary.paradigm == "dolores" and secondary.paradigm == "maeve":
-            if (
-                "organize affected communities for collective action" in primary_actions
-                and "form strategic task force and secure executive mandate"
-                in secondary_actions
-            ):
-                conflicts.append(
-                    Conflict(
-                        conflict_type="approach_conflict",
-                        description="Dolores advocates for grassroots action, while Maeve suggests a top-down corporate approach.",
-                        primary_paradigm_view="Collective action from the ground up.",
-                        secondary_paradigm_view="Executive-led strategic initiative.",
-                        confidence=0.75,
-                    )
-                )
+Perspective 2 ({secondary.paradigm}): {secondary.summary}
+
+Are there any direct contradictions or significant tensions between these two perspectives? If so, describe the conflict, the viewpoint of each paradigm, and estimate your confidence in this conflict existing.
+
+Respond in JSON format with a list of conflicts, each with 'conflict_type', 'description', 'primary_paradigm_view', 'secondary_paradigm_view', and 'confidence'. If no conflicts, return an empty list.
+"""
+        
+        conflicts_str = await llm_client.generate_completion(
+            prompt=prompt,
+            paradigm="bernard",
+            max_tokens=500,
+            temperature=0.5,
+            response_format={"type": "json_object"}
+        )
+        
+        try:
+            conflicts_data = json.loads(conflicts_str)
+            conflicts = [Conflict(**c) for c in conflicts_data.get("conflicts", [])]
+        except (json.JSONDecodeError, TypeError):
+            conflicts = []
 
         return conflicts
 
-    def _identify_synergies(
+    async def _identify_synergies(
         self, primary: GeneratedAnswer, secondary: GeneratedAnswer
     ) -> List[str]:
         """
         Identifies synergies between two generated answers.
         """
-        synergies = []
+        prompt = f"""Analyze the following two summaries from different perspectives and identify potential synergies.
 
-        # Example: Bernard's analysis provides data for Maeve's strategy
-        if primary.paradigm == "maeve" and secondary.paradigm == "bernard":
-            synergies.append(
-                "Bernard's analytical findings provide the evidence base for Maeve's strategic recommendations."
-            )
+Perspective 1 ({primary.paradigm}): {primary.summary}
 
-        if primary.paradigm == "dolores" and secondary.paradigm == "teddy":
-            synergies.append(
-                "Dolores's exposure of injustice provides the 'why' for Teddy's compassionate action."
-            )
+Perspective 2 ({secondary.paradigm}): {secondary.summary}
+
+How can these two perspectives complement each other? Describe any synergies where one perspective's findings can support or enhance the other's goals.
+
+Respond in JSON format with a list of synergy descriptions. If no synergies, return an empty list.
+"""
+        
+        synergies_str = await llm_client.generate_completion(
+            prompt=prompt,
+            paradigm="bernard",
+            max_tokens=400,
+            temperature=0.6,
+            response_format={"type": "json_object"}
+        )
+        
+        try:
+            synergies_data = json.loads(synergies_str)
+            synergies = synergies_data.get("synergies", [])
+        except (json.JSONDecodeError, TypeError):
+            synergies = []
 
         return synergies
 
@@ -180,7 +194,7 @@ class MeshNetworkService:
             key_insights=key_insights[:3],
         )
 
-    def _generate_integrated_summary(
+    async def _generate_integrated_summary(
         self,
         primary: GeneratedAnswer,
         secondary: GeneratedAnswer,
@@ -190,19 +204,27 @@ class MeshNetworkService:
         """
         Generates a summary that integrates both perspectives.
         """
-        summary = f"This integrated analysis, primarily through the lens of the {primary.paradigm} paradigm, reveals key insights into '{primary.query}'.\n\n"
-        summary += f"The primary {primary.paradigm} perspective suggests: {primary.summary}\n\n"
-        summary += f"This is enriched by the {secondary.paradigm} perspective, which adds: {secondary.summary}\n\n"
+        prompt = f"""Synthesize the following two perspectives into a single, integrated summary.
 
-        if synergies:
-            summary += "Key Synergy: " + " ".join(synergies) + "\n"
+Primary Perspective ({primary.paradigm}): {primary.summary}
 
-        if conflicts:
-            summary += (
-                f"A key point of tension to consider is: {conflicts[0].description}"
-            )
+Secondary Perspective ({secondary.paradigm}): {secondary.summary}
 
-        return summary
+Identified Conflicts: {'. '.join([c.description for c in conflicts]) if conflicts else 'None'}
+
+Identified Synergies: {'. '.join(synergies) if synergies else 'None'}
+
+Create a concise, integrated summary that acknowledges both viewpoints and resolves or highlights the tension between them.
+"""
+        
+        integrated_summary = await llm_client.generate_completion(
+            prompt=prompt,
+            paradigm="bernard", # Use analytical paradigm for integration
+            max_tokens=500,
+            temperature=0.6,
+        )
+        
+        return integrated_summary
 
 
 # Global instance

@@ -269,7 +269,7 @@ Write a {context.max_length} word response that burns with righteous anger and t
 {i}. {result.get('title', 'Untitled')}
 Source: {result.get('domain', 'Unknown')}
 Credibility: {result.get('credibility_score', 0.5):.2f}
-Content: {result.get('snippet', 'No snippet available')[:200]}...
+Content: {result.get('content', 'No content available')}...
 """
             )
         return "\n".join(formatted)
@@ -364,21 +364,7 @@ Include specific examples and cite sources.
             key_insights=insights,
         )
 
-    async def _mock_generate_content(
-        self, prompt: str, section_def: Dict[str, Any]
-    ) -> str:
-        """Mock content generation (replace with actual LLM call)"""
-        # Simulate processing time
-        await asyncio.sleep(0.1)
-
-        templates = {
-            "Exposing the System": """The investigation reveals a deeply troubling pattern of systemic failures and deliberate exploitation. Corporate entities have systematically abused their power, creating structures designed to extract maximum value while providing minimal accountability. Documents obtained through whistleblower testimony show clear evidence of coordinated efforts to suppress dissent and maintain the status quo through intimidation and legal manipulation.""",
-            "Voices of the Oppressed": """Victims speak of devastating impacts on their lives and communities. 'They took everything from us,' says Maria, a community organizer who has fought for justice for over a decade. The human cost is staggering - families destroyed, communities decimated, and futures stolen by those who prioritize profit over people. These are not isolated incidents but part of a deliberate strategy of oppression.""",
-            "Pattern of Injustice": """Analysis reveals recurring patterns across multiple cases: silencing of whistleblowers, regulatory capture, and systematic targeting of vulnerable populations. The same tactics appear repeatedly - divide communities, co-opt leaders, and use legal frameworks designed to protect the powerful. This is not incompetence but calculated malice, a system working exactly as designed to benefit the few at the expense of the many.""",
-            "Path to Revolution": """The time for polite requests has passed. Effective resistance requires coordinated action: organize locally, document everything, support whistleblowers, and build alternative systems. Direct action, strategic litigation, and public pressure campaigns have shown success. Most importantly, we must reject the narrative that change is impossible. History shows that organized people can topple any system of oppression.""",
-        }
-
-        return templates.get(section_def["title"], "Content generation in progress...")
+    
 
     def _filter_results_for_section(
         self, results: List[Dict[str, Any]], section_def: Dict[str, Any]
@@ -419,10 +405,20 @@ Include specific examples and cite sources.
         self, context: SynthesisContext, sections: List[AnswerSection]
     ) -> str:
         """Generate executive summary"""
-        # Mock summary for now
-        return f"""Revolutionary analysis reveals systematic exploitation and abuse of power in {context.query}.
-Evidence exposes coordinated efforts to suppress truth and maintain unjust systems.
-Immediate action required to dismantle these structures of oppression and build just alternatives."""
+        summary_prompt = f"""Synthesize the following sections into a powerful, concise summary (3-4 sentences) that captures the core revolutionary message for the query: '{context.query}'.
+
+Sections:
+"""
+        for s in sections:
+            summary_prompt += f"- {s.title}: {s.key_insights[0] if s.key_insights else s.content[:100]}...\n"
+
+        summary = await llm_client.generate_paradigm_content(
+            prompt=summary_prompt,
+            paradigm=self.paradigm,
+            max_tokens=250,
+            temperature=0.6,
+        )
+        return summary
 
     def _generate_action_items(self, context: SynthesisContext) -> List[Dict[str, Any]]:
         """Generate paradigm-specific action items"""
@@ -565,7 +561,7 @@ Write a {context.max_length} word response filled with compassion and practical 
 {i}. {result.get('title', 'Untitled')}
 Source: {result.get('domain', 'Unknown')}
 Trust Score: {result.get('credibility_score', 0.5):.2f}
-Content: {result.get('snippet', 'No snippet available')[:200]}...
+Content: {result.get('content', 'No content available')}...
 """
             )
         return "\n".join(formatted)
@@ -661,21 +657,7 @@ Use warm, supportive language.
             key_insights=insights,
         )
 
-    async def _mock_generate_content(
-        self, prompt: str, section_def: Dict[str, Any]
-    ) -> str:
-        """Mock content generation (replace with actual LLM call)"""
-        # Simulate processing time
-        await asyncio.sleep(0.1)
-
-        templates = {
-            "Understanding the Need": """Those facing these challenges deserve our deepest compassion and understanding. The struggles are real and often overwhelming - isolation, fear, and uncertainty can make each day feel insurmountable. Yet within each person lies incredible resilience and dignity that must be honored. By truly listening and understanding their experiences, we can provide support that respects their autonomy while offering genuine help.""",
-            "Available Support Resources": """Numerous organizations stand ready to help: The National Alliance provides 24/7 crisis support at 1-800-HELP, local community centers offer free counseling services, and faith-based organizations provide both material and spiritual support. Online resources include peer support groups, educational materials, and connection to local services. Many programs offer sliding scale fees or free services to ensure help is accessible to all who need it.""",
-            "Success Stories": """Sarah's story reminds us that recovery is possible: 'When I felt most alone, the community wrapped around me. Small acts of kindness - a meal delivered, someone to talk to, help navigating resources - these made all the difference.' Similar stories emerge daily from support groups, showing how connection and care transform lives. These aren't just statistics; they're our neighbors finding hope again.""",
-            "How to Help": """Everyone can make a difference through simple acts of care: volunteer at local organizations, donate to programs providing direct services, or simply be present for someone struggling. Educate yourself about the challenges faced and the resources available. Most importantly, approach with humility and respect - ask how you can help rather than assuming. Together, we build communities where everyone is valued and supported.""",
-        }
-
-        return templates.get(section_def["title"], "Content generation in progress...")
+    
 
     def _filter_results_for_section(
         self, results: List[Dict[str, Any]], section_def: Dict[str, Any]
@@ -720,9 +702,20 @@ Use warm, supportive language.
         self, context: SynthesisContext, sections: List[AnswerSection]
     ) -> str:
         """Generate executive summary"""
-        return f"""Compassionate analysis of {context.query} reveals both significant challenges and hopeful paths forward.
-Multiple resources and support systems exist to help those affected, with proven success stories demonstrating recovery is possible.
-Community-based care and individual acts of kindness create networks of support that honor human dignity and foster healing."""
+        summary_prompt = f"""Synthesize the following sections into a compassionate, concise summary (3-4 sentences) that captures the core message of devotion and support for the query: '{context.query}'.
+
+Sections:
+"""
+        for s in sections:
+            summary_prompt += f"- {s.title}: {s.key_insights[0] if s.key_insights else s.content[:100]}...\n"
+
+        summary = await llm_client.generate_paradigm_content(
+            prompt=summary_prompt,
+            paradigm=self.paradigm,
+            max_tokens=250,
+            temperature=0.6,
+        )
+        return summary
 
     def _generate_action_items(self, context: SynthesisContext) -> List[Dict[str, Any]]:
         """Generate paradigm-specific action items"""
