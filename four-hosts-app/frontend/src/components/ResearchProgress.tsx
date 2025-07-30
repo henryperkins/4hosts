@@ -7,6 +7,7 @@ import { StatusBadge, type StatusType } from './ui/StatusIcon'
 import { ProgressBar } from './ui/ProgressBar'
 import { LoadingSpinner } from './ui/LoadingSpinner'
 import { Badge } from './ui/Badge'
+import api from '../services/api'
 
 interface ResearchProgressProps {
   researchId: string
@@ -78,9 +79,8 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const updatesContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    // Import api here to use WebSocket
-    import('../services/api').then(({ default: api }) => {
-      setIsConnecting(true)
+    // Use WebSocket from api
+    setIsConnecting(true)
       
       api.connectWebSocket(researchId, (message) => {
         setIsConnecting(false)
@@ -213,17 +213,14 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         }
       })
 
-      return () => {
-        api.unsubscribeFromResearch(researchId)
-      }
-    })
+    return () => {
+      api.unsubscribeFromResearch(researchId)
+    }
   }, [researchId, currentStatus, onComplete, onCancel])
 
   const handleCancel = async () => {
     setIsCancelling(true)
     try {
-      // Import api here for cancel function
-      const { default: api } = await import('../services/api')
       await api.cancelResearch(researchId)
       // Status will be updated via WebSocket
     } catch (error) {

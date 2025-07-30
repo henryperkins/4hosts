@@ -1,4 +1,4 @@
-import type { ParadigmClassification, ResearchResult, ResearchHistoryItem, UserPreferences, Paradigm, ResearchOptions } from '../types'
+import type { ParadigmClassification, ResearchResult, ResearchHistoryItem, UserPreferences, Paradigm, ResearchOptions, User } from '../types'
 import { AuthErrorHandler } from './api-auth'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || ''
@@ -160,6 +160,14 @@ class APIService {
     this.authToken = null
     AuthErrorHandler.clearAuthTokens()
     this.disconnectWebSocket()
+  }
+
+  async getCurrentUser(): Promise<User> {
+    const response = await this.fetchWithAuth('/auth/user')
+    if (!response.ok) {
+      throw new Error('Failed to get current user')
+    }
+    return await response.json()
   }
 
   // Research APIs

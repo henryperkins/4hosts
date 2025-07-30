@@ -13,7 +13,7 @@ interface ResultsDisplayEnhancedProps {
 export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ results }) => {
   const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set([0]))
   const [isExporting, setIsExporting] = useState(false)
-  const [exportFormat, setExportFormat] = useState<'json' | 'pdf' | 'markdown' | null>(null)
+  const [exportFormat, setExportFormat] = useState<'json' | 'pdf' | 'csv' | null>(null)
   const [showAllCitations, setShowAllCitations] = useState(false)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -77,7 +77,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     })
   }
 
-  const handleExport = async (format: 'json' | 'pdf' | 'markdown') => {
+  const handleExport = async (format: 'json' | 'pdf' | 'csv') => {
     setIsExporting(true)
     setExportFormat(format)
     setDropdownOpen(false)
@@ -204,14 +204,14 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   Export as JSON
                 </button>
                 <button
-                  onClick={() => handleExport('markdown')}
+                  onClick={() => handleExport('csv')}
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200 flex items-center gap-2"
                   disabled={isExporting}
                 >
-                  {exportFormat === 'markdown' && isExporting ? (
+                  {exportFormat === 'csv' && isExporting ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : null}
-                  Export as Markdown
+                  Export as CSV
                 </button>
                 <button
                   onClick={() => handleExport('pdf')}

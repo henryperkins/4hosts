@@ -1,5 +1,5 @@
 import React from 'react';
-import { HostParadigm } from '@/types/paradigm';
+import type { HostParadigm } from '@/types/paradigm';
 
 interface ParadigmCardProps {
   paradigm: HostParadigm;

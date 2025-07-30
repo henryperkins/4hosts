@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useParams, useLocation, useNavigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { Home, History, User, BarChart3, Menu, X, AlertCircle, Loader2 } from 'lucide-react'
@@ -15,8 +15,11 @@ import { LoginForm } from './components/auth/LoginForm'
 import { RegisterForm } from './components/auth/RegisterForm'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import { ResearchFormEnhanced } from './components/ResearchFormEnhanced'
+import { ResearchFormIdeaBrowser } from './components/ResearchFormIdeaBrowser'
 import { ResearchProgress } from './components/ResearchProgress'
+import { ResearchProgressIdeaBrowser } from './components/ResearchProgressIdeaBrowser'
 import { ResultsDisplayEnhanced } from './components/ResultsDisplayEnhanced'
+import { ResultsDisplayIdeaBrowser } from './components/ResultsDisplayIdeaBrowser'
 import ParadigmDisplay from './components/ParadigmDisplay'
 import { UserProfile } from './components/UserProfile'
 import { ResearchHistory } from './components/ResearchHistory'
@@ -62,7 +65,11 @@ const Navigation = () => {
   }
 
   return (
-    <nav className="bg-surface shadow-lg border-b border-border animate-slide-down transition-all duration-300 backdrop-blur-sm bg-opacity-95 dark:bg-opacity-95">
+    <>
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 bg-primary text-white px-4 py-2 rounded-md z-50">
+        Skip to main content
+      </a>
+      <nav className="bg-surface shadow-lg border-b border-border animate-slide-down transition-all duration-300 backdrop-blur-sm bg-opacity-95 dark:bg-opacity-95">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           <div className="flex items-center gap-8">
@@ -144,7 +151,7 @@ const Navigation = () => {
           mobileMenuOpen ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
         }`}>
           <div className="py-2 space-y-1">
-            {navItems.map(({ path, label }, index) => (
+            {navItems.map(({ path, label }) => (
               <Link
                 key={path}
                 to={path}
@@ -153,7 +160,7 @@ const Navigation = () => {
                   isActive(path)
                   ? 'bg-linear-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300'
                     : 'text-text-muted hover:bg-surface-subtle'
-                } stagger-delay-${index * 50}`}
+                }`}
               >
                 {label}
               </Link>
@@ -173,7 +180,7 @@ const Navigation = () => {
                 logout()
                 closeMobileMenu()
               }}
-              className="block w-full text-left px-4 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-200 stagger-delay-150"
+              className="block w-full text-left px-4 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-200"
             >
               Logout
             </button>
@@ -181,6 +188,7 @@ const Navigation = () => {
         </div>
       </div>
     </nav>
+    </>
   )
 }
 
@@ -192,6 +200,24 @@ const ResearchPage = () => {
   const [error, setError] = useState<string | null>(null)
   const [currentResearchId, setCurrentResearchId] = useState<string | null>(null)
   const [showProgress, setShowProgress] = useState(false)
+  const [useIdeaBrowser, setUseIdeaBrowser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('useIdeaBrowser')
+      return saved ? JSON.parse(saved) : false
+    } catch {
+      return false
+    }
+  })
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+      }
+    }
+  }, [])
 
   const handleSubmit = async (query: string, options: ResearchOptions) => {
     setIsLoading(true)
@@ -215,14 +241,13 @@ const ResearchPage = () => {
         // Use standard research endpoint
         data = await api.submitResearch(query, options)
       }
-      setParadigmClassification(data.paradigm_classification)
       setCurrentResearchId(data.research_id)
 
       // Poll for results
       let retries = 0
       const maxRetries = 60
 
-      const pollInterval = setInterval(async () => {
+      pollIntervalRef.current = setInterval(async () => {
         try {
           const resultsData = await api.getResearchResults(data.research_id)
           
@@ -233,20 +258,49 @@ const ResearchPage = () => {
               setError('Research timeout - please try again')
               setIsLoading(false)
               setShowProgress(false)
-              clearInterval(pollInterval)
+              clearInterval(pollIntervalRef.current!)
             }
           } else if (resultsData.status === 'failed' || resultsData.status === 'cancelled') {
             // Research failed or was cancelled
             setError(`Research ${resultsData.status}: ${resultsData.message || 'Please try again'}`)
             setIsLoading(false)
             setShowProgress(false)
-            clearInterval(pollInterval)
+            clearInterval(pollIntervalRef.current!)
           } else {
             // Research completed successfully
             setResults(resultsData)
+            // Extract paradigm classification from results
+            if (resultsData.paradigm_analysis && resultsData.paradigm_analysis.primary) {
+              // Build distribution from primary and secondary paradigms
+              const distribution: Record<string, number> = {
+                [resultsData.paradigm_analysis.primary.paradigm]: resultsData.paradigm_analysis.primary.confidence
+              }
+              
+              if (resultsData.paradigm_analysis.secondary) {
+                distribution[resultsData.paradigm_analysis.secondary.paradigm] = resultsData.paradigm_analysis.secondary.confidence
+              }
+              
+              // Fill in other paradigms with 0 if not present
+              const allParadigms = ['dolores', 'teddy', 'bernard', 'maeve']
+              allParadigms.forEach(p => {
+                if (!distribution[p]) {
+                  distribution[p] = 0
+                }
+              })
+              
+              setParadigmClassification({
+                primary: resultsData.paradigm_analysis.primary.paradigm,
+                secondary: resultsData.paradigm_analysis.secondary?.paradigm || null,
+                distribution,
+                confidence: resultsData.paradigm_analysis.primary.confidence,
+                explanation: {
+                  [resultsData.paradigm_analysis.primary.paradigm]: resultsData.paradigm_analysis.primary.approach
+                }
+              })
+            }
             setIsLoading(false)
             setShowProgress(false)
-            clearInterval(pollInterval)
+            clearInterval(pollIntervalRef.current!)
           }
         } catch (error) {
           // API error - continue polling if not at max retries
@@ -254,7 +308,7 @@ const ResearchPage = () => {
             setError('Research timeout - please try again')
             setIsLoading(false)
             setShowProgress(false)
-            clearInterval(pollInterval)
+            clearInterval(pollIntervalRef.current!)
           }
         }
         retries++
@@ -268,7 +322,7 @@ const ResearchPage = () => {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-fade-in">
+    <div id="main-content" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-fade-in">
       <div className="mb-8 text-center animate-slide-down">
         <h1 className="text-responsive-3xl sm:text-3xl font-bold text-text mb-2">
           Discover Insights Through Four Perspectives
@@ -278,7 +332,25 @@ const ResearchPage = () => {
         </p>
       </div>
 
-      <ResearchFormEnhanced onSubmit={handleSubmit} isLoading={isLoading} />
+      {/* Toggle for IdeaBrowser mode */}
+      <div className="mb-4 flex items-center justify-center gap-3">
+        <label className="text-sm text-text-muted">Standard View</label>
+        <ToggleSwitch
+          checked={useIdeaBrowser}
+          onChange={(checked) => {
+            setUseIdeaBrowser(checked)
+            localStorage.setItem('useIdeaBrowser', JSON.stringify(checked))
+          }}
+          size="sm"
+        />
+        <label className="text-sm text-text-muted">IdeaBrowser View</label>
+      </div>
+
+      {useIdeaBrowser ? (
+        <ResearchFormIdeaBrowser onSubmit={handleSubmit} isLoading={isLoading} />
+      ) : (
+        <ResearchFormEnhanced onSubmit={handleSubmit} isLoading={isLoading} />
+      )}
 
       {error && (
         <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg animate-slide-down transform transition-all duration-300 hover:scale-[1.02]">
@@ -297,20 +369,35 @@ const ResearchPage = () => {
 
       {showProgress && currentResearchId && (
         <div className="animate-slide-up">
-          <ResearchProgress
-            researchId={currentResearchId}
-            onComplete={() => setShowProgress(false)}
-            onCancel={() => {
-              setShowProgress(false)
-              setCurrentResearchId(null)
-            }}
-          />
+          {useIdeaBrowser ? (
+            <ResearchProgressIdeaBrowser
+              researchId={currentResearchId}
+              onComplete={() => setShowProgress(false)}
+              onCancel={() => {
+                setShowProgress(false)
+                setCurrentResearchId(null)
+              }}
+            />
+          ) : (
+            <ResearchProgress
+              researchId={currentResearchId}
+              onComplete={() => setShowProgress(false)}
+              onCancel={() => {
+                setShowProgress(false)
+                setCurrentResearchId(null)
+              }}
+            />
+          )}
         </div>
       )}
 
       {results && !showProgress && (
         <div className="animate-fade-in">
-          <ResultsDisplayEnhanced results={results} />
+          {useIdeaBrowser ? (
+            <ResultsDisplayIdeaBrowser results={results} />
+          ) : (
+            <ResultsDisplayEnhanced results={results} />
+          )}
         </div>
       )}
     </div>
@@ -324,6 +411,14 @@ const ResearchResultPage = () => {
   const [results, setResults] = useState<ResearchResult | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [useIdeaBrowser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('useIdeaBrowser')
+      return saved ? JSON.parse(saved) : false
+    } catch {
+      return false
+    }
+  })
 
   useEffect(() => {
     const loadResults = async () => {
@@ -355,7 +450,7 @@ const ResearchResultPage = () => {
     }
 
     loadResults()
-  }, [id])
+  }, [id, navigate])
 
   if (isLoading) {
     return (
@@ -386,12 +481,12 @@ const ResearchResultPage = () => {
             >
               Go Back
             </button>
-            <button
-              onClick={() => window.location.href = '/history'}
+            <Link
+              to="/history"
               className="btn-primary"
             >
               View History
-            </button>
+            </Link>
           </div>
         </div>
       </div>
@@ -400,7 +495,11 @@ const ResearchResultPage = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <ResultsDisplayEnhanced results={results} />
+      {useIdeaBrowser ? (
+        <ResultsDisplayIdeaBrowser results={results} />
+      ) : (
+        <ResultsDisplayEnhanced results={results} />
+      )}
     </div>
   )
 }
@@ -408,8 +507,12 @@ const ResearchResultPage = () => {
 // Main App component
 function App() {
   const [darkMode, setDarkMode] = useState(() => {
-    const saved = localStorage.getItem('darkMode')
-    return saved ? JSON.parse(saved) : false
+    try {
+      const saved = localStorage.getItem('darkMode')
+      return saved ? JSON.parse(saved) : false
+    } catch {
+      return false
+    }
   })
 
   const toggleDarkMode = () => {

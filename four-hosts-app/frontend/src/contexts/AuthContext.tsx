@@ -119,7 +119,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const updatePreferences = async (preferences: UserPreferences) => {
     try {
-      const updatedUser = await api.updateUserPreferences(preferences)
+      await api.updateUserPreferences(preferences)
+      // Refresh user data after updating preferences
+      const updatedUser = await api.getCurrentUser()
       setAuthState(prev => ({
         ...prev,
         user: updatedUser,
