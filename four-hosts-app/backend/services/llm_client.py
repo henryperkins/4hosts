@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 import httpx
 from openai import AsyncOpenAI, AsyncAzureOpenAI
+import anthropic
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -47,9 +48,17 @@ class TruncationStrategy(Enum):
 
 _PARADIGM_MODEL_MAP: Dict[str, str] = {
     "dolores": "gpt-4o",
-    "teddy": "gpt-4o-mini",
+    "teddy": "gpt-4o-mini", 
     "bernard": "gpt-4o",
     "maeve": "gpt-4o-mini",
+}
+
+# Add Anthropic Claude model mappings for each paradigm
+_PARADIGM_ANTHROPIC_MODEL_MAP: Dict[str, str] = {
+    "dolores": "claude-3-5-sonnet-20250123",  # Sonnet 4 for revolutionary analysis
+    "teddy": "claude-3-5-sonnet-20250123",    # Sonnet 4 for empathetic care
+    "bernard": "claude-3-opus-20250123",      # Opus 4 for analytical rigor
+    "maeve": "claude-3-5-sonnet-20250123",   # Sonnet 4 for strategic insights
 }
 
 _SYSTEM_PROMPTS: Dict[str, str] = {
@@ -76,9 +85,20 @@ _SYSTEM_PROMPTS: Dict[str, str] = {
 }
 
 
-def _select_model(paradigm: str, explicit_model: str | None = None) -> str:
+def _select_model(paradigm: str, explicit_model: str | None = None, provider: str = "openai") -> str:
     """Return the model to use, preferring an explicit value when provided."""
-    return explicit_model or _PARADIGM_MODEL_MAP.get(paradigm, "gpt-4o-mini")
+    if explicit_model:
+        return explicit_model
+    
+    if provider == "anthropic":
+        return _PARADIGM_ANTHROPIC_MODEL_MAP.get(paradigm, "claude-3-5-sonnet-20250123")
+    else:
+        return _PARADIGM_MODEL_MAP.get(paradigm, "gpt-4o-mini")
+
+
+def _is_anthropic_model(model: str) -> bool:
+    """Check if a model name belongs to Anthropic."""
+    return model.startswith("claude-")
 
 
 def _system_role_for(model: str) -> str:
@@ -90,14 +110,16 @@ def _system_role_for(model: str) -> str:
 #  LLM Client
 # ────────────────────────────────────────────────────────────
 class LLMClient:
-    """Asynchronous client wrapper for OpenAI and Azure OpenAI."""
+    """Asynchronous client wrapper for OpenAI, Azure OpenAI, and Anthropic."""
 
     openai_client: Optional[AsyncOpenAI]
     azure_client: Optional[AsyncAzureOpenAI]
+    anthropic_client: Optional[anthropic.AsyncAnthropic]
 
     def __init__(self) -> None:
         self.openai_client = None
         self.azure_client = None
+        self.anthropic_client = None
         self._initialized = False
         # Try to initialize, but don't fail at import time
         try:
@@ -136,8 +158,16 @@ class LLMClient:
         else:
             self.openai_client = None
             
-        if not self.azure_client and not self.openai_client:
-            raise RuntimeError("Neither AZURE_OPENAI_* nor OPENAI_API_KEY environment variables are set")
+        # Anthropic Claude
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if anthropic_key:
+            self.anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_key)
+            logger.info("✓ Anthropic client initialised")
+        else:
+            self.anthropic_client = None
+            
+        if not self.azure_client and not self.openai_client and not self.anthropic_client:
+            raise RuntimeError("No LLM client configured - set AZURE_OPENAI_*, OPENAI_API_KEY, or ANTHROPIC_API_KEY environment variables")
     
     def _ensure_initialized(self) -> None:
         """Ensure client is initialized before use."""
@@ -180,6 +210,7 @@ class LLMClient:
         *,
         model: str | None = None,
         paradigm: str = "bernard",
+        provider: str = "openai",  # "openai" or "anthropic"
         max_tokens: int = 2_000,
         temperature: float = 0.7,
         top_p: float = 0.9,
@@ -197,7 +228,28 @@ class LLMClient:
         Returns either the full response string or an async iterator of tokens.
         """
         self._ensure_initialized()
-        model_name = _select_model(paradigm, model)
+        
+        # Auto-detect provider from model name if not explicitly set
+        if model and _is_anthropic_model(model):
+            provider = "anthropic"
+        
+        model_name = _select_model(paradigm, model, provider)
+
+        # Check if we detected an Anthropic model that wasn't explicitly requested
+        if _is_anthropic_model(model_name) and provider == "openai":
+            provider = "anthropic"
+            
+        # Handle Anthropic models
+        if _is_anthropic_model(model_name):
+            return await self._generate_anthropic_completion(
+                prompt=prompt,
+                model=model_name,
+                paradigm=paradigm,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                stream=stream,
+            )
 
         # Build shared message list
         messages = [
@@ -341,12 +393,14 @@ class LLMClient:
         *,
         model: str | None = None,
         paradigm: str = "bernard",
+        provider: str = "openai",
     ) -> Dict[str, Any]:
         """Return JSON matching the provided schema."""
         raw = await self.generate_completion(
             prompt,
             model=model,
             paradigm=paradigm,
+            provider=provider,
             json_schema=schema,
             temperature=0.3,
             stream=False,
@@ -366,10 +420,30 @@ class LLMClient:
         tool_choice: Optional[Union[str, Dict[str, Any]]] = "auto",
         model: str | None = None,
         paradigm: str = "bernard",
+        provider: str = "openai",
     ) -> Dict[str, Any]:
         """Invoke model with tool-calling enabled and return content + tool_calls."""
         self._ensure_initialized()
-        model_name = _select_model(paradigm, model)
+        
+        # Auto-detect provider from model name if not explicitly set
+        if model and _is_anthropic_model(model):
+            provider = "anthropic"
+            
+        model_name = _select_model(paradigm, model, provider)
+        
+        # Check if we detected an Anthropic model
+        if _is_anthropic_model(model_name):
+            provider = "anthropic"
+            
+        # Handle Anthropic tool calling
+        if provider == "anthropic" and self.anthropic_client:
+            return await self._generate_anthropic_with_tools(
+                prompt=prompt,
+                tools=tools,
+                model=model_name,
+                paradigm=paradigm,
+            )
+        
         result: Dict[str, Any] | None = None
 
         wrapped_choice = self._wrap_tool_choice(tool_choice)
@@ -428,11 +502,52 @@ class LLMClient:
         *,
         model: str | None = None,
         paradigm: str = "bernard",
+        provider: str = "openai",
         max_tokens: int = 2_000,
         temperature: float = 0.7,
     ) -> str:
         """Multi-turn chat conversation helper (non-streaming)."""
-        model_name = _select_model(paradigm, model)
+        # Auto-detect provider from model name if not explicitly set
+        if model and _is_anthropic_model(model):
+            provider = "anthropic"
+            
+        model_name = _select_model(paradigm, model, provider)
+        
+        # Check if we detected an Anthropic model
+        if _is_anthropic_model(model_name):
+            provider = "anthropic"
+            
+        # Handle Anthropic conversation
+        if provider == "anthropic" and self.anthropic_client:
+            system_prompt = _SYSTEM_PROMPTS.get(paradigm, "")
+            # Convert messages format for Anthropic
+            anthropic_messages = []
+            for msg in messages:
+                anthropic_messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+            
+            try:
+                response = await self.anthropic_client.messages.create(
+                    model=model_name,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    system=system_prompt,
+                    messages=anthropic_messages,
+                )
+                
+                content = ""
+                for block in response.content:
+                    if block.type == "text":
+                        content += block.text
+                return content.strip()
+                
+            except Exception as exc:
+                logger.error(f"Anthropic conversation request failed • {exc}")
+                raise
+                
+        # Build OpenAI-style messages for Azure/OpenAI  
         full_msgs = [
             {
                 "role": _system_role_for(model_name),
@@ -440,7 +555,6 @@ class LLMClient:
             },
             *messages,
         ]
-
 
         # Use Azure for o3 model
         if model_name in {"o3", "azure"} and self.azure_client:
@@ -473,6 +587,7 @@ class LLMClient:
         max_tokens: int = 2_000,
         temperature: float = 0.7,
         model: str | None = None,
+        provider: str = "openai",
     ) -> str:
         """Generate content based on a specific paradigm's perspective."""
         return await self.generate_completion(
@@ -481,6 +596,7 @@ class LLMClient:
             max_tokens=max_tokens,
             temperature=temperature,
             model=model,
+            provider=provider,
             stream=False,
         )
 
@@ -500,6 +616,132 @@ class LLMClient:
             if hasattr(event, 'type') and event.type == 'response.output_text.delta':
                 if hasattr(event, 'delta'):
                     yield event.delta
+
+    @staticmethod
+    async def _iter_anthropic_stream(raw: AsyncIterator[Any]) -> AsyncIterator[str]:
+        """Yield token strings from Anthropic stream."""
+        async for event in raw:
+            if event.type == "content_block_delta":
+                if hasattr(event.delta, 'text'):
+                    yield event.delta.text
+
+    # ─────────── Anthropic-specific methods ───────────
+    async def _generate_anthropic_completion(
+        self,
+        prompt: str,
+        model: str,
+        paradigm: str,
+        max_tokens: int = 2_000,
+        temperature: float = 0.7,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        stream: bool = False,
+    ) -> Union[str, AsyncIterator[str]]:
+        """Generate completion using Anthropic Claude models."""
+        if not self.anthropic_client:
+            raise RuntimeError("Anthropic client not configured - set ANTHROPIC_API_KEY environment variable")
+
+        # Build system message and user prompt
+        system_prompt = _SYSTEM_PROMPTS.get(paradigm, "")
+        
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        # Add tools if provided
+        if tools:
+            # Convert OpenAI-style tools to Anthropic format
+            anthropic_tools = []
+            for tool in tools:
+                if tool.get("type") == "function":
+                    func = tool.get("function", {})
+                    anthropic_tools.append({
+                        "name": func.get("name", ""),
+                        "description": func.get("description", ""),
+                        "input_schema": func.get("parameters", {})
+                    })
+            kwargs["tools"] = anthropic_tools
+
+        try:
+            if stream:
+                kwargs["stream"] = True
+                response = await self.anthropic_client.messages.create(**kwargs)
+                return self._iter_anthropic_stream(response)
+            else:
+                response = await self.anthropic_client.messages.create(**kwargs)
+                # Extract text content from response
+                content = ""
+                for block in response.content:
+                    if block.type == "text":
+                        content += block.text
+                return content.strip()
+                
+        except Exception as exc:
+            logger.error(f"Anthropic request failed • {exc}")
+            raise
+
+    async def _generate_anthropic_with_tools(
+        self,
+        prompt: str,
+        tools: List[Dict[str, Any]],
+        model: str,
+        paradigm: str,
+    ) -> Dict[str, Any]:
+        """Generate completion with tools using Anthropic Claude models."""
+        if not self.anthropic_client:
+            raise RuntimeError("Anthropic client not configured")
+
+        # Convert OpenAI-style tools to Anthropic format
+        anthropic_tools = []
+        for tool in tools:
+            if tool.get("type") == "function":
+                func = tool.get("function", {})
+                anthropic_tools.append({
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {})
+                })
+
+        system_prompt = _SYSTEM_PROMPTS.get(paradigm, "")
+        
+        try:
+            response = await self.anthropic_client.messages.create(
+                model=model,
+                max_tokens=2000,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+                tools=anthropic_tools,
+            )
+            
+            # Extract content and tool calls
+            content = ""
+            tool_calls = []
+            
+            for block in response.content:
+                if block.type == "text":
+                    content += block.text
+                elif block.type == "tool_use":
+                    # Convert Anthropic tool call to OpenAI format for compatibility
+                    tool_calls.append({
+                        "id": block.id,
+                        "type": "function",
+                        "function": {
+                            "name": block.name,
+                            "arguments": json.dumps(block.input)
+                        }
+                    })
+            
+            return {
+                "content": content.strip(),
+                "tool_calls": tool_calls,
+            }
+            
+        except Exception as exc:
+            logger.error(f"Anthropic tool calling request failed • {exc}")
+            raise
 
 
 
