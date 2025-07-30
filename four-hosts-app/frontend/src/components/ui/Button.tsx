@@ -33,9 +33,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     }
 
     const sizeClasses = {
-      sm: 'px-3 py-1.5 text-sm',
-      md: 'px-4 py-2 text-base',
-      lg: 'px-6 py-3 text-lg'
+      sm: 'px-3 py-1.5 text-sm min-h-[36px] md:min-h-[32px]',
+      md: 'px-4 py-2 text-base min-h-[44px] md:min-h-[40px]',
+      lg: 'px-6 py-3 text-lg min-h-[52px] md:min-h-[48px]'
     }
 
     const fullWidthClasses = fullWidth ? 'w-full' : ''
@@ -44,6 +44,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       variantClasses[variant],
       sizeClasses[size],
       fullWidthClasses,
+      'touch-target select-none-mobile active:scale-95 transition-transform',
       className
     ].filter(Boolean).join(' ')
 

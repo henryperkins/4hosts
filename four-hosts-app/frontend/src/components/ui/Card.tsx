@@ -24,7 +24,7 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(
       if (variant === 'interactive' && paradigm) {
         return `card-interactive paradigm-border-${paradigm}`
       }
-      return variant === 'interactive' ? 'card-interactive' : 'card'
+      return variant === 'interactive' ? 'card-interactive active:scale-[0.98] transition-transform' : 'card'
     }
 
     const elevationClass = elevated ? 'shadow-xl hover:shadow-2xl' : ''

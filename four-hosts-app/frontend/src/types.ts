@@ -8,6 +8,7 @@ export interface ResearchOptions {
   language?: string
   region?: string
   enable_ai_classification?: boolean
+  paradigm_override?: Paradigm
 }
 
 export interface ParadigmClassification {
@@ -22,6 +23,7 @@ export interface ResearchResult {
   research_id: string
   query: string
   status: string
+  message?: string
   paradigm_analysis: {
     primary: {
       paradigm: Paradigm

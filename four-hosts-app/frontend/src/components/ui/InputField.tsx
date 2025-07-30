@@ -101,7 +101,7 @@ export const InputField = forwardRef<
         <textarea
           ref={textareaRef}
           id={inputId}
-          className={`input resize-y min-h-[80px] ${statusClass} ${className}`}
+          className={`input resize-y min-h-[80px] text-base md:text-sm ${statusClass} ${className}`}
           style={autoResize ? { overflow: 'hidden' } : {}}
           {...ariaProps}
           {...(props as TextareaHTMLAttributes<HTMLTextAreaElement>)}
@@ -110,7 +110,7 @@ export const InputField = forwardRef<
         <input
           ref={ref as React.Ref<HTMLInputElement>}
           id={inputId}
-          className={`input ${statusClass} ${className}`}
+          className={`input text-base md:text-sm ${statusClass} ${className}`}
           {...ariaProps}
           {...(props as InputHTMLAttributes<HTMLInputElement>)}
         />

@@ -1904,8 +1904,10 @@ async def execute_real_research(
             citations_list.append(
                 {
                     "id": cite_id,
+                    "title": citation.source_title,
                     "source": citation.source_title,
                     "url": citation.source_url,
+                    "snippet": getattr(citation, "snippet", ""),
                     "credibility_score": citation.credibility_score,
                     "paradigm_alignment": context_engineered_query.classification.primary_paradigm.value,
                 }

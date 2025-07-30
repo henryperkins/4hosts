@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { Clock, X, Search, Database, Brain, CheckCircle, AlertCircle, Zap } from 'lucide-react'
+import { Clock, X, Search, Database, Brain, CheckCircle, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 import { Button } from './ui/Button'
 import { Card } from './ui/Card'

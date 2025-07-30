@@ -520,6 +520,133 @@
   }
 }
 
+/* Mobile-specific utilities */
+@layer utilities {
+  /* Touch-friendly tap targets */
+  .touch-target {
+    position: relative;
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .touch-target::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+  }
+
+  /* Responsive text utilities */
+  .text-responsive-sm {
+    font-size: clamp(0.875rem, 2.5vw, 1rem);
+  }
+
+  .text-responsive-base {
+    font-size: clamp(1rem, 3vw, 1.125rem);
+  }
+
+  .text-responsive-lg {
+    font-size: clamp(1.125rem, 3.5vw, 1.25rem);
+  }
+
+  .text-responsive-xl {
+    font-size: clamp(1.25rem, 4vw, 1.5rem);
+  }
+
+  .text-responsive-2xl {
+    font-size: clamp(1.5rem, 5vw, 2rem);
+  }
+
+  .text-responsive-3xl {
+    font-size: clamp(1.875rem, 6vw, 2.5rem);
+  }
+
+  /* Mobile-optimized spacing */
+  .mobile-safe-area {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Touch-friendly hover states */
+  @media (hover: hover) and (pointer: fine) {
+    .hover-only\:opacity-80:hover {
+      opacity: 0.8;
+    }
+
+    .hover-only\:scale-105:hover {
+      transform: scale(1.05);
+    }
+  }
+
+  /* Active states for touch */
+  .active\:scale-95:active {
+    transform: scale(0.95);
+  }
+
+  .active\:opacity-80:active {
+    opacity: 0.8;
+  }
+
+  /* Disable text selection on interactive elements */
+  .select-none-mobile {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* Smooth scrolling on mobile */
+  .mobile-scroll-smooth {
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+  }
+
+  /* Hide scrollbar on mobile */
+  .scrollbar-hide-mobile {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scrollbar-hide-mobile::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Mobile-first media queries */
+@media (max-width: 639px) {
+  /* Adjust button padding for mobile */
+  .btn, .btn-primary, .btn-secondary, .btn-ghost {
+    padding: 0.625rem 1.25rem;
+    min-height: 44px;
+  }
+
+  /* Larger touch targets for mobile */
+  .card-interactive {
+    min-height: 60px;
+  }
+
+  /* Mobile-optimized input fields */
+  .input {
+    min-height: 44px;
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+
+  /* Adjust spacing for mobile */
+  .card, .card-hover, .card-interactive {
+    padding: 1rem;
+  }
+}
+
+/* Tablet-specific adjustments */
+@media (min-width: 640px) and (max-width: 1023px) {
+  .btn, .btn-primary, .btn-secondary, .btn-ghost {
+    padding: 0.5rem 1.25rem;
+  }
+}
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   *,

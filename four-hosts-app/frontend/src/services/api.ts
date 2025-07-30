@@ -81,7 +81,7 @@ export interface SystemStats {
 }
 
 export interface WebSocketMessage {
-  type: 'status_update' | 'progress' | 'result' | 'error' | 'connected' | 'system_notification' | 'research_started' | 'research_phase_change' | 'research_progress' | 'source_found' | 'source_analyzed' | 'research_completed' | 'research_failed'
+  type: 'status_update' | 'progress' | 'result' | 'error' | 'connected' | 'system_notification' | 'research_started' | 'research_phase_change' | 'research_progress' | 'source_found' | 'source_analyzed' | 'research_completed' | 'research_failed' | 'search.started' | 'search.completed' | 'credibility.check' | 'deduplication.progress'
   research_id?: string
   data: unknown
   id?: string

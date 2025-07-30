@@ -117,14 +117,14 @@ export const Dialog: React.FC<DialogProps> = ({
   if (!isOpen) return null
 
   const sizeClasses = {
-    sm: 'max-w-sm',
-    md: 'max-w-md',
-    lg: 'max-w-lg',
-    xl: 'max-w-xl'
+    sm: 'max-w-sm w-full mx-4',
+    md: 'max-w-md w-full mx-4',
+    lg: 'max-w-lg w-full mx-4',
+    xl: 'max-w-xl w-full mx-4'
   }
 
   const dialogContent = (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 mobile-safe-area">
       {/* Overlay */}
       <div
         className="fixed inset-0 bg-black/50 backdrop-blur-sm animate-fade-in"
@@ -140,10 +140,11 @@ export const Dialog: React.FC<DialogProps> = ({
         aria-labelledby={title ? 'dialog-title' : undefined}
         aria-describedby={description ? 'dialog-description' : undefined}
         className={`
-          relative w-full ${sizeClasses[size]} 
+          relative ${sizeClasses[size]} 
           bg-surface dark:bg-surface-subtle 
           rounded-xl shadow-2xl 
           animate-scale-in
+          max-h-[90vh] overflow-y-auto mobile-scroll-smooth
           ${className}
         `}
         tabIndex={-1}
@@ -166,7 +167,7 @@ export const Dialog: React.FC<DialogProps> = ({
             {showCloseButton && (
               <button
                 onClick={onClose}
-                className="ml-auto -mr-2 -mt-2 p-2 text-text-muted hover:text-text rounded-lg hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="ml-auto -mr-2 -mt-2 p-2 text-text-muted hover:text-text rounded-lg hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 touch-target active:scale-95"
                 aria-label="Close dialog"
               >
                 <X className="h-5 w-5" />
