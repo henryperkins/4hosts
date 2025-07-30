@@ -187,7 +187,7 @@ class SelfHealingSystem:
                 await self._execute_paradigm_switch(record, switch_decision)
         
         # Send metrics to monitoring service
-        await monitoring_service.track_paradigm_performance(paradigm, record)
+        await monitoring_service.track_paradigm_performance(paradigm, record.__dict__)
 
     async def record_user_feedback(
         self, query_id: str, satisfaction_score: float

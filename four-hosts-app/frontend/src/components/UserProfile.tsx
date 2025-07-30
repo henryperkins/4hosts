@@ -61,11 +61,32 @@ export const UserProfile: React.FC = () => {
           <div>
             <h3 className="font-semibold text-lg text-gray-900">{user.username}</h3>
             <p className="text-gray-600">{user.email}</p>
-            <p className="text-sm text-gray-500">
-              Member since {user.created_at ? new Date(user.created_at).toLocaleDateString() : 'Unknown'}
-            </p>
+            <div className="flex items-center gap-4 mt-1">
+              <p className="text-sm text-gray-500">
+                Member since {user.created_at ? new Date(user.created_at).toLocaleDateString() : 'Unknown'}
+              </p>
+              {/* Role Badge */}
+              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                user.role === 'admin' ? 'bg-red-100 text-red-800' :
+                user.role === 'enterprise' ? 'bg-purple-100 text-purple-800' :
+                user.role === 'pro' ? 'bg-yellow-100 text-yellow-800' :
+                user.role === 'basic' ? 'bg-blue-100 text-blue-800' :
+                'bg-gray-100 text-gray-800'
+              }`}>
+                {user.role?.toUpperCase() || 'FREE'}
+              </span>
+            </div>
           </div>
         </div>
+
+        {/* Role-specific features notice */}
+        {user.role === 'free' && (
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <p className="text-sm text-blue-800">
+              🎯 Upgrade to unlock deep research, export features, and advanced analytics!
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Preferences */}

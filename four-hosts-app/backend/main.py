@@ -471,7 +471,7 @@ app.add_middleware(
         "https://app.lakefrontdigital.io",
         "http://lakefrontdigital.io",
         "https://lakefrontdigital.io",
-        "*",  # Allow all origins in development (more permissive for debugging)
+        # Note: Cannot use "*" with allow_credentials=True
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
@@ -1229,7 +1229,7 @@ async def get_research_history(
                 "research_id": research["id"],
                 "query": research["query"],
                 "status": research["status"],
-                "paradigm": research["paradigm_classification"]["primary"],
+                "paradigm": research.get("paradigm_classification", {}).get("primary", "unknown"),
                 "created_at": research["created_at"],
                 "options": research["options"],
             }

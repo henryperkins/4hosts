@@ -42,3 +42,59 @@ You are a specialized analyst for the Four Hosts application, expert in understa
 - Deep research mode mappings (DeepResearchMode enum)
 
 Always provide specific file:line references and ensure changes maintain compatibility with the existing API contracts.
+
+## Known Issues to Watch For:
+
+### 1. **Enum Mapping Inconsistencies**:
+- `HostParadigm` enum in classification_engine.py
+- `Paradigm` enum in main.py and database models
+- `ParadigmType` in database/models.py
+- Mapping dictionary `HOST_TO_MAIN_PARADIGM` in main.py:181
+
+### 2. **Duplicate Paradigm Logic**:
+- Answer generators have overlapping code (answer_generator*.py files)
+- Similar paradigm strategies repeated in multiple services
+- Consider refactoring to shared paradigm behavior modules
+
+### 3. **Hard-coded Paradigm References**:
+```python
+# Found in multiple files:
+_PARADIGM_MODEL_MAP = {
+    "dolores": "gpt-4",
+    "teddy": "gpt-4",
+    "bernard": "gpt-4",
+    "maeve": "gpt-4"
+}
+```
+
+### 4. **Classification Confidence**:
+- Default confidence threshold is 0.4 (classification_engine.py:296)
+- No paradigm-specific confidence adjustments
+- Missing confidence calibration over time
+
+### 5. **Cross-Service Dependencies**:
+- Direct imports between services create coupling
+- Example: answer_generator imports from mesh_network
+- Consider dependency injection pattern
+
+## Improvement Opportunities:
+
+1. **Create Paradigm Registry**:
+   - Centralize paradigm definitions
+   - Single source of truth for mappings
+   - Easier to add new paradigms
+
+2. **Extract Common Patterns**:
+   - Paradigm-specific search strategies
+   - Answer generation templates
+   - Tone and style configurations
+
+3. **Add Paradigm Metrics**:
+   - Track classification accuracy
+   - Monitor paradigm-specific performance
+   - Identify paradigm confusion patterns
+
+4. **Implement Paradigm Inheritance**:
+   - Base paradigm behaviors
+   - Paradigm mixins for shared traits
+   - Easier paradigm customization

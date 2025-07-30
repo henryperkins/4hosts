@@ -28,6 +28,15 @@ except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("Scikit-learn not available - ML pipeline will use mock training")
 
+# Import HF zero-shot classifier
+try:
+    from .hf_zero_shot import async_predict_paradigm as hf_predict_async
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.info("HF zero-shot classifier not available")
+
 from .classification_engine import HostParadigm, QueryFeatures
 from .self_healing_system import self_healing_system
 
@@ -629,15 +638,31 @@ class MLPipeline:
             if ex.timestamp > cutoff_date
         ]
 
-    def predict_paradigm(
+    async def predict_paradigm(
         self, query_text: str, features: QueryFeatures
     ) -> Tuple[HostParadigm, float]:
         """Predict paradigm using the current model"""
+        # Try HF zero-shot classifier first if available
+        if HF_AVAILABLE:
+            try:
+                label, score = await hf_predict_async(query_text)
+                paradigm = HostParadigm(label)
+                logger.debug(f"HF zero-shot prediction: {paradigm.value} (confidence: {score:.3f})")
+                return paradigm, score
+            except Exception as e:
+                logger.debug(f"HF zero-shot fallback ({e}); trying ML model")
+        
+        # Fall back to ML model if HF not available or failed
         if not ML_AVAILABLE or self.paradigm_classifier is None:
             # Fallback to rule-based
             return self._rule_based_prediction(query_text, features)
         
         try:
+            # Ensure vectorizer is fitted before use
+            if not hasattr(self.vectorizer, "vocabulary_") or self.vectorizer.vocabulary_ is None:
+                # Not enough data to train – fall back to rule-based classification
+                raise ValueError("Vectorizer_not_fitted")
+
             # Vectorize query
             X_text = self.vectorizer.transform([query_text])
             
@@ -671,7 +696,9 @@ class MLPipeline:
             return paradigm, confidence
             
         except Exception as e:
-            logger.error(f"Error in ML prediction: {e}")
+            # Log as debug for expected not-fitted cases to avoid flooding error logs
+            log_method = logger.debug if "Vectorizer_not_fitted" in str(e) else logger.error
+            log_method(f"Error in ML prediction: {e}")
             return self._rule_based_prediction(query_text, features)
 
     def _rule_based_prediction(

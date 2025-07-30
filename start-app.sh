@@ -10,6 +10,20 @@ PROJECT_ROOT="$SCRIPT_DIR"
 echo "📁 Project root: $PROJECT_ROOT"
 echo "🔄 Running in background mode"
 
+# Source nvm to ensure npm is available when running with sudo
+if [ -f "/home/azureuser/.nvm/nvm.sh" ]; then
+    export NVM_DIR="/home/azureuser/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    echo "✅ NVM loaded, using node $(node --version) and npm $(npm --version)"
+else
+    echo "⚠️  NVM not found, checking for system npm..."
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "❌ npm is not installed or not in PATH"
+        echo "   Please install Node.js and npm first"
+        exit 1
+    fi
+fi
+
 # Function to cleanup on exit
 cleanup() {
     echo -e "\n\n🛑 Shutting down services..."

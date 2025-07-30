@@ -1,5 +1,3 @@
-import { AuthTokens } from './api';
-
 interface AuthError {
   status: number;
   message: string;
@@ -50,38 +48,42 @@ export class AuthErrorHandler {
   }
 
   /**
-   * Store auth token with better error handling
+   * Store auth and refresh tokens with better error handling
    */
-  static storeAuthToken(token: string): void {
+  static storeAuthTokens(accessToken: string, refreshToken?: string): void {
     try {
-      localStorage.setItem('auth_token', token);
+      localStorage.setItem('auth_token', accessToken);
+      if (refreshToken) {
+        localStorage.setItem('refresh_token', refreshToken);
+      }
     } catch (error) {
-      console.error('Failed to store authentication token:', error);
+      console.error('Failed to store authentication tokens:', error);
       throw new Error('Browser storage unavailable. Please enable cookies and try again.');
     }
   }
 
   /**
-   * Clear auth token
+   * Retrieve the refresh token
    */
-  static clearAuthToken(): void {
+  static getRefreshToken(): string | null {
+    try {
+      return localStorage.getItem('refresh_token');
+    } catch (error) {
+      console.error('Failed to retrieve refresh token:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Clear auth and refresh tokens
+   */
+  static clearAuthTokens(): void {
     try {
       localStorage.removeItem('auth_token');
+      localStorage.removeItem('refresh_token');
     } catch (error) {
-      console.error('Failed to clear authentication token:', error);
+      console.error('Failed to clear authentication tokens:', error);
     }
   }
 }
 
-// Enhanced auth tokens interface for better error handling
-export interface AuthTokens {
-  access_token: string;
-  token_type: string;
-  refresh_token?: string;
-  expires_in: number;
-  user?: {
-    id: string;
-    email: string;
-    username: string;
-  };
-}

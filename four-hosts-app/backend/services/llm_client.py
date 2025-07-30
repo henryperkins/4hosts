@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncAzureOpenAI
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -90,12 +90,14 @@ def _system_role_for(model: str) -> str:
 #  LLM Client
 # ────────────────────────────────────────────────────────────
 class LLMClient:
-    """Asynchronous client wrapper for OpenAI."""
+    """Asynchronous client wrapper for OpenAI and Azure OpenAI."""
 
     openai_client: Optional[AsyncOpenAI]
+    azure_client: Optional[AsyncAzureOpenAI]
 
     def __init__(self) -> None:
         self.openai_client = None
+        self.azure_client = None
         self._initialized = False
         # Try to initialize, but don't fail at import time
         try:
@@ -106,13 +108,36 @@ class LLMClient:
 
     # ─────────── client initialisation ───────────
     def _init_clients(self) -> None:
+        # Azure OpenAI
+        azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "preview")
+        
+        if azure_key and endpoint and deployment:
+            # Ensure endpoint has trailing slash
+            if not endpoint.endswith("/"):
+                endpoint += "/"
+                
+            self.azure_client = AsyncAzureOpenAI(
+                api_key=azure_key,
+                base_url=f"{endpoint}openai/v1/",
+                api_version=api_version,
+            )
+            logger.info("✓ Azure OpenAI client initialised for Responses API")
+        else:
+            self.azure_client = None
+            
         # OpenAI cloud
         openai_key = os.getenv("OPENAI_API_KEY")
         if openai_key:
             self.openai_client = AsyncOpenAI(api_key=openai_key)
             logger.info("✓ OpenAI client initialised")
         else:
-            raise RuntimeError("OPENAI_API_KEY environment variable not set")
+            self.openai_client = None
+            
+        if not self.azure_client and not self.openai_client:
+            raise RuntimeError("Neither AZURE_OPENAI_* nor OPENAI_API_KEY environment variables are set")
     
     def _ensure_initialized(self) -> None:
         """Ensure client is initialized before use."""
@@ -194,10 +219,9 @@ class LLMClient:
             "stream": stream,
         }
 
-        # Token param differs for “o” family
-        if model_name.startswith(("o1", "o3", "o4")):
+        # Token param - use max_completion_tokens for o3
+        if model_name in {"o3", "azure"}:
             kw["max_completion_tokens"] = max_tokens
-            kw["reasoning_effort"] = "medium"
         else:
             kw["max_tokens"] = max_tokens
 
@@ -216,6 +240,75 @@ class LLMClient:
         else:
             tool_choice = None                        # ensure we don't forward it
 
+        # ─── Azure OpenAI path (for o3 model) ───
+        if model_name in {"o3", "azure"} and self.azure_client:
+            try:
+                deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
+                # Remove Azure-incompatible params
+                azure_kwargs = {k: v for k, v in kw.items() if k not in ["stream", "tool_choice", "model"]}
+                if tools and tool_choice:
+                    azure_kwargs["tool_choice"] = self._wrap_tool_choice(tool_choice)
+                    
+                # For o3, use the Responses API instead of Chat Completions
+                if hasattr(self.azure_client, 'responses'):
+                    # Convert messages to input format for Responses API
+                    input_content = []
+                    for msg in messages:
+                        input_content.append({
+                            "type": "message",
+                            "role": msg["role"],
+                            "content": msg["content"]
+                        })
+                    
+                    # Use Responses API for o3
+                    # Note: o3 doesn't support temperature/top_p parameters
+                    response_kwargs = {
+                        "model": deployment,
+                        "input": input_content,
+                        "max_output_tokens": azure_kwargs.get("max_completion_tokens", azure_kwargs.get("max_tokens", 2000)),
+                    }
+                    
+                    if stream:
+                        response_kwargs["stream"] = stream
+                    
+                    op_res = await self.azure_client.responses.create(**response_kwargs)
+                    
+                    if stream:
+                        return self._iter_responses_stream(op_res)
+                    
+                    # Extract text from response - Responses API provides output_text directly
+                    if hasattr(op_res, 'output_text') and op_res.output_text:
+                        return op_res.output_text.strip()
+                    
+                    # Fallback: extract from output array if output_text not available
+                    if hasattr(op_res, 'output') and op_res.output:
+                        text_content = ""
+                        for output in op_res.output:
+                            if hasattr(output, 'content') and output.content:
+                                for content_item in output.content:
+                                    if hasattr(content_item, 'text') and content_item.type == 'output_text':
+                                        text_content += content_item.text
+                        if text_content:
+                            return text_content.strip()
+                    
+                    # Log for debugging if no text found
+                    logger.warning(f"No text content found in response. Response type: {type(op_res)}")
+                    return ""
+                else:
+                    # Fallback to chat completions if responses API not available
+                    op_res = await self.azure_client.chat.completions.create(
+                        model=deployment,
+                        **azure_kwargs,
+                        stream=stream,
+                    )
+                if stream:
+                    return self._iter_openai_stream(op_res)
+                content = op_res.choices[0].message.content
+                return content.strip() if content else ""
+            except Exception as exc:
+                logger.error(f"Azure OpenAI request failed • {exc}")
+                raise
+                
         # ─── OpenAI path ───
         if self.openai_client:
             try:
@@ -281,8 +374,28 @@ class LLMClient:
 
         wrapped_choice = self._wrap_tool_choice(tool_choice)
         
+        # Use Azure for o3 model
+        if model_name in {"o3", "azure"} and self.azure_client:
+            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
+            op = await self.azure_client.chat.completions.create(
+                model=deployment,
+                messages=[
+                    {
+                        "role": _system_role_for(model_name),
+                        "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                tools=tools,
+                tool_choice=wrapped_choice,
+                max_tokens=2_000,
+            )
+            result = {
+                "content": op.choices[0].message.content or "",
+                "tool_calls": op.choices[0].message.tool_calls or [],
+            }
         # Use OpenAI
-        if self.openai_client:
+        elif self.openai_client:
             op = await self.openai_client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -329,7 +442,19 @@ class LLMClient:
         ]
 
 
-        if self.openai_client:
+        # Use Azure for o3 model
+        if model_name in {"o3", "azure"} and self.azure_client:
+            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
+            op = await self.azure_client.chat.completions.create(
+                model=deployment,
+                messages=full_msgs,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return (op.choices[0].message.content or "").strip()
+        
+        # Use OpenAI
+        elif self.openai_client:
             op = await self.openai_client.chat.completions.create(
                 model=model_name,
                 messages=full_msgs,
@@ -367,6 +492,14 @@ class LLMClient:
         async for chunk in raw:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+    
+    @staticmethod
+    async def _iter_responses_stream(raw: AsyncIterator[Any]) -> AsyncIterator[str]:
+        """Yield token strings from Azure Responses API stream."""
+        async for event in raw:
+            if hasattr(event, 'type') and event.type == 'response.output_text.delta':
+                if hasattr(event, 'delta'):
+                    yield event.delta
 
 
 

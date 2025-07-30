@@ -87,3 +87,169 @@ if cached:
 - Duplicate result percentage
 
 Always validate optimizations against the test suite and monitor production metrics.
+
+## Critical Performance Issues Found:
+
+### 1. **Sequential Processing**:
+- Context engineering layers run sequentially
+- Search APIs called one by one
+- URL content fetching is synchronous
+
+### 2. **Cache Underutilization**:
+- Classification results not cached
+- Search results cache not shared across paradigms
+- LLM responses not cached for similar queries
+
+### 3. **Token Waste**:
+- Full search results sent to LLM
+- Redundant context in prompts
+- No compression of similar results
+
+### 4. **Database Inefficiencies**:
+- Missing indexes on critical queries
+- No connection pooling configured
+- N+1 queries in research history
+
+## Immediate Optimization Opportunities:
+
+### 1. **Implement Parallel Search**:
+```python
+# In research_orchestrator.py
+async def execute_searches_parallel(self, queries: List[str]):
+    # Group by API to respect rate limits
+    api_groups = self._group_queries_by_api(queries)
+    
+    # Execute each group in parallel
+    tasks = []
+    for api, api_queries in api_groups.items():
+        for query in api_queries:
+            tasks.append(self._rate_limited_search(api, query))
+    
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return self._process_results(results)
+```
+
+### 2. **Add Classification Cache**:
+```python
+# In classification_engine.py
+CLASSIFICATION_CACHE_TTL = 3600  # 1 hour
+
+async def classify_query_cached(self, query: str):
+    cache_key = f"classification:{hashlib.md5(query.encode()).hexdigest()}"
+    
+    # Check cache first
+    cached = await self.cache.get(cache_key)
+    if cached:
+        return ClassificationResult(**cached)
+    
+    # Classify and cache
+    result = await self.classify_query(query)
+    await self.cache.set(cache_key, result.dict(), ttl=CLASSIFICATION_CACHE_TTL)
+    return result
+```
+
+### 3. **Optimize LLM Context**:
+```python
+# Compress search results before sending to LLM
+def compress_search_results(results: List[SearchResult], max_tokens: int = 1000):
+    # Sort by relevance
+    sorted_results = sorted(results, key=lambda x: x.relevance_score, reverse=True)
+    
+    # Take top results that fit in token budget
+    compressed = []
+    token_count = 0
+    
+    for result in sorted_results:
+        # Estimate tokens (rough: 1 token ≈ 4 chars)
+        result_tokens = len(result.snippet) // 4
+        
+        if token_count + result_tokens > max_tokens:
+            break
+            
+        compressed.append({
+            "title": result.title[:100],  # Truncate long titles
+            "snippet": result.snippet[:200],  # Limit snippet length
+            "url": result.url
+        })
+        token_count += result_tokens
+    
+    return compressed
+```
+
+### 4. **Database Optimization**:
+```sql
+-- Add composite indexes
+CREATE INDEX idx_research_user_status_created 
+ON research_queries(user_id, status, created_at DESC);
+
+CREATE INDEX idx_research_paradigm_created 
+ON research_queries(primary_paradigm, created_at DESC);
+
+-- Enable connection pooling in SQLAlchemy
+engine = create_async_engine(
+    DATABASE_URL,
+    pool_size=20,
+    max_overflow=40,
+    pool_pre_ping=True,
+    pool_recycle=3600
+)
+```
+
+### 5. **Result Deduplication**:
+```python
+# Improve deduplication with better similarity detection
+class ImprovedDeduplicator:
+    def __init__(self, similarity_threshold: float = 0.85):
+        self.threshold = similarity_threshold
+        self.vectorizer = TfidfVectorizer()
+    
+    def deduplicate(self, results: List[SearchResult]):
+        if len(results) < 2:
+            return results
+        
+        # Vectorize snippets
+        snippets = [r.snippet for r in results]
+        vectors = self.vectorizer.fit_transform(snippets)
+        
+        # Calculate similarity matrix
+        similarity = cosine_similarity(vectors)
+        
+        # Keep unique results
+        unique_indices = self._find_unique_indices(similarity)
+        return [results[i] for i in unique_indices]
+```
+
+## Monitoring Implementation:
+
+Add performance tracking to measure optimization impact:
+
+```python
+from dataclasses import dataclass
+from typing import Dict
+import time
+
+@dataclass
+class PerformanceMetrics:
+    classification_time: float = 0.0
+    context_engineering_time: float = 0.0
+    search_time: float = 0.0
+    answer_generation_time: float = 0.0
+    total_time: float = 0.0
+    
+    cache_hits: Dict[str, int] = field(default_factory=dict)
+    api_calls: Dict[str, int] = field(default_factory=dict)
+    tokens_used: int = 0
+    
+    def log_metrics(self):
+        logger.info(
+            "Research performance",
+            classification_ms=self.classification_time * 1000,
+            search_ms=self.search_time * 1000,
+            answer_ms=self.answer_generation_time * 1000,
+            total_ms=self.total_time * 1000,
+            cache_hit_rate=self._calculate_cache_hit_rate(),
+            tokens=self.tokens_used
+        )
+```
+
+Track these metrics for every research request to identify bottlenecks and measure improvements.

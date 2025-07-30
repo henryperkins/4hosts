@@ -9,6 +9,12 @@ export interface ResearchOptions {
   region?: string
   enable_ai_classification?: boolean
   paradigm_override?: Paradigm
+  // Deep research specific options
+  search_context_size?: 'small' | 'medium' | 'large'
+  user_location?: {
+    country?: string
+    city?: string
+  }
 }
 
 export interface ParadigmClassification {
@@ -121,7 +127,7 @@ export interface User {
   username: string
   email: string
   created_at?: string
-  role?: string
+  role?: 'free' | 'basic' | 'pro' | 'enterprise' | 'admin'
   preferences?: UserPreferences
 }
 

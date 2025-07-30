@@ -75,6 +75,7 @@ class AnswerSection:
     citations: List[str]  # Citation IDs
     word_count: int
     key_insights: List[str]
+    metadata: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -346,6 +347,7 @@ Include specific examples and cite sources.
             prompt=section_prompt,
             paradigm=self.paradigm,
             max_tokens=int(context.max_length * section_def["weight"] * 2),
+            model="o3",  # Use Azure OpenAI o3 for enhanced synthesis
         )
 
         # Extract citations from content
@@ -417,6 +419,7 @@ Sections:
             paradigm=self.paradigm,
             max_tokens=250,
             temperature=0.6,
+            model="o3",  # Use Azure OpenAI o3 for enhanced synthesis
         )
         return summary
 
@@ -639,6 +642,7 @@ Use warm, supportive language.
             prompt=section_prompt,
             paradigm=self.paradigm,
             max_tokens=int(context.max_length * section_def["weight"] * 2),
+            model="o3",  # Use Azure OpenAI o3 for enhanced synthesis
         )
 
         # Extract citations from content
@@ -714,6 +718,7 @@ Sections:
             paradigm=self.paradigm,
             max_tokens=250,
             temperature=0.6,
+            model="o3",  # Use Azure OpenAI o3 for enhanced synthesis
         )
         return summary
 

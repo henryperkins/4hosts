@@ -18,28 +18,178 @@ logger = logging.getLogger(__name__)
 
 
 class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
-    """Enhanced orchestrator that integrates new components"""
-    
+    """Enhanced orchestrator that integrates new components.
+
+    This subclass extends the original ``AnswerGenerationOrchestrator`` while **preserving
+    backwards-compatibility** with the original public interface.  There are currently **two**
+    calling conventions in the code base:
+
+    1. **Legacy signature** – used by the FastAPI routes in *main.py* and elsewhere.  It matches
+       the parent implementation::
+
+           await answer_orchestrator.generate_answer(
+               paradigm="bernard",
+               query="…",
+               search_results=[…],
+               context_engineering={…},
+               options={…},
+           )
+
+    2. **New signature** – used by the new tests in *test_enhanced_features.py* where the first
+       argument is a fully populated ``SynthesisContext`` followed by the paradigms::
+
+           await answer_orchestrator.generate_answer(context, HostParadigm.BERNARD)
+
+    Previously we overwrote ``generate_answer`` with the *new* signature which broke the code that
+    still depends on the legacy keyword arguments (FastAPI runtime error
+    "got an unexpected keyword argument 'paradigm'").
+
+    The implementation below accepts **either** calling style and internally routes the request to
+    ``_generate_from_context`` which contains the actual enhanced generation logic.  This keeps the
+    public interface stable without duplicating business logic.
+    """
+
     def __init__(self):
         super().__init__()
-        
+
         # Replace basic generators with enhanced versions
         self.generators[HostParadigm.BERNARD] = EnhancedBernardAnswerGenerator()
         self.generators[HostParadigm.MAEVE] = EnhancedMaeveAnswerGenerator()
-        
+
         # Enable self-healing and ML features
         self.self_healing_enabled = True
         self.ml_enhanced = True
-        
+
         logger.info("Enhanced Answer Generation Orchestrator initialized with advanced features")
 
-    async def generate_answer(
+    # ------------------------------------------------------------------
+    # Public entry point – supports both the legacy and the new signature
+    # ------------------------------------------------------------------
+    async def generate_answer(self, *args, **kwargs) -> Any:  # type: ignore[override]
+        """Generate an answer using either the **legacy** or **new** call signature.
+
+        The method inspects *args* / *kwargs* to determine which signature was used and then
+        constructs the appropriate ``SynthesisContext`` before delegating to
+        ``_generate_from_context``.
+        """
+
+        # Helper local function available to both call-paths -----------------
+        def _resolve_paradigm(value: str | HostParadigm | None) -> HostParadigm | None:
+            """Translate various string representations (e.g. "bernard", "analytical") to
+            ``HostParadigm`` enum members.  Returns *None* if *value* is *None*."""
+            if value is None:
+                return None
+            if isinstance(value, HostParadigm):
+                return value
+            mapping = {
+                "dolores": HostParadigm.DOLORES,
+                "revolutionary": HostParadigm.DOLORES,
+                "teddy": HostParadigm.TEDDY,
+                "devotion": HostParadigm.TEDDY,
+                "bernard": HostParadigm.BERNARD,
+                "analytical": HostParadigm.BERNARD,
+                "maeve": HostParadigm.MAEVE,
+                "strategic": HostParadigm.MAEVE,
+            }
+            key = str(value).lower()
+            if key not in mapping:
+                raise ValueError(f"Unknown paradigm: {value}")
+            return mapping[key]
+
+        # ------------------------------------------------------------------
+        # Case 1 – NEW SIGNATURE: first positional argument is a SynthesisContext instance
+        # ------------------------------------------------------------------
+        if args and isinstance(args[0], SynthesisContext):
+            context: SynthesisContext = args[0]
+
+            # Primary/secondary paradigm can come either positionally or via kwargs
+            primary_paradigm: HostParadigm | None = None
+            secondary_paradigm: Optional[HostParadigm] = None
+
+            if len(args) > 1:
+                primary_paradigm = args[1]
+            if len(args) > 2:
+                secondary_paradigm = args[2]
+
+            # Fallback to kwargs if not provided positionally
+            primary_paradigm = primary_paradigm or kwargs.get("primary_paradigm")
+            secondary_paradigm = secondary_paradigm or kwargs.get("secondary_paradigm")
+
+            # If context already stores a paradigm string we try to map it to enum when needed
+            if primary_paradigm is None and hasattr(context, "paradigm") and context.paradigm:
+                try:
+                    primary_paradigm = _resolve_paradigm(context.paradigm)
+                except Exception:
+                    primary_paradigm = None
+
+            if primary_paradigm is None:
+                raise ValueError("primary_paradigm must be supplied when using the context signature")
+
+            return await self._generate_from_context(context, primary_paradigm, secondary_paradigm)
+
+        # ------------------------------------------------------------------
+        # Case 2 – LEGACY SIGNATURE: parameters passed individually (possibly as kwargs)
+        # ------------------------------------------------------------------
+        paradigm: str | HostParadigm | None = None
+        query: Optional[str] = None
+        search_results: Optional[list] = None
+        context_engineering: Optional[dict] = None
+        options: Optional[dict] = None
+
+        # Extract either positionally or via kwargs
+        if len(args) >= 4:
+            paradigm, query, search_results, context_engineering = args[:4]
+            if len(args) >= 5:
+                options = args[4]
+        else:
+            paradigm = kwargs.get("paradigm")
+            query = kwargs.get("query")
+            search_results = kwargs.get("search_results")
+            context_engineering = kwargs.get("context_engineering")
+            options = kwargs.get("options")
+
+        if paradigm is None or query is None or search_results is None or context_engineering is None:
+            raise TypeError("Invalid arguments – expected legacy signature parameters to be provided")
+
+        # Resolve paradigms using the helper defined at the top of this method
+        primary_paradigm_enum = _resolve_paradigm(paradigm)
+
+        secondary_paradigm = kwargs.get("secondary_paradigm")
+        secondary_paradigm = _resolve_paradigm(secondary_paradigm)
+
+        # Build ``SynthesisContext`` – replicate logic from the parent implementation
+        options = options or {}
+
+        context = SynthesisContext(
+            query=query,
+            paradigm=primary_paradigm_enum.value if isinstance(primary_paradigm_enum, HostParadigm) else str(primary_paradigm_enum),
+            search_results=search_results,
+            context_engineering=context_engineering,
+            max_length=options.get("max_length", 2000),
+            include_citations=options.get("include_citations", True),
+            tone=options.get("tone", "professional"),
+        )
+
+        # Attach metadata if provided
+        context.metadata = {"research_id": options.get("research_id", "unknown")}
+
+        # Deep-research content may be attached via the options dict
+        if dr_content := options.get("deep_research_content"):
+            context.deep_research_content = dr_content  # type: ignore[attr-defined]
+
+        return await self._generate_from_context(context, primary_paradigm_enum, secondary_paradigm)
+
+    # ------------------------------------------------------------------
+    # Internal implementation – **moved unchanged** from the previous override
+    # ------------------------------------------------------------------
+
+    async def _generate_from_context(
         self,
         context: SynthesisContext,
         primary_paradigm: HostParadigm,
         secondary_paradigm: Optional[HostParadigm] = None,
     ) -> Any:
-        """Enhanced answer generation with self-healing and ML tracking"""
+        """Actual enhanced generation logic (extracted from the old implementation)."""
         start_time = datetime.now()
         query_id = context.metadata.get("research_id", f"query_{start_time.timestamp()}")
         
@@ -67,8 +217,11 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                     # Use recommended paradigm
                     primary_paradigm = recommended_paradigm
             
-            # Generate answer using appropriate generator
-            primary_answer = await self.generators[primary_paradigm].generate_answer(context)
+            # Generate answer using appropriate generator (support both enum and string keys)
+            generator = self.generators.get(primary_paradigm) or self.generators.get(primary_paradigm.value)
+            if generator is None:
+                raise ValueError(f"No generator registered for paradigm {primary_paradigm}")
+            primary_answer = await generator.generate_answer(context)
             
             # Record performance metrics
             response_time = (datetime.now() - start_time).total_seconds()
@@ -92,7 +245,10 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
             
             # Handle secondary paradigm if provided
             if secondary_paradigm:
-                secondary_answer = await self.generators[secondary_paradigm].generate_answer(context)
+                secondary_generator = self.generators.get(secondary_paradigm) or self.generators.get(secondary_paradigm.value)
+                if secondary_generator is None:
+                    secondary_generator = generator  # Fallback to primary to avoid crash
+                secondary_answer = await secondary_generator.generate_answer(context)
                 
                 # Integrate using mesh network
                 integrated = await self.mesh_network.integrate_paradigm_results(
@@ -127,7 +283,9 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                 if fallback_paradigm:
                     logger.info(f"Attempting fallback to {fallback_paradigm} paradigm")
                     try:
-                        return await self.generators[fallback_paradigm].generate_answer(context)
+                        fallback_generator = self.generators.get(fallback_paradigm) or self.generators.get(fallback_paradigm.value)
+                        if fallback_generator:
+                            return await fallback_generator.generate_answer(context)
                     except Exception as fallback_error:
                         logger.error(f"Fallback also failed: {fallback_error}")
             
@@ -155,12 +313,12 @@ class EnhancedClassificationEngine(ClassificationEngine):
     async def classify_query(self, query: str, use_llm: bool = True) -> Any:
         """Enhanced classification with ML model"""
         # First get base classification
-        result = await super().classify_query(query, use_llm=use_llm)
+        result = await super().classify_query(query)
         
         # If ML is available, also get ML prediction
-        if self.ml_enhanced and ml_pipeline.paradigm_classifier is not None:
+        if self.ml_enhanced:
             try:
-                ml_paradigm, ml_confidence = ml_pipeline.predict_paradigm(
+                ml_paradigm, ml_confidence = await ml_pipeline.predict_paradigm(
                     query, result.features
                 )
                 

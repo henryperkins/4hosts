@@ -9,7 +9,12 @@ interface ParadigmCardProps {
   onClick?: () => void;
 }
 
-const paradigmStyles = {
+const paradigmStyles: Record<HostParadigm, {
+  container: string;
+  title: string;
+  description: string;
+  icon: string;
+}> = {
   dolores: {
     container: 'bg-red-50 border-red-200 hover:border-red-400',
     title: 'text-red-900',

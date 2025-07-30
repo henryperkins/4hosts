@@ -6,7 +6,7 @@ data = {
     "email": "test@example.com",
     "username": "testuser",
     "password": "Test123!Pass",
-    "role": "free",
+    "role": "pro",
 }
 
 response = requests.post(url, json=data)

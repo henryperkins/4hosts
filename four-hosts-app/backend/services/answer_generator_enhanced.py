@@ -281,6 +281,7 @@ Requirements:
             paradigm=self.paradigm,
             max_tokens=int(context.max_length * section_def["weight"] * 2),
             temperature=0.3,  # Lower temperature for analytical precision
+            model="o3",  # Use Azure OpenAI o3 for enhanced synthesis
         )
         
         # Create citations with enhanced metadata
@@ -573,6 +574,7 @@ Requirements:
             paradigm=self.paradigm,
             max_tokens=300,
             temperature=0.3,
+            model="o3",  # Use Azure OpenAI o3 for enhanced synthesis
         )
 
     def _generate_research_action_items(
@@ -687,6 +689,30 @@ Requirements:
             citation_quality * 0.2 +
             method_quality * 0.2
         )
+
+    def _count_peer_reviewed(self, search_results: List[Dict[str, Any]]) -> int:
+        """Count the number of peer-reviewed sources in search results"""
+        peer_reviewed_domains = [
+            "arxiv", "pubmed", "nature", "science", "sciencedirect",
+            "springer", "wiley", "elsevier", "ncbi", "nih", "ieee",
+            "acm", "plos", "bmj", "lancet", "jama", "nejm"
+        ]
+        
+        count = 0
+        for result in search_results:
+            domain = result.get("domain", "").lower()
+            url = result.get("url", "").lower()
+            
+            # Check if domain or URL contains peer-reviewed indicators
+            if any(pr_domain in domain for pr_domain in peer_reviewed_domains):
+                count += 1
+            elif any(pr_domain in url for pr_domain in peer_reviewed_domains):
+                count += 1
+            # Also check for DOI which indicates academic publication
+            elif "doi.org" in url or "doi:" in result.get("snippet", ""):
+                count += 1
+                
+        return count
 
     def get_synthesis_prompt(self, context: SynthesisContext) -> str:
         """Get analytical paradigm-specific synthesis prompt"""
@@ -1022,6 +1048,7 @@ Requirements:
             paradigm=self.paradigm,
             max_tokens=int(context.max_length * section_def["weight"] * 2),
             temperature=0.5,  # Balanced for strategic creativity
+            model="o3",  # Use Azure OpenAI o3 for enhanced synthesis
         )
         
         # Create strategic citations
@@ -1307,6 +1334,7 @@ Requirements:
             paradigm=self.paradigm,
             max_tokens=300,
             temperature=0.5,
+            model="o3",  # Use Azure OpenAI o3 for enhanced synthesis
         )
 
     def _generate_strategic_recommendations(

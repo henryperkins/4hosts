@@ -42,18 +42,18 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    
+
     const trimmedQuery = query.trim()
     if (!trimmedQuery) {
       setError('Please enter a research query')
       return
     }
-    
+
     if (trimmedQuery.length < 3) {
       setError('Query must be at least 3 characters long')
       return
     }
-    
+
     onSubmit(trimmedQuery, { ...options, depth })
   }
 
