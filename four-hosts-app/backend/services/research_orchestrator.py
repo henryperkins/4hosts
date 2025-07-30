@@ -14,6 +14,13 @@ from .search_apis import SearchResult, SearchConfig, create_search_manager
 from .paradigm_search import get_search_strategy, SearchContext
 from .credibility import get_source_credibility
 from .cache import cache_manager, get_cached_search_results, cache_search_results
+from .deep_research_service import (
+    deep_research_service,
+    DeepResearchConfig,
+    DeepResearchMode,
+    initialize_deep_research,
+)
+from .openai_responses_client import SearchContextSize
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -214,6 +221,7 @@ class ParadigmAwareSearchOrchestrator:
         self.search_manager = create_search_manager()
         await self.search_manager.initialize()
         await cache_manager.initialize()
+        await initialize_deep_research()
         logger.info("Research orchestrator initialized")
 
     async def cleanup(self):
@@ -494,6 +502,197 @@ class ParadigmAwareSearchOrchestrator:
         logger.info(f"Final results: {len(final_results)} sources")
 
         return result
+
+    async def execute_deep_research(
+        self,
+        context_engineered_query,
+        *,
+        enable_standard_search: bool = True,
+        deep_research_mode: DeepResearchMode = DeepResearchMode.PARADIGM_FOCUSED,
+        search_context_size: Optional[str] = None,
+        user_location: Optional[Dict[str, str]] = None,
+        progress_tracker=None,
+        research_id: str = None,
+    ) -> ResearchExecutionResult:
+        """
+        Execute research using both standard search and deep research capabilities.
+        
+        Args:
+            context_engineered_query: Output from Context Engineering Pipeline
+            enable_standard_search: Whether to also run standard search
+            deep_research_mode: Mode for deep research execution
+            progress_tracker: Progress tracking
+            research_id: Research ID for tracking
+            
+        Returns:
+            Combined research execution result
+        """
+        start_time = datetime.now()
+        
+        # Run standard search if enabled
+        if enable_standard_search:
+            # Update progress
+            if progress_tracker and research_id:
+                await progress_tracker.update_progress(
+                    research_id, "Starting standard search phase", 20
+                )
+            
+            standard_result = await self.execute_paradigm_research(
+                context_engineered_query, 
+                max_results=50,  # Limit for standard search when combined with deep
+                progress_tracker=progress_tracker,
+                research_id=research_id
+            )
+        else:
+            standard_result = None
+        
+        # Update progress for deep research
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id, "Starting deep research analysis", 60
+            )
+        
+        # Configure deep research
+        deep_config = DeepResearchConfig(
+            mode=deep_research_mode,
+            enable_web_search=True,
+            enable_code_interpreter=False,
+            background=True,
+            include_paradigm_context=True,
+        )
+        
+        # Apply search configuration if provided
+        if search_context_size:
+            try:
+                deep_config.search_context_size = SearchContextSize(search_context_size.lower())
+            except ValueError:
+                logger.warning(f"Invalid search_context_size: {search_context_size}, using default")
+        
+        if user_location:
+            deep_config.user_location = user_location
+        
+        # Execute deep research
+        deep_result = await deep_research_service.execute_deep_research(
+            query=context_engineered_query.original_query,
+            classification=context_engineered_query.classification,
+            context_engineering=context_engineered_query,
+            config=deep_config,
+            progress_tracker=progress_tracker,
+            research_id=research_id,
+        )
+        
+        # Combine results if both were run
+        if standard_result and deep_result.content:
+            # Convert deep research content into search results format
+            deep_search_results = []
+            
+            # Extract citations from deep research
+            for citation in deep_result.citations:
+                deep_search_results.append(
+                    SearchResult(
+                        title=citation.title,
+                        url=citation.url,
+                        snippet=deep_result.content[citation.start_index:citation.end_index][:200],
+                        domain=citation.url.split('/')[2] if '/' in citation.url else citation.url,
+                        result_type="deep_research",
+                        credibility_score=0.9,  # High credibility for deep research
+                        published_date=None,
+                    )
+                )
+            
+            # Merge results
+            combined_filtered = standard_result.filtered_results + deep_search_results
+            
+            # Update metrics
+            end_time = datetime.now()
+            processing_time = (end_time - start_time).total_seconds()
+            
+            combined_metrics = standard_result.execution_metrics.copy()
+            combined_metrics.update({
+                "deep_research_enabled": True,
+                "deep_research_time": deep_result.execution_time,
+                "deep_research_citations": len(deep_result.citations),
+                "total_processing_time": processing_time,
+            })
+            
+            # Update cost breakdown
+            combined_costs = standard_result.cost_breakdown.copy()
+            if deep_result.cost_info:
+                combined_costs.update(deep_result.cost_info)
+            
+            # Create combined result
+            combined_result = ResearchExecutionResult(
+                original_query=standard_result.original_query,
+                paradigm=standard_result.paradigm,
+                secondary_paradigm=standard_result.secondary_paradigm,
+                search_queries_executed=standard_result.search_queries_executed,
+                raw_results=standard_result.raw_results,
+                filtered_results=combined_filtered,
+                secondary_results=standard_result.secondary_results,
+                credibility_scores=standard_result.credibility_scores,
+                execution_metrics=combined_metrics,
+                cost_breakdown=combined_costs,
+            )
+            
+            # Store deep research content for answer generation
+            combined_result.deep_research_content = deep_result.content
+            
+            return combined_result
+            
+        elif deep_result.content:
+            # Only deep research was run
+            deep_search_results = []
+            for citation in deep_result.citations:
+                deep_search_results.append(
+                    SearchResult(
+                        title=citation.title,
+                        url=citation.url,
+                        snippet=deep_result.content[citation.start_index:citation.end_index][:200],
+                        domain=citation.url.split('/')[2] if '/' in citation.url else citation.url,
+                        result_type="deep_research",
+                        credibility_score=0.9,
+                        published_date=None,
+                    )
+                )
+            
+            end_time = datetime.now()
+            processing_time = (end_time - start_time).total_seconds()
+            
+            result = ResearchExecutionResult(
+                original_query=context_engineered_query.original_query,
+                paradigm=context_engineered_query.classification.primary_paradigm.value,
+                secondary_paradigm=None,
+                search_queries_executed=[],
+                raw_results={},
+                filtered_results=deep_search_results,
+                secondary_results=[],
+                credibility_scores={},
+                execution_metrics={
+                    "processing_time_seconds": processing_time,
+                    "deep_research_enabled": True,
+                    "deep_research_only": True,
+                    "deep_research_citations": len(deep_result.citations),
+                },
+                cost_breakdown=deep_result.cost_info or {},
+            )
+            
+            result.deep_research_content = deep_result.content
+            return result
+            
+        else:
+            # Fallback to standard result if deep research failed
+            return standard_result or ResearchExecutionResult(
+                original_query=context_engineered_query.original_query,
+                paradigm="unknown",
+                secondary_paradigm=None,
+                search_queries_executed=[],
+                raw_results={},
+                filtered_results=[],
+                secondary_results=[],
+                credibility_scores={},
+                execution_metrics={"error": "Both standard and deep research failed"},
+                cost_breakdown={},
+            )
 
     async def get_execution_stats(self) -> Dict[str, Any]:
         """Get execution statistics"""

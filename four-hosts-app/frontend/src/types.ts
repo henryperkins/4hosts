@@ -1,7 +1,7 @@
 export type Paradigm = 'dolores' | 'teddy' | 'bernard' | 'maeve'
 
 export interface ResearchOptions {
-  depth: 'quick' | 'standard' | 'deep'
+  depth: 'quick' | 'standard' | 'deep' | 'deep_research'
   include_secondary?: boolean
   max_sources?: number
   enable_real_search?: boolean
@@ -53,6 +53,8 @@ export interface ResearchResult {
     answer_generation_time?: number
     synthesis_quality?: number
     paradigms_used: Paradigm[]
+    deep_research_enabled?: boolean
+    research_depth?: string
   },
   cost_info?: {
     search_api_costs?: number
@@ -123,7 +125,7 @@ export interface User {
 
 export interface UserPreferences {
   default_paradigm?: Paradigm
-  default_depth?: 'quick' | 'standard' | 'deep'
+  default_depth?: 'quick' | 'standard' | 'deep' | 'deep_research'
   enable_real_search?: boolean
   enable_ai_classification?: boolean
   theme?: 'light' | 'dark'

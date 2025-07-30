@@ -201,7 +201,20 @@ const ResearchPage = () => {
 
     try {
       // Submit research query
-      const data = await api.submitResearch(query, options)
+      let data
+      if (options.depth === 'deep_research') {
+        // Use deep research endpoint for o3-deep-research model
+        // TODO: Add UI for search context size and user location configuration
+        data = await api.submitDeepResearch(
+          query, 
+          options.paradigm_override || undefined,
+          'medium', // Default search context size
+          undefined // User location - could detect from browser
+        )
+      } else {
+        // Use standard research endpoint
+        data = await api.submitResearch(query, options)
+      }
       setParadigmClassification(data.paradigm_classification)
       setCurrentResearchId(data.research_id)
 

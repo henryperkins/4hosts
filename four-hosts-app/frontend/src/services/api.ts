@@ -23,7 +23,7 @@ export interface User {
 }
 
 export interface ResearchOptions {
-  depth?: 'quick' | 'standard' | 'deep'
+  depth?: 'quick' | 'standard' | 'deep' | 'deep_research'
   paradigm_override?: string | null
   include_secondary?: boolean
   max_sources?: number
@@ -340,6 +340,45 @@ class APIService {
     }
 
     return response.blob()
+  }
+
+  // Deep Research endpoints
+  async submitDeepResearch(
+    query: string, 
+    paradigm?: string,
+    searchContextSize?: string,
+    userLocation?: { country?: string; city?: string; region?: string; timezone?: string }
+  ): Promise<ResearchSubmission> {
+    const response = await this.fetchWithAuth('/research/deep', {
+      method: 'POST',
+      body: JSON.stringify({ 
+        query, 
+        paradigm,
+        search_context_size: searchContextSize,
+        user_location: userLocation
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || 'Failed to submit deep research')
+    }
+
+    const data = await response.json()
+    if (!data.created_at) {
+      data.created_at = new Date().toISOString()
+    }
+    return data
+  }
+
+  async getDeepResearchStatus(): Promise<{ total: number; deep_research_queries: any[] }> {
+    const response = await this.fetchWithAuth('/research/deep/status')
+
+    if (!response.ok) {
+      throw new Error('Failed to get deep research status')
+    }
+
+    return response.json()
   }
 
   // Source credibility

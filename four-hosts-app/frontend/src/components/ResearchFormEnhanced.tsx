@@ -16,7 +16,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [error, setError] = useState('')
   const [paradigm, setParadigm] = useState('auto')
-  const [depth, setDepth] = useState<'quick' | 'standard' | 'deep'>(user?.preferences?.default_depth ?? 'standard')
+  const [depth, setDepth] = useState<'quick' | 'standard' | 'deep' | 'deep_research'>(user?.preferences?.default_depth ?? 'standard')
 
   const [options, setOptions] = useState<ResearchOptions>({
     depth: user?.preferences?.default_depth || 'standard',
@@ -146,21 +146,29 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
               { value: 'quick', label: 'Quick', description: 'Fast overview' },
               { value: 'standard', label: 'Standard', description: 'Balanced analysis' },
               { value: 'deep', label: 'Deep', description: 'Comprehensive research' },
+              { value: 'deep_research', label: 'Deep AI', description: 'o3 model analysis', badge: 'PRO' },
             ].map((option) => (
               <button
                 key={option.value}
                 type="button"
-                onClick={() => setDepth(option.value as 'quick' | 'standard' | 'deep')}
-                disabled={isLoading}
+                onClick={() => setDepth(option.value as 'quick' | 'standard' | 'deep' | 'deep_research')}
+                disabled={isLoading || (option.value === 'deep_research' && user?.role === 'free')}
                 className={`flex-1 p-3 rounded-lg border transition-colors
                   ${depth === option.value
                     ? 'border-primary bg-primary/10 shadow-md'
                     : 'border-border hover:border-text-subtle bg-surface'
                   }
-                  ${isLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-lg'}`}
+                  ${isLoading || (option.value === 'deep_research' && user?.role === 'free') ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-lg'}`}
               >
-                <div className="font-medium text-text">{option.label}</div>
-                <div className="text-xs text-text-muted mt-1">{option.description}</div>
+                <div className="relative">
+                  <div className="font-medium text-text">{option.label}</div>
+                  <div className="text-xs text-text-muted mt-1">{option.description}</div>
+                  {option.badge && (
+                    <span className="absolute -top-2 -right-2 px-1.5 py-0.5 text-xs font-bold bg-gradient-to-r from-orange-500 to-yellow-500 text-white rounded">
+                      {option.badge}
+                    </span>
+                  )}
+                </div>
               </button>
             ))}
           </div>

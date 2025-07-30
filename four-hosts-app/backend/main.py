@@ -267,6 +267,7 @@ class ResearchDepth(str, Enum):
     QUICK = "quick"
     STANDARD = "standard"
     DEEP = "deep"
+    DEEP_RESEARCH = "deep_research"  # Uses o3-deep-research model
 
 
 class ResearchOptions(BaseModel):
@@ -518,6 +519,7 @@ async def root():
             "authentication": True,
             "real_research": True,
             "ai_synthesis": True,
+            "deep_research": True,  # o3-deep-research model support
             "monitoring": True,
             "webhooks": True,
             "websockets": True,
@@ -845,7 +847,7 @@ async def submit_research(
         raise HTTPException(status_code=503, detail="System not initialized")
 
     # Check role requirements for research depth
-    if research.options.depth == ResearchDepth.DEEP:
+    if research.options.depth in [ResearchDepth.DEEP, ResearchDepth.DEEP_RESEARCH]:
         # Deep research requires at least PRO role
         if not hasattr(current_user, "role") or current_user.role not in [
             "pro",
@@ -1227,6 +1229,177 @@ async def get_research_history(
         raise HTTPException(status_code=500, detail="Failed to fetch research history")
 
 
+# Deep Research Endpoints
+@app.post("/research/deep", tags=["research"])
+async def submit_deep_research(
+    query: str,
+    paradigm: Optional[Paradigm] = None,
+    search_context_size: Optional[str] = "medium",
+    user_location: Optional[Dict[str, str]] = None,
+    background_tasks: BackgroundTasks = None,
+    current_user: User = Depends(require_role(AuthUserRole.PRO)),
+):
+    """
+    Submit a query for deep research using o3-deep-research model.
+    Requires PRO subscription or higher.
+    """
+    if not system_initialized:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    research_id = f"deep_{uuid.uuid4().hex[:12]}"
+    
+    # Track active research
+    active_research.inc()
+    
+    try:
+        # Create research query with deep research option
+        research = ResearchQuery(
+            query=query,
+            options=ResearchOptions(
+                depth=ResearchDepth.DEEP_RESEARCH,
+                paradigm_override=paradigm,
+                max_sources=100,  # Deep research can handle more sources
+                enable_real_search=True,
+            )
+        )
+        
+        # Store and execute
+        research_data = {
+            "id": research_id,
+            "user_id": str(current_user.id),
+            "query": query,
+            "options": research.options.dict(),
+            "status": ResearchStatus.PROCESSING,
+            "deep_research": True,
+            "search_context_size": search_context_size,
+            "user_location": user_location,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        await research_store.set(research_id, research_data)
+        
+        # Execute in background
+        background_tasks.add_task(
+            execute_real_research, research_id, research, str(current_user.id)
+        )
+        
+        # Track in WebSocket
+        await progress_tracker.start_research(
+            research_id,
+            str(current_user.id),
+            query,
+            paradigm.value if paradigm else "auto",
+            "deep_research",
+        )
+        
+        return {
+            "research_id": research_id,
+            "status": ResearchStatus.PROCESSING,
+            "deep_research": True,
+            "estimated_completion": (
+                datetime.utcnow() + timedelta(minutes=10)  # Deep research takes longer
+            ).isoformat(),
+            "websocket_url": f"/ws/research/{research_id}",
+        }
+        
+    except Exception as e:
+        active_research.dec()
+        logger.error(f"Deep research submission error: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Deep research submission failed: {str(e)}"
+        )
+
+
+@app.post("/research/deep/{research_id}/resume", tags=["research"])
+async def resume_deep_research(
+    research_id: str,
+    background_tasks: BackgroundTasks = None,
+    current_user: User = Depends(require_role(AuthUserRole.PRO)),
+):
+    """Resume an interrupted deep research task"""
+    if not system_initialized:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    try:
+        # Verify research belongs to user
+        research_data = await research_store.get(research_id)
+        if not research_data:
+            raise HTTPException(status_code=404, detail="Research not found")
+        
+        if research_data.get("user_id") != str(current_user.id):
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Check if it's a deep research task
+        if not research_data.get("deep_research"):
+            raise HTTPException(status_code=400, detail="Not a deep research task")
+        
+        # Check if there's a response ID to resume
+        if not research_data.get("deep_research_response_id"):
+            raise HTTPException(status_code=400, detail="No deep research response to resume")
+        
+        # Update status
+        await research_store.update_field(research_id, "status", ResearchStatus.IN_PROGRESS)
+        
+        # Resume in background
+        background_tasks.add_task(
+            resume_deep_research_task, research_id, str(current_user.id)
+        )
+        
+        return {
+            "research_id": research_id,
+            "status": ResearchStatus.IN_PROGRESS,
+            "message": "Deep research resumed",
+            "websocket_url": f"/ws/research/{research_id}",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Deep research resume error: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to resume deep research: {str(e)}"
+        )
+
+
+@app.get("/research/deep/status", tags=["research"])
+async def get_deep_research_status(
+    current_user: User = Depends(require_role(AuthUserRole.PRO)),
+):
+    """Get status of all deep research queries for the current user"""
+    try:
+        # Get all user research
+        user_research = await research_store.get_user_research(str(current_user.id), 50)
+        
+        # Filter for deep research only
+        deep_research_list = [
+            r for r in user_research 
+            if r.get("deep_research") or r.get("options", {}).get("depth") == "deep_research"
+        ]
+        
+        # Sort by creation date
+        deep_research_list.sort(key=lambda x: x["created_at"], reverse=True)
+        
+        # Format response
+        formatted = []
+        for research in deep_research_list[:20]:  # Limit to 20 most recent
+            formatted.append({
+                "research_id": research["id"],
+                "query": research["query"],
+                "status": research["status"],
+                "created_at": research["created_at"],
+                "paradigm": research.get("paradigm_classification", {}).get("primary"),
+                "has_results": research.get("results") is not None,
+            })
+        
+        return {
+            "total": len(deep_research_list),
+            "deep_research_queries": formatted,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching deep research status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch deep research status")
+
+
 # Source Credibility Endpoint
 @app.get("/sources/credibility/{domain}", tags=["sources"])
 async def get_domain_credibility(
@@ -1253,6 +1426,43 @@ async def get_domain_credibility(
         raise HTTPException(
             status_code=500, detail=f"Credibility check failed: {str(e)}"
         )
+
+
+# Test Deep Research (Development Only)
+@app.get("/test/deep-research", tags=["test"])
+async def test_deep_research(current_user: User = Depends(require_role(AuthUserRole.ADMIN))):
+    """Test deep research functionality (Admin only)"""
+    try:
+        from services.deep_research_service import deep_research_service
+        
+        # Simple test query
+        test_query = "What are the latest advancements in quantum computing?"
+        
+        # Test initialization
+        await deep_research_service.initialize()
+        
+        # Create a simple test without full context
+        result = await deep_research_service.analytical_deep_dive(
+            query=test_query,
+            research_id="test_deep_research"
+        )
+        
+        return {
+            "status": "success",
+            "test_query": test_query,
+            "deep_research_status": result.status.value,
+            "has_content": result.content is not None,
+            "citation_count": len(result.citations) if result.citations else 0,
+            "execution_time": result.execution_time,
+            "error": result.error,
+        }
+    except Exception as e:
+        logger.error(f"Deep research test failed: {str(e)}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Deep research test failed. Check logs for details."
+        }
 
 
 # System Stats
@@ -1352,6 +1562,55 @@ def get_paradigm_approach_suggestion(paradigm: Paradigm) -> str:
     return suggestions[paradigm]
 
 
+# Background task for resuming deep research
+async def resume_deep_research_task(research_id: str, user_id: str):
+    """Resume an interrupted deep research task"""
+    try:
+        # Update progress
+        await progress_tracker.update_progress(
+            research_id, "Resuming deep research", 10
+        )
+        
+        # Import deep research service locally
+        from services.deep_research_service import deep_research_service
+        
+        # Initialize if needed
+        if not deep_research_service._initialized:
+            await deep_research_service.initialize()
+        
+        # Resume the research
+        result = await deep_research_service.resume_deep_research(
+            research_id, progress_tracker
+        )
+        
+        # Store the result
+        research_data = await research_store.get(research_id)
+        if research_data:
+            research_data["result"] = result.dict() if hasattr(result, 'dict') else result
+            research_data["status"] = ResearchStatus.COMPLETED
+            research_data["completed_at"] = datetime.utcnow().isoformat()
+            await research_store.set(research_id, research_data)
+        
+        # Update final progress
+        await progress_tracker.update_progress(
+            research_id, "Research completed", 100
+        )
+        
+    except Exception as e:
+        logger.error(f"Resume deep research failed: {str(e)}")
+        
+        # Update status to failed
+        await research_store.update_field(research_id, "status", ResearchStatus.FAILED)
+        await research_store.update_field(research_id, "error", str(e))
+        
+        # Update progress
+        await progress_tracker.update_progress(
+            research_id, f"Resume failed: {str(e)}", -1
+        )
+    finally:
+        active_research.dec()
+
+
 # Background task for real research execution
 async def execute_real_research(
     research_id: str, research: ResearchQuery, user_id: str
@@ -1418,10 +1677,40 @@ async def execute_real_research(
         if await check_cancellation():
             return
 
-        # Execute research with context-engineered query
-        execution_result = await research_orchestrator.execute_paradigm_research(
-            context_engineered_query, research.options.max_sources, progress_tracker, research_id
-        )
+        # Execute research based on depth option
+        if research.options.depth == ResearchDepth.DEEP_RESEARCH:
+            # Use deep research with o3-deep-research model
+            from services.deep_research_service import DeepResearchMode
+            
+            # Map paradigms to deep research modes
+            deep_mode_mapping = {
+                "dolores": DeepResearchMode.PARADIGM_FOCUSED,
+                "teddy": DeepResearchMode.PARADIGM_FOCUSED,
+                "bernard": DeepResearchMode.ANALYTICAL,
+                "maeve": DeepResearchMode.STRATEGIC,
+            }
+            
+            paradigm_name = context_engineered_query.classification.primary_paradigm.value
+            deep_mode = deep_mode_mapping.get(paradigm_name, DeepResearchMode.COMPREHENSIVE)
+            
+            # Get web search settings from research data
+            search_context_size = research_data.get("search_context_size")
+            user_location = research_data.get("user_location")
+            
+            execution_result = await research_orchestrator.execute_deep_research(
+                context_engineered_query,
+                enable_standard_search=True,  # Combine with standard search
+                deep_research_mode=deep_mode,
+                search_context_size=search_context_size,
+                user_location=user_location,
+                progress_tracker=progress_tracker,
+                research_id=research_id,
+            )
+        else:
+            # Use standard paradigm research
+            execution_result = await research_orchestrator.execute_paradigm_research(
+                context_engineered_query, research.options.max_sources, progress_tracker, research_id
+            )
 
         # Update progress
         await progress_tracker.update_progress(
@@ -1510,6 +1799,9 @@ async def execute_real_research(
             "bernard",  # Default to bernard if not found
         )
 
+        # Check if we have deep research content
+        deep_research_content = getattr(execution_result, "deep_research_content", None)
+        
         generated_answer = await answer_orchestrator.generate_answer(
             paradigm=paradigm_name,
             query=research.query,
@@ -1519,6 +1811,7 @@ async def execute_real_research(
                 "research_id": research_id,
                 "max_length": 2000,
                 "include_citations": True,
+                "deep_research_content": deep_research_content,  # Pass deep research content if available
             },
         )
 
@@ -1590,6 +1883,8 @@ async def execute_real_research(
                 "paradigms_used": [
                     context_engineered_query.classification.primary_paradigm.value
                 ],
+                "deep_research_enabled": execution_result.execution_metrics.get("deep_research_enabled", False),
+                "research_depth": research.options.depth.value,
             },
             cost_info=execution_result.cost_breakdown,
         )

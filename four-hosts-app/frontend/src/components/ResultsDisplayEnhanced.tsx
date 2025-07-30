@@ -251,6 +251,22 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
         </div>
 
+        {/* Deep Research Indicator */}
+        {results.metadata.deep_research_enabled && (
+          <div className="mt-4 p-4 bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 rounded-lg border border-purple-200 dark:border-purple-800 transition-colors duration-200">
+            <div className="flex items-center gap-2">
+              <Zap className="h-5 w-5 text-purple-600 dark:text-purple-400" />
+              <h4 className="text-sm font-semibold text-purple-900 dark:text-purple-100">Deep Research Mode</h4>
+              <span className="ml-auto text-xs font-bold bg-gradient-to-r from-orange-500 to-yellow-500 text-white px-2 py-1 rounded">
+                o3-deep-research
+              </span>
+            </div>
+            <p className="text-sm text-purple-700 dark:text-purple-300 mt-2">
+              This research utilized OpenAI's advanced o3-deep-research model for comprehensive multi-source analysis
+            </p>
+          </div>
+        )}
+
         {/* Context Engineering Info */}
         {results.paradigm_analysis.context_engineering && (
           <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors duration-200">
