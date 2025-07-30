@@ -23,8 +23,29 @@ export const MetricsDashboard: React.FC = () => {
       const data = await api.getSystemStats()
       setStats(data)
       setError(null)
-    } catch {
-      setError('Failed to load system metrics')
+    } catch (error: unknown) {
+      const err = error as Error & { status?: number }
+      if (err.status === 403) {
+        // Try to load public stats if regular stats are forbidden
+        try {
+          const publicData = await api.getPublicSystemStats()
+          const fallbackStats: SystemStats = {
+            total_queries: 0,
+            active_research: 0,
+            paradigm_distribution: {},
+            average_processing_time: 0,
+            cache_hit_rate: 0,
+            system_health: 'healthy'
+          }
+          Object.assign(fallbackStats, publicData)
+          setStats(fallbackStats)
+          setError(null)
+        } catch {
+          setError('Access denied. Please upgrade to view detailed system metrics.')
+        }
+      } else {
+        setError('Failed to load system metrics')
+      }
     } finally {
       setIsLoading(false)
     }

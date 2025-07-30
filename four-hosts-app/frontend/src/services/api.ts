@@ -344,15 +344,15 @@ class APIService {
 
   // Deep Research endpoints
   async submitDeepResearch(
-    query: string, 
+    query: string,
     paradigm?: string,
     searchContextSize?: string,
     userLocation?: { country?: string; city?: string; region?: string; timezone?: string }
   ): Promise<ResearchSubmission> {
     const response = await this.fetchWithAuth('/research/deep', {
       method: 'POST',
-      body: JSON.stringify({ 
-        query, 
+      body: JSON.stringify({
+        query,
         paradigm,
         search_context_size: searchContextSize,
         user_location: userLocation
@@ -397,7 +397,28 @@ class APIService {
     const response = await this.fetchWithAuth('/system/stats')
 
     if (!response.ok) {
-      throw new Error('Failed to get system stats')
+      const error = await response.json()
+      const errorObject = new Error(error.detail || 'Failed to get system stats')
+
+      // Add status code to error object for more granular error handling
+      Object.defineProperty(errorObject, 'status', {
+        value: response.status,
+        writable: true,
+        enumerable: true,
+        configurable: true
+      })
+
+      throw errorObject
+    }
+
+    return response.json()
+  }
+
+  async getPublicSystemStats(): Promise<SystemStats> {
+    const response = await this.fetchWithAuth('/system/public-stats')
+
+    if (!response.ok) {
+      throw new Error('Failed to get public system stats')
     }
 
     return response.json()
@@ -451,13 +472,13 @@ class APIService {
         const message: WebSocketMessage = JSON.parse(event.data)
         // Extract research_id from data if not at top level
         const researchIdToUse = message.research_id || (message.data as any)?.research_id || researchId
-        
+
         // Ensure research_id is present for handler routing
         const messageWithId = {
           ...message,
           research_id: researchIdToUse
         }
-        
+
         const handler = this.wsHandlers.get(researchIdToUse)
         if (handler) {
           handler(messageWithId)
