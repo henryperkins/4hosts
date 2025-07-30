@@ -1,0 +1,249 @@
+/* Tailwind CSS v4 Theme Configuration */
+@theme {
+  /* Design System Colors */
+  --color-paradigm-dolores: oklch(0.629 0.237 24.8);
+  --color-paradigm-teddy: oklch(0.7 0.193 42.7);
+  --color-paradigm-bernard: oklch(0.598 0.216 252.1);
+  --color-paradigm-maeve: oklch(0.671 0.186 157.6);
+
+  /* Semantic Colors */
+  --color-surface: oklch(1 0 0);
+  --color-surface-subtle: oklch(0.98 0.005 240);
+  --color-surface-muted: oklch(0.95 0.01 240);
+  --color-border: oklch(0.9 0.01 240);
+  --color-border-subtle: oklch(0.95 0.005 240);
+  --color-text: oklch(0.15 0.02 240);
+  --color-text-muted: oklch(0.5 0.015 240);
+
+  /* Spacing Scale */
+  --spacing-3xs: 0.125rem;
+  --spacing-2xs: 0.25rem;
+  --spacing-xs: 0.5rem;
+  --spacing-sm: 0.75rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+  --spacing-2xl: 3rem;
+  --spacing-3xl: 4rem;
+
+  /* Border Radius Scale */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+  --radius-full: 9999px;
+
+  /* Animations */
+  --animate-spin-slow: spin 2s linear infinite;
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-in: fade-in 0.4s ease-out;
+  --animate-slide-up: slide-up 0.3s ease-out;
+  --animate-scale-in: scale-in 0.3s ease-out;
+  --animate-shake: error-shake 0.5s ease-in-out;
+
+  /* Elevation System */
+  --shadow-xs: 0 1px 3px oklch(0 0 0 / 0.08);
+  --shadow-sm: 0 2px 8px oklch(0 0 0 / 0.08);
+  --shadow-md: 0 4px 16px oklch(0 0 0 / 0.12);
+  --shadow-lg: 0 8px 32px oklch(0 0 0 / 0.16);
+  --shadow-xl: 0 12px 48px oklch(0 0 0 / 0.18);
+  --shadow-2xl: 0 16px 64px oklch(0 0 0 / 0.24);
+
+  /* Transition Timing Functions */
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-bounce: cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+/* Dark mode color overrides */
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --color-surface: oklch(0.15 0.02 240);
+  --color-surface-subtle: oklch(0.18 0.015 240);
+  --color-surface-muted: oklch(0.22 0.01 240);
+  --color-border: oklch(0.3 0.01 240);
+  --color-border-subtle: oklch(0.25 0.005 240);
+  --color-text: oklch(0.95 0.01 240);
+  --color-text-muted: oklch(0.7 0.01 240);
+}
+
+/* Import Tailwind CSS v4 */
+@import "tailwindcss";
+
+/* Import animations */
+@import "./styles/animations.css";
+
+/* Import theme transitions */
+@import "./styles/theme-transitions.css";
+
+/* Import component styles */
+@import "./styles/components.css";
+
+/* Utility Classes - properly layered */
+@layer utilities {
+  /* Hover Effects */
+  .hover-lift {
+    transition: transform 200ms var(--ease-smooth), box-shadow 200ms var(--ease-smooth);
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-0.25rem);
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  }
+
+  /* Focus Effects */
+  .focus-ring-animated:focus {
+    @apply outline-none;
+    animation: pulse-border 1.5s ease-in-out;
+  }
+
+  /* Text Shadows */
+  .text-shadow-subtle {
+    text-shadow: 0 1px 2px rgb(0 0 0 / 0.1);
+  }
+
+  .text-shadow-strong {
+    text-shadow: 0 2px 4px rgb(0 0 0 / 0.2);
+  }
+
+  /* Glass Morphism */
+  .glass {
+    background: rgb(255 255 255 / 0.1);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgb(255 255 255 / 0.2);
+  }
+
+  .dark .glass {
+    background: rgb(0 0 0 / 0.2);
+    border: 1px solid rgb(255 255 255 / 0.1);
+  }
+
+  /* Gradient Animation */
+  .gradient-shift {
+    background-size: 200% 200%;
+    animation: gradient-shift 3s ease infinite;
+  }
+
+  /* Animation Delays */
+  .delay-100 { animation-delay: 100ms; }
+  .delay-200 { animation-delay: 200ms; }
+  .delay-300 { animation-delay: 300ms; }
+  .delay-400 { animation-delay: 400ms; }
+  .delay-500 { animation-delay: 500ms; }
+
+  /* Stagger Delays for lists */
+  .stagger-delay-0 { animation-delay: 0ms; }
+  .stagger-delay-50 { animation-delay: 50ms; }
+  .stagger-delay-100 { animation-delay: 100ms; }
+  .stagger-delay-150 { animation-delay: 150ms; }
+  .stagger-delay-200 { animation-delay: 200ms; }
+  .stagger-delay-250 { animation-delay: 250ms; }
+  .stagger-delay-300 { animation-delay: 300ms; }
+
+  /* Brand Gradients */
+  .gradient-brand {
+    background: linear-gradient(to right,
+      oklch(0.629 0.237 24.8),  /* Dolores */
+      oklch(0.598 0.216 252.1), /* Bernard */
+      oklch(0.671 0.186 157.6)  /* Maeve */
+    );
+  }
+
+  .gradient-accent {
+    background: linear-gradient(to right,
+      oklch(0.65 0.24 328),     /* Purple */
+      oklch(0.65 0.24 0)        /* Pink */
+    );
+  }
+}
+
+/* Base Styles */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Focus visible only for keyboard navigation */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+/* Custom Scrollbar Styles */
+@layer components {
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-subtle;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+    @apply hover:bg-border-subtle;
+  }
+
+  /* Thin scrollbar variant */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-track-transparent::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+}
+
+/* Responsive touch targets */
+@media (pointer: coarse) {
+  .btn,
+  .input-field {
+    @apply min-h-[44px];
+  }
+
+  .btn {
+    @apply min-w-[44px];
+  }
+}
+
+/* Gradient shift animation */
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+/* Custom Utilities for Micro-interactions */
+@utility feedback-pulse {
+  animation: pulse-border 1.5s ease-in-out;
+}
+
+@utility feedback-shake {
+  animation: error-shake 0.5s ease-in-out;
+}
+
+@utility feedback-success {
+  animation: success-check 0.6s ease-out forwards;
+}
+
+@utility transition-smooth {
+  transition: all 0.3s var(--ease-smooth);
+}
+
+@utility transition-bounce {
+  transition: all 0.5s var(--ease-bounce);
+}

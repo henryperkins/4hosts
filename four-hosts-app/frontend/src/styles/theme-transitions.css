@@ -1,0 +1,206 @@
+/* Smooth theme transitions */
+.theme-transition * {
+    transition: background-color 300ms ease-in-out,
+        border-color 300ms ease-in-out,
+        color 300ms ease-in-out !important;
+}
+
+/* Paradigm-specific animations */
+@keyframes paradigm-pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.8;
+        transform: scale(1.05);
+    }
+}
+
+.paradigm-dolores {
+    animation: paradigm-pulse 3s ease-in-out infinite;
+    animation-delay: 0s;
+}
+
+.paradigm-teddy {
+    animation: paradigm-pulse 3s ease-in-out infinite;
+    animation-delay: 0.75s;
+}
+
+.paradigm-bernard {
+    animation: paradigm-pulse 3s ease-in-out infinite;
+    animation-delay: 1.5s;
+}
+
+.paradigm-maeve {
+    animation: paradigm-pulse 3s ease-in-out infinite;
+    animation-delay: 2.25s;
+}
+
+/* Enhanced micro-interactions */
+@keyframes float {
+
+    0%,
+    100% {
+        transform: translateY(0px);
+    }
+
+    50% {
+        transform: translateY(-10px);
+    }
+}
+
+.hover-float:hover {
+    animation: float 2s ease-in-out infinite;
+}
+
+/* New micro-interactions */
+@keyframes wiggle {
+
+    0%,
+    100% {
+        transform: rotate(-3deg);
+    }
+
+    50% {
+        transform: rotate(3deg);
+    }
+}
+
+.hover-wiggle:hover {
+    animation: wiggle 0.5s ease-in-out infinite;
+}
+
+@keyframes heartbeat {
+    0% {
+        transform: scale(1);
+    }
+
+    14% {
+        transform: scale(1.05);
+    }
+
+    28% {
+        transform: scale(1);
+    }
+
+    42% {
+        transform: scale(1.05);
+    }
+
+    70% {
+        transform: scale(1);
+    }
+}
+
+.hover-heartbeat:hover {
+    animation: heartbeat 1.3s ease-in-out infinite;
+}
+
+/* Enhanced button press effect */
+@keyframes button-press {
+    0% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(0.95);
+    }
+
+    100% {
+        transform: scale(1);
+    }
+}
+
+.button-press:active {
+    animation: button-press 0.2s ease-out;
+}
+
+
+
+/* Enhanced focus states */
+*:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+    transition: outline-offset 0.2s ease-out;
+}
+
+*:focus-visible:hover {
+    outline-offset: 4px;
+}
+
+/* Loading skeleton enhancements */
+@keyframes skeleton-pulse {
+    0% {
+        opacity: 0.7;
+    }
+
+    50% {
+        opacity: 1;
+    }
+
+    100% {
+        opacity: 0.7;
+    }
+}
+
+.skeleton-pulse {
+    animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+
+
+/* Glow effects for interactive elements */
+@keyframes glow {
+    0% {
+        box-shadow: 0 0 5px rgba(59, 130, 246, 0.5);
+    }
+
+    50% {
+        box-shadow: 0 0 20px rgba(59, 130, 246, 0.8),
+            0 0 30px rgba(59, 130, 246, 0.6);
+    }
+
+    100% {
+        box-shadow: 0 0 5px rgba(59, 130, 246, 0.5);
+    }
+}
+
+.hover-glow:hover {
+    animation: glow 2s ease-in-out infinite;
+}
+
+/* Success animation */
+@keyframes success-bounce {
+    0% {
+        transform: scale(0);
+        opacity: 0;
+    }
+
+    50% {
+        transform: scale(1.2);
+    }
+
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+.animate-success {
+    animation: success-bounce 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+
+
+/* Smooth number transitions */
+.number-transition {
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.number-transition:hover {
+    transform: scale(1.1);
+}

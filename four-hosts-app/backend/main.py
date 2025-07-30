@@ -59,6 +59,7 @@ from services.context_engineering import context_pipeline
 
 # Import production services
 from services.auth_service import AuthService
+from fastapi.exceptions import RequestValidationError
 from services.rate_limiter import RateLimiter, RateLimitMiddleware
 from services.monitoring import (
     PrometheusMetrics,
@@ -1144,9 +1145,16 @@ async def cancel_research(
 async def export_research(
     research_id: str,
     format: str = "pdf",
-    current_user: User = Depends(require_role(AuthUserRole.BASIC)),
+    current_user: User = Depends(get_current_user),
 ):
     """Export research results (requires BASIC subscription or higher)"""
+    # Check if user has BASIC role or higher
+    if current_user.role not in [UserRole.BASIC, UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403, 
+            detail="Export requires BASIC subscription or higher"
+        )
+    
     research = await research_store.get(research_id)
     if not research:
         raise HTTPException(status_code=404, detail="Research not found")
@@ -1229,22 +1237,41 @@ async def get_research_history(
         raise HTTPException(status_code=500, detail="Failed to fetch research history")
 
 
+class ResearchDeepQuery(BaseModel):
+    query: str = Field(..., min_length=10, max_length=500)
+    paradigm: Optional[Paradigm] = None
+    search_context_size: Optional[str] = Field(default="medium", pattern="^(small|medium|large)$")
+    user_location: Optional[Dict[str, str]] = None
+
+
 # Deep Research Endpoints
 @app.post("/research/deep", tags=["research"])
 async def submit_deep_research(
-    query: str,
-    paradigm: Optional[Paradigm] = None,
-    search_context_size: Optional[str] = "medium",
-    user_location: Optional[Dict[str, str]] = None,
+    research_query: ResearchDeepQuery,
     background_tasks: BackgroundTasks = None,
-    current_user: User = Depends(require_role(AuthUserRole.PRO)),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Submit a query for deep research using o3-deep-research model.
     Requires PRO subscription or higher.
+    
+    Expected request body:
+    {
+        "query": "your research query (10-500 chars)",
+        "paradigm": "dolores|teddy|bernard|maeve" (optional),
+        "search_context_size": "small|medium|large" (optional, default: "medium"),
+        "user_location": {"country": "US", "city": "NYC"} (optional)
+    }
     """
     if not system_initialized:
         raise HTTPException(status_code=503, detail="System not initialized")
+    
+    # Check if user has PRO role or higher
+    if current_user.role not in [UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403, 
+            detail="Deep research requires PRO subscription or higher"
+        )
     
     research_id = f"deep_{uuid.uuid4().hex[:12]}"
     
@@ -1254,10 +1281,10 @@ async def submit_deep_research(
     try:
         # Create research query with deep research option
         research = ResearchQuery(
-            query=query,
+            query=research_query.query,  # Access query from the Pydantic model
             options=ResearchOptions(
                 depth=ResearchDepth.DEEP_RESEARCH,
-                paradigm_override=paradigm,
+                paradigm_override=research_query.paradigm,
                 max_sources=100,  # Deep research can handle more sources
                 enable_real_search=True,
             )
@@ -1267,12 +1294,12 @@ async def submit_deep_research(
         research_data = {
             "id": research_id,
             "user_id": str(current_user.id),
-            "query": query,
+            "query": research_query.query, # Access query from the Pydantic model
             "options": research.options.dict(),
             "status": ResearchStatus.PROCESSING,
             "deep_research": True,
-            "search_context_size": search_context_size,
-            "user_location": user_location,
+            "search_context_size": research_query.search_context_size,
+            "user_location": research_query.user_location,
             "created_at": datetime.utcnow().isoformat(),
         }
         await research_store.set(research_id, research_data)
@@ -1286,8 +1313,8 @@ async def submit_deep_research(
         await progress_tracker.start_research(
             research_id,
             str(current_user.id),
-            query,
-            paradigm.value if paradigm else "auto",
+            research_query.query, # Access query from the Pydantic model
+            research_query.paradigm.value if research_query.paradigm else "auto",
             "deep_research",
         )
         
@@ -1313,11 +1340,18 @@ async def submit_deep_research(
 async def resume_deep_research(
     research_id: str,
     background_tasks: BackgroundTasks = None,
-    current_user: User = Depends(require_role(AuthUserRole.PRO)),
+    current_user: User = Depends(get_current_user),
 ):
     """Resume an interrupted deep research task"""
     if not system_initialized:
         raise HTTPException(status_code=503, detail="System not initialized")
+    
+    # Check if user has PRO role or higher
+    if current_user.role not in [UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403, 
+            detail="Deep research requires PRO subscription or higher"
+        )
     
     try:
         # Verify research belongs to user
@@ -1362,9 +1396,16 @@ async def resume_deep_research(
 
 @app.get("/research/deep/status", tags=["research"])
 async def get_deep_research_status(
-    current_user: User = Depends(require_role(AuthUserRole.PRO)),
+    current_user: User = Depends(get_current_user),
 ):
     """Get status of all deep research queries for the current user"""
+    # Check if user has PRO role or higher
+    if current_user.role not in [UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403, 
+            detail="Deep research requires PRO subscription or higher"
+        )
+    
     try:
         # Get all user research
         user_research = await research_store.get_user_research(str(current_user.id), 50)
@@ -1430,8 +1471,15 @@ async def get_domain_credibility(
 
 # Test Deep Research (Development Only)
 @app.get("/test/deep-research", tags=["test"])
-async def test_deep_research(current_user: User = Depends(require_role(AuthUserRole.ADMIN))):
+async def test_deep_research(current_user: User = Depends(get_current_user)):
     """Test deep research functionality (Admin only)"""
+    # Check if user has ADMIN role
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=403, 
+            detail="Test endpoint requires ADMIN role"
+        )
+    
     try:
         from services.deep_research_service import deep_research_service
         
@@ -1955,6 +2003,44 @@ async def execute_real_research(
 
 
 # Error Handlers
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors with detailed messages"""
+    errors = exc.errors()
+    error_messages = []
+    
+    for error in errors:
+        field = ".".join(str(x) for x in error["loc"][1:])  # Skip 'body' in location
+        msg = error["msg"]
+        error_type = error["type"]
+        
+        if field == "query" and "at least 10 characters" in msg:
+            error_messages.append(f"Query must be at least 10 characters long")
+        elif field == "query" and "at most 500 characters" in msg:
+            error_messages.append(f"Query must be at most 500 characters long")
+        elif field == "query" and error_type == "value_error.missing":
+            error_messages.append(f"Query field is required")
+        elif field == "search_context_size":
+            error_messages.append(f"search_context_size must be one of: small, medium, large")
+        else:
+            error_messages.append(f"{field}: {msg}")
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "Validation Error",
+            "detail": error_messages,
+            "expected_format": {
+                "query": "your research query (10-500 chars required)",
+                "paradigm": "dolores|teddy|bernard|maeve (optional)",
+                "search_context_size": "small|medium|large (optional, default: medium)",
+                "user_location": {"country": "US", "city": "NYC"} # optional
+            },
+            "request_id": getattr(request.state, "request_id", "unknown"),
+        },
+    )
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Handle HTTP exceptions"""

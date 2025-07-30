@@ -605,14 +605,14 @@ General requirements:
                             if tool_calls:
                                 last_call = tool_calls[-1]
                                 if last_call["type"] == "web_search_call":
-                                message = "Searching web for information"
-                            elif last_call["type"] == "code_interpreter_call":
-                                message = "Analyzing data"
-                    
-                    await progress_tracker.update_progress(
-                        research_id, message, int(progress)
-                    )
-                    last_progress = progress
+                                    message = "Searching web for information"
+                                elif last_call["type"] == "code_interpreter_call":
+                                    message = "Analyzing data"
+                        
+                        await progress_tracker.update_progress(
+                            research_id, message, int(progress)
+                        )
+                        last_progress = progress
             
             except Exception as e:
                 logger.warning(f"Error polling response {response_id}: {str(e)}")
