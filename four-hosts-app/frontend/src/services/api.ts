@@ -103,6 +103,7 @@ class APIService {
   private async fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      Accept: 'application/json',
       ...(options.headers as Record<string, string> || {}),
     }
 
@@ -111,28 +112,43 @@ class APIService {
     }
 
     try {
-      console.log('API Request:', {
-        url: `${API_BASE_URL}${url}`,
-        method: options.method || 'GET',
-        headers,
-        body: options.body,
-        bodyParsed: options.body ? JSON.parse(options.body as string) : null
-      })
+      const fullUrl = `${API_BASE_URL}${url}`;
 
-      const response = await fetch(`${API_BASE_URL}${url}`, {
+      // Skip detailed logging for GET requests to reduce noise
+      if (options.method !== 'GET') {
+        console.log('API Request:', {
+          url: fullUrl,
+          method: options.method || 'GET',
+          headers: { ...headers, Authorization: this.authToken ? '[TOKEN]' : '[NONE]' },
+        })
+      }
+
+      // Add timeout for network requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch(fullUrl, {
         ...options,
         headers,
-      })
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
 
-      console.log('API Response:', {
-        status: response.status,
-        statusText: response.statusText,
-        ok: response.ok
-      })
+      // Log response for non-GET requests
+      if (options.method !== 'GET' || !response.ok) {
+        console.log('API Response:', {
+          status: response.status,
+          statusText: response.statusText,
+          ok: response.ok,
+          url: fullUrl,
+        })
+      }
 
       return response
     } catch (error) {
-      // Handle network errors (backend not running)
+      if (error.name === 'AbortError') {
+        throw new Error('Request timeout - backend may be slow');
+      }
+
       console.error('Network error:', error)
       throw new Error('Cannot connect to backend server. Please ensure the backend is running on http://localhost:8000')
     }
@@ -147,24 +163,24 @@ class APIService {
 
     if (!response.ok) {
       let errorMessage = 'Registration failed'
-      try {
-        const errorText = await response.text()
-        console.error('Registration error response text:', errorText)
-        try {
-          const error = JSON.parse(errorText)
-          console.error('Registration error parsed:', error)
-          errorMessage = error.detail || error.message || errorMessage
-          if (Array.isArray(error.detail)) {
-            errorMessage = error.detail[0]?.msg || errorMessage
-          }
-        } catch (jsonError) {
-          console.error('Failed to parse error as JSON:', jsonError)
-          errorMessage = errorText || errorMessage
-        }
-      } catch (e) {
-        console.error('Failed to read error response:', e)
+
+      // Handle network-level errors (backend not running)
+      if (response.status === 0 || response.status === 503) {
+        throw new Error('Cannot connect to backend server. Please ensure the backend is running on http://localhost:8000');
       }
-      throw new Error(errorMessage)
+
+      try {
+        const errorData = await response.json();
+        if (Array.isArray(errorData.detail)) {
+          errorMessage = errorData.detail[0]?.msg || errorMessage;
+        } else {
+          errorMessage = errorData.detail || errorData.message || errorMessage;
+        }
+      } catch {
+        errorMessage = response.statusText || 'Registration request failed';
+      }
+
+      throw new Error(errorMessage);
     }
 
     const tokens = await response.json()
@@ -180,22 +196,26 @@ class APIService {
     })
 
     if (!response.ok) {
-      let errorMessage = 'Login failed'
-      try {
-        const errorText = await response.text()
-        console.error('Login error response text:', errorText)
-        try {
-          const error = JSON.parse(errorText)
-          console.error('Login error parsed:', error)
-          errorMessage = error.detail || error.message || errorMessage
-        } catch (jsonError) {
-          console.error('Failed to parse error as JSON:', jsonError)
-          errorMessage = errorText || errorMessage
-        }
-      } catch (e) {
-        console.error('Failed to read error response:', e)
+      let errorMessage = 'Login failed';
+
+      // Handle network-level errors (backend not running)
+      if (response.status === 0 || response.status === 503) {
+        throw new Error('Cannot connect to backend server. Please ensure the backend is running on http://localhost:8000');
       }
-      throw new Error(errorMessage)
+
+      // Handle authentication errors
+      if (response.status === 401) {
+        throw new Error('Invalid email or password');
+      }
+
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.detail || errorData.message || 'Login failed';
+      } catch {
+        errorMessage = response.statusText || 'Login request failed';
+      }
+
+      throw new Error(errorMessage);
     }
 
     const tokens = await response.json()
@@ -303,6 +323,23 @@ class APIService {
         throw new Error('Research not found or still processing')
       }
       throw new Error('Failed to get research results')
+    }
+
+    return response.json()
+  }
+
+  async submitResearchFeedback(researchId: string, satisfactionScore: number, paradigmFeedback?: string): Promise<any> {
+    const response = await this.fetchWithAuth(`/research/feedback/${researchId}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        satisfaction_score: satisfactionScore,
+        paradigm_feedback: paradigmFeedback
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || 'Failed to submit feedback')
     }
 
     return response.json()
@@ -444,11 +481,58 @@ class APIService {
     return response.text()
   }
 
+  // Admin endpoints for enhanced features
+  async adminForceParadigmSwitch(queryId: string, newParadigm: string, reason: string): Promise<any> {
+    const response = await this.fetchWithAuth('/admin/paradigm/force-switch', {
+      method: 'POST',
+      body: JSON.stringify({
+        query_id: queryId,
+        new_paradigm: newParadigm,
+        reason: reason
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || 'Failed to force paradigm switch')
+    }
+
+    return response.json()
+  }
+
+  async adminTriggerMLRetraining(): Promise<any> {
+    const response = await this.fetchWithAuth('/admin/ml/retrain', {
+      method: 'POST',
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || 'Failed to trigger ML retraining')
+    }
+
+    return response.json()
+  }
+
+  async adminGetSystemHealth(): Promise<any> {
+    const response = await this.fetchWithAuth('/admin/system/health')
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || 'Failed to get system health')
+    }
+
+    return response.json()
+  }
+
   // WebSocket support for real-time updates
   connectWebSocket(researchId: string, onMessage: (message: WebSocketMessage) => void): void {
     if (this.wsConnection?.readyState === WebSocket.OPEN) {
-      // Already connected, just add the handler
+      // Already connected, just add the handler and subscribe to research
       this.wsHandlers.set(researchId, onMessage)
+      this.wsConnection.send(JSON.stringify({
+        type: 'subscribe',
+        research_id: researchId
+      }))
       return
     }
 
@@ -456,16 +540,22 @@ class APIService {
     // Otherwise (relative like "/api"), leave blank so the client connects to same origin
     // and lets the Vite proxy `/ws` rule forward the request.
     const wsUrl = API_BASE_URL.startsWith('http')
-      ? API_BASE_URL.replace(/^http/, 'ws')
+      ? API_BASE_URL.replace(/^http/, 'ws').replace('/api', '')
       : ''
     const token = this.authToken ? `?token=${this.authToken}` : ''
-    this.wsConnection = new WebSocket(`${wsUrl}/ws/research/${researchId}${token}`)
+    this.wsConnection = new WebSocket(`${wsUrl}/ws${token}`)
 
     this.wsConnection.onopen = () => {
       console.log('WebSocket connected')
-      // Connection is already tied to research_id from the URL path
-      // No need to send subscription message
+      // Send subscription message for the research ID
+      this.wsConnection!.send(JSON.stringify({
+        type: 'subscribe',
+        research_id: researchId
+      }))
     }
+
+    // Add the handler to the map before connection is established
+    this.wsHandlers.set(researchId, onMessage)
 
     this.wsConnection.onmessage = (event) => {
       try {
@@ -513,7 +603,7 @@ class APIService {
     this.wsHandlers.delete(researchId)
     if (this.wsConnection?.readyState === WebSocket.OPEN) {
       this.wsConnection.send(JSON.stringify({
-        action: 'unsubscribe',
+        type: 'unsubscribe',
         research_id: researchId
       }))
     }

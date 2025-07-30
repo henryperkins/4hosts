@@ -702,3 +702,48 @@ def create_monitoring_middleware(
     # Only *app_insights* is necessary for the middleware; *prometheus_metrics*
     # is accepted to maintain backwards compatibility with existing call sites.
     return MonitoringMiddleware(app_insights, otel_service)
+
+
+# --- Singleton Monitoring Service for Enhanced Features ---
+
+class EnhancedMonitoringService:
+    """Monitoring service for enhanced features (self-healing, ML pipeline)"""
+    
+    def __init__(self):
+        self.paradigm_metrics = defaultdict(lambda: {"queries": 0, "switches": 0, "satisfaction": []})
+        self.ml_metrics = {"training_runs": 0, "model_updates": 0, "accuracy_history": []}
+        
+    async def track_paradigm_performance(self, paradigm: str, performance_record: Dict[str, Any]):
+        """Track paradigm performance for self-healing system"""
+        self.paradigm_metrics[paradigm]["queries"] += 1
+        if performance_record.get("user_feedback"):
+            self.paradigm_metrics[paradigm]["satisfaction"].append(
+                performance_record["user_feedback"]
+            )
+    
+    async def track_paradigm_switch(self, switch_decision: Dict[str, Any]):
+        """Track paradigm switch events"""
+        original = switch_decision.get("original_paradigm")
+        if original:
+            self.paradigm_metrics[original]["switches"] += 1
+    
+    async def track_ml_training(self, training_result: Dict[str, Any]):
+        """Track ML pipeline training events"""
+        self.ml_metrics["training_runs"] += 1
+        if training_result.get("accuracy"):
+            self.ml_metrics["accuracy_history"].append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "accuracy": training_result["accuracy"]
+            })
+    
+    async def track_error(self, error_type: str, severity: str, details: Dict[str, Any]):
+        """Track errors from enhanced features"""
+        logger.bind(
+            error_type=error_type,
+            severity=severity,
+            **details
+        ).error(f"Enhanced feature error: {error_type}")
+
+
+# Create singleton instance
+monitoring_service = EnhancedMonitoringService()

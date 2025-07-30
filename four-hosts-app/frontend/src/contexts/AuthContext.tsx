@@ -53,7 +53,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       // Check if it's an email or username
       const isEmail = emailOrUsername.includes('@')
-      const email = isEmail ? emailOrUsername : `${emailOrUsername}@example.com` // Fallback for username
+      const email = isEmail ? emailOrUsername : emailOrUsername + '@example.com' // Simple fallback
 
       await api.login(email, password)
       const user = await api.getCurrentUser()
@@ -64,7 +64,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       })
       toast.success('Logged in successfully!')
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Login failed')
+      // Provide more user-friendly error messages
+      let errorMessage = 'Login failed';
+      if (error instanceof Error) {
+        if (error.message.includes('connect to backend')) {
+          errorMessage = 'Cannot connect to server. Please ensure the backend is running.';
+        } else if (error.message.includes('Invalid email') || error.message.includes('Invalid credentials')) {
+          errorMessage = 'Invalid email or password. Please try again.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      toast.error(errorMessage)
       throw error
     }
   }

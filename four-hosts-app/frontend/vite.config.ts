@@ -19,6 +19,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    allowedHosts: ['lakefrontdigital.io', 'localhost', '.localhost'],
     watch: {
       // Exclude directories that contain many files
       ignored: [
@@ -34,13 +35,14 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
+        rewrite: (path) => path.replace(/^\/api/, '/api/v1'),
       },
       // Proxy WebSocket connections
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
         changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/ws/, '/api/v1/ws'),
       },
     },
   },

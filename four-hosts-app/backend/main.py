@@ -25,6 +25,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
     Security,
+    Body,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -52,10 +53,22 @@ from services.research_orchestrator import (
 from services.cache import initialize_cache
 from services.credibility import get_source_credibility
 from services.llm_client import initialise_llm_client
-from services.answer_generator_continued import answer_orchestrator
 from services.research_store import research_store
-from services.classification_engine import classification_engine, HostParadigm
 from services.context_engineering import context_pipeline
+
+# Import enhanced components
+from services.enhanced_integration import (
+    enhanced_answer_orchestrator as answer_orchestrator,
+    enhanced_classification_engine as classification_engine,
+    record_user_feedback,
+    get_system_health_report,
+    force_paradigm_switch as admin_force_paradigm_switch,
+    trigger_model_retraining,
+    get_paradigm_performance_metrics,
+)
+from services.classification_engine import HostParadigm
+from services.self_healing_system import self_healing_system
+from services.ml_pipeline import ml_pipeline
 
 # Import production services
 from services.auth_service import AuthService
@@ -451,16 +464,20 @@ app.add_middleware(
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://0.0.0.0:5173",
         "https://api.4hosts.ai",
         "http://app.lakefrontdigital.io",
         "https://app.lakefrontdigital.io",
         "http://lakefrontdigital.io",
         "https://lakefrontdigital.io",
+        "*",  # Allow all origins in development (more permissive for debugging)
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Length", "X-Request-ID"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+    allow_headers=["*", "Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
+    expose_headers=["Content-Length", "X-Request-ID", "Set-Cookie", "Authorization"],
+    max_age=6000,
 )
 
 
@@ -1474,6 +1491,45 @@ async def get_domain_credibility(
         )
 
 
+# User Feedback Endpoint
+@app.post("/research/feedback/{research_id}", tags=["research"])
+async def submit_research_feedback(
+    research_id: str,
+    satisfaction_score: float = Body(..., ge=0.0, le=1.0),
+    paradigm_feedback: Optional[str] = Body(None),
+    current_user: User = Depends(get_current_user),
+):
+    """Submit feedback for a research query to improve the system"""
+    research = await research_store.get(research_id)
+    if not research:
+        raise HTTPException(status_code=404, detail="Research not found")
+
+    # Verify ownership
+    if research["user_id"] != str(current_user.id) and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        # Record feedback in enhanced systems
+        await record_user_feedback(research_id, satisfaction_score, paradigm_feedback)
+
+        # Store feedback in research data
+        await research_store.update_field(research_id, "user_feedback", {
+            "satisfaction_score": satisfaction_score,
+            "paradigm_feedback": paradigm_feedback,
+            "submitted_at": datetime.utcnow().isoformat()
+        })
+
+        return {
+            "success": True,
+            "message": "Feedback recorded successfully",
+            "research_id": research_id,
+            "satisfaction_score": satisfaction_score
+        }
+    except Exception as e:
+        logger.error(f"Failed to record feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to record feedback")
+
+
 # Test Deep Research (Development Only)
 @app.get("/test/deep-research", tags=["test"])
 async def test_deep_research(current_user: User = Depends(get_current_user)):
@@ -1540,6 +1596,13 @@ async def get_system_stats(current_user: User = Depends(get_current_user)):
         if hasattr(research_orchestrator, "get_execution_stats"):
             stats["research_stats"] = await research_orchestrator.get_execution_stats()
 
+        # Add enhanced system metrics
+        stats["enhanced_features"] = {
+            "self_healing": self_healing_system.get_performance_report(),
+            "ml_pipeline": ml_pipeline.get_model_info(),
+            "paradigm_performance": get_paradigm_performance_metrics()
+        }
+
         stats["timestamp"] = datetime.utcnow().isoformat()
         return stats
     except Exception as e:
@@ -1568,6 +1631,43 @@ async def get_public_system_stats(
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat()
         }
+
+
+# Admin Enhanced Features Endpoints
+@app.post("/admin/paradigm/force-switch", tags=["admin"])
+async def admin_force_paradigm_switch_endpoint(
+    query_id: str,
+    new_paradigm: str,
+    reason: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Force a paradigm switch for a query (Admin only)"""
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    return await admin_force_paradigm_switch(query_id, new_paradigm, reason)
+
+
+@app.post("/admin/ml/retrain", tags=["admin"])
+async def admin_trigger_retraining(
+    current_user: User = Depends(get_current_user),
+):
+    """Trigger ML model retraining (Admin only)"""
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    return await trigger_model_retraining()
+
+
+@app.get("/admin/system/health", tags=["admin"])
+async def admin_system_health(
+    current_user: User = Depends(get_current_user),
+):
+    """Get comprehensive system health report (Admin only)"""
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    return get_system_health_report()
 
 
 # Metrics endpoint

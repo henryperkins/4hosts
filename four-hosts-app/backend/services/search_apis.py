@@ -14,6 +14,7 @@ from urllib.parse import quote_plus
 import hashlib
 import os
 import time
+import re
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
 from urllib.robotparser import RobotFileParser
@@ -32,6 +33,10 @@ try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
     nltk.download('punkt')
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt_tab')
 try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
@@ -523,11 +528,11 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                                 error_details = error_data['error']
                                 logger.error(f"Google API error details: {error_details.get('message', 'Unknown error')}")
                                 logger.error(f"Error code: {error_details.get('code', 'Unknown')}")
-                        except:
+                        except Exception:
                             # If not JSON, get as text
                             error_body = await response.text()
                             logger.error(f"Google API error: {response.status} - {error_body}")
-                    except:
+                    except Exception:
                         logger.error(f"Google API error: {response.status} - Could not read response body")
                     
                     return []
@@ -624,7 +629,7 @@ class ArxivAPI(BaseSearchAPI):
                             published_date = datetime.fromisoformat(
                                 published_elem.text.replace("Z", "+00:00")
                             )
-                        except:
+                        except Exception:
                             pass
 
                     result = SearchResult(
@@ -750,7 +755,7 @@ class BraveSearchAPI(BaseSearchAPI):
                     published_date = datetime.fromisoformat(
                         item["age"].replace("Z", "+00:00")
                     )
-                except:
+                except Exception:
                     pass
 
             # Extract domain from meta_url if available
@@ -783,7 +788,7 @@ class BraveSearchAPI(BaseSearchAPI):
                     published_date = datetime.fromisoformat(
                         item["age"].replace("Z", "+00:00")
                     )
-                except:
+                except Exception:
                     pass
 
             # Extract source info
@@ -939,7 +944,7 @@ class PubMedAPI(BaseSearchAPI):
                         try:
                             year = int(pub_date_elem.text)
                             published_date = datetime(year, 1, 1)
-                        except:
+                        except Exception:
                             pass
 
                     abstract = ""
@@ -1006,7 +1011,7 @@ class SemanticScholarAPI(BaseSearchAPI):
             if year := paper.get("year"):
                 try:
                     published_date = datetime(year, 1, 1)
-                except:
+                except Exception:
                     pass
                     
             # Build snippet from abstract
@@ -1081,7 +1086,7 @@ class CrossRefAPI(BaseSearchAPI):
                         month = date_parts[0][1] if len(date_parts[0]) > 1 else 1
                         day = date_parts[0][2] if len(date_parts[0]) > 2 else 1
                         published_date = datetime(year, month, day)
-                except:
+                except Exception:
                     pass
                     
             # Build snippet
@@ -1327,7 +1332,7 @@ def create_search_manager() -> SearchAPIManager:
     
     # Add Semantic Scholar (free, excellent for academic papers)
     semantic_scholar_api = SemanticScholarAPI(
-        rate_limiter=RateLimiter(calls_per_minute=100)  # They allow 100 req/sec
+        rate_limiter=RateLimiter(calls_per_minute=10)  # More conservative rate limit
     )
     manager.add_api("semantic_scholar", semantic_scholar_api)
     

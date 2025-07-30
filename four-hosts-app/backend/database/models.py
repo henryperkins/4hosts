@@ -493,6 +493,110 @@ class Webhook(Base):
     )
 
 
+# --- Enhanced Features Models ---
+
+
+class UserFeedback(Base):
+    __tablename__ = "user_feedback"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    research_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("research_queries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    
+    # Feedback data
+    satisfaction_score = Column(Float, nullable=False)  # 0.0-1.0
+    paradigm_feedback = Column(String(50))  # Suggested paradigm
+    comments = Column(Text)
+    
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    
+    # Relationships
+    research_query = relationship("ResearchQuery", backref="user_feedback")
+    user = relationship("User", backref="feedback_given")
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_feedback_research", "research_id"),
+        Index("idx_feedback_user", "user_id"),
+        CheckConstraint("satisfaction_score >= 0 AND satisfaction_score <= 1", name="check_satisfaction_range"),
+    )
+
+
+class ParadigmPerformance(Base):
+    __tablename__ = "paradigm_performance"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    paradigm = Column(Enum(ParadigmType), nullable=False)
+    
+    # Performance metrics
+    total_queries = Column(Integer, default=0)
+    successful_queries = Column(Integer, default=0)
+    failed_queries = Column(Integer, default=0)
+    avg_confidence_score = Column(Float, default=0.0)
+    avg_synthesis_quality = Column(Float, default=0.0)
+    avg_user_satisfaction = Column(Float, default=0.0)
+    avg_response_time = Column(Float, default=0.0)
+    
+    # Time window for aggregation
+    window_start = Column(DateTime(timezone=True), nullable=False)
+    window_end = Column(DateTime(timezone=True), nullable=False)
+    
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_paradigm_performance_paradigm", "paradigm"),
+        Index("idx_paradigm_performance_window", "window_start", "window_end"),
+        UniqueConstraint("paradigm", "window_start", "window_end", name="unique_paradigm_window"),
+    )
+
+
+class MLTrainingData(Base):
+    __tablename__ = "ml_training_data"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    query_id = Column(String(100), nullable=False)  # External query ID
+    query_text = Column(Text, nullable=False)
+    
+    # Features
+    query_features = Column(JSONB, nullable=False)  # Extracted features
+    true_paradigm = Column(Enum(ParadigmType), nullable=False)
+    predicted_paradigm = Column(Enum(ParadigmType), nullable=False)
+    confidence_score = Column(Float)
+    
+    # Performance data
+    user_satisfaction = Column(Float)  # 0.0-1.0 if available
+    synthesis_quality = Column(Float)  # 0.0-1.0
+    
+    # Training status
+    used_for_training = Column(Boolean, default=False)
+    model_version = Column(String(50))  # Which model version used this data
+    
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_ml_training_paradigm", "true_paradigm"),
+        Index("idx_ml_training_used", "used_for_training"),
+        Index("idx_ml_training_created", "created_at"),
+    )
+
+
 class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
 
