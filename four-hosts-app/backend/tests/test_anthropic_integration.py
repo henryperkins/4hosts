@@ -26,12 +26,12 @@ class TestAnthropicIntegration:
 
     def test_anthropic_model_detection(self):
         """Test that Anthropic models are correctly detected"""
-        assert _is_anthropic_model("claude-3-5-sonnet-20250123") == True
-        assert _is_anthropic_model("claude-3-opus-20250123") == True
-        assert _is_anthropic_model("claude-3-haiku-20240307") == True
-        assert _is_anthropic_model("gpt-4o") == False
-        assert _is_anthropic_model("gpt-4o-mini") == False
-        assert _is_anthropic_model("o3") == False
+        assert _is_anthropic_model("claude-3-5-sonnet-20250123")
+        assert _is_anthropic_model("claude-3-opus-20250123")
+        assert _is_anthropic_model("claude-3-haiku-20240307")
+        assert not _is_anthropic_model("gpt-4o")
+        assert not _is_anthropic_model("gpt-4o-mini")
+        assert not _is_anthropic_model("o3")
 
     def test_paradigm_anthropic_model_mapping(self):
         """Test that paradigms map to appropriate Anthropic models"""
