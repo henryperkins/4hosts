@@ -452,10 +452,15 @@ app.add_middleware(
         "http://localhost:5174",
         "http://localhost:3000",
         "https://api.4hosts.ai",
+        "http://app.lakefrontdigital.io",
+        "https://app.lakefrontdigital.io",
+        "http://lakefrontdigital.io",
+        "https://lakefrontdigital.io",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Length", "X-Request-ID"],
 )
 
 
