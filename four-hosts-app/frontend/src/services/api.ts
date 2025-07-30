@@ -1,6 +1,6 @@
 import type { ParadigmClassification, ResearchResult, ResearchHistoryItem, UserPreferences } from '../types'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 // Feature flags from environment (available for conditional feature enabling)
 // const ENABLE_WEBSOCKET = import.meta.env.VITE_ENABLE_WEBSOCKET !== 'false'

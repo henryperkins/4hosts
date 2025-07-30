@@ -31,18 +31,56 @@ export default defineConfig({
       ]
     },
     proxy: {
-      // Proxy API requests to backend
+      // Proxy auth routes directly
+      '/auth': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Proxy paradigm routes directly
+      '/paradigms': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Proxy research routes directly
+      '/research': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Proxy system routes directly
+      '/system': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Proxy sources routes directly
+      '/sources': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Proxy health route directly
+      '/health': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Proxy metrics route directly
+      '/metrics': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Proxy admin routes directly
+      '/admin': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // Proxy API routes that actually use /api/v1
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, '/api/v1'),
       },
       // Proxy WebSocket connections
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/ws/, '/api/v1/ws'),
       },
     },
   },
