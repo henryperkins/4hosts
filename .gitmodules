@@ -1,0 +1,3 @@
+[submodule "four-hosts-app/backend/brave-search-mcp-server"]
+	path = four-hosts-app/backend/brave-search-mcp-server
+	url = https://github.com/henryperkins/brave-search-mcp-server

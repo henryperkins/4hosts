@@ -53,6 +53,7 @@ from services.credibility import get_source_credibility
 from services.llm_client import initialise_llm_client
 from services.research_store import research_store
 from services.context_engineering import context_pipeline
+from services.search_apis import create_search_manager
 
 # Import enhanced components
 from services.enhanced_integration import (
