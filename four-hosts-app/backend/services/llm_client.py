@@ -254,11 +254,23 @@ class LLMClient:
                     # Convert messages to input format for Responses API
                     input_content = []
                     for msg in messages:
-                        input_content.append({
+                        msg_item = {
                             "type": "message",
                             "role": msg["role"],
                             "content": msg["content"]
-                        })
+                        }
+                        
+                        # Handle tool calls in assistant messages
+                        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                            msg_item["tool_calls"] = msg["tool_calls"]
+                        
+                        # Handle tool responses
+                        if msg.get("role") == "tool":
+                            msg_item["type"] = "tool"
+                            msg_item["tool_call_id"] = msg.get("tool_call_id")
+                            msg_item["name"] = msg.get("name")
+                        
+                        input_content.append(msg_item)
                     
                     # Use Responses API for o3
                     # Note: o3 doesn't support temperature/top_p parameters
@@ -268,6 +280,17 @@ class LLMClient:
                         "max_output_tokens": azure_kwargs.get("max_completion_tokens", azure_kwargs.get("max_tokens", 2000)),
                     }
                     
+                    # Add tools if provided
+                    if tools:
+                        response_kwargs["tools"] = tools
+                        if tool_choice:
+                            response_kwargs["tool_choice"] = tool_choice
+                    
+                    # Check for background mode flag
+                    if kw.get("background_mode", False):
+                        response_kwargs["mode"] = "background"
+                        # Background mode returns immediately with a task ID
+                    
                     if stream:
                         response_kwargs["stream"] = stream
                     
@@ -275,6 +298,13 @@ class LLMClient:
                     
                     if stream:
                         return self._iter_responses_stream(op_res)
+                    
+                    # Check for tool calls first
+                    if hasattr(op_res, 'output') and op_res.output:
+                        for output in op_res.output:
+                            if hasattr(output, 'tool_calls') and output.tool_calls:
+                                # Return the complete response for tool handling
+                                return op_res
                     
                     # Extract text from response - Responses API provides output_text directly
                     if hasattr(op_res, 'output_text') and op_res.output_text:
@@ -291,8 +321,28 @@ class LLMClient:
                         if text_content:
                             return text_content.strip()
                     
+                    # Try to extract from response object attributes
+                    # Log available attributes for debugging
+                    logger.debug(f"Response attributes: {dir(op_res)}")
+                    
+                    # Check if it's a ChatCompletion-like response
+                    if hasattr(op_res, 'choices') and op_res.choices:
+                        choice = op_res.choices[0]
+                        if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
+                            content = choice.message.content
+                            if content:
+                                return content.strip()
+                    
+                    # Check if response has a direct content attribute
+                    if hasattr(op_res, 'content') and op_res.content:
+                        return str(op_res.content).strip()
+                    
+                    # Check for text attribute
+                    if hasattr(op_res, 'text') and op_res.text:
+                        return op_res.text.strip()
+                    
                     # Log for debugging if no text found
-                    logger.warning(f"No text content found in response. Response type: {type(op_res)}")
+                    logger.warning(f"No text content found in response. Response type: {type(op_res)}, attributes: {[attr for attr in dir(op_res) if not attr.startswith('_')][:10]}")
                     return ""
                 else:
                     # Fallback to chat completions if responses API not available
@@ -483,6 +533,32 @@ class LLMClient:
             model=model,
             stream=False,
         )
+    
+    async def generate_background(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        callback: Optional[Any] = None,
+        **kwargs
+    ) -> str:
+        """Submit a long-running task to background processing"""
+        if not self.azure_client or not hasattr(self.azure_client, 'responses'):
+            raise NotImplementedError("Background mode requires Azure OpenAI Responses API")
+        
+        from services.background_llm import background_llm_manager
+        if not background_llm_manager:
+            raise RuntimeError("Background LLM manager not initialized")
+        
+        # Submit task to background processing
+        task_id = await background_llm_manager.submit_background_task(
+            messages=messages,
+            tools=tools,
+            callback=callback,
+            **kwargs
+        )
+        
+        return task_id
 
 
     # ─────────── streaming iterators ───────────
@@ -516,6 +592,16 @@ async def initialise_llm_client() -> bool:
         if not llm_client._initialized:
             llm_client._init_clients()
             llm_client._initialized = True
+            
+            # Initialize background LLM manager if Azure client is available
+            if llm_client.azure_client:
+                from services.background_llm import initialize_background_manager
+                initialize_background_manager(llm_client.azure_client)
+            
+            # Initialize MCP integration
+            from services.mcp_integration import configure_default_servers
+            configure_default_servers()
+            
             logger.info("✓ LLM client initialized successfully")
         else:
             logger.info("LLM client already initialized")

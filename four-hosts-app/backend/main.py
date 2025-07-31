@@ -403,6 +403,23 @@ async def lifespan(app: FastAPI):
         # Initialize LLM client
         await initialise_llm_client()
         logger.info("✓ LLM client initialized")
+        
+        # Initialize unified research orchestrator (includes Brave MCP)
+        try:
+            from services.unified_research_orchestrator import initialize_unified_orchestrator
+            await initialize_unified_orchestrator()
+            logger.info("✓ Unified research orchestrator initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize unified orchestrator: {e}")
+        
+        # Preload Hugging Face model to avoid cold start
+        try:
+            from services.hf_zero_shot import get_classifier
+            # This will load the model into memory
+            get_classifier()
+            logger.info("✓ Hugging Face zero-shot classifier preloaded")
+        except Exception as e:
+            logger.warning(f"Failed to preload HF model: {e}")
 
         # Initialize monitoring
         prometheus = PrometheusMetrics(metrics_registry)
@@ -1601,6 +1618,29 @@ async def test_deep_research(current_user: User = Depends(get_current_user)):
             "message": "Deep research test failed. Check logs for details."
         }
 
+
+# Orchestrator Status
+@app.get("/system/orchestrator", tags=["system"])
+async def get_orchestrator_status(current_user: User = Depends(get_current_user)):
+    """Get research orchestrator status and capabilities"""
+    try:
+        from services.unified_research_orchestrator import unified_orchestrator
+        capabilities = unified_orchestrator.get_capabilities()
+        
+        return {
+            "status": "active",
+            "capabilities": capabilities,
+            "brave_mcp_enabled": capabilities.get("brave_mcp", False),
+            "search_apis_available": [api for api in capabilities.get("search_apis", []) if api],
+            "mode": capabilities.get("mode", "unknown")
+        }
+    except Exception as e:
+        logger.error(f"Failed to get orchestrator status: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "mode": "degraded"
+        }
 
 # System Stats (Admin/Enterprise only)
 @app.get("/system/stats", tags=["system"])

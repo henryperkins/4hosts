@@ -1,24 +1,41 @@
 from functools import lru_cache
 from transformers import pipeline
 import logging
+import torch
 
 logger = logging.getLogger(__name__)
 
 # Paradigm labels matching the Four Hosts system
 LABELS = ["revolutionary", "devotion", "analytical", "strategic"]
 
+def get_device():
+    """Detect and return the best available device (GPU or CPU)."""
+    if torch.cuda.is_available():
+        device = 0  # Use first GPU
+        logger.info(f"CUDA GPU detected. Using device: cuda:{device}")
+        return device
+    else:
+        logger.info("No GPU detected. Using CPU (device: -1)")
+        return -1
+
 @lru_cache(maxsize=1)
-def get_classifier(device: int | str = -1):
+def get_classifier(device: int | str = None):
     """
     Lazily load the Hugging Face zero-shot classifier.
-    Set device=-1 for CPU, 0 for the first CUDA GPU.
+    Set device=-1 for CPU, 0 for the first CUDA GPU, or None for auto-detection.
     The LRU cache ensures this happens only once.
     """
+    if device is None:
+        device = get_device()
+    
     logger.info(f"Loading DeBERTa zero-shot classifier on device: {device}")
     return pipeline(
         task="zero-shot-classification",
         model="microsoft/deberta-large-mnli",
-        device=device
+        device=device,
+        # Set max_length to avoid truncation warnings
+        max_length=512,
+        truncation=True
     )
 
 def predict_paradigm(text: str) -> tuple[str, float]:

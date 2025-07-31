@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # Brave Search MCP Server
+  brave-mcp:
+    image: braveintegrations/mcp-server-brave-search:latest
+    container_name: brave-mcp-server
+    environment:
+      - BRAVE_API_KEY=${BRAVE_SEARCH_API_KEY}
+      - BRAVE_MCP_TRANSPORT=HTTP
+      - BRAVE_MCP_PORT=8080
+      - BRAVE_MCP_HOST=0.0.0.0
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    networks:
+      - fourhosts-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Optional: Additional MCP servers can be added here
+  # filesystem-mcp:
+  #   image: your-org/filesystem-mcp:latest
+  #   environment:
+  #     - MCP_AUTH_TOKEN=${MCP_FILESYSTEM_TOKEN}
+  #   ports:
+  #     - "8081:8080"
+  #   networks:
+  #     - fourhosts-network
+
+networks:
+  fourhosts-network:
+    external: true
+    name: fourhosts-network

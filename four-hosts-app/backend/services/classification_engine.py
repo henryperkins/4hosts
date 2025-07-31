@@ -473,13 +473,29 @@ class ParadigmClassifier:
 
     async def classify(self, query: str) -> ClassificationResult:
         """Perform complete classification with confidence scoring"""
-        features = self.analyzer.analyze(query)
-        rule_scores = self._rule_based_classification(query, features)
-
-        llm_scores = {}
+        import asyncio
+        
+        # Run feature extraction in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        features_task = loop.run_in_executor(None, self.analyzer.analyze, query)
+        
+        # Start LLM classification early if enabled
+        llm_task = None
         if self.use_llm:
+            # Create a placeholder features for LLM (it doesn't need full features)
+            llm_task = self._llm_classification(query, None)
+        
+        # Wait for features
+        features = await features_task
+        
+        # Run rule-based classification
+        rule_scores = self._rule_based_classification(query, features)
+        
+        # Wait for LLM results if started
+        llm_scores = {}
+        if llm_task:
             try:
-                llm_scores = await self._llm_classification(query, features)
+                llm_scores = await llm_task
             except Exception as e:
                 logger.warning(f"LLM classification failed, using rule-based only: {e}")
                 llm_scores = {}
@@ -655,20 +671,24 @@ class ParadigmClassifier:
         return min(confidence, 0.95)
 
     async def _llm_classification(
-        self, query: str, features: QueryFeatures
+        self, query: str, features: Optional[QueryFeatures]
     ) -> Dict[HostParadigm, ParadigmScore]:
         """Use LLM to classify the query into paradigms"""
         # Create a prompt for the LLM
-        prompt = f"""Analyze this query and determine which host paradigm(s) it best aligns with.
-
-Query: "{query}"
-
+        features_text = ""
+        if features:
+            features_text = f"""
 Extracted Features:
 - Domain: {features.domain or 'General'}
 - Intent Signals: {', '.join(features.intent_signals) if features.intent_signals else 'None'}
 - Urgency Score: {features.urgency_score:.2f}
 - Complexity Score: {features.complexity_score:.2f}
-- Emotional Valence: {features.emotional_valence:.2f}
+- Emotional Valence: {features.emotional_valence:.2f}"""
+        
+        prompt = f"""Analyze this query and determine which host paradigm(s) it best aligns with.
+
+Query: "{query}"
+{features_text}
 
 Host Paradigms:
 1. DOLORES (Revolutionary): Focuses on exposing injustices, fighting oppression, revealing truth
@@ -703,8 +723,31 @@ Return as JSON with this structure:
                 max_tokens=500,
             )
 
-            # Parse the JSON response
-            llm_result = json.loads(response_text)
+            # Log raw response for debugging
+            logger.debug(f"LLM raw response: {response_text[:200]}...")
+
+            # Parse the JSON response with better error handling
+            try:
+                llm_result = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parsing error: {e}")
+                logger.error(f"Raw response that failed to parse: {response_text}")
+                # Try to clean common issues
+                if response_text.strip().startswith("```json"):
+                    # Remove markdown code block if present
+                    response_text = response_text.strip()
+                    response_text = response_text.replace("```json", "").replace("```", "")
+                    try:
+                        llm_result = json.loads(response_text.strip())
+                    except:
+                        return {}
+                else:
+                    return {}
+
+            # Validate the structure
+            if not isinstance(llm_result, dict):
+                logger.error(f"LLM response is not a dictionary: {type(llm_result)}")
+                return {}
 
             # Convert to ParadigmScore objects
             scores = {}
@@ -716,16 +759,23 @@ Return as JSON with this structure:
             }
 
             for key, paradigm in paradigm_map.items():
-                if key in llm_result:
+                if key in llm_result and isinstance(llm_result[key], dict):
                     score_data = llm_result[key]
-                    score = float(score_data.get("score", 0))
-                    reasoning = score_data.get("reasoning", "")
+                    try:
+                        score = float(score_data.get("score", 0))
+                        # Clamp score to valid range
+                        score = max(0, min(10, score))
+                    except (TypeError, ValueError):
+                        logger.warning(f"Invalid score for {key}: {score_data.get('score')}")
+                        score = 0
+                    
+                    reasoning = str(score_data.get("reasoning", ""))
 
                     scores[paradigm] = ParadigmScore(
                         paradigm=paradigm,
                         score=score,
                         confidence=min(score / 10.0, 1.0),  # Normalize to 0-1
-                        reasoning=[f"LLM: {reasoning}"],
+                        reasoning=[f"LLM: {reasoning}"] if reasoning else [],
                         keyword_matches=[],
                     )
 
@@ -733,6 +783,8 @@ Return as JSON with this structure:
 
         except Exception as e:
             logger.error(f"Error in LLM classification: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             # Return empty scores on error
             return {}
 

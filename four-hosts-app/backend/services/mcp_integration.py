@@ -1,0 +1,209 @@
+"""
+MCP (Model Context Protocol) Server Integration
+Enables the Four Hosts system to connect to remote MCP servers for extended capabilities
+"""
+
+import asyncio
+import json
+import logging
+from typing import Dict, List, Any, Optional, Callable
+from dataclasses import dataclass
+from enum import Enum
+import aiohttp
+from pydantic import BaseModel, HttpUrl
+
+logger = logging.getLogger(__name__)
+
+
+class MCPCapability(str, Enum):
+    """Available MCP server capabilities"""
+    SEARCH = "search"
+    DATABASE = "database"
+    FILESYSTEM = "filesystem"
+    COMPUTATION = "computation"
+    CUSTOM = "custom"
+
+
+@dataclass
+class MCPServer:
+    """Remote MCP server configuration"""
+    name: str
+    url: str
+    capabilities: List[MCPCapability]
+    auth_token: Optional[str] = None
+    timeout: int = 30
+
+
+class MCPToolDefinition(BaseModel):
+    """Tool definition compatible with Azure OpenAI"""
+    type: str = "function"
+    function: Dict[str, Any]
+
+
+class MCPRequest(BaseModel):
+    """Request to MCP server"""
+    method: str
+    params: Dict[str, Any]
+    id: Optional[str] = None
+
+
+class MCPResponse(BaseModel):
+    """Response from MCP server"""
+    result: Optional[Any] = None
+    error: Optional[Dict[str, Any]] = None
+    id: Optional[str] = None
+
+
+class MCPIntegration:
+    """Manages connections to remote MCP servers"""
+    
+    def __init__(self):
+        self.servers: Dict[str, MCPServer] = {}
+        self.session: Optional[aiohttp.ClientSession] = None
+        self._tool_handlers: Dict[str, Callable] = {}
+    
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    def register_server(self, server: MCPServer):
+        """Register a remote MCP server"""
+        self.servers[server.name] = server
+        logger.info(f"Registered MCP server: {server.name} with capabilities: {server.capabilities}")
+    
+    async def discover_tools(self, server_name: str) -> List[MCPToolDefinition]:
+        """Discover available tools from an MCP server"""
+        server = self.servers.get(server_name)
+        if not server:
+            raise ValueError(f"Unknown MCP server: {server_name}")
+        
+        request = MCPRequest(
+            method="tools.list",
+            params={},
+            id=f"discover_{server_name}"
+        )
+        
+        response = await self._send_request(server, request)
+        
+        if response.error:
+            logger.error(f"Error discovering tools from {server_name}: {response.error}")
+            return []
+        
+        # Convert MCP tools to Azure OpenAI format
+        tools = []
+        for tool_data in response.result.get("tools", []):
+            tool_def = MCPToolDefinition(
+                function={
+                    "name": f"{server_name}_{tool_data['name']}",
+                    "description": tool_data.get("description", ""),
+                    "parameters": tool_data.get("parameters", {})
+                }
+            )
+            tools.append(tool_def)
+            
+            # Register handler for this tool
+            self._tool_handlers[tool_def.function["name"]] = lambda params, t=tool_data, s=server: self._execute_tool(s, t["name"], params)
+        
+        return tools
+    
+    async def execute_tool_call(self, tool_name: str, parameters: Dict[str, Any]) -> Any:
+        """Execute a tool call through the appropriate MCP server"""
+        handler = self._tool_handlers.get(tool_name)
+        if not handler:
+            raise ValueError(f"Unknown tool: {tool_name}")
+        
+        return await handler(parameters)
+    
+    async def _execute_tool(self, server: MCPServer, tool_name: str, parameters: Dict[str, Any]) -> Any:
+        """Execute a tool on a remote MCP server"""
+        request = MCPRequest(
+            method="tools.execute",
+            params={
+                "name": tool_name,
+                "parameters": parameters
+            },
+            id=f"exec_{tool_name}"
+        )
+        
+        response = await self._send_request(server, request)
+        
+        if response.error:
+            logger.error(f"Tool execution error: {response.error}")
+            raise Exception(f"MCP tool execution failed: {response.error}")
+        
+        return response.result
+    
+    async def _send_request(self, server: MCPServer, request: MCPRequest) -> MCPResponse:
+        """Send a request to an MCP server"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+        
+        headers = {"Content-Type": "application/json"}
+        if server.auth_token:
+            headers["Authorization"] = f"Bearer {server.auth_token}"
+        
+        try:
+            async with self.session.post(
+                server.url,
+                json=request.dict(),
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=server.timeout)
+            ) as response:
+                data = await response.json()
+                return MCPResponse(**data)
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout connecting to MCP server {server.name}")
+            return MCPResponse(error={"code": -32000, "message": "Connection timeout"})
+        except Exception as e:
+            logger.error(f"Error connecting to MCP server {server.name}: {e}")
+            return MCPResponse(error={"code": -32001, "message": str(e)})
+    
+    def get_all_tools(self) -> List[MCPToolDefinition]:
+        """Get all registered tools from all servers"""
+        all_tools = []
+        for server_name in self.servers:
+            # Note: This is synchronous, you'd need to call discover_tools first
+            # In practice, you'd cache discovered tools
+            pass
+        return all_tools
+
+
+# Global MCP integration instance
+mcp_integration = MCPIntegration()
+
+
+# Example configuration for common MCP servers
+def configure_default_servers():
+    """Configure default MCP servers based on environment"""
+    import os
+    
+    # Example: Filesystem MCP server
+    if os.getenv("MCP_FILESYSTEM_URL"):
+        mcp_integration.register_server(MCPServer(
+            name="filesystem",
+            url=os.getenv("MCP_FILESYSTEM_URL"),
+            capabilities=[MCPCapability.FILESYSTEM],
+            auth_token=os.getenv("MCP_FILESYSTEM_TOKEN")
+        ))
+    
+    # Example: Search MCP server
+    if os.getenv("MCP_SEARCH_URL"):
+        mcp_integration.register_server(MCPServer(
+            name="search",
+            url=os.getenv("MCP_SEARCH_URL"),
+            capabilities=[MCPCapability.SEARCH],
+            auth_token=os.getenv("MCP_SEARCH_TOKEN")
+        ))
+    
+    # Example: Database MCP server
+    if os.getenv("MCP_DATABASE_URL"):
+        mcp_integration.register_server(MCPServer(
+            name="database",
+            url=os.getenv("MCP_DATABASE_URL"),
+            capabilities=[MCPCapability.DATABASE],
+            auth_token=os.getenv("MCP_DATABASE_TOKEN")
+        ))
