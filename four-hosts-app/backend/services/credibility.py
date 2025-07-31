@@ -56,6 +56,8 @@ class DomainAuthorityChecker:
         self.moz_api_key = os.getenv("MOZ_API_KEY")
         self.moz_secret_key = os.getenv("MOZ_SECRET_KEY")
         self.session: Optional[aiohttp.ClientSession] = None
+        self.moz_failures = 0
+        self.moz_backoff_until = None
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -83,7 +85,13 @@ class DomainAuthorityChecker:
         return await self._heuristic_domain_authority(domain)
 
     async def _get_moz_domain_authority(self, domain: str) -> Optional[float]:
-        """Get domain authority from Moz API"""
+        """Get domain authority from Moz API with backoff on repeated failures"""
+        
+        # Check if we're in backoff period
+        if self.moz_backoff_until and datetime.now() < self.moz_backoff_until:
+            logger.debug(f"Moz API in backoff period, skipping DA check for {domain}")
+            return None
+        
         try:
             import hmac
             import hashlib
@@ -116,15 +124,38 @@ class DomainAuthorityChecker:
                     data = await response.json()
                     # Extract Domain Authority from the new response structure
                     if "results" in data and data["results"]:
+                        # Reset failure count on success
+                        self.moz_failures = 0
+                        self.moz_backoff_until = None
                         return data["results"][0].get(
                             "page_authority"
                         )  # Moz v2 uses page_authority
                     return None
                 else:
-                    logger.warning(f"Moz API error for {domain}: {response.status}")
+                    error_text = await response.text()
+                    logger.warning(f"Moz API error for {domain}: {response.status} - {error_text}")
+                    
+                    # Handle 401 errors with backoff
+                    if response.status == 401:
+                        self.moz_failures += 1
+                        if self.moz_failures >= 3:
+                            # Backoff for 1 hour after 3 failures
+                            self.moz_backoff_until = datetime.now() + timedelta(hours=1)
+                            logger.warning(f"Moz API failing repeatedly, backing off for 1 hour")
+                        else:
+                            logger.debug(f"Moz API 401 error ({self.moz_failures}/3), will retry")
 
         except Exception as e:
-            logger.error(f"Moz API error: {str(e)}")
+            if "401" in str(e):
+                self.moz_failures += 1
+                if self.moz_failures >= 3:
+                    # Backoff for 1 hour after 3 failures
+                    self.moz_backoff_until = datetime.now() + timedelta(hours=1)
+                    logger.warning(f"Moz API failing repeatedly, backing off for 1 hour")
+                else:
+                    logger.debug(f"Moz API 401 error ({self.moz_failures}/3), will retry")
+            else:
+                logger.error(f"Moz API error: {str(e)}")
 
         return None
 

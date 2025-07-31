@@ -164,7 +164,7 @@ class APIService {
       })
     } catch {
       // If logout fails (e.g., 401), we still want to clear local tokens
-      console.log('Logout request failed, clearing local tokens anyway')
+      // Logout request failed, clearing local tokens anyway
     }
     this.authToken = null
     AuthErrorHandler.clearAuthTokens()
@@ -180,7 +180,7 @@ class APIService {
   }
 
   // Research APIs
-  async submitResearch(query: string, options: ResearchOptions): Promise<{ research_id: string }> {
+  async submitResearch(query: string, options: ResearchOptions): Promise<{ research_id: string; paradigm_classification?: ParadigmClassification; status?: string; estimated_completion?: string; websocket_url?: string }> {
     const response = await this.fetchWithAuth('/research/query', {
       method: 'POST',
       body: JSON.stringify({ query, options })
@@ -194,7 +194,7 @@ class APIService {
     return response.json()
   }
 
-  async submitDeepResearch(query: string, paradigm?: Paradigm, searchContextSize?: 'small' | 'medium' | 'large', userLocation?: { country?: string; city?: string }): Promise<{ research_id: string }> {
+  async submitDeepResearch(query: string, paradigm?: Paradigm, searchContextSize?: 'small' | 'medium' | 'large', userLocation?: { country?: string; city?: string }): Promise<{ research_id: string; paradigm_classification?: ParadigmClassification; status?: string; estimated_completion?: string; websocket_url?: string }> {
     const response = await this.fetchWithAuth('/research/deep', {
       method: 'POST',
       body: JSON.stringify({
@@ -360,7 +360,7 @@ class APIService {
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
-      console.log(`WebSocket connected for research ${researchId}`)
+      // WebSocket connected
     }
 
     ws.onmessage = (event) => {
@@ -377,7 +377,7 @@ class APIService {
     }
 
     ws.onclose = () => {
-      console.log(`WebSocket disconnected for research ${researchId}`)
+      // WebSocket disconnected
       this.wsConnections.delete(researchId)
       this.wsCallbacks.delete(researchId)
     }

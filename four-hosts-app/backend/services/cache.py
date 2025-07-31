@@ -310,6 +310,33 @@ class CacheManager:
                 "error": str(e),
             }
 
+    async def get(self, key: str) -> Optional[Any]:
+        """Generic get method for any cached data"""
+        try:
+            async with self.get_client() as client:
+                cached_data = await client.get(key)
+                if cached_data:
+                    self.hit_count += 1
+                    return json.loads(cached_data)
+                else:
+                    self.miss_count += 1
+                    return None
+        except Exception as e:
+            logger.error(f"Cache get error: {str(e)}")
+            return None
+
+    async def set(self, key: str, value: Any, ttl: int = 3600):
+        """Generic set method for any data"""
+        try:
+            async with self.get_client() as client:
+                await client.setex(
+                    key,
+                    ttl,
+                    json.dumps(value, default=str)
+                )
+        except Exception as e:
+            logger.error(f"Cache set error: {str(e)}")
+
     async def clear_expired_keys(self, pattern: str = "*"):
         """Clear expired keys (maintenance function)"""
         try:

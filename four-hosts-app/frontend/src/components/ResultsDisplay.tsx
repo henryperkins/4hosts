@@ -54,7 +54,7 @@ function ResultsDisplay({ results }: ResultsDisplayProps) {
       toast.success(`Research exported as ${format.toUpperCase()}`)
     } catch (error) {
       toast.error('Failed to export research')
-      console.error('Export error:', error)
+      // Export error
     } finally {
       setIsExporting(false)
     }
@@ -67,7 +67,7 @@ function ResultsDisplay({ results }: ResultsDisplayProps) {
       setShowFeedback(false)
     } catch (error) {
       toast.error('Failed to submit feedback')
-      console.error('Feedback error:', error)
+      // Feedback error
     }
   }
 

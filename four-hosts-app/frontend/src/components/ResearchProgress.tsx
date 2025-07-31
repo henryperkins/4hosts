@@ -224,7 +224,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
       await api.cancelResearch(researchId)
       // Status will be updated via WebSocket
     } catch (error) {
-      console.error('Failed to cancel research:', error)
+      // Failed to cancel research
       // You might want to show a toast error here
     } finally {
       setIsCancelling(false)

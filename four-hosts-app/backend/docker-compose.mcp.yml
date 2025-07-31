@@ -2,16 +2,20 @@ version: '3.8'
 
 services:
   # Brave Search MCP Server
-  brave-mcp:
-    image: mcp/brave-search:latest
+  brave-mcp-server:
+    image: brave-mcp-server:latest
     container_name: brave-mcp-server
     environment:
-      - BRAVE_API_KEY=${BRAVE_SEARCH_API_KEY}
+      - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
       - BRAVE_MCP_TRANSPORT=http
       - BRAVE_MCP_PORT=8080
       - BRAVE_MCP_HOST=0.0.0.0
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-100}
     ports:
       - "8080:8080"
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
     restart: unless-stopped
     networks:
       - fourhosts-network
@@ -20,6 +24,20 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   # Optional: Additional MCP servers can be added here
   # filesystem-mcp:

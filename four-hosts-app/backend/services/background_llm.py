@@ -68,11 +68,20 @@ class BackgroundLLMManager:
                 "metadata": kwargs.get("metadata", {}),
             }
             
-            # Start polling task
+            # Start polling task with task registry
+            from services.task_registry import task_registry, TaskPriority
+            
             polling_task = asyncio.create_task(
                 self._poll_task_status(task_id)
             )
             self._polling_tasks[task_id] = polling_task
+            
+            # Register with high priority since LLM tasks are expensive
+            await task_registry.register_task(
+                polling_task,
+                name=f"llm_poll_{task_id[:8]}",
+                priority=TaskPriority.HIGH
+            )
             
             logger.info(f"Submitted background LLM task: {task_id}")
             return task_id
@@ -226,6 +235,27 @@ class BackgroundLLMManager:
             await asyncio.sleep(1)
         
         raise TimeoutError(f"Task {task_id} did not complete within {timeout} seconds")
+    
+    async def cleanup(self):
+        """Cleanup all active polling tasks"""
+        logger.info("Cleaning up background LLM manager...")
+        
+        # Cancel all polling tasks
+        for task_id, polling_task in list(self._polling_tasks.items()):
+            if not polling_task.done():
+                polling_task.cancel()
+                logger.debug(f"Cancelled polling task for {task_id}")
+        
+        # Wait for all polling tasks to complete
+        if self._polling_tasks:
+            await asyncio.gather(*self._polling_tasks.values(), return_exceptions=True)
+        
+        # Mark all active tasks as cancelled
+        for task_id in self.active_tasks:
+            if self.active_tasks[task_id]["status"] in [BackgroundTaskStatus.PENDING, BackgroundTaskStatus.RUNNING]:
+                self.active_tasks[task_id]["status"] = BackgroundTaskStatus.CANCELLED
+        
+        logger.info("Background LLM manager cleanup complete")
 
 
 # Global instance (initialized when LLM client is initialized)

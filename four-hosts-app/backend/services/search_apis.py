@@ -8,14 +8,14 @@ import aiohttp
 import json
 import logging
 from typing import Dict, List, Any, Optional, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 import hashlib
 import os
 import time
 import re
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 from urllib.robotparser import RobotFileParser
 from urllib.parse import urlparse
@@ -421,17 +421,33 @@ class ContentRelevanceFilter:
         matches = sum(1 for phrase in quoted_phrases if phrase.lower() in text)
         return matches / len(quoted_phrases)
     
-    def filter_results(self, results: List[SearchResult], original_query: str, min_relevance: float = 0.15) -> List[SearchResult]:
-        """Filter and rank results by relevance"""
+    def filter_results(self, results: List[SearchResult], original_query: str, min_relevance: float = 0.25) -> List[SearchResult]:
+        """Filter and rank results by relevance with higher threshold"""
+        # Increased default threshold from 0.15 to 0.25 for better performance
+        
+        # Early filtering for known problematic domains
+        blocked_domains = {
+            'sciencedirect.com', 'springer.com', 'wiley.com', 
+            'jstor.org', 'tandfonline.com', 'sage.com'
+        }
+        
+        pre_filtered = []
+        for result in results:
+            if any(blocked in result.domain for blocked in blocked_domains):
+                # Skip content fetch for known blocking domains
+                result.content = f"Summary from search results: {result.snippet}"
+                result.raw_data['content_source'] = 'search_api_snippet'
+            pre_filtered.append(result)
+        
         # Extract key terms once
         key_terms = self.query_optimizer.extract_key_terms(original_query)
         
         # Calculate relevance scores
-        for result in results:
+        for result in pre_filtered:
             result.relevance_score = self.calculate_relevance_score(result, original_query, key_terms)
         
         # Filter by minimum relevance
-        filtered = [r for r in results if r.relevance_score >= min_relevance]
+        filtered = [r for r in pre_filtered if r.relevance_score >= min_relevance]
         
         # Sort by relevance score (descending)
         filtered.sort(key=lambda x: x.relevance_score, reverse=True)
@@ -450,14 +466,27 @@ class BaseSearchAPI:
         self.session: Optional[aiohttp.ClientSession] = None
         self.query_optimizer = QueryOptimizer()
         self.relevance_filter = ContentRelevanceFilter()
+        self._session_closed = False
 
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
+        if not self.session or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+            self._session_closed = False
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
+        await self.close_session()
+
+    async def close_session(self):
+        """Safely close the session"""
+        if self.session and not self.session.closed and not self._session_closed:
+            try:
+                await self.session.close()
+                self._session_closed = True
+                logger.debug(f"Closed session for {self.__class__.__name__}")
+            except Exception as e:
+                logger.warning(f"Error closing session for {self.__class__.__name__}: {e}")
 
     async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
         """Override in subclasses"""
@@ -478,10 +507,12 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         self.base_url = "https://customsearch.googleapis.com/customsearch/v1"
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10)
+        stop=stop_after_attempt(3), 
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
     )
     async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
-        """Search using Google Custom Search API"""
+        """Search using Google Custom Search API with proper error handling"""
         await self.rate_limiter.wait_if_needed()
 
         # Validate parameters to prevent 400 errors
@@ -539,7 +570,7 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                     return filtered_results
                 elif response.status == 429:
                     logger.warning("Google API rate limit exceeded")
-                    raise Exception("Rate limit exceeded")
+                    raise aiohttp.ClientError("Rate limit exceeded")
                 else:
                     # Get response body for detailed error information
                     try:
@@ -559,8 +590,11 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                         logger.error(f"Google API error: {response.status} - Could not read response body")
                     
                     return []
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:
             logger.error(f"Google search failed: {str(e)}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error in Google search: {str(e)}")
             return []
 
     def _parse_google_results(self, data: Dict[str, Any]) -> List[SearchResult]:
@@ -1138,12 +1172,13 @@ class CrossRefAPI(BaseSearchAPI):
 class SearchAPIManager:
     """Manages multiple search APIs with failover and aggregation"""
 
-    def __init__(self):
+    def __init__(self, cache_manager=None):
         self.apis: Dict[str, BaseSearchAPI] = {}
         self.fallback_order = []
         self._initialized = False
         self.respectful_fetcher = RespectfulFetcher()
         self.relevance_filter = ContentRelevanceFilter()
+        self.cache_manager = cache_manager
 
     def add_api(self, name: str, api: BaseSearchAPI, is_primary: bool = False):
         """Add a search API"""
@@ -1209,10 +1244,19 @@ class SearchAPIManager:
         if not self._initialized:
             return
 
+        cleanup_tasks = []
         for name, api in self.apis.items():
-            if hasattr(api, "__aexit__"):
-                await api.__aexit__(None, None, None)
-                logger.info(f"Cleaned up session for {name}")
+            if hasattr(api, 'close_session'):
+                cleanup_tasks.append(api.close_session())
+            elif hasattr(api, "__aexit__"):
+                cleanup_tasks.append(api.__aexit__(None, None, None))
+
+        if cleanup_tasks:
+            try:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                logger.info("All search API sessions cleaned up")
+            except Exception as e:
+                logger.error(f"Error during search API cleanup: {e}")
 
         self._initialized = False
     
@@ -1277,10 +1321,25 @@ class SearchAPIManager:
     async def search_with_fallback(
         self, query: str, config: SearchConfig
     ) -> List[SearchResult]:
-        """Search with automatic failover"""
+        """Search with automatic failover and performance optimizations"""
         # Ensure APIs are initialized
         if not self._initialized:
             await self.initialize()
+
+        # Normalize query for better cache hits
+        normalized_query = self._normalize_query_for_cache(query)
+        cache_key = f"{normalized_query}:{config.max_results}:{config.language}"
+        
+        # Check cache first
+        if self.cache_manager:
+            try:
+                cached = await self.cache_manager.get(cache_key)
+                if cached:
+                    logger.info(f"Cache HIT for normalized query: {normalized_query}")
+                    # Convert cached data back to SearchResult objects
+                    return [SearchResult(**item) for item in cached]
+            except Exception as e:
+                logger.warning(f"Cache get failed: {e}")
 
         for api_name in self.fallback_order:
             if api_name in self.apis:
@@ -1302,6 +1361,16 @@ class SearchAPIManager:
                                     result.content = content
                         # Enhance with snippets if content unavailable
                         results = GoogleCustomSearchAPI.enhance_results_with_snippets(results)
+                        
+                        # Cache results
+                        if self.cache_manager:
+                            try:
+                                # Convert to dict for caching
+                                cache_data = [asdict(r) for r in results]
+                                await self.cache_manager.set(cache_key, cache_data, ttl=3600)
+                            except Exception as e:
+                                logger.warning(f"Cache set failed: {e}")
+                        
                         return results
                 except Exception as e:
                     logger.warning(f"{api_name} failed, trying next: {str(e)}")
@@ -1309,11 +1378,19 @@ class SearchAPIManager:
 
         logger.error("All search APIs failed")
         return []
+    
+    def _normalize_query_for_cache(self, query: str) -> str:
+        """Normalize query to improve cache hit rate"""
+        import re
+        # Remove extra whitespace, quotes, and punctuation
+        normalized = re.sub(r'[^\w\s]', '', query.lower())
+        normalized = ' '.join(normalized.split())
+        return normalized
 
 
-def create_search_manager() -> SearchAPIManager:
+def create_search_manager(cache_manager=None) -> SearchAPIManager:
     """Factory function to create search manager with all APIs"""
-    manager = SearchAPIManager()
+    manager = SearchAPIManager(cache_manager=cache_manager)
 
     # Get API keys from environment
     google_api_key = os.getenv("GOOGLE_SEARCH_API_KEY")

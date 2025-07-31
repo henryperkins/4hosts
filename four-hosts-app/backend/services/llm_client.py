@@ -306,44 +306,8 @@ class LLMClient:
                                 # Return the complete response for tool handling
                                 return op_res
                     
-                    # Extract text from response - Responses API provides output_text directly
-                    if hasattr(op_res, 'output_text') and op_res.output_text:
-                        return op_res.output_text.strip()
-                    
-                    # Fallback: extract from output array if output_text not available
-                    if hasattr(op_res, 'output') and op_res.output:
-                        text_content = ""
-                        for output in op_res.output:
-                            if hasattr(output, 'content') and output.content:
-                                for content_item in output.content:
-                                    if hasattr(content_item, 'text') and content_item.type == 'output_text':
-                                        text_content += content_item.text
-                        if text_content:
-                            return text_content.strip()
-                    
-                    # Try to extract from response object attributes
-                    # Log available attributes for debugging
-                    logger.debug(f"Response attributes: {dir(op_res)}")
-                    
-                    # Check if it's a ChatCompletion-like response
-                    if hasattr(op_res, 'choices') and op_res.choices:
-                        choice = op_res.choices[0]
-                        if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
-                            content = choice.message.content
-                            if content:
-                                return content.strip()
-                    
-                    # Check if response has a direct content attribute
-                    if hasattr(op_res, 'content') and op_res.content:
-                        return str(op_res.content).strip()
-                    
-                    # Check for text attribute
-                    if hasattr(op_res, 'text') and op_res.text:
-                        return op_res.text.strip()
-                    
-                    # Log for debugging if no text found
-                    logger.warning(f"No text content found in response. Response type: {type(op_res)}, attributes: {[attr for attr in dir(op_res) if not attr.startswith('_')][:10]}")
-                    return ""
+                    # Use safe extraction method
+                    return self._extract_content_safely(op_res)
                 else:
                     # Fallback to chat completions if responses API not available
                     op_res = await self.azure_client.chat.completions.create(
@@ -353,8 +317,7 @@ class LLMClient:
                     )
                 if stream:
                     return self._iter_openai_stream(op_res)
-                content = op_res.choices[0].message.content
-                return content.strip() if content else ""
+                return self._extract_content_safely(op_res)
             except Exception as exc:
                 logger.error(f"Azure OpenAI request failed • {exc}")
                 raise
@@ -373,8 +336,7 @@ class LLMClient:
                 )
                 if stream:
                     return self._iter_openai_stream(op_res)
-                content = op_res.choices[0].message.content
-                return content.strip() if content else ""
+                return self._extract_content_safely(op_res)
             except Exception as exc:
                 logger.error(f"OpenAI request failed • {exc}")
                 raise
@@ -441,8 +403,8 @@ class LLMClient:
                 max_tokens=2_000,
             )
             result = {
-                "content": op.choices[0].message.content or "",
-                "tool_calls": op.choices[0].message.tool_calls or [],
+                "content": self._extract_content_safely(op) if not (op.choices and op.choices[0].message.tool_calls) else (op.choices[0].message.content or ""),
+                "tool_calls": op.choices[0].message.tool_calls or [] if op.choices else [],
             }
         # Use OpenAI
         elif self.openai_client:
@@ -460,8 +422,8 @@ class LLMClient:
                 max_tokens=2_000,
             )
             result = {
-                "content": op.choices[0].message.content or "",
-                "tool_calls": op.choices[0].message.tool_calls or [],
+                "content": self._extract_content_safely(op) if not (op.choices and op.choices[0].message.tool_calls) else (op.choices[0].message.content or ""),
+                "tool_calls": op.choices[0].message.tool_calls or [] if op.choices else [],
             }
         else:
             raise RuntimeError("No LLM back-ends configured for tool calling.")
@@ -501,7 +463,7 @@ class LLMClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-            return (op.choices[0].message.content or "").strip()
+            return self._extract_content_safely(op)
         
         # Use OpenAI
         elif self.openai_client:
@@ -511,7 +473,7 @@ class LLMClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-            return (op.choices[0].message.content or "").strip()
+            return self._extract_content_safely(op)
 
         raise RuntimeError("No LLM back-ends configured for conversation.")
 
@@ -560,6 +522,46 @@ class LLMClient:
         
         return task_id
 
+
+    def _extract_content_safely(self, response) -> str:
+        """Safely extract text content from various response types"""
+        if isinstance(response, str):
+            return response.strip()
+        
+        # Handle Azure Responses API response
+        if hasattr(response, 'output_text') and response.output_text:
+            return str(response.output_text).strip()
+        
+        # Handle output array
+        if hasattr(response, 'output') and response.output:
+            text_content = ""
+            for output in response.output:
+                if hasattr(output, 'content') and output.content:
+                    for content_item in output.content:
+                        if hasattr(content_item, 'text') and content_item.type == 'output_text':
+                            text_content += content_item.text
+            if text_content:
+                return text_content.strip()
+        
+        # Handle ChatCompletion-like response
+        if hasattr(response, 'choices') and response.choices:
+            choice = response.choices[0]
+            if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
+                content = choice.message.content
+                if content:
+                    return str(content).strip()
+        
+        # Handle direct content attribute
+        if hasattr(response, 'content') and response.content:
+            return str(response.content).strip()
+        
+        # Handle text attribute
+        if hasattr(response, 'text') and response.text:
+            return str(response.text).strip()
+        
+        # Default fallback
+        logger.warning(f"Could not extract text from response type: {type(response)}")
+        return ""
 
     # ─────────── streaming iterators ───────────
     @staticmethod

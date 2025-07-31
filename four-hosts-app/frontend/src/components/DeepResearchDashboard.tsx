@@ -49,7 +49,7 @@ export const DeepResearchDashboard: React.FC<DeepResearchDashboardProps> = ({ on
       const data = await api.getDeepResearchStatus()
       setDeepResearches((data as { deep_research_queries?: DeepResearchItem[] }).deep_research_queries || [])
     } catch (error) {
-      console.error('Failed to load deep research status:', error)
+      // Failed to load deep research status
       toast.error('Failed to load deep research data')
     } finally {
       setIsLoading(false)
@@ -75,7 +75,7 @@ export const DeepResearchDashboard: React.FC<DeepResearchDashboardProps> = ({ on
       await loadDeepResearches()
     } catch (error) {
       toast.error((error as Error).message || 'Failed to start deep research')
-      console.error('Deep research submission error:', error)
+      // Deep research submission error
     } finally {
       setIsSubmitting(false)
     }
@@ -89,7 +89,7 @@ export const DeepResearchDashboard: React.FC<DeepResearchDashboardProps> = ({ on
       await loadDeepResearches()
     } catch (error) {
       toast.error((error as Error).message || 'Failed to resume deep research')
-      console.error('Resume error:', error)
+      // Resume error
     }
   }
 

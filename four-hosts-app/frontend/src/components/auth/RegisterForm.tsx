@@ -67,7 +67,6 @@ export const RegisterForm: React.FC = () => {
       navigate('/')
     } catch (error) {
       // Error is handled by AuthContext, but we should also show it here
-      console.error('Registration error in form:', error)
       setError(error instanceof Error ? error.message : 'Registration failed')
     } finally {
       setIsLoading(false)

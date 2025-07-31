@@ -34,7 +34,6 @@ export const LoginForm: React.FC = () => {
       }, REDIRECT_DELAY)
     } catch (error) {
       // Error is handled by AuthContext, but we should also show it here
-      console.error('Login error in form:', error)
       setError(error instanceof Error ? error.message : 'Login failed')
       // Add error shake animation
       if (formRef.current) {

@@ -404,6 +404,13 @@ async def lifespan(app: FastAPI):
         await initialise_llm_client()
         logger.info("✓ LLM client initialized")
         
+        # Store search manager for cleanup with cache integration
+        from services.cache import cache_manager
+        search_manager = create_search_manager(cache_manager=cache_manager)
+        await search_manager.initialize()
+        app.state.search_manager = search_manager
+        logger.info("✓ Search manager initialized with cache")
+        
         # Initialize unified research orchestrator (includes Brave MCP)
         try:
             from services.unified_research_orchestrator import initialize_unified_orchestrator
@@ -455,21 +462,66 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
+    # Enhanced Shutdown
     logger.info("🛑 Shutting down Four Hosts Research API...")
 
-    # Stop self-healing system
-    await self_healing_system.stop()
-    logger.info("✓ Self-healing system stopped")
+    try:
+        # Stop self-healing system
+        await self_healing_system.stop()
+        logger.info("✓ Self-healing system stopped")
 
-    # Cleanup research orchestrator
-    if hasattr(research_orchestrator, "cleanup"):
-        await research_orchestrator.cleanup()
-        logger.info("✓ Research orchestrator cleaned up")
+        # Cleanup search manager
+        if hasattr(app.state, 'search_manager'):
+            await app.state.search_manager.cleanup()
+            logger.info("✓ Search manager cleaned up")
 
-    # Cleanup connections
-    await connection_manager.disconnect_all()
-    logger.info("✓ WebSocket connections cleaned up")
+        # Cleanup background LLM manager
+        from services.background_llm import background_llm_manager
+        if background_llm_manager:
+            await background_llm_manager.cleanup()
+            logger.info("✓ Background LLM manager cleaned up")
+        
+        # Cleanup research orchestrator
+        if hasattr(research_orchestrator, "cleanup"):
+            await research_orchestrator.cleanup()
+            logger.info("✓ Research orchestrator cleaned up")
+
+        # Cleanup connections
+        await connection_manager.disconnect_all()
+        logger.info("✓ WebSocket connections cleaned up")
+
+        # Graceful task shutdown using task registry
+        from services.task_registry import task_registry
+        
+        # Show active tasks before shutdown
+        active_tasks = await task_registry.get_active_tasks()
+        if active_tasks:
+            logger.info(f"Active tasks before shutdown: {len(active_tasks)}")
+            for task_id, info in active_tasks.items():
+                logger.debug(f"  - {info['name']} (priority: {info['priority']}, done: {info['done']})")
+        
+        # Perform graceful shutdown with 30 second timeout
+        shutdown_results = await task_registry.graceful_shutdown(timeout=30.0)
+        
+        # Log shutdown results
+        if shutdown_results:
+            completed = sum(1 for r in shutdown_results.values() if r == "completed")
+            cancelled = sum(1 for r in shutdown_results.values() if r == "cancelled")
+            failed = sum(1 for r in shutdown_results.values() if "failed" in r)
+            logger.info(f"Task shutdown complete: {completed} completed, {cancelled} cancelled, {failed} failed")
+        
+        # Final cleanup of any untracked tasks (shouldn't be any if everything uses the registry)
+        remaining_tasks = [task for task in asyncio.all_tasks() if not task.done() and task != asyncio.current_task()]
+        if remaining_tasks:
+            logger.warning(f"Found {len(remaining_tasks)} untracked tasks, cancelling...")
+            for task in remaining_tasks:
+                task.cancel()
+            await asyncio.gather(*remaining_tasks, return_exceptions=True)
+
+    except asyncio.CancelledError:
+        logger.info("Shutdown cancelled - this is normal during graceful shutdown")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
 
     logger.info("👋 Shutdown complete")
 
@@ -482,28 +534,39 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Middleware
+# Enhanced CORS and security middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        "http://localhost:5174",
         "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://0.0.0.0:5173",
         "https://api.4hosts.ai",
-        "http://app.lakefrontdigital.io",
         "https://app.lakefrontdigital.io",
-        "http://lakefrontdigital.io",
-        "https://lakefrontdigital.io",
-        # Note: Cannot use "*" with allow_credentials=True
-    ],
+        # Remove wildcard in production
+    ] if os.getenv("ENVIRONMENT") == "production" else ["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
-    allow_headers=["*", "Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
-    expose_headers=["Content-Length", "X-Request-ID", "Set-Cookie", "Authorization"],
-    max_age=6000,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["*"],
+    max_age=600,
 )
+
+
+# Add security middleware to block malicious requests
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    """Block malicious requests early"""
+    path = request.url.path.lower()
+    
+    # Block PHP file requests
+    if path.endswith(('.php', '.asp', '.jsp')):
+        return Response(status_code=403, content="Forbidden")
+    
+    # Block common attack patterns
+    attack_patterns = ['/admin', '/wp-admin', '/.env', '/config']
+    if any(pattern in path for pattern in attack_patterns):
+        return Response(status_code=403, content="Forbidden")
+    
+    return await call_next(request)
 
 
 # Handle OPTIONS requests before authentication
@@ -522,9 +585,10 @@ async def handle_options(request: Request, call_next):
     return await call_next(request)
 
 
-app.add_middleware(
-    TrustedHostMiddleware, allowed_hosts=os.getenv("ALLOWED_HOSTS", "*").split(",")
-)
+# Enhanced trusted host middleware
+allowed_hosts = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,api.4hosts.ai").split(",")
+if os.getenv("ENVIRONMENT") == "production":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -553,6 +617,42 @@ async def request_id_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
     return response
+
+
+# System Status Endpoint
+@app.get("/system/tasks")
+async def get_active_tasks(current_user: Any = Depends(get_current_user)):
+    """Get information about active background tasks"""
+    from services.task_registry import task_registry
+    
+    # Only admins can view system tasks
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    active_tasks = await task_registry.get_active_tasks()
+    
+    # Group by priority
+    tasks_by_priority = {
+        "critical": [],
+        "high": [],
+        "normal": [],
+        "low": []
+    }
+    
+    for task_id, info in active_tasks.items():
+        tasks_by_priority[info["priority"]].append({
+            "id": task_id,
+            "name": info["name"],
+            "created_at": info["created_at"],
+            "done": info["done"],
+            "cancelled": info["cancelled"]
+        })
+    
+    return {
+        "total_active_tasks": len(active_tasks),
+        "tasks_by_priority": tasks_by_priority,
+        "is_shutting_down": task_registry.is_shutting_down()
+    }
 
 
 # Root Endpoint

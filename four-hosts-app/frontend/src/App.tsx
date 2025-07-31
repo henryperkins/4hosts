@@ -442,7 +442,7 @@ const ResearchResultPage = () => {
         
         setResults(data)
       } catch (err) {
-        console.error('Failed to load research results:', err)
+        // Failed to load research results
         setError('Failed to load research results')
       } finally {
         setIsLoading(false)
