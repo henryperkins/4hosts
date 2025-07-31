@@ -24,7 +24,18 @@ interface ProgressUpdate {
   timestamp: string
 }
 
-interface WebSocketData {
+interface PhaseMetricsPayload {
+  accuracy?: number
+  time?: string
+  compression?: number
+  relevance?: number
+  coverage?: number
+  quality?: number
+  coherence?: number
+  paradigm_fit?: number
+}
+
+interface WebSocketData extends PhaseMetricsPayload {
   status?: 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
   progress?: number
   message?: string
@@ -39,9 +50,14 @@ interface WebSocketData {
   after_count?: number
   removed?: number
   phase?: string
-  old_phase?: string
+  old_phase?: 'classification' | 'context_engineering' | 'search' | 'synthesis'
   new_phase?: string
-  source?: any
+  source?: {
+    title: string
+    domain: string
+    snippet?: string
+    credibility_score?: number
+  }
   total_sources?: number
   source_id?: string
   analyzed_count?: number
@@ -138,13 +154,13 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
 
   useEffect(() => {
     setIsConnecting(true)
-      
-      api.connectWebSocket(researchId, (message) => {
-        setIsConnecting(false)
-        const data = message.data as any
-        
+api.connectWebSocket(researchId, (message) => {
+  setIsConnecting(false)
+  const data = message.data as Partial<WebSocketData>
+
+
         let statusUpdate: WebSocketData | undefined
-        
+
         switch (message.type) {
           case 'research_progress':
             statusUpdate = {
@@ -157,7 +173,12 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
             statusUpdate = {
               message: `Phase changed: ${data.old_phase} → ${data.new_phase}`
             }
-            updatePhaseScores(data.old_phase, data)
+            if (data.old_phase) {
+              const {
+                accuracy, time, compression, relevance, coverage, quality, coherence, paradigm_fit
+              } = data
+              updatePhaseScores(data.old_phase, { accuracy, time, compression, relevance, coverage, quality, coherence, paradigm_fit })
+            }
             break
           case 'source_found':
             statusUpdate = {
@@ -165,12 +186,14 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
             }
             if (data.source) {
               setSourcePreviews(prev => [...prev.slice(-4), {
-                title: data.source.title,
-                domain: data.source.domain,
-                snippet: data.source.snippet,
-                credibility: data.source.credibility_score
+                title: data.source?.title ?? 'Unknown',
+                domain: data.source?.domain ?? 'unknown',
+                snippet: data.source?.snippet,
+                credibility: data.source?.credibility_score
               }])
-              updateQualityMetrics('source', data.source.credibility_score)
+              if (typeof data.source?.credibility_score === 'number') {
+                updateQualityMetrics('source', data.source.credibility_score)
+              }
             }
             break
           case 'source_analyzed':
@@ -208,18 +231,20 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
             statusUpdate = {
               message: `Found ${data.results_count} results`
             }
-            setStats(prev => ({ 
-              ...prev, 
+            setStats(prev => ({
+              ...prev,
               searchesCompleted: prev.searchesCompleted + 1,
               sourcesFound: prev.sourcesFound + (data.results_count || 0)
             }))
-            updateQualityMetrics('search', data.results_count)
+            if (typeof data.results_count === 'number') {
+              updateQualityMetrics('search', data.results_count)
+            }
             break
           case 'credibility.check':
             statusUpdate = {
-              message: `Checking credibility: ${data.domain} (${(data.score * 100).toFixed(0)}%)`
+              message: `Checking credibility: ${data.domain ?? 'unknown'} (${typeof data.score === 'number' ? (data.score * 100).toFixed(0) : '0'}%)`
             }
-            if (data.score > 0.7) {
+            if (typeof data.score === 'number' && data.score > 0.7) {
               setStats(prev => ({ ...prev, highQualitySources: prev.highQualitySources + 1 }))
             }
             break
@@ -235,7 +260,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
               message: data.message
             }
         }
-        
+
         const update: ProgressUpdate = {
           status: statusUpdate.status || currentStatus,
           progress: statusUpdate.progress,
@@ -252,11 +277,11 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
           }, 100)
           return newUpdates
         })
-        
+
         if (data.status) {
           setCurrentStatus(data.status)
         }
-        
+
         if (data.progress !== undefined) {
           setProgress(data.progress)
         }
@@ -264,7 +289,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
         if (data.status === 'completed' && onComplete) {
           onComplete()
         }
-        
+
         if (data.status === 'cancelled' && onCancel) {
           onCancel()
         }
@@ -275,21 +300,21 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
     }
   }, [researchId, currentStatus, onComplete, onCancel])
 
-  const updateQualityMetrics = (type: string, value: any) => {
+  const updateQualityMetrics = (type: 'source' | 'search' | 'paradigm' | 'confidence', value: number) => {
     setQualityMetrics(prev => {
       const newMetrics = { ...prev }
-      
+
       switch (type) {
         case 'source':
-          const credibilityScore = value * 100
+          { const credibilityScore = value * 100
           newMetrics.sourceQualityScore = Math.round(
-            (prev.sourceQualityScore * stats.sourcesAnalyzed + credibilityScore) / 
+            (prev.sourceQualityScore * stats.sourcesAnalyzed + credibilityScore) /
             (stats.sourcesAnalyzed + 1)
           )
-          break
+          break }
         case 'search':
           if (value > 0) {
-            newMetrics.searchEffectiveness = Math.min(100, 
+            newMetrics.searchEffectiveness = Math.min(100,
               Math.round((stats.sourcesFound + value) / (stats.totalSearches * 10) * 100)
             )
           }
@@ -301,15 +326,27 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
           newMetrics.answerConfidence = Math.round(value * 100)
           break
       }
-      
+
       return newMetrics
     })
   }
 
-  const updatePhaseScores = (phase: string, data: any) => {
+  const updatePhaseScores = (
+    phase: 'classification' | 'context_engineering' | 'search' | 'synthesis',
+    data: Partial<{
+      accuracy: number
+      time: string
+      compression: number
+      relevance: number
+      coverage: number
+      quality: number
+      coherence: number
+      paradigm_fit: number
+    }>
+  ) => {
     setPhaseScores(prev => {
       const newScores = { ...prev }
-      
+
       switch (phase) {
         case 'classification':
           newScores.classification = {
@@ -336,7 +373,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
           }
           break
       }
-      
+
       return newScores
     })
   }
@@ -354,7 +391,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
 
   const getStatusType = (): StatusType => {
     if (isConnecting) return 'processing'
-    
+
     switch (currentStatus) {
       case 'pending': return 'pending'
       case 'processing':
@@ -441,13 +478,13 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
       searchEffectiveness: 0.3,
       answerConfidence: 0.2
     }
-    
-    const score = 
+
+    const score =
       qualityMetrics.sourceQualityScore * weights.sourceQuality +
       qualityMetrics.paradigmAlignment * weights.paradigmAlignment +
       qualityMetrics.searchEffectiveness * weights.searchEffectiveness +
       qualityMetrics.answerConfidence * weights.answerConfidence
-    
+
     return Math.round(score)
   }
 
@@ -502,7 +539,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
               </Button>
             </div>
           </div>
-          
+
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className={cn("rounded-lg p-3 transition-all", getMetricBgColor(qualityMetrics.sourceQualityScore))}>
               <div className="flex items-center justify-between">
@@ -519,7 +556,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
                 />
               </div>
             </div>
-            
+
             <div className={cn("rounded-lg p-3 transition-all", getMetricBgColor(qualityMetrics.paradigmAlignment))}>
               <div className="flex items-center justify-between">
                 <Target className="h-4 w-4 opacity-50" />
@@ -535,7 +572,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
                 />
               </div>
             </div>
-            
+
             <div className={cn("rounded-lg p-3 transition-all", getMetricBgColor(qualityMetrics.searchEffectiveness))}>
               <div className="flex items-center justify-between">
                 <TrendingUp className="h-4 w-4 opacity-50" />
@@ -551,7 +588,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
                 />
               </div>
             </div>
-            
+
             <div className={cn("rounded-lg p-3 transition-all", getMetricBgColor(qualityMetrics.answerConfidence))}>
               <div className="flex items-center justify-between">
                 <Brain className="h-4 w-4 opacity-50" />
@@ -582,7 +619,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
             shimmer
             className="mb-4"
           />
-          
+
           {/* Enhanced Research Phases with Scores */}
           <div className="mb-4 bg-gray-50 dark:bg-gray-800/30 rounded-lg p-4">
             <div className="flex justify-between items-center gap-2">
@@ -591,15 +628,15 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
                   <div className="flex flex-col items-center flex-1">
                     <div className={cn(
                       "p-2 rounded-full mb-1 transition-all duration-300 relative",
-                      phase.isCompleted ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400' : 
-                      phase.isActive ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 animate-pulse' : 
+                      phase.isCompleted ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400' :
+                      phase.isActive ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 animate-pulse' :
                       'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600'
                     )}>
                       {phase.isCompleted ? <CheckCircle className="h-4 w-4" /> : phase.icon}
                       {phase.score !== undefined && phase.score > 0 && (
-                        <Badge 
-                          variant="default" 
-                          size="sm" 
+                        <Badge
+                          variant="default"
+                          size="sm"
                           className={cn(
                             "absolute -top-2 -right-2 text-xs",
                             getMetricColor(phase.score)
@@ -628,7 +665,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
               ))}
             </div>
           </div>
-          
+
           {/* Enhanced Statistics with Trends */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
             <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3 relative overflow-hidden">
@@ -676,7 +713,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
         </>
       )}
 
-      <div 
+      <div
         ref={updatesContainerRef}
         className="space-y-2 max-h-64 overflow-y-auto"
         role="log"
@@ -687,7 +724,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
           const isSearchCompleted = update.message?.includes('Found') && update.message?.includes('results')
           const resultsMatch = update.message?.match(/Found (\d+) results/)
           const resultsCount = resultsMatch ? parseInt(resultsMatch[1]) : 0
-          
+
           return (
             <div
               key={index}
@@ -702,8 +739,8 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
                 </p>
                 {isSearchCompleted && resultsCount > 0 && (
                   <div className="mt-1">
-                    <Badge 
-                      variant={resultsCount > 10 ? 'success' : resultsCount > 5 ? 'warning' : 'default'} 
+                    <Badge
+                      variant={resultsCount > 10 ? 'success' : resultsCount > 5 ? 'warning' : 'default'}
                       size="sm"
                     >
                       {resultsCount} results
@@ -733,7 +770,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
           </p>
         </div>
       )}
-      
+
       {updates.length === 0 && isConnecting && (
         <div className="text-center py-8">
           <LoadingSpinner
@@ -743,7 +780,7 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
           />
         </div>
       )}
-      
+
       {/* Enhanced Source Previews with Quality Indicators */}
       {sourcePreviews.length > 0 && showSourcePreviews && (
         <div className="mt-4 border-t border-border pt-4">

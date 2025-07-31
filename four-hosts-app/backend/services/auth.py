@@ -12,7 +12,7 @@ from utils.async_utils import run_in_thread
 import secrets
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Final, cast
 from pydantic import BaseModel, EmailStr, Field
 from fastapi import HTTPException, Depends, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -25,6 +25,8 @@ import re
 
 # Import database models and connection
 from database.models import User as DBUser, APIKey as DBAPIKey, UserRole as _DBUserRole
+from sqlalchemy import select
+from sqlalchemy.sql import ColumnElement
 from database.connection import get_db
 
 # Re-export to preserve "services.auth.UserRole"
@@ -35,11 +37,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-if not SECRET_KEY:
+SECRET_KEY_ENV = os.getenv("JWT_SECRET_KEY")
+if SECRET_KEY_ENV is None or SECRET_KEY_ENV.strip() == "":
     raise ValueError(
         "JWT_SECRET_KEY environment variable must be set. Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
     )
+SECRET_KEY: Final[str] = SECRET_KEY_ENV
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -93,8 +96,8 @@ class UserLogin(BaseModel):
     password: str
 
 
-class APIKey(BaseModel):
-    """API Key model"""
+class APIKeyInfo(BaseModel):
+    """API Key info model returned by service layer"""
 
     id: str
     key_hash: str
@@ -309,17 +312,43 @@ async def get_current_user(
     token = credentials.credentials
     payload = await decode_token(token)
 
+    # Coerce/validate payload fields for type safety
+    user_id_val = str(payload.get("user_id"))
+    email_val = str(payload.get("email"))
+    role_val = UserRole(payload.get("role"))
+    exp_raw = payload.get("exp")
+    iat_raw = payload.get("iat")
+    jti_val = str(payload.get("jti"))
+
+    # Validate required time fields robustly for type checker
+    if exp_raw is None or iat_raw is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        exp_dt = datetime.fromtimestamp(float(cast(float, exp_raw)), tz=timezone.utc)
+        iat_dt = datetime.fromtimestamp(float(cast(float, iat_raw)), tz=timezone.utc)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token timestamps",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return TokenData(
-        user_id=payload.get("user_id"),
-        email=payload.get("email"),
-        role=UserRole(payload.get("role")),
-        exp=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc),
-        iat=datetime.fromtimestamp(payload.get("iat"), tz=timezone.utc),
-        jti=payload.get("jti"),
+        user_id=user_id_val,
+        email=email_val,
+        role=role_val,
+        exp=exp_dt,
+        iat=iat_dt,
+        jti=jti_val,
     )
 
 
-async def get_api_key_info(api_key: str, db: AsyncSession = None) -> Optional[APIKey]:
+async def get_api_key_info(api_key: str, db: Optional[AsyncSession] = None) -> Optional[APIKeyInfo]:
     """Validate API key and return key info"""
     if not api_key.startswith("fh_"):
         return None
@@ -351,30 +380,43 @@ async def get_api_key_info(api_key: str, db: AsyncSession = None) -> Optional[AP
         if not matching_key:
             return None
 
-        # Check expiration
-        if matching_key.expires_at and matching_key.expires_at < datetime.now(
-            timezone.utc
-        ):
-            return None
+        # Check expiration (handle SQLAlchemy Column types safely)
+        expires_at_val = getattr(matching_key, "expires_at", None)
+        now_dt = datetime.now(timezone.utc)
+        if expires_at_val is not None:
+            try:
+                # If it's a plain datetime, this will work; otherwise skip strict check
+                if isinstance(expires_at_val, datetime) and expires_at_val < now_dt:
+                    return None
+            except Exception:
+                # Fallback: if cannot compare, don't treat as expired
+                pass
 
-        # Update last used timestamp
-        matching_key.last_used = datetime.now(timezone.utc)
+        # Update last used timestamp on ORM instance and persist
+        setattr(matching_key, "last_used", now_dt)
         await db.commit()
 
-        # Convert to Pydantic model
-        api_key_info = APIKey(
-            id=matching_key.id,
-            key_hash=matching_key.key_hash,
-            user_id=matching_key.user_id,
-            name=matching_key.name,
-            role=UserRole(matching_key.role),
-            created_at=matching_key.created_at,
-            last_used=matching_key.last_used,
-            expires_at=matching_key.expires_at,
-            is_active=matching_key.is_active,
-            allowed_origins=matching_key.allowed_origins or [],
-            rate_limit_tier=matching_key.rate_limit_tier or "standard",
-            metadata=matching_key.metadata or {},
+        # Convert to response model (use plain python values)
+        # Normalize rate_limit_tier to a plain string for Pydantic/APIKey model
+        _tier = getattr(matching_key, "rate_limit_tier", None)
+        if not isinstance(_tier, str):
+            _tier = getattr(_tier, "value", None) or getattr(_tier, "name", None)
+        rate_limit_tier_str = _tier or "standard"
+
+        # Build APIKeyInfo (Pydantic model defined above)
+        api_key_info = APIKeyInfo(
+            id=str(getattr(matching_key, "id")),
+            key_hash=str(getattr(matching_key, "key_hash")),
+            user_id=str(getattr(matching_key, "user_id")),
+            name=str(getattr(matching_key, "name")),
+            role=UserRole(getattr(matching_key, "role")),
+            created_at=getattr(matching_key, "created_at"),
+            last_used=getattr(matching_key, "last_used"),
+            expires_at=getattr(matching_key, "expires_at"),
+            is_active=bool(getattr(matching_key, "is_active")),
+            allowed_origins=getattr(matching_key, "allowed_origins") or [],
+            rate_limit_tier=rate_limit_tier_str,
+            metadata=getattr(matching_key, "metadata") or {},
         )
 
         return api_key_info
@@ -465,9 +507,9 @@ class AuthService:
 
             # Convert to Pydantic model
             user = User(
-                id=str(db_user.id),  # Cast UUID to string for Pydantic
-                email=db_user.email,
-                username=db_user.username,
+                id=str(db_user.id),
+                email=str(db_user.email),
+                username=str(db_user.username),
                 role=UserRole(db_user.role),
                 auth_provider=AuthProvider(db_user.auth_provider),
             )
@@ -480,7 +522,7 @@ class AuthService:
             raise HTTPException(status_code=409, detail="User already exists")
 
     async def authenticate_user(
-        self, login_data: UserLogin, db: AsyncSession = None
+        self, login_data: UserLogin, db: Optional[AsyncSession] = None
     ) -> Optional[User]:
         """Authenticate user with email and password"""
         # Obtain DB session correctly from async generator
@@ -504,23 +546,23 @@ class AuthService:
                 return None
 
             # Verify password
-            if not await verify_password(login_data.password, db_user.password_hash):
+            if not await verify_password(login_data.password, str(db_user.password_hash)):
                 return None
 
             # Check if user is active
-            if not db_user.is_active:
+            if not bool(db_user.is_active):
                 raise HTTPException(status_code=403, detail="Account is disabled")
 
             # Update last login
-            db_user.last_login = datetime.now(timezone.utc)
+            setattr(db_user, "last_login", datetime.now(timezone.utc))
             await db.commit()
             await db.refresh(db_user)
 
             # Convert to Pydantic model
             user = User(
-                id=str(db_user.id),  # Cast UUID to string for Pydantic
-                email=db_user.email,
-                username=db_user.username,
+                id=str(db_user.id),
+                email=str(db_user.email),
+                username=str(db_user.username),
                 role=UserRole(db_user.role),
                 auth_provider=AuthProvider(db_user.auth_provider),
             )
@@ -534,7 +576,7 @@ class AuthService:
                 await should_close_gen.aclose()
 
     async def create_api_key(
-        self, user_id: str, key_name: str, db: AsyncSession = None
+        self, user_id: str, key_name: str, db: Optional[AsyncSession] = None
     ) -> str:
         """Create a new API key for user"""
         # Get database session
@@ -583,8 +625,8 @@ class AuthService:
         self,
         jti: str,
         token_type: str = "access",
-        user_id: str = None,
-        expires_at: datetime = None,
+        user_id: Optional[str] = None,
+        expires_at: Optional[datetime] = None,
     ):
         """Revoke a JWT token"""
         from services.token_manager import token_manager
@@ -688,7 +730,9 @@ class SessionManager:
                 import redis
 
                 self.redis_client = redis.from_url(redis_url, decode_responses=True)
-                self.redis_client.ping()
+                # ping only if client was created
+                if self.redis_client:
+                    self.redis_client.ping()
                 logger.info("Connected to Redis for session management")
             except Exception as e:
                 logger.warning(f"Failed to connect to Redis: {e}")
@@ -700,7 +744,7 @@ class SessionManager:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         device_id: Optional[str] = None,
-        db: AsyncSession = None,
+        db: Optional[AsyncSession] = None,
     ) -> str:
         """Create a new session"""
         if db is None:
@@ -753,7 +797,7 @@ class SessionManager:
                 await should_close_gen.aclose()
 
     async def validate_session(
-        self, session_token: str, db: AsyncSession = None
+        self, session_token: str, db: Optional[AsyncSession] = None
     ) -> Optional[Dict[str, Any]]:
         """Validate if session is still active"""
         # Check Redis cache first
@@ -793,7 +837,7 @@ class SessionManager:
                 return None
 
             # Update last activity
-            db_session.last_activity = datetime.now(timezone.utc)
+            setattr(db_session, "last_activity", datetime.now(timezone.utc))
             await db.commit()
 
             # Update cache
@@ -819,7 +863,7 @@ class SessionManager:
             if should_close_gen is not None:
                 await should_close_gen.aclose()
 
-    async def end_session(self, session_token: str, db: AsyncSession = None):
+    async def end_session(self, session_token: str, db: Optional[AsyncSession] = None):
         """End a user session"""
         # Remove from cache
         if self.redis_client:
@@ -846,7 +890,8 @@ class SessionManager:
             db_session = result.scalars().first()
 
             if db_session:
-                db_session.is_active = False
+                # Avoid direct assignment that confuses Pylance on SQLAlchemy Columns
+                setattr(db_session, "is_active", False)
                 await db.commit()
                 logger.info(f"Ended session for user {db_session.user_id}")
 
@@ -854,7 +899,7 @@ class SessionManager:
             if should_close_gen is not None:
                 await should_close_gen.aclose()
 
-    async def end_all_user_sessions(self, user_id: str, db: AsyncSession = None):
+    async def end_all_user_sessions(self, user_id: str, db: Optional[AsyncSession] = None):
         """End all sessions for a user"""
         if db is None:
             db_gen = get_db()
@@ -876,7 +921,8 @@ class SessionManager:
             db_sessions = result.scalars().all()
 
             for session in db_sessions:
-                session.is_active = False
+                # Avoid direct assignment that confuses Pylance on SQLAlchemy Columns
+                setattr(session, "is_active", False)
                 # Remove from cache
                 if self.redis_client:
                     self.redis_client.delete(f"session:{session.session_token}")

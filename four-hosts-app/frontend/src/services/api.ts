@@ -162,7 +162,7 @@ class APIService {
         method: 'POST',
         body: JSON.stringify({ refresh_token: refreshToken })
       })
-    } catch (error) {
+    } catch {
       // If logout fails (e.g., 401), we still want to clear local tokens
       console.log('Logout request failed, clearing local tokens anyway')
     }
@@ -434,7 +434,7 @@ class APIService {
     }
   }
 
-  async getDeepResearchStatus(): Promise<any> {
+  async getDeepResearchStatus(): Promise<Record<string, unknown>> {
     const response = await this.fetchWithAuth('/research/deep/status')
 
     if (!response.ok) {
@@ -446,7 +446,7 @@ class APIService {
   }
 
   // Source credibility
-  async getSourceCredibility(domain: string, paradigm: Paradigm): Promise<any> {
+  async getSourceCredibility(domain: string, paradigm: Paradigm): Promise<Record<string, unknown>> {
     const response = await this.fetchWithAuth(`/sources/credibility/${domain}?paradigm=${paradigm}`)
 
     if (!response.ok) {

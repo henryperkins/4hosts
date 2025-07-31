@@ -302,7 +302,7 @@ const ResearchPage = () => {
             setShowProgress(false)
             clearInterval(pollIntervalRef.current!)
           }
-        } catch (error) {
+        } catch {
           // API error - continue polling if not at max retries
           if (retries >= maxRetries) {
             setError('Research timeout - please try again')

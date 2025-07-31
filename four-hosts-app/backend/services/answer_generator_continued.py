@@ -5,7 +5,6 @@ Plus the main orchestrator
 
 from .answer_generator import (
     BaseAnswerGenerator,
-    Citation,
     AnswerSection,
     GeneratedAnswer,
     SynthesisContext,
@@ -14,7 +13,6 @@ from .answer_generator import (
 )
 from typing import Dict, List, Any, Optional
 from datetime import datetime
-import asyncio
 import logging
 from .llm_client import llm_client
 from .mesh_network import mesh_network_service, IntegratedSynthesis
@@ -106,11 +104,11 @@ Write a {context.max_length} word analysis with scientific rigor and clarity.
             content = result.get('content', '')
             if not content or content == 'No content available':
                 content = result.get('snippet', 'No abstract available')
-            
+
             # Truncate to reasonable length
             if len(content) > 300:
                 content = content[:300] + '...'
-            
+
             formatted.append(
                 f"""
 [{i}] {result.get('title', 'Untitled')}
@@ -201,6 +199,17 @@ Maintain academic objectivity and precision.
             max_tokens=int(context.max_length * section_def["weight"] * 2),
         )
 
+        # Ensure content is a string (handle AsyncIterator case)
+        if hasattr(content, '__aiter__') or str(type(content)).find('AsyncIterator') != -1:
+            # It's an AsyncIterator, collect all chunks
+            content_str = ""
+            async for chunk in content:
+                content_str += chunk
+            content = content_str
+        elif not isinstance(content, str):
+            # Handle other non-string types
+            content = str(content)
+
         # Extract citations from content
         citation_ids = self._extract_and_create_citations(content, relevant_results)
 
@@ -217,7 +226,7 @@ Maintain academic objectivity and precision.
             key_insights=insights,
         )
 
-    
+
 
     def _filter_results_for_section(
         self, results: List[Dict[str, Any]], section_def: Dict[str, Any]
@@ -448,11 +457,11 @@ Write a {context.max_length} word strategic analysis with clear action steps.
             content = result.get('content', '')
             if not content or content == 'No content available':
                 content = result.get('snippet', 'No insight available')
-            
+
             # Truncate to reasonable length
             if len(content) > 300:
                 content = content[:300] + '...'
-            
+
             formatted.append(
                 f"""
 [{i}] {result.get('title', 'Untitled')}
@@ -540,6 +549,17 @@ Include frameworks, tools, and methodologies where applicable.
             max_tokens=int(context.max_length * section_def["weight"] * 2),
         )
 
+        # Ensure content is a string (handle AsyncIterator case)
+        if hasattr(content, '__aiter__') or str(type(content)).find('AsyncIterator') != -1:
+            # It's an AsyncIterator, collect all chunks
+            content_str = ""
+            async for chunk in content:
+                content_str += chunk
+            content = content_str
+        elif not isinstance(content, str):
+            # Handle other non-string types
+            content = str(content)
+
         # Extract citations from content
         citation_ids = self._extract_and_create_citations(content, relevant_results)
 
@@ -556,7 +576,7 @@ Include frameworks, tools, and methodologies where applicable.
             key_insights=insights,
         )
 
-    
+
 
     def _filter_results_for_section(
         self, results: List[Dict[str, Any]], section_def: Dict[str, Any]
@@ -749,7 +769,7 @@ class AnswerGenerationOrchestrator:
         query: str,
         search_results: List[Dict[str, Any]],
         context_engineering: Dict[str, Any],
-        options: Dict[str, Any] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> GeneratedAnswer:
         """Generate answer for specified paradigm"""
 
@@ -802,7 +822,7 @@ class AnswerGenerationOrchestrator:
         primary_results: List[Dict[str, Any]],
         secondary_results: List[Dict[str, Any]],
         context_engineering: Dict[str, Any],
-        options: Dict[str, Any] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> IntegratedSynthesis:
         """Generate answer combining multiple paradigms using the Mesh Network Service."""
 
