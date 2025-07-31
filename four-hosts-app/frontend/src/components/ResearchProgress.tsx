@@ -36,6 +36,20 @@ interface WebSocketData {
   before_count?: number
   after_count?: number
   removed?: number
+  phase?: string
+  old_phase?: string
+  new_phase?: string
+  source?: {
+    title: string
+    domain: string
+    snippet: string
+    credibility_score: number
+  }
+  total_sources?: number
+  source_id?: string
+  analyzed_count?: number
+  duration_seconds?: number
+  error?: string
 }
 
 interface ResearchPhase {
@@ -84,7 +98,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
       
       api.connectWebSocket(researchId, (message) => {
         setIsConnecting(false)
-        const data = message.data as any
+        const data = message.data as WebSocketData
         
         // Handle different message types
         let statusUpdate: WebSocketData | undefined
@@ -109,10 +123,10 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             // Add source to previews
             if (data.source) {
               setSourcePreviews(prev => [...prev.slice(-4), {
-                title: data.source.title,
-                domain: data.source.domain,
-                snippet: data.source.snippet,
-                credibility: data.source.credibility_score
+                title: data.source!.title,
+                domain: data.source!.domain,
+                snippet: data.source!.snippet,
+                credibility: data.source!.credibility_score
               }])
             }
             break
@@ -158,9 +172,9 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             break
           case 'credibility.check':
             statusUpdate = {
-              message: `Checking credibility: ${data.domain} (${(data.score * 100).toFixed(0)}%)`
+              message: `Checking credibility: ${data.domain} (${((data.score ?? 0) * 100).toFixed(0)}%)`
             }
-            if (data.score > 0.7) {
+            if ((data.score ?? 0) > 0.7) {
               setStats(prev => ({ ...prev, highQualitySources: prev.highQualitySources + 1 }))
             }
             break
@@ -223,7 +237,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     try {
       await api.cancelResearch(researchId)
       // Status will be updated via WebSocket
-    } catch (error) {
+    } catch {
       // Failed to cancel research
       // You might want to show a toast error here
     } finally {

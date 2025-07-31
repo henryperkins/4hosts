@@ -5,7 +5,7 @@ Phase 5: Production-Ready Features
 
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
@@ -16,7 +16,6 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Text,
-    JSON,
     ForeignKey,
     Table,
     Index,
@@ -24,11 +23,10 @@ from sqlalchemy import (
     CheckConstraint,
     Enum,
     ARRAY,
-    func,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, backref
+from sqlalchemy.orm import relationship
 from sqlalchemy.ext.hybrid import hybrid_property
 
 Base = declarative_base()

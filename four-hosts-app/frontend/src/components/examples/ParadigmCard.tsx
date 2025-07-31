@@ -9,7 +9,7 @@ interface ParadigmCardProps {
   onClick?: () => void;
 }
 
-const paradigmStyles: Record<HostParadigm, {
+const paradigmStyles: Record<Paradigm, {
   container: string;
   title: string;
   description: string;

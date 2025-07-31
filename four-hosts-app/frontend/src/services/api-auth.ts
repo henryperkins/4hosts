@@ -56,7 +56,7 @@ export class AuthErrorHandler {
       if (refreshToken) {
         localStorage.setItem('refresh_token', refreshToken);
       }
-    } catch (error) {
+    } catch {
       // Failed to store authentication tokens
       throw new Error('Browser storage unavailable. Please enable cookies and try again.');
     }
@@ -68,7 +68,7 @@ export class AuthErrorHandler {
   static getRefreshToken(): string | null {
     try {
       return localStorage.getItem('refresh_token');
-    } catch (error) {
+    } catch {
       // Failed to retrieve refresh token
       return null;
     }
@@ -81,7 +81,7 @@ export class AuthErrorHandler {
     try {
       localStorage.removeItem('auth_token');
       localStorage.removeItem('refresh_token');
-    } catch (error) {
+    } catch {
       // Failed to clear authentication tokens
     }
   }

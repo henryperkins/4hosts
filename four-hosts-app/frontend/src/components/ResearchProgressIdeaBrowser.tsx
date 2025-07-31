@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { Clock, X, Search, Database, Brain, CheckCircle, Zap, TrendingUp, BarChart3, Activity, Target, Award, AlertTriangle } from 'lucide-react'
 import { format } from 'date-fns'
 import { Button } from './ui/Button'
@@ -152,6 +152,37 @@ export const ResearchProgressIdeaBrowser: React.FC<ResearchProgressIdeaBrowserPr
   const [showMetricsDashboard, setShowMetricsDashboard] = useState(true)
   const updatesContainerRef = useRef<HTMLDivElement>(null)
 
+  const updateQualityMetrics = useCallback((type: 'source' | 'search' | 'paradigm' | 'confidence', value: number) => {
+    setQualityMetrics(prev => {
+      const newMetrics = { ...prev }
+
+      switch (type) {
+        case 'source':
+          { const credibilityScore = value * 100
+          newMetrics.sourceQualityScore = Math.round(
+            (prev.sourceQualityScore * stats.sourcesAnalyzed + credibilityScore) /
+            (stats.sourcesAnalyzed + 1)
+          )
+          break }
+        case 'search':
+          if (value > 0) {
+            newMetrics.searchEffectiveness = Math.min(100,
+              Math.round((stats.sourcesFound + value) / (stats.totalSearches * 10) * 100)
+            )
+          }
+          break
+        case 'paradigm':
+          newMetrics.paradigmAlignment = Math.round(value * 100)
+          break
+        case 'confidence':
+          newMetrics.answerConfidence = Math.round(value * 100)
+          break
+      }
+
+      return newMetrics
+    })
+  }, [stats.sourcesAnalyzed, stats.sourcesFound, stats.totalSearches])
+
   useEffect(() => {
     setIsConnecting(true)
 api.connectWebSocket(researchId, (message) => {
@@ -298,38 +329,7 @@ api.connectWebSocket(researchId, (message) => {
     return () => {
       api.unsubscribeFromResearch(researchId)
     }
-  }, [researchId, currentStatus, onComplete, onCancel])
-
-  const updateQualityMetrics = (type: 'source' | 'search' | 'paradigm' | 'confidence', value: number) => {
-    setQualityMetrics(prev => {
-      const newMetrics = { ...prev }
-
-      switch (type) {
-        case 'source':
-          { const credibilityScore = value * 100
-          newMetrics.sourceQualityScore = Math.round(
-            (prev.sourceQualityScore * stats.sourcesAnalyzed + credibilityScore) /
-            (stats.sourcesAnalyzed + 1)
-          )
-          break }
-        case 'search':
-          if (value > 0) {
-            newMetrics.searchEffectiveness = Math.min(100,
-              Math.round((stats.sourcesFound + value) / (stats.totalSearches * 10) * 100)
-            )
-          }
-          break
-        case 'paradigm':
-          newMetrics.paradigmAlignment = Math.round(value * 100)
-          break
-        case 'confidence':
-          newMetrics.answerConfidence = Math.round(value * 100)
-          break
-      }
-
-      return newMetrics
-    })
-  }
+  }, [researchId, currentStatus, onComplete, onCancel, updateQualityMetrics])
 
   const updatePhaseScores = (
     phase: 'classification' | 'context_engineering' | 'search' | 'synthesis',
@@ -382,7 +382,7 @@ api.connectWebSocket(researchId, (message) => {
     setIsCancelling(true)
     try {
       await api.cancelResearch(researchId)
-    } catch (error) {
+    } catch {
       // Failed to cancel research
     } finally {
       setIsCancelling(false)

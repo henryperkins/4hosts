@@ -30,7 +30,7 @@ export const ResearchHistory: React.FC = () => {
         }
         setHistory(items)
         setOffset(items.length)
-      } catch (error) {
+      } catch {
         // Failed to load history
       } finally {
         setIsLoading(false)
@@ -48,7 +48,7 @@ export const ResearchHistory: React.FC = () => {
       }
       setHistory(prev => [...prev, ...items])
       setOffset(prev => prev + items.length)
-    } catch (error) {
+    } catch {
       // Failed to load history
     } finally {
       setIsLoading(false)
@@ -73,7 +73,7 @@ export const ResearchHistory: React.FC = () => {
           ? { ...item, status: 'cancelled' }
           : item
       ))
-    } catch (error) {
+    } catch {
       // Failed to cancel research
       // You might want to show a toast error here
     } finally {
