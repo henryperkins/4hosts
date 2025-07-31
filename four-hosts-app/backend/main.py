@@ -653,19 +653,24 @@ async def login(login_data: UserLogin):
     )
 
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
 @app.post("/auth/refresh", response_model=Token, tags=["authentication"])
-async def refresh_token(refresh_token: str):
+async def refresh_token(request: RefreshTokenRequest):
     """Refresh access token using secure token rotation"""
-    # Validate and rotate refresh token
-    token_result = await token_manager.rotate_refresh_token(refresh_token)
-
-    if not token_result:
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
-
-    # Validate the old token to get user info
+    refresh_token = request.refresh_token
+    
+    # Validate the token first to get user info
     token_info = await token_manager.validate_refresh_token(refresh_token)
     if not token_info:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
+    
+    # Then rotate the refresh token
+    token_result = await token_manager.rotate_refresh_token(refresh_token)
+    if not token_result:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
     # Get user from database
     from sqlalchemy import select
@@ -707,14 +712,36 @@ async def get_current_user_info(current_user: TokenData = Depends(auth_get_curre
     }
 
 
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+# Optional auth dependency for logout
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(HTTPBearer(auto_error=False))
+) -> Optional[TokenData]:
+    """Get current user if authenticated, None otherwise"""
+    if not credentials:
+        return None
+    try:
+        return await auth_get_current_user(credentials)
+    except Exception:
+        return None
+
+
 @app.post("/auth/logout", tags=["authentication"])
 async def logout(
-    current_user: TokenData = Depends(auth_get_current_user),
-    refresh_token: Optional[str] = None,
+    request: Optional[LogoutRequest] = None,
+    current_user: Optional[TokenData] = Depends(get_current_user_optional),
 ):
     """Logout user by revoking tokens"""
+    # Handle case where user is already logged out
+    if not current_user:
+        return {"message": "Successfully logged out"}
+    
+    refresh_token = request.refresh_token if request else None
     # Revoke the access token using its JTI
-    if current_user.jti:
+    if current_user and current_user.jti:
         await real_auth_service.revoke_token(
             jti=current_user.jti,
             token_type="access",
@@ -732,7 +759,8 @@ async def logout(
             )
 
     # End all user sessions
-    await session_manager.end_all_user_sessions(current_user.user_id)
+    if current_user:
+        await session_manager.end_all_user_sessions(current_user.user_id)
 
     return {"message": "Successfully logged out"}
 
@@ -1682,14 +1710,32 @@ async def prometheus_metrics():
 @app.websocket("/ws/research/{research_id}")
 async def websocket_research_progress(websocket: WebSocket, research_id: str):
     """WebSocket for real-time research progress"""
-    await connection_manager.connect(websocket, research_id)
+    # For anonymous WebSocket connections, use research_id as user_id for now
+    # In production, you should authenticate the WebSocket connection
+    await connection_manager.connect(websocket, f"research_{research_id}")
+    
+    # Subscribe to the specific research
+    await connection_manager.subscribe_to_research(websocket, research_id)
+    
     websocket_connections.inc()
 
     try:
         while True:
-            # Keep connection alive
-            await asyncio.sleep(1)
+            # Keep connection alive and handle potential client messages
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+                await connection_manager.handle_client_message(websocket, data)
+            except asyncio.TimeoutError:
+                # Send ping to keep connection alive
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except:
+                    break
     except WebSocketDisconnect:
+        await connection_manager.disconnect(websocket)
+        websocket_connections.dec()
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
         await connection_manager.disconnect(websocket)
         websocket_connections.dec()
 

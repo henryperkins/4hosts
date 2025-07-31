@@ -156,7 +156,16 @@ class APIService {
   }
 
   async logout(): Promise<void> {
-    await this.fetchWithAuth('/auth/logout', { method: 'POST' })
+    const refreshToken = AuthErrorHandler.getRefreshToken()
+    try {
+      await this.fetchWithAuth('/auth/logout', { 
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: refreshToken })
+      })
+    } catch (error) {
+      // If logout fails (e.g., 401), we still want to clear local tokens
+      console.log('Logout request failed, clearing local tokens anyway')
+    }
     this.authToken = null
     AuthErrorHandler.clearAuthTokens()
     this.disconnectWebSocket()
@@ -344,7 +353,10 @@ class APIService {
       this.disconnectWebSocket(researchId)
     }
 
-    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/research/${researchId}`
+    // Use the API_BASE_URL and convert it to WebSocket URL
+    const apiUrl = new URL(API_BASE_URL || window.location.origin)
+    const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${wsProtocol}//${apiUrl.host}/ws/research/${researchId}`
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {

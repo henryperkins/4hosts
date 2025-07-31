@@ -265,12 +265,18 @@ Write a {context.max_length} word response that burns with righteous anger and t
         """Format search results for LLM prompt"""
         formatted = []
         for i, result in enumerate(results, 1):
+            # Use snippet if content is not available
+            content = result.get('content', '')
+            if not content or content == 'No content available':
+                content = result.get('snippet', 'No content available')
+            
             formatted.append(
                 f"""
 {i}. {result.get('title', 'Untitled')}
 Source: {result.get('domain', 'Unknown')}
+URL: {result.get('url', 'Unknown')}
 Credibility: {result.get('credibility_score', 0.5):.2f}
-Content: {result.get('content', 'No content available')}...
+Content: {content}
 """
             )
         return "\n".join(formatted)
@@ -559,12 +565,18 @@ Write a {context.max_length} word response filled with compassion and practical 
         """Format search results for LLM prompt"""
         formatted = []
         for i, result in enumerate(results, 1):
+            # Use snippet if content is not available
+            content = result.get('content', '')
+            if not content or content == 'No content available':
+                content = result.get('snippet', 'No content available')
+            
             formatted.append(
                 f"""
 {i}. {result.get('title', 'Untitled')}
 Source: {result.get('domain', 'Unknown')}
+URL: {result.get('url', 'Unknown')}
 Trust Score: {result.get('credibility_score', 0.5):.2f}
-Content: {result.get('content', 'No content available')}...
+Content: {content}
 """
             )
         return "\n".join(formatted)

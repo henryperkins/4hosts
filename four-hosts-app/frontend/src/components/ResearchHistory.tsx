@@ -198,7 +198,28 @@ export const ResearchHistory: React.FC = () => {
                         {item.processing_time}s
                       </span>
                     )}
+                    
+                    {item.summary?.total_cost !== undefined && (
+                      <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                        ${item.summary.total_cost.toFixed(4)}
+                      </span>
+                    )}
                   </div>
+                  
+                  {item.summary && (
+                    <div className="mt-2 space-y-1">
+                      {item.summary.answer_preview && (
+                        <p className="text-sm text-text-muted line-clamp-2">
+                          {item.summary.answer_preview}
+                        </p>
+                      )}
+                      {item.summary.source_count !== undefined && (
+                        <p className="text-xs text-text-muted">
+                          {item.summary.source_count} sources analyzed
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className={`flex items-center gap-2 transition-all duration-300 ${

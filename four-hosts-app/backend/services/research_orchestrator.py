@@ -208,11 +208,21 @@ class EarlyRelevanceFilter:
             
         # 7. Paradigm-specific early filters
         if paradigm == "bernard" and result.result_type == "web":
-            # For Bernard, filter out non-authoritative web results early
-            authoritative_indicators = ['.edu', '.gov', 'journal', 'research', 'study', 'analysis']
-            if not any(indicator in result.domain.lower() or indicator in combined_text for indicator in authoritative_indicators):
-                # Give it a second chance if it has academic language
-                academic_terms = ['methodology', 'hypothesis', 'conclusion', 'abstract', 'citation']
+            # For Bernard, be more inclusive of technology and research sites
+            authoritative_indicators = ['.edu', '.gov', 'journal', 'research', 'study', 'analysis', 
+                                      'technology', 'innovation', 'science', 'ieee', 'acm', 'mit',
+                                      'stanford', 'harvard', 'arxiv', 'nature', 'springer']
+            tech_indicators = ['ai', 'artificial intelligence', 'machine learning', 'deep learning',
+                             'neural', 'algorithm', 'technology', 'computing', 'software', 'innovation']
+            
+            has_authority = any(indicator in result.domain.lower() or indicator in combined_text for indicator in authoritative_indicators)
+            has_tech_content = any(indicator in combined_text for indicator in tech_indicators)
+            
+            # Accept if it has either authority indicators OR technology content
+            if not (has_authority or has_tech_content):
+                # Give it a final chance if it has academic language
+                academic_terms = ['methodology', 'hypothesis', 'conclusion', 'abstract', 'citation',
+                                'analysis', 'framework', 'approach', 'technique', 'evaluation']
                 if not any(term in combined_text for term in academic_terms):
                     return False
                     

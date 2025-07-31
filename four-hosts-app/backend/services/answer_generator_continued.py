@@ -102,12 +102,22 @@ Write a {context.max_length} word analysis with scientific rigor and clarity.
         """Format search results for LLM prompt"""
         formatted = []
         for i, result in enumerate(results, 1):
+            # Use content if available, fallback to snippet
+            content = result.get('content', '')
+            if not content or content == 'No content available':
+                content = result.get('snippet', 'No abstract available')
+            
+            # Truncate to reasonable length
+            if len(content) > 300:
+                content = content[:300] + '...'
+            
             formatted.append(
                 f"""
 [{i}] {result.get('title', 'Untitled')}
 Journal/Source: {result.get('domain', 'Unknown')}
+URL: {result.get('url', 'Unknown')}
 Reliability Score: {result.get('credibility_score', 0.5):.2f}
-Abstract: {result.get('snippet', 'No abstract available')[:200]}...
+Abstract: {content}
 """
             )
         return "\n".join(formatted)
@@ -434,11 +444,21 @@ Write a {context.max_length} word strategic analysis with clear action steps.
         """Format search results for LLM prompt"""
         formatted = []
         for i, result in enumerate(results, 1):
+            # Use content if available, fallback to snippet
+            content = result.get('content', '')
+            if not content or content == 'No content available':
+                content = result.get('snippet', 'No insight available')
+            
+            # Truncate to reasonable length
+            if len(content) > 300:
+                content = content[:300] + '...'
+            
             formatted.append(
                 f"""
 [{i}] {result.get('title', 'Untitled')}
 Source: {result.get('domain', 'Unknown')} | Authority: {result.get('credibility_score', 0.5):.2f}
-Key Insight: {result.get('snippet', 'No insight available')[:200]}...
+URL: {result.get('url', 'Unknown')}
+Key Insight: {content}
 """
             )
         return "\n".join(formatted)

@@ -220,8 +220,30 @@ class QueryOptimizer:
         
     def extract_key_terms(self, query: str) -> List[str]:
         """Extract key terms from query for better search relevance"""
-        # Tokenize and lowercase
-        tokens = word_tokenize(query.lower())
+        # First extract important compound terms
+        compound_terms = []
+        query_lower = query.lower()
+        
+        # Common compound terms to preserve
+        compound_patterns = [
+            r'cutting[\-\s]edge',
+            r'state[\-\s]of[\-\s]the[\-\s]art',
+            r'artificial intelligence',
+            r'machine learning',
+            r'deep learning',
+            r'neural network[s]?',
+            r'large language model[s]?',
+        ]
+        
+        for pattern in compound_patterns:
+            if re.search(pattern, query_lower):
+                match = re.search(pattern, query_lower).group()
+                compound_terms.append(match)
+                # Remove from query to avoid duplication
+                query_lower = re.sub(pattern, '', query_lower)
+        
+        # Tokenize and lowercase remaining query
+        tokens = word_tokenize(query_lower)
         
         # Remove punctuation and stop words
         key_terms = [
@@ -235,7 +257,8 @@ class QueryOptimizer:
         # Identify phrases (consecutive key terms)
         phrases = self._extract_phrases(query, key_terms)
         
-        return phrases + key_terms
+        # Combine compound terms first, then phrases, then individual terms
+        return compound_terms + phrases + key_terms
     
     def _extract_phrases(self, original_query: str, key_terms: List[str]) -> List[str]:
         """Extract meaningful phrases from the query"""
@@ -398,7 +421,7 @@ class ContentRelevanceFilter:
         matches = sum(1 for phrase in quoted_phrases if phrase.lower() in text)
         return matches / len(quoted_phrases)
     
-    def filter_results(self, results: List[SearchResult], original_query: str, min_relevance: float = 0.3) -> List[SearchResult]:
+    def filter_results(self, results: List[SearchResult], original_query: str, min_relevance: float = 0.15) -> List[SearchResult]:
         """Filter and rank results by relevance"""
         # Extract key terms once
         key_terms = self.query_optimizer.extract_key_terms(original_query)

@@ -450,8 +450,33 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
       )}
 
+      {/* Cost and Metadata Information */}
+      {results.cost_info && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.5s' }}>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Research Metrics</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {Object.entries(results.cost_info).map(([key, value]) => (
+              <div key={key} className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                <p className="text-sm text-gray-600 dark:text-gray-400">{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</p>
+                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                  {typeof value === 'number' ? (key.includes('cost') ? `$${value.toFixed(4)}` : value.toFixed(2)) : value}
+                </p>
+              </div>
+            ))}
+            {results.metadata?.processing_time_seconds && (
+              <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                <p className="text-sm text-gray-600 dark:text-gray-400">Processing Time</p>
+                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                  {results.metadata.processing_time_seconds.toFixed(1)}s
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Citations with Credibility */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.5s' }}>
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.6s' }}>
         <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Answer Citations</h3>
         <div className="space-y-3">
           {displayedCitations.map((citation) => (
