@@ -43,11 +43,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Import core services
+from services.research_orchestrator_v2 import research_orchestrator_v2
+from services.research_orchestrator_compat import research_orchestrator_compat as research_orchestrator
 from services.research_orchestrator import (
-    research_orchestrator,
     initialize_research_system,
     execute_research,
 )
+from models.context_models import UserContextSchema, ContextEngineeredQuerySchema
 from services.cache import initialize_cache
 from services.credibility import get_source_credibility
 from services.llm_client import initialise_llm_client
@@ -79,12 +81,12 @@ from services.monitoring import (
     create_monitoring_middleware,
 )
 from services.webhook_manager import WebhookManager, WebhookEvent, create_webhook_router
-from services.websocket_service import (
-    ConnectionManager,
-    ResearchProgressTracker,
+from services.websocket_service_v2 import (
+    ConnectionManagerV2 as ConnectionManager,
+    ResearchProgressTrackerV2 as ResearchProgressTracker,
     WSEventType,
     WSMessage,
-    create_websocket_router,
+    create_websocket_router_v2 as create_websocket_router,
 )
 from services.export_service import ExportService, create_export_router
 from database.connection import init_database, get_db
@@ -402,14 +404,14 @@ async def lifespan(app: FastAPI):
         # Initialize LLM client
         await initialise_llm_client()
         logger.info("✓ LLM client initialized")
-        
+
         # Store search manager for cleanup with cache integration
         from services.cache import cache_manager
         search_manager = create_search_manager(cache_manager=cache_manager)
         await search_manager.initialize()
         app.state.search_manager = search_manager
         logger.info("✓ Search manager initialized with cache")
-        
+
         # Initialize unified research orchestrator (includes Brave MCP)
         try:
             from services.unified_research_orchestrator import initialize_unified_orchestrator
@@ -417,7 +419,7 @@ async def lifespan(app: FastAPI):
             logger.info("✓ Unified research orchestrator initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize unified orchestrator: {e}")
-        
+
         # Preload Hugging Face model to avoid cold start
         try:
             from services.hf_zero_shot import get_classifier
@@ -479,7 +481,7 @@ async def lifespan(app: FastAPI):
         if background_llm_manager:
             await background_llm_manager.cleanup()
             logger.info("✓ Background LLM manager cleaned up")
-        
+
         # Cleanup research orchestrator
         if hasattr(research_orchestrator, "cleanup"):
             await research_orchestrator.cleanup()
@@ -491,24 +493,24 @@ async def lifespan(app: FastAPI):
 
         # Graceful task shutdown using task registry
         from services.task_registry import task_registry
-        
+
         # Show active tasks before shutdown
         active_tasks = await task_registry.get_active_tasks()
         if active_tasks:
             logger.info(f"Active tasks before shutdown: {len(active_tasks)}")
             for task_id, info in active_tasks.items():
                 logger.debug(f"  - {info['name']} (priority: {info['priority']}, done: {info['done']})")
-        
+
         # Perform graceful shutdown with 30 second timeout
         shutdown_results = await task_registry.graceful_shutdown(timeout=30.0)
-        
+
         # Log shutdown results
         if shutdown_results:
             completed = sum(1 for r in shutdown_results.values() if r == "completed")
             cancelled = sum(1 for r in shutdown_results.values() if r == "cancelled")
             failed = sum(1 for r in shutdown_results.values() if "failed" in r)
             logger.info(f"Task shutdown complete: {completed} completed, {cancelled} cancelled, {failed} failed")
-        
+
         # Final cleanup of any untracked tasks (shouldn't be any if everything uses the registry)
         remaining_tasks = [task for task in asyncio.all_tasks() if not task.done() and task != asyncio.current_task()]
         if remaining_tasks:
@@ -555,16 +557,16 @@ app.add_middleware(
 async def security_middleware(request: Request, call_next):
     """Block malicious requests early"""
     path = request.url.path.lower()
-    
+
     # Block PHP file requests
     if path.endswith(('.php', '.asp', '.jsp')):
         return Response(status_code=403, content="Forbidden")
-    
+
     # Block common attack patterns
     attack_patterns = ['/admin', '/wp-admin', '/.env', '/config']
     if any(pattern in path for pattern in attack_patterns):
         return Response(status_code=403, content="Forbidden")
-    
+
     return await call_next(request)
 
 
@@ -623,13 +625,13 @@ async def request_id_middleware(request: Request, call_next):
 async def get_active_tasks(current_user: Any = Depends(get_current_user)):
     """Get information about active background tasks"""
     from services.task_registry import task_registry
-    
+
     # Only admins can view system tasks
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Admin access required")
-    
+
     active_tasks = await task_registry.get_active_tasks()
-    
+
     # Group by priority
     tasks_by_priority = {
         "critical": [],
@@ -637,7 +639,7 @@ async def get_active_tasks(current_user: Any = Depends(get_current_user)):
         "normal": [],
         "low": []
     }
-    
+
     for task_id, info in active_tasks.items():
         tasks_by_priority[info["priority"]].append({
             "id": task_id,
@@ -646,7 +648,7 @@ async def get_active_tasks(current_user: Any = Depends(get_current_user)):
             "done": info["done"],
             "cancelled": info["cancelled"]
         })
-    
+
     return {
         "total_active_tasks": len(active_tasks),
         "tasks_by_priority": tasks_by_priority,
@@ -785,12 +787,12 @@ class RefreshTokenRequest(BaseModel):
 async def refresh_token(request: RefreshTokenRequest):
     """Refresh access token using secure token rotation"""
     refresh_token = request.refresh_token
-    
+
     # Validate the token first to get user info
     token_info = await token_manager.validate_refresh_token(refresh_token)
     if not token_info:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-    
+
     # Then rotate the refresh token
     token_result = await token_manager.rotate_refresh_token(refresh_token)
     if not token_result:
@@ -862,7 +864,7 @@ async def logout(
     # Handle case where user is already logged out
     if not current_user:
         return {"message": "Successfully logged out"}
-    
+
     refresh_token = request.refresh_token if request else None
     # Revoke the access token using its JTI
     if current_user and current_user.jti:
@@ -1733,7 +1735,7 @@ async def get_orchestrator_status(current_user: User = Depends(get_current_user)
     try:
         from services.unified_research_orchestrator import unified_orchestrator
         capabilities = unified_orchestrator.get_capabilities()
-        
+
         return {
             "status": "active",
             "capabilities": capabilities,
@@ -1860,10 +1862,10 @@ async def websocket_research_progress(websocket: WebSocket, research_id: str):
     # For anonymous WebSocket connections, use research_id as user_id for now
     # In production, you should authenticate the WebSocket connection
     await connection_manager.connect(websocket, f"research_{research_id}")
-    
+
     # Subscribe to the specific research
     await connection_manager.subscribe_to_research(websocket, research_id)
-    
+
     websocket_connections.inc()
 
     try:

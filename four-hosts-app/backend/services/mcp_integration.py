@@ -61,6 +61,7 @@ class MCPIntegration:
         self.servers: Dict[str, MCPServer] = {}
         self.session: Optional[aiohttp.ClientSession] = None
         self._tool_handlers: Dict[str, Callable] = {}
+        self._server_health: Dict[str, bool] = {}
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -73,6 +74,7 @@ class MCPIntegration:
     def register_server(self, server: MCPServer):
         """Register a remote MCP server"""
         self.servers[server.name] = server
+        self._server_health[server.name] = False  # Initially mark as unhealthy
         logger.info(f"Registered MCP server: {server.name} with capabilities: {server.capabilities}")
     
     async def discover_tools(self, server_name: str) -> List[MCPToolDefinition]:
@@ -144,7 +146,7 @@ class MCPIntegration:
         
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream"
+            "Accept": "application/json"
         }
         if server.auth_token:
             headers["Authorization"] = f"Bearer {server.auth_token}"
@@ -156,11 +158,27 @@ class MCPIntegration:
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=server.timeout)
             ) as response:
-                data = await response.json()
-                return MCPResponse(**data)
+                # Check content type before trying to parse JSON
+                content_type = response.headers.get('content-type', '')
+                if 'application/json' not in content_type:
+                    text_content = await response.text()
+                    logger.error(f"Unexpected content type from {server.name}: {content_type}. Content: {text_content[:200]}")
+                    return MCPResponse(error={"code": -32002, "message": f"Unexpected content type: {content_type}. Expected JSON but got {content_type}"})
+                
+                try:
+                    data = await response.json()
+                    return MCPResponse(**data)
+                except json.JSONDecodeError as e:
+                    text_content = await response.text()
+                    logger.error(f"Invalid JSON from {server.name}: {e}. Content: {text_content[:200]}")
+                    return MCPResponse(error={"code": -32003, "message": f"Invalid JSON response: {str(e)}"})
+                    
         except asyncio.TimeoutError:
             logger.error(f"Timeout connecting to MCP server {server.name}")
             return MCPResponse(error={"code": -32000, "message": "Connection timeout"})
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP error connecting to MCP server {server.name}: {e}")
+            return MCPResponse(error={"code": -32001, "message": f"HTTP error: {str(e)}"})
         except Exception as e:
             logger.error(f"Error connecting to MCP server {server.name}: {e}")
             return MCPResponse(error={"code": -32001, "message": str(e)})
@@ -173,6 +191,56 @@ class MCPIntegration:
             # In practice, you'd cache discovered tools
             pass
         return all_tools
+    
+    async def check_server_health(self, server_name: str) -> bool:
+        """Check if an MCP server is healthy and responding"""
+        server = self.servers.get(server_name)
+        if not server:
+            return False
+        
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+        
+        try:
+            # Try a simple health check endpoint first
+            health_url = f"{server.url}/health"
+            headers = {}
+            if server.auth_token:
+                headers["Authorization"] = f"Bearer {server.auth_token}"
+            
+            async with self.session.get(
+                health_url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                if response.status == 200:
+                    self._server_health[server_name] = True
+                    return True
+        except:
+            # If health endpoint doesn't exist, try a simple ping/echo request
+            pass
+        
+        # Try a simple MCP request as fallback
+        try:
+            request = MCPRequest(
+                method="ping",
+                params={},
+                id="health_check"
+            )
+            response = await self._send_request(server, request)
+            
+            # If we get any response (even an error for unknown method), server is alive
+            self._server_health[server_name] = not (response.error and response.error.get("code") == -32001)
+            return self._server_health[server_name]
+            
+        except Exception as e:
+            logger.warning(f"Health check failed for {server_name}: {e}")
+            self._server_health[server_name] = False
+            return False
+    
+    def is_server_healthy(self, server_name: str) -> bool:
+        """Get cached health status of a server"""
+        return self._server_health.get(server_name, False)
 
 
 # Global MCP integration instance

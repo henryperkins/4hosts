@@ -7,8 +7,10 @@ import os
 import logging
 from typing import Dict, List, Any, Optional
 from enum import Enum
+import aiohttp
 
 from services.mcp_integration import MCPServer, MCPCapability, mcp_integration
+from services.search_apis import BraveSearchAPI, SearchConfig, RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ class BraveMCPConfig:
     def __init__(self):
         # Get Brave API key from environment
         self.api_key = os.getenv("BRAVE_API_KEY") or os.getenv("BRAVE_SEARCH_API_KEY")
-        self.mcp_url = os.getenv("BRAVE_MCP_URL", "http://localhost:8080/mcp")
+        self.mcp_url = os.getenv("BRAVE_MCP_URL", "http://localhost:8080")
         self.mcp_transport = os.getenv("BRAVE_MCP_TRANSPORT", "HTTP")
         self.mcp_host = os.getenv("BRAVE_MCP_HOST", "localhost")
         self.mcp_port = int(os.getenv("BRAVE_MCP_PORT", "8080"))
@@ -50,6 +52,8 @@ class BraveMCPIntegration:
     def __init__(self, config: BraveMCPConfig):
         self.config = config
         self.server_registered = False
+        self._brave_api: Optional[BraveSearchAPI] = None
+        self._session: Optional[aiohttp.ClientSession] = None
         
     async def initialize(self) -> bool:
         """Initialize Brave MCP server connection"""
@@ -68,7 +72,14 @@ class BraveMCPIntegration:
             
             mcp_integration.register_server(brave_server)
             
-            # Try to discover available tools
+            # Check server health first
+            is_healthy = await mcp_integration.check_server_health("brave_search")
+            if not is_healthy:
+                logger.warning("Brave MCP server is not responding to health checks")
+                self.server_registered = False
+                return True  # Return True for partial success
+            
+            # Try to discover available tools with better error handling
             try:
                 tools = await mcp_integration.discover_tools("brave_search")
                 logger.info(f"Discovered {len(tools)} Brave search tools")
@@ -76,9 +87,10 @@ class BraveMCPIntegration:
                 return True
             except Exception as discover_error:
                 logger.warning(f"Could not discover Brave MCP tools (server may not be running): {discover_error}")
-                # Still mark as registered since we can use direct Brave API
+                # Still mark as registered for fallback to direct API
                 self.server_registered = False
-                return False
+                # Return True to indicate partial success (we can still use direct API)
+                return True
             
         except Exception as e:
             logger.error(f"Failed to initialize Brave MCP server: {e}")
@@ -148,46 +160,50 @@ class BraveMCPIntegration:
     ) -> Dict[str, Any]:
         """Execute a paradigm-aware search using Brave MCP"""
         
-        if not self.server_registered:
-            raise RuntimeError("Brave MCP server not initialized")
-        
         # Get paradigm-specific configuration
         search_config = self.get_paradigm_search_config(paradigm)
         
-        # Build tool name based on search type
-        tool_name = f"brave_search_brave_{search_type}_search"
+        # Try MCP server first if registered and healthy
+        if self.server_registered and mcp_integration.is_server_healthy("brave_search"):
+            try:
+                # Build tool name based on search type
+                # Tool name format depends on how MCP server registers them
+                tool_name = f"brave_search_{search_type}"
+                
+                # Prepare search parameters
+                search_params = {
+                    "query": query,
+                    "country": search_config.get("country"),
+                    "language": search_config.get("language"),
+                    "safesearch": search_config.get("safesearch"),
+                }
+                
+                # Add freshness if specified
+                if "freshness" in search_config:
+                    search_params["freshness"] = search_config["freshness"]
+                
+                # Execute search through MCP
+                result = await mcp_integration.execute_tool_call(
+                    tool_name,
+                    search_params
+                )
+                
+                # Post-process results based on paradigm
+                processed_result = self._process_results_for_paradigm(
+                    result,
+                    paradigm,
+                    search_config.get("extra_params", {})
+                )
+                
+                return processed_result
+                
+            except Exception as e:
+                logger.warning(f"MCP search failed, falling back to direct API: {e}")
+                # Fall through to direct API call
         
-        # Prepare search parameters
-        search_params = {
-            "query": query,
-            "country": search_config.get("country"),
-            "language": search_config.get("language"),
-            "safesearch": search_config.get("safesearch"),
-        }
-        
-        # Add freshness if specified
-        if "freshness" in search_config:
-            search_params["freshness"] = search_config["freshness"]
-        
-        try:
-            # Execute search through MCP
-            result = await mcp_integration.execute_tool_call(
-                tool_name,
-                search_params
-            )
-            
-            # Post-process results based on paradigm
-            processed_result = self._process_results_for_paradigm(
-                result,
-                paradigm,
-                search_config.get("extra_params", {})
-            )
-            
-            return processed_result
-            
-        except Exception as e:
-            logger.error(f"Brave search error for {paradigm}: {e}")
-            raise
+        # Fallback to direct Brave API
+        logger.info(f"Using direct Brave API for {paradigm} search")
+        return await self._fallback_brave_search(query, paradigm, search_type, search_config)
     
     def _process_results_for_paradigm(
         self,
@@ -250,6 +266,81 @@ class BraveMCPIntegration:
         """Prioritize business and market analysis sources"""
         # Implementation would identify business publications and analysis
         return results
+    
+    async def _fallback_brave_search(
+        self,
+        query: str,
+        paradigm: str,
+        search_type: BraveSearchType,
+        search_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Fallback to direct Brave API when MCP server is unavailable"""
+        # Initialize Brave API if not already done
+        if not self._brave_api:
+            if not self.config.api_key:
+                raise ValueError("Brave API key not configured")
+            
+            self._brave_api = BraveSearchAPI(
+                api_key=self.config.api_key,
+                rate_limiter=RateLimiter(calls_per_minute=60)
+            )
+            self._session = aiohttp.ClientSession()
+            self._brave_api.session = self._session
+        
+        # Convert our search config to SearchConfig object
+        from services.search_apis import SearchConfig
+        
+        api_config = SearchConfig(
+            max_results=20,  # Brave's limit per request
+            language=search_config.get("language", "en"),
+            region=search_config.get("country", "US").lower(),
+            safe_search=search_config.get("safesearch", "moderate"),
+        )
+        
+        # Add date range if freshness is specified
+        if "freshness" in search_config:
+            freshness_map = {"pd": "d", "pw": "w", "pm": "m", "py": "y"}
+            api_config.date_range = freshness_map.get(search_config["freshness"])
+        
+        # Map search type to source types
+        if search_type == BraveSearchType.NEWS:
+            api_config.source_types = ["news"]
+        elif search_type == BraveSearchType.WEB:
+            api_config.source_types = ["web"]
+        
+        try:
+            # Execute search
+            results = await self._brave_api.search(query, api_config)
+            
+            # Convert SearchResult objects to dict format
+            results_data = []
+            for result in results:
+                result_dict = {
+                    "title": result.title,
+                    "url": result.url,
+                    "description": result.snippet,
+                    "domain": result.domain,
+                    "published": result.published_date.isoformat() if result.published_date else None,
+                    "type": result.result_type,
+                }
+                results_data.append(result_dict)
+            
+            # Process results for paradigm
+            return self._process_results_for_paradigm(
+                {"results": results_data},
+                paradigm,
+                search_config.get("extra_params", {})
+            )
+            
+        except Exception as e:
+            logger.error(f"Direct Brave API search failed: {e}")
+            raise
+    
+    async def cleanup(self):
+        """Clean up resources"""
+        if self._session:
+            await self._session.close()
+            self._session = None
 
 
 # Global instance
@@ -265,3 +356,8 @@ async def initialize_brave_mcp():
     else:
         logger.warning("Brave Search MCP server not initialized")
         return False
+
+async def cleanup_brave_mcp():
+    """Cleanup Brave MCP resources during shutdown"""
+    await brave_mcp.cleanup()
+    logger.info("Brave MCP resources cleaned up")

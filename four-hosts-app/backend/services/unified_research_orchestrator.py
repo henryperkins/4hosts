@@ -1,38 +1,33 @@
 """
-Unified Research Orchestrator
-Combines all research capabilities with Brave MCP as the primary search provider
+Unified Research Orchestrator V2
+Single interface for all research operations
 """
-
 import logging
 from typing import Dict, Any, Optional
 
+from services.research_orchestrator_v2 import research_orchestrator_v2
 from services.enhanced_research_orchestrator import enhanced_orchestrator
-from services.research_orchestrator import research_orchestrator as legacy_orchestrator
 from services.classification_engine import HostParadigm
+from models.context_models import (
+    ClassificationResultSchema, UserContextSchema,
+    ContextEngineeredQuerySchema
+)
 
 logger = logging.getLogger(__name__)
 
 
-class UnifiedResearchOrchestrator:
-    """Unified interface for all research operations"""
-    
+class UnifiedResearchOrchestratorV2:
+    """Unified interface using V2 implementation"""
+
     def __init__(self):
+        self.orchestrator = research_orchestrator_v2
         self.enhanced = enhanced_orchestrator
-        self.legacy = legacy_orchestrator
-        self.use_enhanced = True
-    
+
     async def initialize(self):
-        """Initialize the unified orchestrator"""
-        # Initialize enhanced orchestrator (includes Brave MCP)
-        try:
-            await self.enhanced.initialize()
-            self.use_enhanced = True
-            logger.info("✓ Unified orchestrator using enhanced mode with Brave MCP")
-        except Exception as e:
-            logger.warning(f"Enhanced orchestrator initialization failed: {e}")
-            logger.info("Falling back to legacy orchestrator")
-            self.use_enhanced = False
-    
+        """Initialize unified orchestrator"""
+        await self.enhanced.initialize()
+        logger.info("✓ Unified orchestrator V2 initialized")
+
     async def execute_research(
         self,
         query: str,
@@ -40,66 +35,36 @@ class UnifiedResearchOrchestrator:
         secondary_paradigm: Optional[HostParadigm] = None,
         options: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Execute research using the best available method"""
-        
-        if self.use_enhanced:
-            try:
-                # Use enhanced orchestrator with Brave MCP
-                return await self.enhanced.execute_paradigm_research(
-                    query=query,
-                    primary_paradigm=primary_paradigm,
-                    secondary_paradigm=secondary_paradigm,
-                    options=options
-                )
-            except Exception as e:
-                logger.error(f"Enhanced research failed: {e}")
-                # Fall back to legacy if enhanced fails
-                if hasattr(self.legacy, 'execute_research'):
-                    logger.info("Falling back to legacy research")
-                    return await self.legacy.execute_research(
-                        query=query,
-                        paradigm=primary_paradigm.value,
-                        options=options
-                    )
-                raise
-        else:
-            # Use legacy orchestrator
-            if hasattr(self.legacy, 'execute_research'):
-                return await self.legacy.execute_research(
-                    query=query,
-                    paradigm=primary_paradigm.value,
-                    options=options
-                )
-            else:
-                raise NotImplementedError("No research orchestrator available")
-    
+        """Execute research using V2 implementation"""
+
+        # Use enhanced orchestrator which wraps V2
+        return await self.enhanced.execute_paradigm_research(
+            query=query,
+            primary_paradigm=primary_paradigm,
+            secondary_paradigm=secondary_paradigm,
+            options=options
+        )
+
     def get_capabilities(self) -> Dict[str, Any]:
         """Get current orchestrator capabilities"""
         return {
-            "mode": "enhanced" if self.use_enhanced else "legacy",
-            "brave_mcp": self.enhanced.brave_enabled if self.use_enhanced else False,
-            "search_apis": [
-                "google",
-                "arxiv",
-                "pubmed",
-                "brave_web" if self.use_enhanced and self.enhanced.brave_enabled else None,
-                "brave_news" if self.use_enhanced and self.enhanced.brave_enabled else None,
-                "brave_summarizer" if self.use_enhanced and self.enhanced.brave_enabled else None,
-            ],
+            "version": "2.0",
             "features": {
+                "deterministic_results": True,
+                "origin_tracking": True,
+                "dynamic_compression": True,
+                "full_context_preservation": True,
+                "user_context_aware": True,
                 "paradigm_optimization": True,
-                "multi_source_synthesis": True,
-                "mcp_tools": self.use_enhanced,
-                "background_processing": True,
+                "brave_mcp": self.enhanced.brave_enabled
             }
         }
 
 
 # Global instance
-unified_orchestrator = UnifiedResearchOrchestrator()
+unified_orchestrator = UnifiedResearchOrchestratorV2()
 
-
-# Backward compatibility exports
+# Backward compatibility
 research_orchestrator = unified_orchestrator
 execute_research = unified_orchestrator.execute_research
 
