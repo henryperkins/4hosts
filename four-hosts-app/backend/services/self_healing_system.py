@@ -90,8 +90,8 @@ class SelfHealingSystem:
         # Paradigm affinity matrix (how well paradigms handle certain query types)
         self.paradigm_affinities = self._initialize_paradigm_affinities()
         
-        # Start monitoring loop
-        asyncio.create_task(self._monitoring_loop())
+        # Monitoring loop will be started when needed
+        self._monitoring_task = None
 
     def _initialize_paradigm_affinities(self) -> Dict[str, Dict[HostParadigm, float]]:
         """Initialize paradigm affinities for different query types"""
@@ -121,6 +121,23 @@ class SelfHealingSystem:
                 HostParadigm.BERNARD: 0.3,
             },
         }
+
+    async def start(self) -> None:
+        """Start the monitoring loop"""
+        if not self._monitoring_task:
+            self._monitoring_task = asyncio.create_task(self._monitoring_loop())
+            logger.info("Self-healing system monitoring started")
+
+    async def stop(self) -> None:
+        """Stop the monitoring loop"""
+        if self._monitoring_task:
+            self._monitoring_task.cancel()
+            try:
+                await self._monitoring_task
+            except asyncio.CancelledError:
+                pass
+            self._monitoring_task = None
+            logger.info("Self-healing system monitoring stopped")
 
     async def record_query_performance(
         self,

@@ -68,12 +68,17 @@ class BraveMCPIntegration:
             
             mcp_integration.register_server(brave_server)
             
-            # Discover available tools
-            tools = await mcp_integration.discover_tools("brave_search")
-            logger.info(f"Discovered {len(tools)} Brave search tools")
-            
-            self.server_registered = True
-            return True
+            # Try to discover available tools
+            try:
+                tools = await mcp_integration.discover_tools("brave_search")
+                logger.info(f"Discovered {len(tools)} Brave search tools")
+                self.server_registered = True
+                return True
+            except Exception as discover_error:
+                logger.warning(f"Could not discover Brave MCP tools (server may not be running): {discover_error}")
+                # Still mark as registered since we can use direct Brave API
+                self.server_registered = False
+                return False
             
         except Exception as e:
             logger.error(f"Failed to initialize Brave MCP server: {e}")

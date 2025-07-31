@@ -120,7 +120,7 @@ class MLPipeline:
         self._load_existing_model()
         
         # Start training loop
-        asyncio.create_task(self._training_loop())
+        # asyncio.create_task(self._training_loop())  # Commented out - needs to be started after event loop is running
 
     def _initialize_feature_generators(self) -> Dict[str, Any]:
         """Initialize feature generation functions"""

@@ -10,6 +10,9 @@ PROJECT_ROOT="$SCRIPT_DIR"
 echo "📁 Project root: $PROJECT_ROOT"
 echo "🔄 Running in background mode"
 
+# Initialize variables
+MCP_STARTED=false
+
 # Source nvm to ensure npm is available when running with sudo
 if [ -f "/home/azureuser/.nvm/nvm.sh" ]; then
     export NVM_DIR="/home/azureuser/.nvm"
@@ -27,7 +30,25 @@ fi
 # Function to cleanup on exit
 cleanup() {
     echo -e "\n\n🛑 Shutting down services..."
+    
+    # Stop backend and frontend
     kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    
+    # Stop MCP server if running
+    if [ -f "$BACKEND_DIR/.mcp_server.pid" ]; then
+        MCP_PID=$(cat "$BACKEND_DIR/.mcp_server.pid")
+        echo "Stopping MCP server (PID: $MCP_PID)..."
+        kill $MCP_PID 2>/dev/null
+        rm "$BACKEND_DIR/.mcp_server.pid"
+    fi
+    
+    # Stop Docker containers if running
+    if [ "$MCP_STARTED" = "true" ] && command -v docker &> /dev/null; then
+        echo "Stopping Docker containers..."
+        cd "$BACKEND_DIR"
+        docker compose -f docker-compose.mcp.yml down
+    fi
+    
     exit
 }
 
@@ -63,9 +84,71 @@ if command -v lsof >/dev/null 2>&1; then
     lsof -ti:8000 | xargs -r kill -9 2>/dev/null
     lsof -ti:5173 | xargs -r kill -9 2>/dev/null
     lsof -ti:5174 | xargs -r kill -9 2>/dev/null
+    lsof -ti:8080 | xargs -r kill -9 2>/dev/null  # MCP server port
     echo "✅ Ports cleared"
 else
     echo "⚠️  lsof not available, skipping port cleanup"
+fi
+
+# Start MCP Server if Brave API key is configured
+echo -e "\n🌐 Checking MCP Server configuration..."
+BACKEND_DIR="$PROJECT_ROOT/four-hosts-app/backend"
+
+if [ -f "$BACKEND_DIR/.env" ]; then
+    if grep -q "BRAVE_SEARCH_API_KEY=" "$BACKEND_DIR/.env" && ! grep -q "BRAVE_SEARCH_API_KEY=your_brave_search_api_key_here" "$BACKEND_DIR/.env"; then
+        echo "✓ Brave API key detected"
+        
+        # Check if Docker is available
+        if command -v docker &> /dev/null; then
+            echo "✓ Docker detected"
+            
+            # Check if docker network exists, create if not
+            if ! docker network inspect fourhosts-network &> /dev/null; then
+                echo "Creating Docker network..."
+                docker network create fourhosts-network
+            fi
+            
+            # Start Brave MCP server using Docker Compose
+            echo "Starting Brave MCP server..."
+            cd "$BACKEND_DIR"
+            docker compose -f docker-compose.mcp.yml up -d
+            MCP_STARTED=true
+            
+            # Wait for MCP server to be ready
+            echo "Waiting for MCP server to be ready..."
+            for i in {1..30}; do
+                if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+                    echo "✓ Brave MCP server is ready"
+                    break
+                fi
+                echo -n "."
+                sleep 1
+            done
+            echo ""
+        else
+            echo "⚠️  Docker not found. Starting MCP server with NPX..."
+            
+            # Check if NPX is available
+            if command -v npx &> /dev/null; then
+                # Start MCP server in background
+                cd "$BACKEND_DIR"
+                npx @modelcontextprotocol/server-brave-search &
+                MCP_PID=$!
+                echo "✓ Brave MCP server started (PID: $MCP_PID)"
+                
+                # Save PID for cleanup
+                echo $MCP_PID > .mcp_server.pid
+            else
+                echo "❌ Neither Docker nor NPX found. Skipping MCP server."
+                echo "   Install Docker or Node.js to enable Brave search."
+            fi
+        fi
+    else
+        echo "⚠️  Brave API key not configured. Skipping MCP server."
+        echo "   To enable, add your API key to $BACKEND_DIR/.env"
+    fi
+else
+    echo "⚠️  Backend .env file not found. Skipping MCP server."
 fi
 
 # Start Backend

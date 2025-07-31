@@ -142,7 +142,10 @@ class MCPIntegration:
         if not self.session:
             self.session = aiohttp.ClientSession()
         
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"
+        }
         if server.auth_token:
             headers["Authorization"] = f"Bearer {server.auth_token}"
         

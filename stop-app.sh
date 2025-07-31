@@ -26,14 +26,40 @@ kill_by_port() {
     fi
 }
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+BACKEND_DIR="$PROJECT_ROOT/four-hosts-app/backend"
+
 # Stop services by port
 kill_by_port 8000 "Backend"
 kill_by_port 5173 "Frontend"
 kill_by_port 5174 "Frontend (alt port)"
+kill_by_port 8080 "MCP Server"
+
+# Stop MCP server if PID file exists
+if [ -f "$BACKEND_DIR/.mcp_server.pid" ]; then
+    MCP_PID=$(cat "$BACKEND_DIR/.mcp_server.pid")
+    echo "Stopping MCP server (PID: $MCP_PID)..."
+    kill $MCP_PID 2>/dev/null
+    rm "$BACKEND_DIR/.mcp_server.pid"
+    echo "✅ MCP server stopped"
+fi
+
+# Stop Docker containers if running
+if command -v docker &> /dev/null; then
+    if docker ps | grep -q "brave-mcp-server"; then
+        echo "Stopping Docker containers..."
+        cd "$BACKEND_DIR"
+        docker compose -f docker-compose.mcp.yml down
+        echo "✅ Docker containers stopped"
+    fi
+fi
 
 # Also try to kill by process name
 echo -e "\n🔍 Cleaning up any remaining processes..."
 pkill -f "uvicorn.*main:app" 2>/dev/null && echo "✅ Uvicorn processes stopped" || true
 pkill -f "vite.*--port" 2>/dev/null && echo "✅ Vite processes stopped" || true
+pkill -f "server-brave-search" 2>/dev/null && echo "✅ Brave MCP processes stopped" || true
 
 echo -e "\n✨ Four Hosts Application stopped!"

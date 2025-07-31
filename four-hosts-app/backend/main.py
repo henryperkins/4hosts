@@ -421,6 +421,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to preload HF model: {e}")
 
+        # Start self-healing system
+        await self_healing_system.start()
+        logger.info("✓ Self-healing system started")
+
         # Initialize monitoring
         prometheus = PrometheusMetrics(metrics_registry)
         insights = ApplicationInsights(prometheus)
@@ -453,6 +457,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("🛑 Shutting down Four Hosts Research API...")
+
+    # Stop self-healing system
+    await self_healing_system.stop()
+    logger.info("✓ Self-healing system stopped")
 
     # Cleanup research orchestrator
     if hasattr(research_orchestrator, "cleanup"):

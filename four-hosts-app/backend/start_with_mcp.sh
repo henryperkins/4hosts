@@ -23,7 +23,7 @@ else
         
         # Start Brave MCP server using Docker Compose
         echo "Starting Brave MCP server..."
-        docker-compose -f docker-compose.mcp.yml up -d
+        docker compose -f docker-compose.mcp.yml up -d
         
         # Wait for MCP server to be ready
         echo "Waiting for MCP server to be ready..."
@@ -76,5 +76,5 @@ fi
 
 if command -v docker &> /dev/null; then
     echo "Stopping Docker containers..."
-    docker-compose -f docker-compose.mcp.yml down
+    docker compose -f docker-compose.mcp.yml down
 fi

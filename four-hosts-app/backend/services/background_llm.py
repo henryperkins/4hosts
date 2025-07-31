@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 import os
 
-from services.cache_manager import cache_manager
+from services.cache import cache_manager
 
 logger = logging.getLogger(__name__)
 

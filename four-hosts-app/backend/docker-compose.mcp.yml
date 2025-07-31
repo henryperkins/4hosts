@@ -3,11 +3,11 @@ version: '3.8'
 services:
   # Brave Search MCP Server
   brave-mcp:
-    image: braveintegrations/mcp-server-brave-search:latest
+    image: mcp/brave-search:latest
     container_name: brave-mcp-server
     environment:
       - BRAVE_API_KEY=${BRAVE_SEARCH_API_KEY}
-      - BRAVE_MCP_TRANSPORT=HTTP
+      - BRAVE_MCP_TRANSPORT=http
       - BRAVE_MCP_PORT=8080
       - BRAVE_MCP_HOST=0.0.0.0
     ports:

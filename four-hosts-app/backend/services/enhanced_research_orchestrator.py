@@ -7,13 +7,14 @@ import asyncio
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
+from dataclasses import asdict
 
 from services.research_orchestrator import research_orchestrator
 from services.classification_engine import HostParadigm
 from services.brave_mcp_integration import brave_mcp, BraveSearchType
-from services.search_apis import SearchAPIs
+from services.search_apis import create_search_manager, SearchConfig
 from services.llm_client import llm_client
-from services.cache_manager import cache_manager
+from services.cache import cache_manager
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,15 @@ class EnhancedResearchOrchestrator:
     
     def __init__(self):
         self.base_orchestrator = research_orchestrator
-        self.search_apis = SearchAPIs()
+        self.search_api_manager = None
         self.brave_enabled = False
     
     async def initialize(self):
         """Initialize enhanced orchestrator"""
+        # Initialize search API manager
+        self.search_api_manager = create_search_manager()
+        await self.search_api_manager.initialize()
+        
         # Initialize Brave MCP if available
         try:
             from services.brave_mcp_integration import initialize_brave_mcp
@@ -131,7 +136,23 @@ class EnhancedResearchOrchestrator:
         try:
             # Add paradigm-specific terms
             enhanced_query = self._enhance_query_for_paradigm(query, paradigm)
-            results = await self.search_apis.google_search(enhanced_query, num_results=5)
+            
+            # Use search API manager to search Google
+            if "google" in self.search_api_manager.apis:
+                config = SearchConfig(
+                    paradigm=paradigm.value,
+                    max_results=5,
+                    include_pdfs=False
+                )
+                results = await self.search_api_manager.apis["google"].search(enhanced_query, config)
+            else:
+                # Fallback to all available APIs
+                config = SearchConfig(
+                    paradigm=paradigm.value,
+                    max_results=5
+                )
+                all_results = await self.search_api_manager.search_all(enhanced_query, config)
+                results = all_results.get("google", []) or list(all_results.values())[0] if all_results else []
             
             return {
                 "source": "google",
@@ -146,7 +167,16 @@ class EnhancedResearchOrchestrator:
     async def _execute_arxiv_search(self, query: str, paradigm: HostParadigm) -> Dict[str, Any]:
         """Execute ArXiv search for academic paradigms"""
         try:
-            results = await self.search_apis.arxiv_search(query, max_results=3)
+            if "arxiv" in self.search_api_manager.apis:
+                config = SearchConfig(
+                    paradigm=paradigm.value,
+                    max_results=3,
+                    include_pdfs=True
+                )
+                results = await self.search_api_manager.apis["arxiv"].search(query, config)
+            else:
+                results = []
+            
             return {
                 "source": "arxiv",
                 "paradigm": paradigm.value,
@@ -160,7 +190,15 @@ class EnhancedResearchOrchestrator:
     async def _execute_pubmed_search(self, query: str, paradigm: HostParadigm) -> Dict[str, Any]:
         """Execute PubMed search for medical/scientific paradigms"""
         try:
-            results = await self.search_apis.pubmed_search(query, max_results=3)
+            if "pubmed" in self.search_api_manager.apis:
+                config = SearchConfig(
+                    paradigm=paradigm.value,
+                    max_results=3
+                )
+                results = await self.search_api_manager.apis["pubmed"].search(query, config)
+            else:
+                results = []
+            
             return {
                 "source": "pubmed",
                 "paradigm": paradigm.value,
@@ -303,10 +341,17 @@ Generate a well-structured response appropriate for the {paradigm.value} paradig
         for i, result in enumerate(results[:5]):  # Limit to top 5
             if "results" in result and isinstance(result["results"], list):
                 for j, item in enumerate(result["results"][:3]):  # Top 3 per source
-                    if isinstance(item, dict):
+                    # Handle both dict and SearchResult objects
+                    if hasattr(item, "title"):
+                        # It's a SearchResult object
+                        title = item.title
+                        snippet = (item.snippet or "")[:200]
+                    elif isinstance(item, dict):
                         title = item.get("title", "Untitled")
                         snippet = item.get("snippet", item.get("description", ""))[:200]
-                        formatted += f"- {title}: {snippet}...\n"
+                    else:
+                        continue
+                    formatted += f"- {title}: {snippet}...\n"
         
         return formatted
     
