@@ -441,7 +441,7 @@ const ResearchResultPage = () => {
         }
         
         setResults(data)
-      } catch (err) {
+      } catch {
         // Failed to load research results
         setError('Failed to load research results')
       } finally {

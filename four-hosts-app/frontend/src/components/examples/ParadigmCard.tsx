@@ -1,8 +1,8 @@
 import React from 'react';
-import type { HostParadigm } from '@/types/paradigm';
+import type { Paradigm } from '../../types';
 
 interface ParadigmCardProps {
-  paradigm: HostParadigm;
+  paradigm: Paradigm;
   title: string;
   description: string;
   isActive?: boolean;
@@ -89,14 +89,3 @@ export const ParadigmCard: React.FC<ParadigmCardProps> = ({
     </div>
   );
 };
-
-// Example usage:
-/*
-<ParadigmCard
-  paradigm="dolores"
-  title="Revolutionary Research"
-  description="Expose systemic issues and uncover hidden truths"
-  isActive={selectedParadigm === 'dolores'}
-  onClick={() => setSelectedParadigm('dolores')}
-/>
-*/

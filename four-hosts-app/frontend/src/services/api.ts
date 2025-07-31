@@ -139,10 +139,19 @@ class APIService {
     return tokens
   }
 
-  async login(email: string, password: string): Promise<AuthTokens> {
+  async login(emailOrUsername: string, password: string): Promise<AuthTokens> {
+    // Check if input is email format
+    const isEmail = emailOrUsername.includes('@')
+    
+    // For now, the backend only supports email login
+    // If username is provided, we need to inform the user
+    if (!isEmail) {
+      throw new Error('Please use your email address to login. Username login is not yet supported.')
+    }
+    
     const response = await this.fetchWithAuth('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email: emailOrUsername, password }),
     })
 
     if (!response.ok) {

@@ -51,11 +51,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const login = async (emailOrUsername: string, password: string) => {
     try {
-      // Check if it's an email or username
-      const isEmail = emailOrUsername.includes('@')
-      const email = isEmail ? emailOrUsername : emailOrUsername + '@example.com' // Simple fallback
-
-      await api.login(email, password)
+      // Use the login endpoint directly with email or username
+      await api.login(emailOrUsername, password)
       const user = await api.getCurrentUser()
       setAuthState({
         isAuthenticated: true,
