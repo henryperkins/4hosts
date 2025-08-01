@@ -108,13 +108,26 @@ class APIService {
       throw new Error('No refresh token available');
     }
 
-    const response = await this.fetchWithAuth('/auth/refresh', {
+    // Call refresh without Authorization header to avoid stale bearer
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    }
+    const fullUrl = `${API_BASE_URL}/auth/refresh`;
+    const response = await fetch(fullUrl, {
       method: 'POST',
+      headers,
       body: JSON.stringify({ refresh_token: refreshToken }),
-    }, true); // isRetry = true to prevent infinite loop
+    });
 
     if (!response.ok) {
-      throw new Error('Failed to refresh token');
+      // surface more helpful message
+      try {
+        const err = await response.json()
+        throw new Error(err.detail || 'Failed to refresh token')
+      } catch {
+        throw new Error('Failed to refresh token')
+      }
     }
 
     const tokens = await response.json();
@@ -140,22 +153,33 @@ class APIService {
   }
 
   async login(emailOrUsername: string, password: string): Promise<AuthTokens> {
-    // Check if input is email format
+    // Email-only login enforced by backend
     const isEmail = emailOrUsername.includes('@')
-    
-    // For now, the backend only supports email login
-    // If username is provided, we need to inform the user
     if (!isEmail) {
-      throw new Error('Please use your email address to login. Username login is not yet supported.')
+      throw new Error('Please use your email address to login.')
     }
-    
+
     const response = await this.fetchWithAuth('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email: emailOrUsername, password }),
     })
 
     if (!response.ok) {
-      // ... (error handling as before)
+      let message = 'Login failed'
+      try {
+        const err = await response.json()
+        const detail = err?.detail || err?.error || ''
+        if (response.status === 401 || /Invalid credentials/i.test(detail)) {
+          message = 'Invalid credentials'
+        } else if (response.status === 503) {
+          message = 'Service unavailable. Please try again later.'
+        } else if (detail) {
+          message = detail
+        }
+      } catch {
+        // keep default
+      }
+      throw new Error(message)
     }
 
     const tokens = await response.json()
@@ -241,7 +265,37 @@ class APIService {
       throw new Error(error.detail || 'Failed to get research results')
     }
 
-    return response.json()
+    const data = await response.json()
+
+    // Runtime validation for dual-shape response (staged vs final)
+    // Lightweight inline guards (P2). If a zod validator exists, use it here instead.
+    const isStaged =
+      data && typeof data === 'object' &&
+      typeof data.status === 'string' &&
+      (!data.answer || !data.sources)
+
+    if (isStaged) {
+      // Pass through as-is so callers can branch on status messages
+      return data as ResearchResult
+    }
+
+    // Final result minimal shape validation
+    if (!data.research_id || !data.answer || !Array.isArray(data.sources) || !data.paradigm_analysis) {
+      throw new Error('Invalid research result shape from server')
+    }
+
+    // Normalize some optional fields to reduce undefined checks in UI
+    data.answer = {
+      summary: data.answer.summary ?? '',
+      sections: Array.isArray(data.answer.sections) ? data.answer.sections : [],
+      action_items: Array.isArray(data.answer.action_items) ? data.answer.action_items : [],
+      citations: Array.isArray(data.answer.citations) ? data.answer.citations : []
+    }
+
+    data.metadata = data.metadata ?? {}
+    data.cost_info = data.cost_info ?? {}
+
+    return data as ResearchResult
   }
 
   async cancelResearch(researchId: string): Promise<void> {
@@ -335,22 +389,54 @@ class APIService {
     const response = await this.fetchWithAuth('/system/stats')
 
     if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.detail || 'Failed to get system stats')
+      const error = await response.json().catch(() => ({} as any))
+      // normalize to a consistent error message
+      throw new Error((error as any).detail || 'Failed to get system stats')
     }
 
-    return response.json()
+    // Map backend keys if needed (system_status -> system_health)
+    const data = await response.json()
+    if (data && typeof data === 'object') {
+      if (data.system_status && !data.system_health) {
+        data.system_health = data.system_status
+      }
+    }
+    return data
+  }
+
+  async getSystemStatsSafe(): Promise<SystemStats | Partial<SystemStats>> {
+    try {
+      return await this.getSystemStats();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('Insufficient permissions') || msg.includes('403')) {
+        return this.getPublicSystemStats();
+      }
+      // Some fetch implementations won’t include the message; try explicit status handling
+      try {
+        return this.getPublicSystemStats();
+      } catch {
+        // Fall through
+      }
+      throw e;
+    }
   }
 
   async getPublicSystemStats(): Promise<Partial<SystemStats>> {
     const response = await this.fetchWithAuth('/system/public-stats')
 
     if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.detail || 'Failed to get public system stats')
+      const error = await response.json().catch(() => ({} as any))
+      throw new Error((error as any).detail || 'Failed to get public system stats')
     }
 
-    return response.json()
+    const data = await response.json()
+    if (data && typeof data === 'object') {
+      if ((data as any).system_status && !(data as any).system_health) {
+        (data as any).system_health = (data as any).system_status
+      }
+    }
+    return data
   }
 
   // WebSocket Management

@@ -4,15 +4,17 @@ Implements Google Custom Search, Bing Search, and Academic APIs
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import string
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
@@ -21,7 +23,7 @@ import fitz  # PyMuPDF
 import nltk
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from nltk.corpus import stopwords
+from nltk.corpus import stopwords, wordnet
 from nltk.tokenize import word_tokenize
 from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
                     wait_exponential)
@@ -39,6 +41,10 @@ try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
     nltk.download('stopwords')
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('wordnet')
 
 # Load environment variables
 load_dotenv()
@@ -322,13 +328,26 @@ class SearchResult:
     raw_data: Dict[str, Any] = field(default_factory=dict)
     relevance_score: float = 0.0  # New field for relevance scoring
     is_primary_source: bool = False  # New field to identify primary sources
-
+    # Enhanced metadata fields
+    author: Optional[str] = None
+    publication_type: Optional[str] = None  # research, article, blog, report, etc.
+    citation_count: Optional[int] = None
+    content_length: Optional[int] = None
+    last_modified: Optional[datetime] = None
+    # Content hash for deduplication
+    content_hash: Optional[str] = None
+    
     def __post_init__(self):
         if not self.domain and self.url:
             # Extract domain from URL
             from urllib.parse import urlparse
 
             self.domain = urlparse(self.url).netloc.lower()
+        
+        # Generate content hash for deduplication
+        if self.title and self.snippet:
+            content_str = f"{self.title.lower().strip()}{self.snippet.lower().strip()}"
+            self.content_hash = hashlib.md5(content_str.encode()).hexdigest()
 
 
 @dataclass
@@ -341,6 +360,11 @@ class SearchConfig:
     safe_search: str = "moderate"
     date_range: Optional[str] = None  # "d", "w", "m", "y" for day/week/month/year
     source_types: List[str] = field(default_factory=list)  # ["academic", "news", "web"]
+    # Authority scoring configuration
+    authority_whitelist: List[str] = field(default_factory=list)  # Preferred domains
+    authority_blacklist: List[str] = field(default_factory=list)  # Blocked domains
+    prefer_primary_sources: bool = True
+    min_relevance_score: float = 0.25
 
 
 class RateLimiter:
@@ -385,8 +409,17 @@ class QueryOptimizer:
         self.known_entities = [
             'context engineering', 'web applications', 'artificial intelligence',
             'machine learning', 'deep learning', 'neural network', 'neural networks',
-            'large language model', 'large language models', 'state of the art'
+            'large language model', 'large language models', 'state of the art',
+            'natural language processing', 'computer vision', 'reinforcement learning',
+            'generative AI', 'transformer models', 'foundation models'
         ]
+        # Domain-specific term dictionaries
+        self.domain_terms = {
+            'medical': ['diagnosis', 'treatment', 'clinical', 'patient', 'therapy'],
+            'technical': ['algorithm', 'implementation', 'architecture', 'framework'],
+            'business': ['strategy', 'revenue', 'market', 'competitive', 'growth'],
+            'academic': ['research', 'study', 'methodology', 'findings', 'hypothesis']
+        }
 
     def _extract_entities(self, query: str) -> Tuple[List[str], str]:
         """Extracts quoted phrases and known entities from the query."""
@@ -434,9 +467,10 @@ class QueryOptimizer:
         # Return entities without quotes and keywords
         return [e.replace('"', '') for e in protected_entities] + keywords
 
-    def generate_query_variations(self, query: str) -> Dict[str, str]:
+    def generate_query_variations(self, query: str, paradigm: Optional[str] = None) -> Dict[str, str]:
         """
-        Generates a dictionary of query variations to improve search recall.
+        Generates an expanded set of query variations to improve search recall.
+        Now includes synonym expansion, related concepts, and domain-specific terminology.
         """
         protected_entities, remaining_text = self._extract_entities(query)
 
@@ -453,35 +487,118 @@ class QueryOptimizer:
         else:
             primary_query = " AND ".join(all_terms)
 
-        # Generate variations
+        # Generate expanded variations (5-7 total)
         variations = {
             "primary": primary_query
         }
 
-        # Semantic variation: use OR for some terms
+        # 1. Semantic variation: use OR for some terms
         if len(protected_entities) > 1:
             semantic_query = f"({' OR '.join([f'\"{e}\"' for e in protected_entities])}) AND {' '.join(keywords)}"
             variations["semantic"] = semantic_query
         else:
             variations["semantic"] = primary_query.replace(" AND ", " ")
 
-        # Question variation
-        question_starters = ['what is', 'how does', 'explain']
+        # 2. Question variation
+        question_starters = ['what is', 'how does', 'explain', 'why does', 'when did']
         if not any(query.lower().startswith(s) for s in question_starters):
             variations["question"] = (
                 "what is the relationship between "
                 f"{' and '.join(all_terms)}"
             )
 
+        # 3. Synonym expansion variation
+        synonym_terms = self._expand_synonyms(keywords)
+        if synonym_terms != keywords:
+            synonym_query = " ".join([f'"{e}"' for e in protected_entities] + synonym_terms)
+            variations["synonym"] = synonym_query
+
+        # 4. Related concepts variation
+        related_terms = self._get_related_concepts(keywords)
+        if related_terms:
+            related_query = f"{primary_query} OR ({' OR '.join(related_terms)})"
+            variations["related"] = related_query
+
+        # 5. Domain-specific variation (if paradigm provided)
+        if paradigm:
+            domain_query = self._add_domain_specific_terms(primary_query, paradigm)
+            if domain_query != primary_query:
+                variations["domain_specific"] = domain_query
+
+        # 6. Broad match variation (less restrictive)
+        broad_terms = protected_entities + keywords
+        if len(broad_terms) > 2:
+            # Use only the most important terms
+            broad_query = " ".join(broad_terms[:3])
+            variations["broad"] = broad_query
+
+        # 7. Exact phrase variation (for finding specific content)
+        if len(all_terms) >= 2 and len(query.split()) <= 6:
+            exact_phrase = f'"{query}"'
+            variations["exact_phrase"] = exact_phrase
+
         return variations
+
+    def _expand_synonyms(self, terms: List[str]) -> List[str]:
+        """Expand terms with synonyms using WordNet"""
+        expanded = []
+        for term in terms:
+            # Add original term
+            expanded.append(term)
+            # Get synonyms (limit to 2 per term to avoid explosion)
+            synsets = wordnet.synsets(term)
+            if synsets:
+                synonyms = set()
+                for syn in synsets[:2]:  # Limit synsets
+                    for lemma in syn.lemmas()[:3]:  # Limit lemmas
+                        synonym = lemma.name().replace('_', ' ')
+                        if synonym.lower() != term.lower():
+                            synonyms.add(synonym)
+                expanded.extend(list(synonyms)[:2])  # Add max 2 synonyms
+        return expanded
+
+    def _get_related_concepts(self, terms: List[str]) -> List[str]:
+        """Get related concepts for the terms"""
+        related_concepts_map = {
+            'AI': ['artificial intelligence', 'machine learning', 'deep learning'],
+            'ML': ['machine learning', 'algorithms', 'models'],
+            'ethics': ['moral', 'ethical considerations', 'responsible AI'],
+            'security': ['cybersecurity', 'privacy', 'data protection'],
+            'climate': ['climate change', 'global warming', 'environmental'],
+            'health': ['healthcare', 'medical', 'wellness'],
+            'finance': ['financial', 'economic', 'investment'],
+            'education': ['learning', 'teaching', 'academic']
+        }
+        
+        related = []
+        for term in terms:
+            term_lower = term.lower()
+            for key, concepts in related_concepts_map.items():
+                if key.lower() in term_lower or term_lower in key.lower():
+                    related.extend(concepts[:2])  # Limit to 2 related concepts
+        return list(set(related))[:3]  # Return max 3 unique related concepts
+
+    def _add_domain_specific_terms(self, query: str, paradigm: str) -> str:
+        """Add domain-specific terms based on paradigm"""
+        paradigm_terms = {
+            'dolores': ['investigation', 'expose', 'systemic', 'corruption'],
+            'teddy': ['support', 'community', 'help', 'care'],
+            'bernard': ['research', 'analysis', 'data', 'evidence'],
+            'maeve': ['strategy', 'business', 'optimization', 'market']
+        }
+        
+        if paradigm.lower() in paradigm_terms:
+            domain_term = paradigm_terms[paradigm.lower()][0]
+            return f"{query} {domain_term}"
+        return query
 
     def optimize_query(self, query: str, paradigm: Optional[str] = None) -> str:
         """
         Returns the primary, most precise query variation.
         This method maintains compatibility with the existing interface.
         """
-        variations = self.generate_query_variations(query)
-        logger.info(f"Generated query variations for '{query}': {variations}")
+        variations = self.generate_query_variations(query, paradigm)
+        logger.info(f"Generated {len(variations)} query variations for '{query}'")
         return variations.get("primary", query)
 
 
@@ -490,35 +607,55 @@ class ContentRelevanceFilter:
 
     def __init__(self):
         self.query_optimizer = QueryOptimizer()
+        # Track cross-source agreement
+        self.claim_tracker: Dict[str, List[SearchResult]] = defaultdict(list)
+        self.consensus_threshold = 0.7  # 70% agreement threshold
 
-    def calculate_relevance_score(self, result: SearchResult, original_query: str, key_terms: List[str]) -> float:
-        """Calculate relevance score for a search result"""
+    def calculate_relevance_score(self, result: SearchResult, original_query: str, key_terms: List[str], config: Optional[SearchConfig] = None) -> float:
+        """Calculate relevance score for a search result with enhanced authority scoring"""
         score = 0.0
 
         # Extract text for analysis
         text_content = f"{result.title} {result.snippet}".lower()
 
-        # 1. Key term frequency (40% weight)
+        # 1. Key term frequency (35% weight - reduced to make room for authority)
         term_frequency_score = self._calculate_term_frequency(text_content, key_terms)
-        score += term_frequency_score * 0.4
+        score += term_frequency_score * 0.35
 
-        # 2. Title relevance (30% weight)
+        # 2. Title relevance (25% weight)
         title_score = self._calculate_title_relevance(result.title.lower(), key_terms)
-        score += title_score * 0.3
+        score += title_score * 0.25
 
         # 3. Content freshness (10% weight)
         freshness_score = self._calculate_freshness_score(result.published_date)
         score += freshness_score * 0.1
 
-        # 4. Source type bonus (10% weight)
-        source_score = self._calculate_source_type_score(result)
-        score += source_score * 0.1
+        # 4. Source authority score (15% weight - increased)
+        source_score = self._calculate_source_type_score(result, config)
+        score += source_score * 0.15
 
         # 5. Exact phrase matching (10% weight)
         phrase_score = self._calculate_phrase_match_score(text_content, original_query)
         score += phrase_score * 0.1
 
+        # 6. Metadata quality bonus (5% weight)
+        metadata_score = self._calculate_metadata_score(result)
+        score += metadata_score * 0.05
+
         return min(1.0, score)
+
+    def _calculate_metadata_score(self, result: SearchResult) -> float:
+        """Calculate score based on metadata completeness"""
+        score = 0.0
+        metadata_fields = [
+            result.author is not None,
+            result.publication_type is not None,
+            result.citation_count is not None,
+            result.published_date is not None,
+            result.content_length is not None
+        ]
+        score = sum(metadata_fields) / len(metadata_fields)
+        return score
 
     def _calculate_term_frequency(self, text: str, key_terms: List[str]) -> float:
         """Calculate normalized term frequency score"""
@@ -553,6 +690,10 @@ class ContentRelevanceFilter:
         if not published_date:
             return 0.5  # Neutral score for unknown dates
 
+        # Ensure published_date is timezone-aware
+        if published_date.tzinfo is None:
+            published_date = published_date.replace(tzinfo=timezone.utc)
+            
         days_old = (datetime.now(timezone.utc) - published_date).days
 
         if days_old <= 7:
@@ -566,30 +707,59 @@ class ContentRelevanceFilter:
         else:
             return 0.2
 
-    def _calculate_source_type_score(self, result: SearchResult) -> float:
-        """Calculate source type score based on result type and domain"""
+    def _calculate_source_type_score(self, result: SearchResult, config: Optional[SearchConfig] = None) -> float:
+        """Calculate source type score based on result type and domain with authority scoring"""
+        score = 0.5  # Base score
+        
+        # Check whitelist/blacklist if config provided
+        if config:
+            if config.authority_blacklist and any(blocked in result.domain for blocked in config.authority_blacklist):
+                return 0.1  # Very low score for blacklisted domains
+            
+            if config.authority_whitelist and any(allowed in result.domain for allowed in config.authority_whitelist):
+                score = 0.95  # Very high score for whitelisted domains
+                result.is_primary_source = True
+                return score
+        
         # Academic sources get higher base score
         if result.result_type == "academic":
-            return 0.9
+            score = 0.9
+            result.is_primary_source = True
+            # Extra points for citation count
+            if result.citation_count and result.citation_count > 10:
+                score = min(1.0, score + 0.05)
+            return score
 
         # Check for primary source indicators
         primary_indicators = [
             '.gov', '.edu', '.org',
             'official', 'foundation', 'institute',
-            'journal', 'research', 'university'
+            'journal', 'research', 'university',
+            'academy', 'national', 'federal'
         ]
 
         domain_lower = result.domain.lower()
         if any(indicator in domain_lower for indicator in primary_indicators):
             result.is_primary_source = True
-            return 0.8
+            # Official government sources get highest score
+            if '.gov' in domain_lower:
+                return 0.95
+            # Educational institutions
+            elif '.edu' in domain_lower:
+                return 0.9
+            # Other primary sources
+            else:
+                return 0.8
 
-        # News sources
+        # News sources - differentiate by credibility
         if result.result_type == "news":
-            return 0.7
+            credible_news = ['reuters', 'ap.org', 'bbc', 'npr', 'wsj', 'nytimes', 'guardian']
+            if any(source in domain_lower for source in credible_news):
+                return 0.75
+            return 0.65
 
         # Default web sources
-        return 0.5
+        return score
 
     def _calculate_phrase_match_score(self, text: str, original_query: str) -> float:
         """Calculate score for exact phrase matching"""
@@ -607,8 +777,14 @@ class ContentRelevanceFilter:
         results: List[SearchResult],
         original_query: str,
         min_relevance: float = 0.25,
+        config: Optional[SearchConfig] = None,
+        detect_consensus: bool = True
     ) -> List[SearchResult]:
-        """Filter and rank results by relevance with a higher threshold."""
+        """Filter and rank results by relevance with cross-source agreement detection"""
+        # Use config min_relevance if provided
+        if config and hasattr(config, 'min_relevance_score'):
+            min_relevance = config.min_relevance_score
+            
         # Domains known to block scrapers or have heavy paywalls
         blocked_domains = {
             "sciencedirect.com", "springer.com", "wiley.com", "jstor.org",
@@ -628,10 +804,14 @@ class ContentRelevanceFilter:
 
         # Calculate relevance scores
         for result in pre_filtered:
-            result.relevance_score = self.calculate_relevance_score(result, original_query, key_terms)
+            result.relevance_score = self.calculate_relevance_score(result, original_query, key_terms, config)
 
         # Filter by minimum relevance
         filtered = [r for r in pre_filtered if r.relevance_score >= min_relevance]
+
+        # Detect cross-source agreement if enabled
+        if detect_consensus and len(filtered) > 1:
+            filtered = self._detect_cross_source_agreement(filtered, key_terms)
 
         # Sort by relevance score (descending)
         filtered.sort(key=lambda x: x.relevance_score, reverse=True)
@@ -639,6 +819,80 @@ class ContentRelevanceFilter:
         logger.info(f"Filtered {len(results)} results to {len(filtered)} with min relevance {min_relevance}")
 
         return filtered
+
+    def _detect_cross_source_agreement(self, results: List[SearchResult], key_terms: List[str]) -> List[SearchResult]:
+        """Detect and score cross-source agreement on key claims"""
+        # Extract key claims from each result
+        claim_groups = defaultdict(list)
+        
+        for result in results:
+            # Extract potential claims (sentences containing key terms)
+            text = f"{result.title} {result.snippet}".lower()
+            sentences = text.split('.')
+            
+            for sentence in sentences:
+                if any(term in sentence for term in key_terms):
+                    # Normalize claim for grouping
+                    normalized_claim = self._normalize_claim(sentence)
+                    if normalized_claim:
+                        claim_groups[normalized_claim].append(result)
+        
+        # Mark results that have consensus
+        consensus_results = set()
+        for claim, supporting_results in claim_groups.items():
+            if len(supporting_results) >= 2:
+                # Multiple sources agree on this claim
+                for result in supporting_results:
+                    consensus_results.add(id(result))
+                    # Boost relevance score for consensus
+                    result.relevance_score = min(1.0, result.relevance_score + 0.1)
+                    # Add consensus metadata
+                    if 'consensus_claims' not in result.raw_data:
+                        result.raw_data['consensus_claims'] = []
+                    result.raw_data['consensus_claims'].append({
+                        'claim': claim,
+                        'supporting_sources': len(supporting_results)
+                    })
+        
+        # Flag potential contradictions
+        self._flag_contradictions(results, claim_groups)
+        
+        return results
+
+    def _normalize_claim(self, sentence: str) -> Optional[str]:
+        """Normalize a claim for comparison"""
+        # Remove extra whitespace and punctuation
+        normalized = re.sub(r'[^\w\s]', '', sentence.lower().strip())
+        normalized = ' '.join(normalized.split())
+        
+        # Skip very short claims
+        if len(normalized.split()) < 4:
+            return None
+            
+        return normalized
+
+    def _flag_contradictions(self, results: List[SearchResult], claim_groups: Dict[str, List[SearchResult]]):
+        """Flag potential contradictions in results"""
+        # Simple contradiction detection based on negation patterns
+        negation_words = ['not', 'no', 'never', 'none', 'neither', 'nor', 'without']
+        
+        for claim, supporting_results in claim_groups.items():
+            # Check for potential negated version of this claim
+            for neg_word in negation_words:
+                if neg_word in claim:
+                    # Look for similar claim without negation
+                    positive_claim = claim.replace(neg_word, '').strip()
+                    for other_claim in claim_groups:
+                        if other_claim != claim and positive_claim in other_claim:
+                            # Potential contradiction found
+                            for result in supporting_results:
+                                if 'potential_contradictions' not in result.raw_data:
+                                    result.raw_data['potential_contradictions'] = []
+                                result.raw_data['potential_contradictions'].append({
+                                    'this_claim': claim,
+                                    'contradicting_claim': other_claim,
+                                    'sources': len(claim_groups[other_claim])
+                                })
 
 
 class BaseSearchAPI:
@@ -676,6 +930,30 @@ class BaseSearchAPI:
         """Override in subclasses"""
         raise NotImplementedError
 
+    async def search_with_variations(self, query: str, config: SearchConfig, paradigm: Optional[str] = None) -> List[SearchResult]:
+        """Search using multiple query variations for better coverage"""
+        variations = self.query_optimizer.generate_query_variations(query, paradigm)
+        all_results = []
+        seen_urls = set()
+        
+        # Search with each variation
+        for variant_type, variant_query in list(variations.items())[:3]:  # Limit to top 3 variations
+            try:
+                variant_results = await self.search(variant_query, config)
+                
+                # Deduplicate by URL
+                for result in variant_results:
+                    if result.url not in seen_urls:
+                        seen_urls.add(result.url)
+                        result.raw_data['query_variant'] = variant_type
+                        all_results.append(result)
+                        
+            except Exception as e:
+                logger.warning(f"Search failed for {variant_type} variant: {e}")
+                continue
+        
+        return all_results
+
 
 class GoogleCustomSearchAPI(BaseSearchAPI):
     """Google Custom Search API implementation"""
@@ -706,9 +984,10 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
             logger.error("Empty query provided to Google search")
             return []
 
-        # Optimize query for better relevance
-        optimized_query = self.query_optimizer.optimize_query(query)
-        logger.info(f"Optimized query: '{query}' -> '{optimized_query}'")
+        # Generate query variations for better coverage
+        variations = self.query_optimizer.generate_query_variations(query)
+        optimized_query = variations.get("primary", query)
+        logger.info(f"Using primary query variation: '{optimized_query}'")
 
         if not self.api_key:
             logger.error("Google API key not configured")
@@ -751,8 +1030,8 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                 if response.status == 200:
                     data = await response.json()
                     results = self._parse_google_results(data)
-                    # Apply relevance filtering
-                    filtered_results = self.relevance_filter.filter_results(results, query)
+                    # Apply relevance filtering with config
+                    filtered_results = self.relevance_filter.filter_results(results, query, config=config)
                     return filtered_results
                 elif response.status == 429:
                     logger.warning("Google API rate limit exceeded")
@@ -789,7 +1068,7 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
             return []
 
     def _parse_google_results(self, data: Dict[str, Any]) -> List[SearchResult]:
-        """Parse Google API response."""
+        """Parse Google API response with enhanced metadata extraction."""
         results = []
         items = data.get("items", [])
         if not isinstance(items, list):
@@ -798,6 +1077,36 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         for item in items:
             if not isinstance(item, dict):
                 continue
+                
+            # Extract enhanced metadata
+            pagemap = item.get("pagemap", {})
+            metatags = pagemap.get("metatags", [{}])[0] if pagemap.get("metatags") else {}
+            
+            # Try to extract author
+            author = (
+                metatags.get("author") or 
+                metatags.get("article:author") or 
+                metatags.get("dc.creator")
+            )
+            
+            # Try to extract publication date
+            date_str = (
+                metatags.get("article:published_time") or
+                metatags.get("publishdate") or
+                metatags.get("dc.date")
+            )
+            published_date = None
+            if date_str:
+                try:
+                    published_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                    if published_date.tzinfo is None:
+                        published_date = published_date.replace(tzinfo=timezone.utc)
+                except:
+                    pass
+                    
+            # Extract content type
+            publication_type = metatags.get("og:type", "web")
+            
             result = SearchResult(
                 title=item.get("title", ""),
                 url=item.get("link", ""),
@@ -805,6 +1114,10 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                 source="google_custom_search",
                 domain=item.get("displayLink", ""),
                 raw_data=item,
+                author=author,
+                published_date=published_date,
+                publication_type=publication_type,
+                content_length=len(item.get("snippet", ""))
             )
             results.append(result)
         return results
@@ -851,7 +1164,7 @@ class ArxivAPI(BaseSearchAPI):
                     results = self._parse_arxiv_results(xml_data)
                     # Apply relevance filtering with higher threshold
                     return self.relevance_filter.filter_results(
-                        results, query, min_relevance=0.4
+                        results, query, min_relevance=0.4, config=config
                     )
                 else:
                     logger.error(f"ArXiv API error: {response.status}")
@@ -892,6 +1205,17 @@ class ArxivAPI(BaseSearchAPI):
                     if summary_elem is not None and summary_elem.text:
                         snippet_text = (summary_elem.text[:300] + "...")
 
+                    # Extract authors
+                    authors = []
+                    for author in entry.findall("atom:author", namespace):
+                        name_elem = author.find("atom:name", namespace)
+                        if name_elem is not None and name_elem.text:
+                            authors.append(name_elem.text)
+                    
+                    author_str = ", ".join(authors[:3]) if authors else None
+                    if len(authors) > 3:
+                        author_str += f" et al. ({len(authors)} authors)"
+
                     result = SearchResult(
                         title=title_elem.text.strip(),
                         url=link_elem.text or "",
@@ -900,6 +1224,9 @@ class ArxivAPI(BaseSearchAPI):
                         published_date=published_date,
                         result_type="academic",
                         domain="arxiv.org",
+                        author=author_str,
+                        publication_type="research_paper",
+                        content_length=len(summary_elem.text) if summary_elem is not None and summary_elem.text else 0
                     )
                     results.append(result)
 
@@ -986,8 +1313,8 @@ class BraveSearchAPI(BaseSearchAPI):
                 if response.status == 200:
                     data = await response.json()
                     results = self._parse_brave_results(data)
-                    # Apply relevance filtering
-                    filtered_results = self.relevance_filter.filter_results(results, query)
+                    # Apply relevance filtering with config
+                    filtered_results = self.relevance_filter.filter_results(results, query, config=config)
                     return filtered_results
                 elif response.status == 401:
                     logger.error("Brave API authentication failed - check API key")
@@ -1109,7 +1436,7 @@ class PubMedAPI(BaseSearchAPI):
                     results = self._parse_pubmed_results(xml_data)
                     # Apply relevance filtering with higher threshold
                     return self.relevance_filter.filter_results(
-                        results, query, min_relevance=0.4
+                        results, query, min_relevance=0.4, config=config
                     )
                 else:
                     logger.error(f"PubMed fetch error: {response.status}")
@@ -1150,6 +1477,23 @@ class PubMedAPI(BaseSearchAPI):
                     if abstract_elem is not None and abstract_elem.text:
                         abstract = (abstract_elem.text[:300] + "...")
 
+                    # Extract authors
+                    authors = []
+                    author_list = article.find(".//AuthorList")
+                    if author_list is not None:
+                        for author in author_list.findall(".//Author"):
+                            lastname = author.find(".//LastName")
+                            forename = author.find(".//ForeName")
+                            if lastname is not None and lastname.text:
+                                name = lastname.text
+                                if forename is not None and forename.text:
+                                    name = f"{forename.text} {name}"
+                                authors.append(name)
+                    
+                    author_str = ", ".join(authors[:3]) if authors else None
+                    if len(authors) > 3:
+                        author_str += f" et al."
+
                     result = SearchResult(
                         title=title_elem.text,
                         url=url,
@@ -1158,6 +1502,9 @@ class PubMedAPI(BaseSearchAPI):
                         published_date=published_date,
                         result_type="academic",
                         domain="pubmed.ncbi.nlm.nih.gov",
+                        author=author_str,
+                        publication_type="medical_research",
+                        content_length=len(abstract_elem.text) if abstract_elem is not None and abstract_elem.text else 0
                     )
                     results.append(result)
 
@@ -1357,6 +1704,8 @@ class SearchAPIManager:
         self.respectful_fetcher = RespectfulFetcher()
         self.relevance_filter = ContentRelevanceFilter()
         self.cache_manager = cache_manager
+        # Deduplication with content hashing
+        self.dedup_threshold = 0.85  # Similarity threshold for near-duplicates
 
     def add_api(self, name: str, api: BaseSearchAPI, is_primary: bool = False):
         """Add a search API"""
@@ -1366,37 +1715,69 @@ class SearchAPIManager:
         else:
             self.fallback_order.append(name)
 
+    async def search_with_api(self, name: str, query: str, config: SearchConfig) -> List[SearchResult]:
+        """
+        Thin wrapper to call a specific API by name for compatibility with orchestrator.
+        Uses search_with_variations when available for broader coverage.
+        """
+        # Ensure APIs are initialized
+        if not self._initialized:
+            await self.initialize()
+
+        api = self.apis.get(name)
+        if not api:
+            logger.warning(f"Requested search API '{name}' not found; falling back to generic search_with_fallback")
+            return await self.search_with_fallback(query, config)
+
+        try:
+            if hasattr(api, 'search_with_variations'):
+                results = await api.search_with_variations(query, config)
+            else:
+                results = await api.search(query, config)
+            logger.info(f"{name}: fetched {len(results)} results")
+            return results
+        except Exception as e:
+            logger.error(f"search_with_api failed for {name}: {e}")
+            return []
+
     async def search_all(
-        self, query: str, config: SearchConfig
+        self, query: str, config: SearchConfig, paradigm: Optional[str] = None
     ) -> Dict[str, List[SearchResult]]:
-        """Search using all available APIs"""
+        """Search using all available APIs with enhanced deduplication"""
         # Ensure APIs are initialized
         if not self._initialized:
             await self.initialize()
 
         results = {}
+        all_results_for_dedup = []
 
         tasks = []
         for name, api in self.apis.items():
-            task = asyncio.create_task(api.search(query, config))
+            # Use search_with_variations if available
+            if hasattr(api, 'search_with_variations'):
+                task = asyncio.create_task(api.search_with_variations(query, config, paradigm))
+            else:
+                task = asyncio.create_task(api.search(query, config))
             tasks.append((name, task))
 
         for name, task in tasks:
             try:
                 api_results = await task
-                # Fetch full content for each result
-                if api.session:
+                # Fetch full content for each result using the proper session for this API
+                api_obj = self.apis.get(name)
+                if api_obj and getattr(api_obj, "session", None):
                     content_tasks = [
                         self.respectful_fetcher.respectful_fetch(
-                            api.session, result.url
+                            api_obj.session, result.url
                         )
                         for result in api_results
                         if result.url and not result.content
                     ]
-                    fetched_contents = await asyncio.gather(*content_tasks)
-                    for result, content in zip(api_results, fetched_contents):
-                        if content:
-                            result.content = content
+                    if content_tasks:
+                        fetched_contents = await asyncio.gather(*content_tasks)
+                        for result, content in zip(api_results, fetched_contents):
+                            if content:
+                                result.content = content
 
                 # Enhance with snippets if content unavailable
                 api_results = GoogleCustomSearchAPI.enhance_results_with_snippets(
@@ -1405,8 +1786,12 @@ class SearchAPIManager:
 
                 # Apply global relevance filtering
                 filtered_results = self.relevance_filter.filter_results(
-                    api_results, query, min_relevance=0.25
+                    api_results, query, min_relevance=0.25, config=config
                 )
+                
+                # Collect for cross-API deduplication
+                all_results_for_dedup.extend(filtered_results)
+                
                 results[name] = filtered_results
                 logger.info(
                     f"{name}: {len(filtered_results)} results "
@@ -1416,7 +1801,77 @@ class SearchAPIManager:
                 logger.error(f"{name} search failed: {str(e)}")
                 results[name] = []
 
-        return results
+        # Apply cross-API deduplication
+        deduplicated_results = self._deduplicate_results(all_results_for_dedup)
+        
+        # Redistribute deduplicated results back to their sources
+        final_results = {name: [] for name in results.keys()}
+        for result in deduplicated_results:
+            source = result.source
+            # Find which API this result came from
+            for api_name, api_results in results.items():
+                if any(r.url == result.url for r in api_results):
+                    final_results[api_name].append(result)
+                    break
+        
+        return final_results
+
+    def _deduplicate_results(self, results: List[SearchResult]) -> List[SearchResult]:
+        """Deduplicate results using content hashing and similarity detection"""
+        if not results:
+            return []
+            
+        deduplicated = []
+        seen_hashes = set()
+        seen_urls = set()
+        similar_content_groups = defaultdict(list)
+        
+        for result in results:
+            # Check exact URL match
+            if result.url in seen_urls:
+                continue
+                
+            # Check exact content hash match
+            if result.content_hash and result.content_hash in seen_hashes:
+                continue
+                
+            # Check for near-duplicates using SimHash (simplified version)
+            is_duplicate = False
+            result_tokens = set(self._tokenize_for_similarity(result))
+            
+            for existing in deduplicated:
+                existing_tokens = set(self._tokenize_for_similarity(existing))
+                
+                # Calculate Jaccard similarity
+                intersection = len(result_tokens & existing_tokens)
+                union = len(result_tokens | existing_tokens)
+                
+                if union > 0:
+                    similarity = intersection / union
+                    if similarity >= self.dedup_threshold:
+                        # Near-duplicate found - keep the one with higher relevance score
+                        if result.relevance_score > existing.relevance_score:
+                            deduplicated.remove(existing)
+                            deduplicated.append(result)
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                deduplicated.append(result)
+                seen_urls.add(result.url)
+                if result.content_hash:
+                    seen_hashes.add(result.content_hash)
+        
+        logger.info(f"Deduplicated {len(results)} results to {len(deduplicated)}")
+        return deduplicated
+
+    def _tokenize_for_similarity(self, result: SearchResult) -> List[str]:
+        """Tokenize result for similarity comparison"""
+        text = f"{result.title} {result.snippet}".lower()
+        # Simple tokenization - could be enhanced with shingles
+        tokens = re.findall(r'\w+', text)
+        # Return 3-grams for better similarity detection
+        return [' '.join(tokens[i:i+3]) for i in range(len(tokens)-2)]
 
     async def initialize(self):
         """Initialize all API sessions"""

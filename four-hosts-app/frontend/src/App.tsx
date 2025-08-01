@@ -253,60 +253,60 @@ const ResearchPage = () => {
       pollIntervalRef.current = setInterval(async () => {
         try {
           const resultsData = await api.getResearchResults(data.research_id)
-          
-          // Check if research is still in progress
-          if (resultsData.status && resultsData.status !== 'completed' && resultsData.status !== 'failed' && resultsData.status !== 'cancelled') {
-            // Still processing, continue polling
+
+          // Handle staged response (status present but not final)
+          const stagedStatuses = ['queued','processing','in_progress']
+          if ((resultsData as any)?.status && stagedStatuses.includes((resultsData as any).status)) {
             if (retries >= maxRetries) {
               setError('Research timeout - please try again')
               setIsLoading(false)
               setShowProgress(false)
               clearInterval(pollIntervalRef.current!)
             }
-          } else if (resultsData.status === 'failed' || resultsData.status === 'cancelled') {
-            // Research failed or was cancelled
-            setError(`Research ${resultsData.status}: ${resultsData.message || 'Please try again'}`)
-            setIsLoading(false)
-            setShowProgress(false)
-            clearInterval(pollIntervalRef.current!)
-          } else {
-            // Research completed successfully
-            setResults(resultsData)
-            // Extract paradigm classification from results
-            if (resultsData.paradigm_analysis && resultsData.paradigm_analysis.primary) {
-              // Build distribution from primary and secondary paradigms
-              const distribution: Record<string, number> = {
-                [resultsData.paradigm_analysis.primary.paradigm]: resultsData.paradigm_analysis.primary.confidence
-              }
-              
-              if (resultsData.paradigm_analysis.secondary) {
-                distribution[resultsData.paradigm_analysis.secondary.paradigm] = resultsData.paradigm_analysis.secondary.confidence
-              }
-              
-              // Fill in other paradigms with 0 if not present
-              const allParadigms = ['dolores', 'teddy', 'bernard', 'maeve']
-              allParadigms.forEach(p => {
-                if (!distribution[p]) {
-                  distribution[p] = 0
-                }
-              })
-              
-              setParadigmClassification({
-                primary: resultsData.paradigm_analysis.primary.paradigm,
-                secondary: resultsData.paradigm_analysis.secondary?.paradigm || null,
-                distribution,
-                confidence: resultsData.paradigm_analysis.primary.confidence,
-                explanation: {
-                  [resultsData.paradigm_analysis.primary.paradigm]: resultsData.paradigm_analysis.primary.approach
-                }
-              })
-            }
-            setIsLoading(false)
-            setShowProgress(false)
-            clearInterval(pollIntervalRef.current!)
+            return
           }
+
+          // Handle terminal staged failures
+          if ((resultsData as any)?.status === 'failed' || (resultsData as any)?.status === 'cancelled') {
+            setError(`Research ${(resultsData as any).status}: ${(resultsData as any).message || 'Please try again'}`)
+            setIsLoading(false)
+            setShowProgress(false)
+            clearInterval(pollIntervalRef.current!)
+            return
+          }
+
+          // Final result path
+          setResults(resultsData)
+
+          // Extract paradigm classification from results
+          if ((resultsData as any).paradigm_analysis && (resultsData as any).paradigm_analysis.primary) {
+            const primary = (resultsData as any).paradigm_analysis.primary
+            const secondary = (resultsData as any).paradigm_analysis.secondary
+            const distribution: Record<string, number> = { [primary.paradigm]: primary.confidence }
+            
+            if (secondary) {
+              distribution[secondary.paradigm] = secondary.confidence
+            }
+
+            const allParadigms = ['dolores', 'teddy', 'bernard', 'maeve']
+            allParadigms.forEach(p => {
+              if (!distribution[p]) distribution[p] = 0
+            })
+
+            setParadigmClassification({
+              primary: primary.paradigm,
+              secondary: secondary?.paradigm || null,
+              distribution,
+              confidence: primary.confidence,
+              explanation: {
+                [primary.paradigm]: primary.approach
+              }
+            })
+          }
+          setIsLoading(false)
+          setShowProgress(false)
+          clearInterval(pollIntervalRef.current!)
         } catch {
-          // API error - continue polling if not at max retries
           if (retries >= maxRetries) {
             setError('Research timeout - please try again')
             setIsLoading(false)
@@ -435,22 +435,20 @@ const ResearchResultPage = () => {
       try {
         const data = await api.getResearchResults(id)
         
-        // Check if this is a failed/cancelled research response
-        if ('status' in data && (data.status === 'failed' || data.status === 'cancelled')) {
-          setError(`Research ${data.status}`)
+        // Terminal staged responses
+        if ((data as any)?.status === 'failed' || (data as any)?.status === 'cancelled') {
+          setError(`Research ${(data as any).status}`)
           return
         }
         
-        // Check if this is a still-processing research
-        if (data.status && data.status !== 'completed' && data.status !== 'failed' && data.status !== 'cancelled') {
-          // Research is still in progress, redirect to home page to show progress
+        // Non-final staged responses
+        if ((data as any)?.status && !['completed','failed','cancelled'].includes((data as any).status)) {
           navigate('/')
           return
         }
         
         setResults(data)
       } catch {
-        // Failed to load research results
         setError('Failed to load research results')
       } finally {
         setIsLoading(false)

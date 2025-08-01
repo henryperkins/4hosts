@@ -1,6 +1,7 @@
 """
 Redis-based caching layer for Four Hosts Research Application
-Implements intelligent caching for search results, API responses, and paradigm classifications
+Implements intelligent caching for search results, API responses,
+and paradigm classifications
 """
 
 import redis.asyncio as redis
@@ -8,7 +9,7 @@ import json
 import logging
 import hashlib
 from typing import Any, Optional, Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import asdict
 import asyncio
 from contextlib import asynccontextmanager
@@ -87,7 +88,9 @@ class CacheManager:
         self, query: str, config_dict: Dict[str, Any], paradigm: str
     ) -> Optional[List[SearchResult]]:
         """Get cached search results"""
-        cache_key = self._generate_cache_key("search", query, paradigm, **config_dict)
+        cache_key = self._generate_cache_key(
+            "search", query, paradigm, **config_dict
+        )
 
         try:
             async with self.get_client() as client:
@@ -103,7 +106,9 @@ class CacheManager:
                         # Handle datetime conversion
                         if result_dict.get("published_date"):
                             result_dict["published_date"] = datetime.fromisoformat(
-                                result_dict["published_date"].replace("Z", "+00:00")
+                                result_dict["published_date"].replace(
+                                    "Z", "+00:00"
+                                )
                             )
                         results.append(SearchResult(**result_dict))
 
@@ -126,7 +131,9 @@ class CacheManager:
         results: List[SearchResult],
     ):
         """Cache search results"""
-        cache_key = self._generate_cache_key("search", query, paradigm, **config_dict)
+        cache_key = self._generate_cache_key(
+            "search", query, paradigm, **config_dict
+        )
 
         try:
             # Convert SearchResult objects to dict for JSON serialization
@@ -154,7 +161,9 @@ class CacheManager:
         except Exception as e:
             logger.error(f"Cache set error: {str(e)}")
 
-    async def get_paradigm_classification(self, query: str) -> Optional[Dict[str, Any]]:
+    async def get_paradigm_classification(
+        self, query: str
+    ) -> Optional[Dict[str, Any]]:
         """Get cached paradigm classification"""
         cache_key = self._generate_cache_key("paradigm", query)
 
@@ -191,7 +200,40 @@ class CacheManager:
         except Exception as e:
             logger.error(f"Cache set error: {str(e)}")
 
-    async def get_source_credibility(self, domain: str) -> Optional[Dict[str, Any]]:
+    async def get_kv(self, key: str) -> Optional[Any]:
+        """Generic KV get for arbitrary keys/namespaces.
+        Namespaces: cred:da:{domain}, cred:card:{domain}:{paradigm}
+        """
+        try:
+            async with self.get_client() as client:
+                cached_data = await client.get(key)
+                if cached_data is None:
+                    return None
+                # Try JSON decode, otherwise return raw string
+                try:
+                    return json.loads(cached_data)
+                except Exception:
+                    return cached_data
+        except Exception as e:
+            logger.error(f"Cache get_kv error: {str(e)}")
+            return None
+
+    async def set_kv(self, key: str, value: Any, ttl: int = 3600) -> bool:
+        """Generic KV set with TTL for arbitrary keys/namespaces."""
+        try:
+            payload = value
+            if not isinstance(value, (str, bytes)):
+                payload = json.dumps(value, default=str)
+            async with self.get_client() as client:
+                await client.setex(key, ttl, payload)
+            return True
+        except Exception as e:
+            logger.error(f"Cache set_kv error: {str(e)}")
+            return False
+
+    async def get_source_credibility(
+        self, domain: str
+    ) -> Optional[Dict[str, Any]]:
         """Get cached source credibility data"""
         cache_key = self._generate_cache_key("credibility", domain)
 

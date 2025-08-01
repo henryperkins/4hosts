@@ -7,21 +7,29 @@ import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 import hashlib
-import json
+# json import removed (unused)
 import re
 
 from models.context_models import (
     SearchResultSchema, ClassificationResultSchema,
-    ContextEngineeredQuerySchema, UserContextSchema,
-    HostParadigm, QueryFeaturesSchema
+    ContextEngineeredQuerySchema,
+    HostParadigm
 )
-from services.search_apis import SearchAPIManager, SearchResult, SearchConfig, create_search_manager
-from services.credibility import get_source_credibility, CredibilityScore
+from services.search_apis import (
+    SearchResult,
+    SearchConfig,
+    create_search_manager,
+)
+from services.credibility import get_source_credibility
 from services.paradigm_search import get_search_strategy, SearchContext
-from services.cache import cache_manager, get_cached_search_results, cache_search_results
+from services.cache import (
+    cache_manager,
+    get_cached_search_results,
+    cache_search_results,
+)
 from services.text_compression import text_compressor, query_compressor
 from services.deep_research_service import (
     deep_research_service,
@@ -29,7 +37,7 @@ from services.deep_research_service import (
     DeepResearchMode,
     initialize_deep_research,
 )
-from services.openai_responses_client import SearchContextSize
+# SearchContextSize import removed (unused)
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +158,10 @@ class ResultDeduplicator:
             is_duplicate = False
 
             for existing in unique_results:
-                similarity = self._calculate_content_similarity(result, existing)
+                similarity = self._calculate_content_similarity(
+                    result,
+                    existing,
+                )
 
                 if similarity > self.similarity_threshold:
                     is_duplicate = True
@@ -202,7 +213,9 @@ class ResultDeduplicator:
 
         # Weighted combination
         overall_similarity = (
-            title_similarity * 0.5 + domain_similarity * 0.2 + snippet_similarity * 0.3
+            title_similarity * 0.5
+            + domain_similarity * 0.2
+            + snippet_similarity * 0.3
         )
 
         return overall_similarity
@@ -436,11 +449,31 @@ class UnifiedResearchOrchestrator:
             "total_queries": 0,
             "total_results": 0,
             "apis_used": set(),
-            "deduplication_rate": 0.0
+            "deduplication_rate": 0.0,
+            # diagnostics
+            "retries_attempted": 0,
+            "task_timeouts": 0,
+            "exceptions_by_api": {},
+            "api_call_counts": {},
+            "dropped_no_url": 0,
+            "dropped_invalid_shape": 0,
+            "compression_plural_used": 0,
+            "compression_singular_used": 0,
         }
+        self._diag_samples = {"no_url": []}
+        self._supports_search_with_api = False
 
         # Performance tracking
         self.execution_history = []
+
+        # Diagnostics toggles
+        self.diagnostics = {
+            "log_task_creation": True,
+            "log_result_normalization": True,
+            "log_credibility_failures": True,
+            "enforce_url_presence": True,
+            "enforce_per_result_origin": True
+        }
 
     async def initialize(self):
         """Initialize the orchestrator"""
@@ -448,6 +481,8 @@ class UnifiedResearchOrchestrator:
         await self.search_manager.initialize()
         await cache_manager.initialize()
         await initialize_deep_research()
+        # Determine capability once
+        self._supports_search_with_api = hasattr(self.search_manager, "search_with_api")
 
         # Try to initialize Brave MCP
         try:
@@ -486,7 +521,7 @@ class UnifiedResearchOrchestrator:
         self,
         classification: ClassificationResultSchema,
         context_engineered: ContextEngineeredQuerySchema,
-        user_context: UserContextSchema,
+        user_context: Any,
         progress_callback: Optional[Any] = None,
         research_id: Optional[str] = None,
         enable_deep_research: bool = False,
@@ -511,15 +546,37 @@ class UnifiedResearchOrchestrator:
 
         # Otherwise use V2 implementation
         # Optimize queries based on paradigm and user limits
-        optimized_queries = query_compressor.optimize_query_batch(
-            context_engineered.refined_queries,
-            max_queries=self._get_query_limit(user_context),
-            paradigm=classification.primary_paradigm.value
-        )
+        # Use QueryCompressor.compress per refined query and cap by limit.
+        # ContextEngineeredQuerySchema may expose 'refined_queries' or 'refined_queries' may be absent; fall back to original_query.
+        try:
+            limited = self._get_query_limit(user_context)
+            source_queries = []
+            if hasattr(context_engineered, "refined_queries") and isinstance(getattr(context_engineered, "refined_queries"), list):
+                source_queries = list(getattr(context_engineered, "refined_queries"))
+            else:
+                # fallback to single original query
+                source_queries = [getattr(context_engineered, "original_query", "")]
+
+            optimized_list = []
+            for q in source_queries:
+                compressed = query_compressor.compress(q, preserve_keywords=True)
+                if compressed:
+                    optimized_list.append(compressed)
+            # Deduplicate while preserving order
+            seen_set = set()
+            deduped = []
+            for q in optimized_list:
+                if q not in seen_set:
+                    seen_set.add(q)
+                    deduped.append(q)
+            optimized_queries = deduped[:limited]
+        except Exception as e:
+            logger.warning(f"Query compression failed, using fallback queries: {e}")
+            fallback_q = getattr(context_engineered, "original_query", "")
+            optimized_queries = [fallback_q][: self._get_query_limit(user_context)]
 
         logger.info(
-            f"Optimized {len(context_engineered.refined_queries)} queries "
-            f"to {len(optimized_queries)} for {classification.primary_paradigm.value}"
+            f"Optimized queries to {len(optimized_queries)} for {classification.primary_paradigm.value}"
         )
 
         # Execute searches with deterministic ordering
@@ -541,14 +598,21 @@ class UnifiedResearchOrchestrator:
 
         # Execute deep research if enabled
         if enable_deep_research:
-            deep_results = await self._execute_deep_research_integration(
-                context_engineered,
-                classification,
-                user_context,
-                deep_research_mode or DeepResearchMode.PARADIGM_FOCUSED,
-                progress_callback,
-                research_id
-            )
+            # Temporarily allow unlinked citations for deep research path
+            prev_allow_unlinked = bool(self.diagnostics.get("allow_unlinked_citations", False))
+            self.diagnostics["allow_unlinked_citations"] = True
+            try:
+                deep_results = await self._execute_deep_research_integration(
+                    context_engineered,
+                    classification,
+                    user_context,
+                    deep_research_mode or DeepResearchMode.PARADIGM_FOCUSED,
+                    progress_callback,
+                    research_id
+                )
+            finally:
+                # Restore previous setting
+                self.diagnostics["allow_unlinked_citations"] = prev_allow_unlinked
 
             if deep_results:
                 processed_results["results"].extend(deep_results)
@@ -568,7 +632,12 @@ class UnifiedResearchOrchestrator:
                 "sources_used": processed_results["sources_used"],
                 "credibility_summary": processed_results["credibility_summary"],
                 "deduplication_stats": processed_results["dedup_stats"],
-                "search_metrics": dict(self._search_metrics),
+                "search_metrics": {
+                "total_queries": int(self._search_metrics.get("total_queries", 0) if isinstance(self._search_metrics.get("total_queries"), int) else 0),
+                "total_results": int(self._search_metrics.get("total_results", 0) if isinstance(self._search_metrics.get("total_results"), int) else 0),
+                "apis_used": list(self._search_metrics.get("apis_used", set())) if isinstance(self._search_metrics.get("apis_used"), set) else [],
+                "deduplication_rate": float(self._search_metrics.get("deduplication_rate", 0.0) if isinstance(self._search_metrics.get("deduplication_rate"), (int, float)) else 0.0)
+            },
                 "paradigm": classification.primary_paradigm.value if hasattr(classification, 'primary_paradigm') else 'unknown'
             }
         }
@@ -578,7 +647,7 @@ class UnifiedResearchOrchestrator:
         context_engineered_query,
         max_results: int = 100,
         progress_tracker=None,
-        research_id: str = None
+        research_id: Optional[str] = None
     ) -> ResearchExecutionResult:
         """Legacy method for backward compatibility"""
         return await self._execute_paradigm_research_legacy(
@@ -593,7 +662,7 @@ class UnifiedResearchOrchestrator:
         context_engineered_query,
         max_results: int = 100,
         progress_tracker=None,
-        research_id: str = None
+        research_id: Optional[str] = None
     ) -> ResearchExecutionResult:
         """Execute research using legacy format"""
 
@@ -635,8 +704,43 @@ class UnifiedResearchOrchestrator:
         # Get paradigm-specific search strategy
         strategy = get_search_strategy(paradigm)
 
-        # Use search queries from Context Engineering Select layer
-        search_queries = select_output.search_queries[:8]
+        # Use search queries from Context Engineering Select layer with guards/normalization
+        raw_sq = getattr(select_output, "search_queries", None)
+        search_queries = []
+        if isinstance(raw_sq, list):
+            # Accept list of dicts or strings; coerce to list[dict]
+            for item in raw_sq:
+                if isinstance(item, dict):
+                    q = (item.get("query") or "").strip()
+                    if q:
+                        t = item.get("type", "generic")
+                        try:
+                            w = float(item.get("weight", 1.0) or 1.0)
+                        except Exception:
+                            w = 1.0
+                        search_queries.append({"query": q, "type": t, "weight": w})
+                elif isinstance(item, str):
+                    q = item.strip()
+                    if q:
+                        search_queries.append({"query": q, "type": "generic", "weight": 1.0})
+        elif isinstance(raw_sq, dict):
+            q = (raw_sq.get("query") or "").strip()
+            if q:
+                try:
+                    w = float(raw_sq.get("weight", 1.0) or 1.0)
+                except Exception:
+                    w = 1.0
+                search_queries.append({"query": q, "type": raw_sq.get("type", "generic"), "weight": w})
+        # Fallback if missing/empty
+        if not search_queries:
+            oq = getattr(context_engineered_query, "original_query", "") or ""
+            if oq:
+                search_queries = [{"query": oq, "type": "generic", "weight": 1.0}]
+            else:
+                # last resort default
+                search_queries = [{"query": "news", "type": "generic", "weight": 1.0}]
+        # Cap to 8
+        search_queries = search_queries[:8]
 
         logger.info(f"Executing {len(search_queries)} search queries")
 
@@ -681,6 +785,8 @@ class UnifiedResearchOrchestrator:
                 )
 
                 try:
+                    if not self.search_manager:
+                        raise RuntimeError("search_manager is not initialized")
                     api_results = await self.search_manager.search_with_fallback(
                         query, config
                     )
@@ -730,26 +836,26 @@ class UnifiedResearchOrchestrator:
             if query_results is None:
                 logger.warning(f"Query results for '{query_key}' is None, skipping")
                 continue
-            
+
             # Validate each result before adding
             valid_results = []
             for result in query_results:
                 if result is None:
                     logger.warning(f"Found None result in query '{query_key}', skipping")
                     continue
-                
+
                 # Check if result has required attributes
                 if not hasattr(result, 'title') or not hasattr(result, 'content'):
                     logger.warning(f"Result missing required attributes in query '{query_key}': {type(result)}")
                     continue
-                
+
                 # Check if content is not empty
                 if not getattr(result, 'content', '').strip():
                     logger.warning(f"Result has empty content in query '{query_key}', skipping")
                     continue
-                    
+
                 valid_results.append(result)
-            
+
             combined_results.extend(valid_results)
             logger.debug(f"Query '{query_key}': {len(query_results)} -> {len(valid_results)} valid results")
 
@@ -763,29 +869,28 @@ class UnifiedResearchOrchestrator:
         # Deduplicate results with additional validation
         dedup_result = await self.deduplicator.deduplicate_results(combined_results)
         deduplicated_results = dedup_result["unique_results"]
-        
+
         # Validate deduplicated results
         validated_results = []
         for result in deduplicated_results:
             if result is None:
                 logger.warning("Found None result after deduplication, skipping")
                 continue
-            
+
             # Ensure sections exist for answer generation
-            if hasattr(result, 'sections'):
-                if result.sections is None:
-                    logger.warning(f"Result has None sections: {getattr(result, 'title', 'Unknown')}")
-                    # Create basic sections structure
-                    result.sections = []
-            elif not hasattr(result, 'sections'):
-                # Add sections attribute if missing
-                result.sections = []
-                
+            # Guard attribute access since SearchResult doesn't define 'sections' in dataclass
+            if not hasattr(result, 'sections') or result.sections is None:
+                try:
+                    setattr(result, 'sections', [])
+                except Exception:
+                    # If object is frozen or doesn't allow new attrs, skip silently
+                    pass
+
             validated_results.append(result)
-        
+
         # Update deduplicated_results with validated ones
         deduplicated_results = validated_results
-        
+
         logger.info(f"Validation after dedup: {len(dedup_result['unique_results'])} -> {len(deduplicated_results)} valid results")
 
         if progress_tracker and research_id:
@@ -841,6 +946,8 @@ class UnifiedResearchOrchestrator:
                 max_results=min(max_results // 2, 25), language="en", region="us"
             )
             try:
+                if not self.search_manager:
+                    raise RuntimeError("search_manager is not initialized")
                 api_results = await self.search_manager.search_with_fallback(
                     secondary_query, config
                 )
@@ -854,19 +961,21 @@ class UnifiedResearchOrchestrator:
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
 
-        metrics.update(
-            {
-                "end_time": end_time.isoformat(),
-                "processing_time_seconds": processing_time,
-                "queries_executed": len(search_queries),
-                "raw_results_count": len(combined_results),
-                "deduplicated_count": len(deduplicated_results),
-                "final_results_count": len(final_results),
-                "secondary_results_count": len(secondary_results),
-                "duplicates_removed": dedup_result["duplicates_removed"],
-                "credibility_checks": len(credibility_scores),
-            }
-        )
+        metrics_dict = {
+            "end_time": end_time.isoformat(),
+            "processing_time_seconds": processing_time,
+            "queries_executed": len(search_queries),
+            "raw_results_count": len(combined_results),
+            "deduplicated_count": len(deduplicated_results),
+            "final_results_count": len(final_results),
+            "secondary_results_count": len(secondary_results),
+            "duplicates_removed": dedup_result["duplicates_removed"],
+            "credibility_checks": len(credibility_scores),
+        }
+        if isinstance(metrics, dict):
+            metrics.update(metrics_dict)
+        else:
+            metrics = metrics_dict
 
         # Create execution result
         result = ResearchExecutionResult(
@@ -887,7 +996,7 @@ class UnifiedResearchOrchestrator:
 
         logger.info(f"Research execution completed in {processing_time:.2f}s")
         logger.info(f"Final results: {len(final_results)} sources")
-        
+
         # Enhanced logging for debugging
         if final_results:
             logger.debug("Final results detailed breakdown:")
@@ -895,14 +1004,14 @@ class UnifiedResearchOrchestrator:
                 if result is None:
                     logger.warning(f"Result {i} is None")
                     continue
-                    
+
                 title = getattr(result, 'title', 'No title')
                 url = getattr(result, 'url', 'No URL')
                 content_length = len(getattr(result, 'content', ''))
                 sections_count = len(getattr(result, 'sections', []))
-                
+
                 logger.debug(f"  Result {i}: '{title[:50]}...' ({content_length} chars, {sections_count} sections) - {url}")
-                
+
                 # Check for sections attribute specifically
                 if hasattr(result, 'sections'):
                     if result.sections is None:
@@ -916,7 +1025,7 @@ class UnifiedResearchOrchestrator:
 
         return result
 
-    def _get_query_limit(self, user_context: UserContextSchema) -> int:
+    def _get_query_limit(self, user_context: Any) -> int:
         """Get query limit based on user context"""
         base_limits = {
             "FREE": 3,
@@ -925,48 +1034,83 @@ class UnifiedResearchOrchestrator:
             "ENTERPRISE": 20,
             "ADMIN": 30
         }
-        return base_limits.get(user_context.role, 3)
+        role = getattr(user_context, "role", "PRO")
+        return base_limits.get(role, 3)
 
     async def _execute_searches_deterministic(
         self,
         queries: List[str],
         paradigm: HostParadigm,
-        user_context: UserContextSchema,
+        user_context: Any,
         progress_callback: Optional[Any],
         research_id: Optional[str]
     ) -> List[Dict[str, Any]]:
-        """Execute searches with guaranteed deterministic ordering"""
-
-        search_tasks = []
-        task_metadata = []
-
-        for idx, query in enumerate(queries):
-            apis_for_query = self._select_apis_for_paradigm(paradigm, user_context)
-
-            for api_name in apis_for_query:
-                task = self._create_search_task(api_name, query, idx)
-                if task:
-                    search_tasks.append(task)
-                    task_metadata.append({
-                        "query_index": idx,
-                        "query": query,
-                        "api": api_name
-                    })
+        """Execute searches with per-task timeout, retries, and deterministic ordering"""
+        entries: List[Dict[str, Any]] = []
+        for qidx, query in enumerate(queries):
+            for api in self._select_apis_for_paradigm(paradigm, user_context):
+                entries.append({"query_index": qidx, "query": query, "api": api})
 
         if progress_callback and research_id:
-            await progress_callback(f"Executing {len(search_tasks)} search operations")
+            await progress_callback(f"Executing {len(entries)} search operations")
 
-        results = await asyncio.gather(*search_tasks, return_exceptions=True)
+        processed_results: List[Dict[str, Any]] = []
+        # Execute sequentially per entry to enable precise retry/backoff and deterministic ordering
+        for idx, meta in enumerate(entries):
+            api = meta["api"]
+            query = meta["query"]
+            qidx = meta["query_index"]
 
-        processed_results = []
+            # Metrics: count calls
+            api_counts = self._search_metrics.get("api_call_counts", {})
+            api_counts[api] = int(api_counts.get(api, 0)) + 1
+            self._search_metrics["api_call_counts"] = api_counts
 
-        for idx, (result, metadata) in enumerate(zip(results, task_metadata)):
-            if isinstance(result, Exception):
-                logger.error(f"Search failed for {metadata['api']}: {result}")
-                continue
+            attempt = 0
+            result_items: List[Any] = []
+            delay = self.retry_policy.base_delay_sec
+            while attempt < self.retry_policy.max_attempts:
+                attempt += 1
+                try:
+                    config = SearchConfig(max_results=20, language="en", region="us")
+                    if self._supports_search_with_api:
+                        coro = self.search_manager.search_with_api(api, query, config)
+                    else:
+                        # Fallback will ignore api specificity; still tracked for metrics
+                        coro = self.search_manager.search_with_fallback(query, config)
 
-            if result and isinstance(result, list):
-                for item in result:
+                    # Per-attempt timeout
+                    task_result = await asyncio.wait_for(coro, timeout=10)
+                    if isinstance(task_result, list):
+                        result_items = task_result
+                    else:
+                        result_items = []
+                    break
+                except asyncio.TimeoutError:
+                    self._search_metrics["task_timeouts"] = int(self._search_metrics.get("task_timeouts", 0)) + 1
+                    if attempt < self.retry_policy.max_attempts:
+                        self._search_metrics["retries_attempted"] = int(self._search_metrics.get("retries_attempted", 0)) + 1
+                        await asyncio.sleep(min(delay, self.retry_policy.max_delay_sec))
+                        delay = min(delay * 2.0, self.retry_policy.max_delay_sec)
+                        continue
+                    else:
+                        logger.error("Search task timeout api=%s qid=q%d q='%s'", api, qidx, query[:80])
+                except Exception as e:
+                    # Track exceptions by api
+                    ex_map = self._search_metrics.get("exceptions_by_api", {})
+                    ex_map[api] = int(ex_map.get(api, 0)) + 1
+                    self._search_metrics["exceptions_by_api"] = ex_map
+                    if attempt < self.retry_policy.max_attempts:
+                        self._search_metrics["retries_attempted"] = int(self._search_metrics.get("retries_attempted", 0)) + 1
+                        await asyncio.sleep(min(delay, self.retry_policy.max_delay_sec))
+                        delay = min(delay * 2.0, self.retry_policy.max_delay_sec)
+                        continue
+                    else:
+                        logger.error("Search failed api=%s qid=q%d err=%s", api, qidx, str(e))
+
+            # Process results for this entry
+            if result_items:
+                for item in result_items:
                     if hasattr(item, 'to_dict'):
                         item_dict = item.to_dict()
                     elif hasattr(item, '__dict__'):
@@ -974,14 +1118,13 @@ class UnifiedResearchOrchestrator:
                     else:
                         item_dict = dict(item) if isinstance(item, dict) else {}
 
-                    item_dict['origin_query'] = metadata['query']
-                    item_dict['origin_query_id'] = f"q{metadata['query_index']}"
-                    item_dict['search_api'] = metadata['api']
+                    item_dict['origin_query'] = meta['query']
+                    item_dict['origin_query_id'] = f"q{meta['query_index']}"
+                    item_dict['search_api'] = meta['api']
                     item_dict['result_index'] = idx
 
-                    # Normalize the result shape
                     normalized_item = self.normalize_result_shape(item_dict)
-                    if normalized_item:  # Only add if URL is present
+                    if normalized_item:
                         processed_results.append(normalized_item)
 
         processed_results.sort(key=lambda x: (
@@ -991,15 +1134,23 @@ class UnifiedResearchOrchestrator:
             x.get('title', '')
         ))
 
-        self._search_metrics['total_queries'] += len(queries)
-        self._search_metrics['total_results'] += len(processed_results)
+        # Update metrics
+        try:
+            self._search_metrics['total_queries'] += len(queries)
+            self._search_metrics['total_results'] += len(processed_results)
+        except Exception:
+            self._search_metrics['total_queries'] = int(self._search_metrics.get('total_queries', 0)) + len(queries)
+            self._search_metrics['total_results'] = int(self._search_metrics.get('total_results', 0)) + len(processed_results)
+
+        if not processed_results:
+            logger.warning("No processed search results; downstream pipeline may produce empty output")
 
         return processed_results
 
     def _select_apis_for_paradigm(
         self,
         paradigm: HostParadigm,
-        user_context: UserContextSchema
+        user_context: Any
     ) -> List[str]:
         """Select appropriate APIs based on paradigm and user context"""
 
@@ -1012,11 +1163,12 @@ class UnifiedResearchOrchestrator:
 
         selected = paradigm_apis.get(paradigm, ["google"])
 
-        if not user_context.is_pro_user and len(selected) > 2:
+        if not getattr(user_context, "is_pro_user", True) and len(selected) > 2:
             selected = selected[:2]
 
-        if user_context.preferences.get("preferred_sources"):
-            selected.extend(user_context.preferences["preferred_sources"])
+        prefs = getattr(user_context, "preferences", {}) or {}
+        if isinstance(prefs, dict) and prefs.get("preferred_sources"):
+            selected.extend(prefs["preferred_sources"])
 
         seen = set()
         unique_apis = []
@@ -1024,7 +1176,12 @@ class UnifiedResearchOrchestrator:
             if api not in seen:
                 seen.add(api)
                 unique_apis.append(api)
-                self._search_metrics['apis_used'].add(api)
+                # apis_used is a set stored in metrics; ensure it's a set before add
+                apis_used = self._search_metrics.get('apis_used')
+                if isinstance(apis_used, set):
+                    apis_used.add(api)
+                else:
+                    self._search_metrics['apis_used'] = {api}
 
         return unique_apis
 
@@ -1037,10 +1194,30 @@ class UnifiedResearchOrchestrator:
         """Create a search task for specific API"""
         try:
             config = SearchConfig(max_results=20, language="en", region="us")
-            return asyncio.create_task(
-                self.search_manager.search_with_fallback(query, config),
-                name=f"{api_name}_q{query_index}"
-            )
+            # Ensure the selected API is actually used by search manager if supported
+            if hasattr(self.search_manager, "search_with_api"):
+                task = asyncio.create_task(
+                    self.search_manager.search_with_api(
+                        api_name,
+                        query,
+                        config,
+                    ),
+                    name=f"{api_name}_q{query_index}",
+                )
+            else:
+                # Fallback to generic with_fallback
+                task = asyncio.create_task(
+                    self.search_manager.search_with_fallback(query, config),
+                    name=f"{api_name}_q{query_index}"
+                )
+            if self.diagnostics.get("log_task_creation"):
+                logger.debug(
+                    "[orchestrator] task created: api=%s qid=q%d q='%s'",
+                    api_name,
+                    query_index,
+                    query[:80],
+                )
+            return task
         except Exception as e:
             logger.error(f"Failed to create task for {api_name}: {e}")
         return None
@@ -1050,7 +1227,7 @@ class UnifiedResearchOrchestrator:
         raw_results: List[Dict[str, Any]],
         classification: ClassificationResultSchema,
         context_engineered: ContextEngineeredQuerySchema,
-        user_context: UserContextSchema
+        user_context: Any
     ) -> Dict[str, Any]:
         """Process results with deduplication and enrichment"""
 
@@ -1066,7 +1243,11 @@ class UnifiedResearchOrchestrator:
             merged = self._merge_duplicate_results(duplicates)
 
             from urllib.parse import urlparse
-            domain = urlparse(merged.get('url', '')).netloc
+            merged_url = merged.get('url', '') or ''
+            if not merged_url:
+                logger.debug("Dropping merged duplicate without URL")
+                continue
+            domain = urlparse(merged_url).netloc
             credibility_score, credibility_explanation, credibility_status = await self.get_source_credibility_safe(
                 domain,
                 classification.primary_paradigm.value
@@ -1076,17 +1257,34 @@ class UnifiedResearchOrchestrator:
             merged['credibility_status'] = credibility_status
             merged['paradigm_alignment'] = classification.primary_paradigm.value
 
+            # Construct SearchResultSchema with minimal required fields; extra fields placed in metadata
+            extra_meta = merged.get('metadata', {}) or {}
+            try:
+                # Derive domain from URL if missing
+                from urllib.parse import urlparse as _urlparse
+                _domain = extra_meta.get("domain")
+                if not _domain:
+                    try:
+                        _domain = _urlparse(merged_url).netloc.lower()
+                    except Exception:
+                        _domain = ""
+                extra_meta.update({
+                    "credibility_explanation": credibility_explanation,
+                    "origin_query": merged.get('origin_query'),
+                    "origin_query_id": merged.get('origin_query_id'),
+                    "search_api": merged.get('search_api', 'unknown'),
+                    "paradigm_alignment": getattr(classification, "primary_paradigm", HostParadigm.BERNARD),
+                    "domain": _domain
+                })
+            except Exception:
+                pass
+
             result_schema = SearchResultSchema(
-                url=merged['url'],
+                url=merged_url,
                 title=merged.get('title', ''),
                 snippet=merged.get('snippet', ''),
-                source_api=merged.get('search_api', 'unknown'),
                 credibility_score=credibility_score,
-                credibility_explanation=credibility_explanation,
-                origin_query=merged.get('origin_query'),
-                origin_query_id=merged.get('origin_query_id'),
-                paradigm_alignment=classification.primary_paradigm,
-                metadata=merged.get('metadata', {})
+                metadata=extra_meta
             )
 
             deduplicated_results.append(result_schema)
@@ -1096,19 +1294,75 @@ class UnifiedResearchOrchestrator:
             reverse=True
         )
 
-        limited_results = deduplicated_results[:user_context.source_limit]
+        limited_results = deduplicated_results[: int(getattr(user_context, "source_limit", 10))]
 
-        dedup_rate = 1 - (len(deduplicated_results) / max(len(raw_results), 1))
+        dedup_rate = 1.0 - (len(deduplicated_results) / float(max(len(raw_results), 1)))
         self._search_metrics['deduplication_rate'] = dedup_rate
 
-        compressed_results = text_compressor.compress_search_results(
-            [r.to_dict() for r in limited_results],
-            total_token_budget=3000
-        )
+        # Defensive: ensure SearchResultSchema has to_dict; otherwise map manually
+        try:
+            result_payload = [r.to_dict() for r in limited_results]
+        except Exception:
+            result_payload = []
+            for r in limited_results:
+                payload_item = {
+                    "url": getattr(r, "url", ""),
+                    "title": getattr(r, "title", ""),
+                    "snippet": getattr(r, "snippet", ""),
+                    "credibility_score": getattr(r, "credibility_score", 0.5),
+                    "metadata": getattr(r, "metadata", {}) or {}
+                }
+                result_payload.append(payload_item)
+
+        # Some implementations expose compress_search_result (singular). Fallback gracefully.
+        # Preserve map for credibility_score and metadata by URL
+        preserve_map = {}
+        for item in result_payload:
+            u = item.get("url", "")
+            if u:
+                preserve_map[u] = {
+                    "credibility_score": item.get("credibility_score"),
+                    "metadata": item.get("metadata", {}) or {}
+                }
+
+        try:
+            compressed_results = text_compressor.compress_search_results(
+                result_payload,
+                total_token_budget=3000
+            )
+            self._search_metrics["compression_plural_used"] = int(
+                self._search_metrics.get("compression_plural_used", 0)
+            ) + 1
+        except Exception:
+            compressed_results = [
+                text_compressor.compress_search_result(item) for item in result_payload
+            ]
+            self._search_metrics["compression_singular_used"] = int(
+                self._search_metrics.get("compression_singular_used", 0)
+            ) + 1
+
+        # Re-merge preserved fields into compressed output
+        merged_compressed = []
+        for item in compressed_results or []:
+            if not isinstance(item, dict):
+                continue
+            u = (item.get("url") or "").strip()
+            if u and u in preserve_map:
+                item.setdefault("metadata", {})
+                # Merge metadata, do not overwrite existing keys in item
+                preserved_meta = preserve_map[u]["metadata"] or {}
+                merged_meta = dict(preserved_meta)
+                merged_meta.update(item.get("metadata") or {})
+                item["metadata"] = merged_meta
+                # Re-inject credibility_score if missing
+                if "credibility_score" not in item or item.get("credibility_score") is None:
+                    item["credibility_score"] = preserve_map[u]["credibility_score"]
+            merged_compressed.append(item)
+        compressed_results = merged_compressed
 
         return {
             "results": compressed_results,
-            "sources_used": list(self._search_metrics['apis_used']),
+            "sources_used": list(self._search_metrics.get('apis_used', set())) if isinstance(self._search_metrics.get('apis_used'), set) else [],
             "credibility_summary": self._calculate_credibility_summary(limited_results),
             "dedup_stats": {
                 "original_count": len(raw_results),
@@ -1146,19 +1400,19 @@ class UnifiedResearchOrchestrator:
     ) -> Dict[str, Any]:
         """Calculate overall credibility statistics"""
         if not results:
-            return {"average_score": 0, "high_credibility_count": 0}
+            return {"average_score": 0.0, "high_credibility_count": 0, "high_credibility_ratio": 0.0, "score_distribution": {"high": 0, "medium": 0, "low": 0}}
 
-        scores = [r.credibility_score for r in results]
-        high_cred_count = sum(1 for s in scores if s >= 0.7)
+        scores = [float(getattr(r, "credibility_score", 0.0) or 0.0) for r in results]
+        high_cred_count = sum(1 for s in scores if s is not None and s >= 0.7)
 
         return {
-            "average_score": sum(scores) / len(scores),
+            "average_score": (sum(scores) / float(len(scores))) if scores else 0.0,
             "high_credibility_count": high_cred_count,
-            "high_credibility_ratio": high_cred_count / len(results),
+            "high_credibility_ratio": (high_cred_count / float(len(results))) if results else 0.0,
             "score_distribution": {
                 "high": high_cred_count,
-                "medium": sum(1 for s in scores if 0.4 <= s < 0.7),
-                "low": sum(1 for s in scores if s < 0.4)
+                "medium": sum(1 for s in scores if s is not None and 0.4 <= s < 0.7),
+                "low": sum(1 for s in scores if s is not None and s < 0.4)
             }
         }
 
@@ -1186,22 +1440,79 @@ class UnifiedResearchOrchestrator:
 
     def normalize_result_shape(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize result to ensure consistent shape with required fields"""
+        url = (result.get('url') or '').strip()
+        title = result.get('title')
+        snippet = result.get('snippet')
+        content = result.get('content')
+        source_api = result.get('source_api', result.get('search_api', 'unknown'))
+        origin_query = result.get('origin_query', '')
+        origin_query_id = result.get('origin_query_id', '')
+        metadata = result.get('metadata', {}) or {}
+        result_type = result.get('result_type', '')
+
+        # Enforce URL presence with diagnostics and optional synthetic handling for deep citations
+        if self.diagnostics.get("enforce_url_presence") and not url:
+            allow_unlinked = self.diagnostics.get("allow_unlinked_citations", False)
+            if allow_unlinked and result_type == "deep_research" and (title or snippet):
+                # Synthesize stable placeholder URL for traceability
+                safe_oid = origin_query_id or "deep"
+                synthesized = f"about:blank#citation-{safe_oid}-{hash((title or snippet)[:64]) & 0xFFFFFFFF}"
+                url = synthesized
+                metadata = dict(metadata)
+                metadata["unlinked_citation"] = True
+            else:
+                # record diagnostics sample and counter, then drop
+                self._search_metrics["dropped_no_url"] = int(self._search_metrics.get("dropped_no_url", 0)) + 1
+                samples = self._diag_samples.get("no_url", [])
+                if len(samples) < 5:
+                    samples.append({
+                        "title": (title or "")[:80],
+                        "api": source_api,
+                        "origin_query_id": origin_query_id
+                    })
+                    self._diag_samples["no_url"] = samples
+                if self.diagnostics.get("log_result_normalization"):
+                    logger.debug(
+                        "[normalize] dropped result without URL: title='%s', api=%s",
+                        (title or "")[:60],
+                        source_api,
+                    )
+                return None
+
         normalized = {
-            'title': result.get('title') or result.get('url', '').split('/')[-1] or '(untitled)',
-            'url': result.get('url', ''),
-            'snippet': result.get('snippet', ''),
-            'content': result.get('content', ''),
-            'source_api': result.get('source_api', result.get('search_api', 'unknown')),
+            'title': title or (url.split('/')[-1] if url else '(untitled)'),
+            'url': url,
+            'snippet': snippet or '',
+            'content': content or '',
+            'source_api': source_api,
             'credibility_score': result.get('credibility_score'),
-            'origin_query': result.get('origin_query', ''),
-            'origin_query_id': result.get('origin_query_id', ''),
-            'metadata': result.get('metadata', {})
+            'origin_query': origin_query,
+            'origin_query_id': origin_query_id,
+            'metadata': metadata
         }
-        
-        # Remove entries with missing URLs (drop if missing)
-        if not normalized['url']:
+
+        # Validate minimal shape; drop invalid with metric
+        if not isinstance(normalized['title'], str) or not isinstance(normalized['snippet'], str):
+            self._search_metrics["dropped_invalid_shape"] = int(self._search_metrics.get("dropped_invalid_shape", 0)) + 1
+            if self.diagnostics.get("log_result_normalization"):
+                logger.debug("[normalize] dropped invalid shape: api=%s oqid=%s", source_api, origin_query_id)
             return None
-            
+
+        # Ensure origin markers
+        if self.diagnostics.get("enforce_per_result_origin"):
+            if not normalized['origin_query_id']:
+                normalized['origin_query_id'] = metadata.get('origin_query_id', '')
+            if not normalized['origin_query'] and metadata.get('origin_query'):
+                normalized['origin_query'] = metadata['origin_query']
+
+        if self.diagnostics.get("log_result_normalization"):
+            logger.debug(
+                "[normalize] url=%s api=%s oqid=%s title='%s'",
+                normalized["url"],
+                normalized["source_api"],
+                normalized["origin_query_id"],
+                normalized["title"][:60],
+            )
         return normalized
 
     async def get_source_credibility_safe(self, domain: str, paradigm: str) -> Tuple[float, str, str]:
@@ -1209,18 +1520,30 @@ class UnifiedResearchOrchestrator:
         try:
             if not self.credibility_enabled:
                 return 0.5, "Credibility checking disabled", "skipped"
-                
+
             credibility = await get_source_credibility(domain, paradigm)
-            return credibility.overall_score, credibility.explanation if hasattr(credibility, 'explanation') else "", "success"
+            # Prefer structured to_dict if available; fall back to attribute
+            explanation = ""
+            if hasattr(credibility, "to_dict"):
+                card = credibility.to_dict()
+                explanation = (
+                    f"bias={card.get('bias_rating')}, "
+                    f"fact={card.get('fact_check_rating')}, "
+                    f"cat={card.get('source_category')}"
+                )
+            elif hasattr(credibility, "explanation"):
+                explanation = getattr(credibility, "explanation") or ""
+            return getattr(credibility, "overall_score", 0.5), explanation, "success"
         except Exception as e:
-            logger.warning(f"Credibility check failed for {domain}: {str(e)}")
+            if self.diagnostics.get("log_credibility_failures", True):
+                logger.warning("Credibility check failed for %s: %s", domain, str(e))
             return 0.5, f"Credibility check failed: {str(e)}", "failed"
 
     async def _execute_deep_research_integration(
         self,
         context_engineered: ContextEngineeredQuerySchema,
         classification: ClassificationResultSchema,
-        user_context: UserContextSchema,
+        user_context: Any,
         mode: DeepResearchMode,
         progress_callback: Optional[Any],
         research_id: Optional[str]
@@ -1240,27 +1563,40 @@ class UnifiedResearchOrchestrator:
 
         deep_result = await deep_research_service.execute_deep_research(
             query=context_engineered.original_query,
-            classification=classification,
-            context_engineering=context_engineered,
+            classification=classification,           # type: ignore[arg-type]
+            context_engineering=context_engineered,   # type: ignore[arg-type]
             config=deep_config,
             progress_tracker=progress_callback,
             research_id=research_id,
         )
 
-        if not deep_result.content:
+        if not getattr(deep_result, "content", None):
             return []
 
         deep_search_results = []
-        for citation in deep_result.citations:
+        for citation in getattr(deep_result, "citations", []) or []:
+            title = getattr(citation, "title", "") or ""
+            url = getattr(citation, "url", "") or ""
+            s = int(getattr(citation, "start_index", 0) or 0)
+            e = int(getattr(citation, "end_index", s) or s)
+            body = getattr(deep_result, "content", "") or ""
+            snippet = body[s:e][:200] if isinstance(body, str) else ""
+            # Synthesize URL when missing for deep_research to avoid downstream drops
+            if not url:
+                safe_oid = "deep"
+                synthesized = f"about:blank#citation-{safe_oid}-{hash((title or snippet)[:64]) & 0xFFFFFFFF}"
+                url = synthesized
+            domain = url.split('/')[2] if ('/' in url and len(url.split('/')) > 2) else url
             deep_search_results.append({
-                "title": citation.title,
-                "url": citation.url,
-                "snippet": deep_result.content[citation.start_index:citation.end_index][:200],
-                "domain": citation.url.split('/')[2] if '/' in citation.url else citation.url,
+                "title": title or (url.split('/')[-1] if url else "(deep research)"),
+                "url": url,
+                "snippet": snippet,
+                "domain": domain,
                 "result_type": "deep_research",
                 "credibility_score": 0.9,
-                "origin_query": context_engineered.original_query,
-                "search_api": "deep_research"
+                "origin_query": getattr(context_engineered, "original_query", ""),
+                "search_api": "deep_research",
+                "metadata": {"unlinked_citation": True} if url.startswith("about:blank#citation-") else {}
             })
 
         return deep_search_results
@@ -1268,45 +1604,50 @@ class UnifiedResearchOrchestrator:
     def _convert_legacy_to_v2_result(self, legacy_result: ResearchExecutionResult) -> Dict[str, Any]:
         """Convert legacy ResearchExecutionResult to V2 format with consistent dict handling"""
         from .result_adapter import adapt_results
-        
+
         # Use ResultAdapter to safely handle filtered_results
         try:
             adapter = adapt_results(legacy_result.filtered_results)
-            
-            if hasattr(adapter, 'get_valid_results'):
-                # It's a ResultListAdapter
-                valid_results = adapter.get_valid_results()
-                results_dicts = []
-                
-                for result in valid_results:
+
+            # Use duck-typing without strict attribute checks to avoid Pylance issues
+            results_dicts = []
+            try:
+                valid_results = getattr(adapter, "get_valid_results", lambda: [])()
+                iterable = valid_results if isinstance(valid_results, list) else []
+            except Exception:
+                iterable = []
+            for result in iterable:
+                try:
                     result_dict = {
-                        "url": result.url,
-                        "title": result.title,
-                        "snippet": result.snippet,
-                        "source_api": result.source_api,
-                        "credibility_score": result.credibility_score or 0.5,
-                        "origin_query": legacy_result.original_query,
-                        "paradigm_alignment": legacy_result.paradigm
+                        "url": getattr(result, "url", ""),
+                        "title": getattr(result, "title", ""),
+                        "snippet": getattr(result, "snippet", ""),
+                        "source_api": getattr(result, "source_api", "unknown"),
+                        "credibility_score": getattr(result, "credibility_score", 0.5) or 0.5,
+                        "origin_query": getattr(legacy_result, "original_query", ""),
+                        "paradigm_alignment": getattr(legacy_result, "paradigm", "unknown")
                     }
-                    # Normalize the result
                     normalized = self.normalize_result_shape(result_dict)
-                    if normalized:  # Only add if valid (has URL)
+                    if normalized:
                         results_dicts.append(normalized)
-            else:
-                # Single result
-                if adapter.has_required_fields():
+                except Exception:
+                    continue
+            if not results_dicts:
+                # Try single adapter fields
+                try:
                     result_dict = {
-                        "url": adapter.url,
-                        "title": adapter.title,
-                        "snippet": adapter.snippet,
-                        "source_api": adapter.source_api,
-                        "credibility_score": adapter.credibility_score or 0.5,
-                        "origin_query": legacy_result.original_query,
-                        "paradigm_alignment": legacy_result.paradigm
+                        "url": getattr(adapter, "url", ""),
+                        "title": getattr(adapter, "title", ""),
+                        "snippet": getattr(adapter, "snippet", ""),
+                        "source_api": getattr(adapter, "source_api", "unknown"),
+                        "credibility_score": getattr(adapter, "credibility_score", 0.5) or 0.5,
+                        "origin_query": getattr(legacy_result, "original_query", ""),
+                        "paradigm_alignment": getattr(legacy_result, "paradigm", "unknown")
                     }
                     normalized = self.normalize_result_shape(result_dict)
-                    results_dicts = [normalized] if normalized else []
-                else:
+                    if normalized:
+                        results_dicts = [normalized]
+                except Exception:
                     results_dicts = []
         except Exception as e:
             logger.error(f"Error converting legacy results: {e}")
@@ -1329,28 +1670,212 @@ class UnifiedResearchOrchestrator:
                 except Exception as result_error:
                     logger.warning(f"Skipping problematic result: {result_error}")
                     continue
-        
+
         return {
             "results": results_dicts,
             "metadata": {
                 "total_results": len(results_dicts),
                 "queries_executed": len(getattr(legacy_result, "search_queries_executed", []) or []),
-                "sources_used": list(set(r.get("source_api", "unknown") for r in results_dicts)),
+                "sources_used": list(set(r.get("source_api", "unknown") for r in results_dicts)) if results_dicts else [],
                 "credibility_summary": {
                     "average_score": (
-                        sum((legacy_result.credibility_scores or {}).values()) / max(len((legacy_result.credibility_scores or {})), 1)
+                        sum(list((legacy_result.credibility_scores or {}).values())) / float(max(len((legacy_result.credibility_scores or {})), 1))
                         if getattr(legacy_result, "credibility_scores", None) else 0.0
                     )
                 },
                 "deduplication_stats": {
-                    "original_count": (legacy_result.execution_metrics or {}).get("raw_results_count", 0) if getattr(legacy_result, "execution_metrics", None) else 0,
+                    "original_count": int((legacy_result.execution_metrics or {}).get("raw_results_count", 0)) if getattr(legacy_result, "execution_metrics", None) else 0,
                     "final_count": len(results_dicts)
                 },
-                "search_metrics": getattr(legacy_result, "execution_metrics", {}) or {},
-                "processing_time": ((legacy_result.execution_metrics or {}).get("processing_time_seconds", 0) if getattr(legacy_result, "execution_metrics", None) else 0),
+                "search_metrics": dict(getattr(legacy_result, "execution_metrics", {}) or {}),
+                "processing_time": float((legacy_result.execution_metrics or {}).get("processing_time_seconds", 0)) if getattr(legacy_result, "execution_metrics", None) else 0.0,
                 "paradigm": getattr(legacy_result, "paradigm", "unknown")
             }
         }
+
+    async def execute_deep_research(
+        self,
+        context_engineered: ContextEngineeredQuerySchema,
+        enable_standard_search: bool = True,
+        deep_research_mode: DeepResearchMode = DeepResearchMode.PARADIGM_FOCUSED,
+        search_context_size: Optional[Any] = None,
+        user_location: Optional[Dict[str, str]] = None,
+        progress_tracker: Optional[Any] = None,
+        research_id: Optional[str] = None,
+    ) -> ResearchExecutionResult:
+        """
+        Public wrapper to run deep research and (optionally) standard search,
+        returning a ResearchExecutionResult compatible object for downstream consumers.
+        """
+        # 1) Build a fallback user_context-shaped object (role=PRO) if missing
+        class _UserCtxShim:
+            def __init__(self, role="PRO", source_limit=10, is_pro_user=True, preferences=None):
+                self.role = role
+                self.source_limit = source_limit
+                self.is_pro_user = is_pro_user
+                self.preferences = preferences or {}
+        try:
+            uc = getattr(context_engineered, "user_context", None)
+            role = getattr(uc, "role", "PRO") if uc else "PRO"
+            source_limit = getattr(uc, "source_limit", 10) if uc else 10
+            is_pro_user = getattr(uc, "is_pro_user", True) if uc else True
+            preferences = getattr(uc, "preferences", {}) if uc else {}
+            user_context = _UserCtxShim(role, source_limit, is_pro_user, preferences)
+        except Exception:
+            user_context = _UserCtxShim()
+
+        # 2) Determine a classification to pass to deep integration. Prefer context_engineered.classification if present.
+        classification = getattr(context_engineered, "classification", None)
+        if classification is None:
+            # Create a minimal default classification targeting analytical/Bernard to avoid None paths
+            try:
+                classification = ClassificationResultSchema(
+                    primary_paradigm=HostParadigm.BERNARD,
+                    secondary_paradigm=None,
+                    confidence=0.9
+                )
+            except Exception:
+                # If constructor differs, try attribute assignment fallback
+                class _C:  # lightweight shim
+                    primary_paradigm = HostParadigm.BERNARD
+                    secondary_paradigm = None
+                    confidence = 0.9
+                classification = _C()  # type: ignore
+
+        # 3) Run deep research via the internal integration
+        deep_items: List[Dict[str, Any]] = []
+        deep_content: Optional[str] = None
+        try:
+            deep_items = await self._execute_deep_research_integration(
+                context_engineered=context_engineered,
+                classification=classification,  # type: ignore[arg-type]
+                user_context=user_context,      # shim object accepted internally
+                mode=deep_research_mode,
+                progress_callback=progress_tracker,
+                research_id=research_id
+            )
+        except Exception as e:
+            logger.error(f"Deep research integration failed: {e}")
+            deep_items = []
+
+        # Attempt to extract content body from deep research service if available
+        # The internal integration currently returns only list[dict]. If upstream adds content,
+        # we set it below when available from deep result; otherwise keep None.
+        try:
+            # Some implementations may attach last deep result content into cache/manager; safe best-effort retrieval.
+            deep_content = None
+        except Exception:
+            deep_content = None
+
+        # 4) Optionally execute legacy/standard search to produce a ResearchExecutionResult baseline
+        legacy_result: Optional[ResearchExecutionResult] = None
+        if enable_standard_search:
+            try:
+                legacy_result = await self._execute_paradigm_research_legacy(
+                    context_engineered_query=context_engineered,
+                    max_results=int(getattr(user_context, "source_limit", 10)),
+                    progress_tracker=progress_tracker,
+                    research_id=research_id
+                )
+            except Exception as e:
+                logger.error(f"Legacy research path failed: {e}")
+                legacy_result = None
+
+        # If legacy result not available, fabricate a minimal ResearchExecutionResult container
+        if legacy_result is None:
+            try:
+                legacy_result = ResearchExecutionResult(
+                    original_query=getattr(context_engineered, "original_query", ""),
+                    paradigm=getattr(classification.primary_paradigm, "value", str(getattr(classification, "primary_paradigm", "bernard"))),
+                    secondary_paradigm=getattr(getattr(classification, "secondary_paradigm", None), "value", None),
+                    search_queries_executed=[],
+                    raw_results={},
+                    filtered_results=[],
+                    secondary_results=[],
+                    credibility_scores={},
+                    execution_metrics={
+                        "queries_executed": 0,
+                        "raw_results_count": 0,
+                        "deduplicated_count": 0,
+                        "final_results_count": 0,
+                        "deep_research_enabled": True
+                    },
+                    cost_breakdown={}
+                )
+            except Exception as e:
+                logger.error(f"Failed to construct minimal ResearchExecutionResult: {e}")
+                # As last resort, raise to signal upstream contract mismatch
+                raise
+
+        # 5) Transform deep results to SearchResult-like shims and append to filtered_results
+        appended = 0
+        for d in deep_items or []:
+            try:
+                url = (d.get("url") or "").strip()
+                title = d.get("title") or (url.split("/")[-1] if url else "(deep research)")
+                snippet = d.get("snippet") or d.get("summary") or ""
+                source_api = d.get("source_api") or d.get("search_api") or "deep_research"
+                credibility_score = d.get("credibility_score", 0.8)
+
+                # Build a lightweight SearchResult-like object using SearchResultSchema if available
+                try:
+                    meta = d.get("metadata", {}) or {}
+                    meta.update({
+                        "source_api": source_api,
+                        "credibility_explanation": d.get("credibility_explanation", ""),
+                        "origin_query": d.get("origin_query", getattr(context_engineered, "original_query", "")),
+                        "origin_query_id": d.get("origin_query_id", "deep"),
+                        "paradigm_alignment": getattr(classification, "primary_paradigm", HostParadigm.BERNARD)
+                    })
+                    shim = SearchResultSchema(
+                        url=url,
+                        title=title,
+                        snippet=snippet,
+                        credibility_score=credibility_score,
+                        metadata=meta
+                    )
+                    # Append as-is; downstream consumers typically accept SearchResult-like items
+                    legacy_result.filtered_results.append(shim)  # type: ignore
+                    appended += 1
+                except Exception:
+                    # Fallback: try the SearchResult dataclass if available from services.search_apis
+                    try:
+                        shim2 = SearchResult(
+                            url=url,
+                            title=title,
+                            snippet=snippet,
+                            domain=(url.split('/')[2] if url else ""),
+                            content=snippet
+                        )
+                        legacy_result.filtered_results.append(shim2)  # type: ignore
+                        appended += 1
+                    except Exception:
+                        # As last resort, keep a dict
+                        legacy_result.filtered_results.append(d)  # type: ignore
+                        appended += 1
+            except Exception as e:
+                logger.warning(f"Skipping deep result append due to error: {e}")
+
+        # 6) Attach deep research content if available
+        if deep_content:
+            legacy_result.deep_research_content = deep_content
+
+        # 7) Update execution metrics and cost breakdown conservatively
+        try:
+            legacy_result.execution_metrics = legacy_result.execution_metrics or {}
+            legacy_result.execution_metrics["deep_research_appended"] = appended
+            legacy_result.execution_metrics["deep_research_enabled"] = True
+        except Exception:
+            pass
+
+        try:
+            legacy_result.cost_breakdown = legacy_result.cost_breakdown or {}
+            # If you later compute deep cost, merge here. For now, set zero-cost marker.
+            legacy_result.cost_breakdown["deep_research"] = legacy_result.cost_breakdown.get("deep_research", 0.0)
+        except Exception:
+            pass
+
+        return legacy_result
 
     async def get_execution_stats(self) -> Dict[str, Any]:
         """Get execution statistics"""

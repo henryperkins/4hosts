@@ -160,14 +160,23 @@ def simhash64(tokens: Iterable[str]) -> int:
     """
     Simple 64-bit simhash from tokens.
     This is a placeholder; replace with a robust implementation as needed.
+    Falls back gracefully if mmh3 is unavailable.
     """
     from collections import Counter
-    import mmh3
+    try:
+        import mmh3  # type: ignore
+        use_mmh3 = True
+    except Exception:
+        use_mmh3 = False
 
     weights = Counter(tokens)
     bit_counts = [0] * 64
     for token, w in weights.items():
-        h = mmh3.hash64(token, signed=False)[0]
+        if use_mmh3:
+            h = mmh3.hash64(token, signed=False)[0]
+        else:
+            # Fallback: use Python's hash, normalized to 64-bit unsigned
+            h = (hash(token) & ((1 << 64) - 1))
         for i in range(64):
             bit = 1 if (h >> i) & 1 else -1
             bit_counts[i] += w * bit

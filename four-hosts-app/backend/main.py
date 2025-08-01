@@ -8,8 +8,6 @@ import os
 import asyncio
 import uuid
 import logging
-import secrets
-import hashlib
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, List, Any
@@ -33,7 +31,6 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, Response, FileResponse, JSONResponse
 from pydantic import BaseModel, Field, EmailStr, HttpUrl
 from dotenv import load_dotenv
-import jwt
 import uvicorn
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
 
@@ -48,7 +45,6 @@ logger = logging.getLogger(__name__)
 from services.research_orchestrator import (
     research_orchestrator,
     initialize_research_system,
-    execute_research,
 )
 from services.cache import initialize_cache
 from services.credibility import get_source_credibility
@@ -922,10 +918,15 @@ async def get_user_preferences(current_user: User = Depends(get_current_user)):
 
 
 # Paradigm Classification
+class ClassifyRequest(BaseModel):
+    query: str
+
 @app.post("/paradigms/classify", tags=["paradigms"])
-async def classify_paradigm(query: str, current_user: User = Depends(get_current_user)):
+async def classify_paradigm(payload: ClassifyRequest, current_user: User = Depends(get_current_user)):
     """Classify a query into paradigms"""
     try:
+        query = payload.query
+
         # Use the new classification engine
         classification_result = await classification_engine.classify_query(query)
 
@@ -1026,11 +1027,7 @@ async def submit_research(
     # Check role requirements for research depth
     if research.options.depth in [ResearchDepth.DEEP, ResearchDepth.DEEP_RESEARCH]:
         # Deep research requires at least PRO role
-        if not hasattr(current_user, "role") or current_user.role not in [
-            "pro",
-            "enterprise",
-            "admin",
-        ]:
+        if current_user.role not in [UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]:
             raise HTTPException(
                 status_code=403,
                 detail="Deep research requires PRO subscription or higher",
@@ -1770,6 +1767,10 @@ async def get_system_stats(current_user: User = Depends(get_current_user)):
             "system_health": "healthy"
         }
 
+        # Mirror field to align with frontend expectations
+        if "system_status" in stats:
+            stats["system_health"] = stats.get("system_health", stats["system_status"])
+
         if hasattr(research_orchestrator, "get_execution_stats"):
             stats["research_stats"] = await research_orchestrator.get_execution_stats()
 
@@ -1800,6 +1801,8 @@ async def get_public_system_stats(
             "system_initialized": system_initialized,
             "timestamp": datetime.utcnow().isoformat()
         }
+        # Provide mirror key for clients expecting system_health
+        health["system_health"] = health["system_status"]
         return health
     except Exception as e:
         logger.error(f"Public stats error: {str(e)}")

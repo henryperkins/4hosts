@@ -4,7 +4,7 @@ Provides text and query compression functionality
 """
 
 import re
-from typing import Optional
+from typing import Optional, List
 
 
 class TextCompressor:
@@ -138,6 +138,30 @@ class QueryCompressor:
                 
         return unique_keywords
 
+
+def compress_search_results(results: List[dict], total_token_budget: int = 3000) -> List[dict]:
+    """
+    Compress search result dicts into concise entries within a rough token budget.
+    """
+    compressor = text_compressor
+    if not results:
+        return []
+    per_item = max(200, int(total_token_budget / max(len(results), 1)))
+    per_item = min(per_item, 800)
+    out: List[dict] = []
+    for r in results:
+        title = r.get("title") or ""
+        snippet = r.get("snippet") or ""
+        content = r.get("content") or ""
+        summary = compressor.compress_search_result(title, snippet, max_length=per_item)
+        short_title = title if len(title) <= 120 else title[:117] + "..."
+        new_r = dict(r)
+        new_r["title"] = short_title
+        new_r["snippet"] = summary
+        if content:
+            new_r["content"] = compressor.compress(content, max_length=per_item * 2)
+        out.append(new_r)
+    return out
 
 # Create singleton instances
 text_compressor = TextCompressor()

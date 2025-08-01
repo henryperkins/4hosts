@@ -51,7 +51,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const login = async (emailOrUsername: string, password: string) => {
     try {
-      // Use the login endpoint directly with email or username
+      // Backend requires email-based login; validate input early for UX
+      if (!emailOrUsername.includes('@')) {
+        throw new Error('Please use your email address to login.')
+      }
+
       await api.login(emailOrUsername, password)
       const user = await api.getCurrentUser()
       setAuthState({
@@ -64,12 +68,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // Provide more user-friendly error messages
       let errorMessage = 'Login failed';
       if (error instanceof Error) {
-        if (error.message.includes('connect to backend')) {
-          errorMessage = 'Cannot connect to server. Please ensure the backend is running.';
-        } else if (error.message.includes('Invalid email') || error.message.includes('Invalid credentials')) {
-          errorMessage = 'Invalid email or password. Please try again.';
+        const msg = error.message || ''
+        if (msg.includes('connect to backend')) {
+          errorMessage = 'Cannot connect to server. Please ensure the backend is running.'
+        } else if (msg.includes('Invalid credentials') || msg.includes('Invalid email') || msg.includes('401')) {
+          errorMessage = 'Invalid email or password. Please try again.'
+        } else if (msg.includes('email address')) {
+          errorMessage = 'Please use your email address to login.'
         } else {
-          errorMessage = error.message;
+          errorMessage = msg
         }
       }
       toast.error(errorMessage)

@@ -51,14 +51,9 @@ export const LoginForm: React.FC = () => {
     return email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)
   }
 
-  const isValidUsername = (username: string) => {
-    // Username validation: alphanumeric and underscore, 3-20 chars
-    return /^[a-zA-Z0-9_]{3,20}$/.test(username)
-  }
-
+  // Enforce email-only login to match backend contract
   const validateInput = (input: string) => {
-    // Check if input is email format or valid username
-    return validateEmail(input) || isValidUsername(input)
+    return !!validateEmail(input)
   }
 
   const togglePasswordVisibility = () => {
@@ -126,8 +121,8 @@ export const LoginForm: React.FC = () => {
           )}
           <div className="space-y-4">
             <div className="relative">
-              <label htmlFor="username" className="sr-only">
-                Email or Username
+              <label htmlFor="email" className="sr-only">
+                Email
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none pl-3">
@@ -138,14 +133,14 @@ export const LoginForm: React.FC = () => {
                   }`} />
                 </div>
                 <InputField
-                  id="username"
-                  name="username"
-                  type="text"
-                  autoComplete="username"
+                  id="email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
                   required
                   status={(getInputStatus('username') as 'error' | 'success') || undefined}
                   className="pl-10"
-                  placeholder="Email or Username"
+                  placeholder="Email"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   onBlur={() => setFormTouched(prev => ({ ...prev, username: true }))}
@@ -154,13 +149,13 @@ export const LoginForm: React.FC = () => {
               {formTouched.username && username && !validateInput(username) && (
                 <p className="mt-1 text-sm text-error animate-slide-up flex items-center">
                   <AlertCircle className="h-4 w-4 mr-1" />
-                  Please enter a valid email address or username
+                  Please enter a valid email address
                 </p>
               )}
               {formTouched.username && username && validateInput(username) && (
                 <p className="mt-1 text-sm text-success animate-slide-up flex items-center">
                   <Check className="h-4 w-4 mr-1" />
-                  Valid input
+                  Valid email
                 </p>
               )}
             </div>
