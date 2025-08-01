@@ -2096,7 +2096,11 @@ async def execute_real_research(
         formatted_sources = []
         search_results_for_synthesis = []
 
-        for result in execution_result.filtered_results[: research.options.max_sources]:
+        # Support both 'filtered_results' and alias 'results'
+        legacy_results = getattr(execution_result, "filtered_results", None)
+        if legacy_results is None:
+            legacy_results = getattr(execution_result, "results", [])
+        for result in legacy_results[: research.options.max_sources]:
             formatted_sources.append(
                 SourceResult(
                     title=result.title,

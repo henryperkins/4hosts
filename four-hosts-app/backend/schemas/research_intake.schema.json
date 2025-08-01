@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://four-hosts.app/schemas/research_intake.schema.json",
+  "title": "ResearchIntake",
+  "type": "object",
+  "required": [
+    "objective",
+    "acceptance_criteria",
+    "timelines",
+    "constraints",
+    "budgets",
+    "stakeholders"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable ID for this intake (UUID recommended)"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "objective": {
+      "type": "string",
+      "description": "Primary research goal stated in user terms"
+    },
+    "scope": {
+      "type": "string",
+      "description": "Boundaries of the research (in scope/out of scope)"
+    },
+    "acceptance_criteria": {
+      "type": "object",
+      "required": [
+        "definition_of_done",
+        "rubric"
+      ],
+      "properties": {
+        "definition_of_done": {
+          "type": "string",
+          "description": "Narrative definition of done"
+        },
+        "rubric": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["criterion", "weight", "min_pass"],
+            "properties": {
+              "criterion": { "type": "string" },
+              "weight": { "type": "number", "minimum": 0 },
+              "min_pass": { "type": "number", "minimum": 0, "maximum": 1 },
+              "notes": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "timelines": {
+      "type": "object",
+      "properties": {
+        "deadline": { "type": "string", "format": "date-time" },
+        "milestones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "target_date"],
+            "properties": {
+              "name": { "type": "string" },
+              "target_date": { "type": "string", "format": "date-time" },
+              "notes": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "data_access": { "type": "string" },
+        "compliance": { "type": "string" },
+        "security": { "type": "string" },
+        "tooling": { "type": "string" },
+        "model_constraints": { "type": "string" },
+        "other": { "type": "string" }
+      }
+    },
+    "risks_assumptions": {
+      "type": "object",
+      "properties": {
+        "risks": { "type": "array", "items": { "type": "string" } },
+        "assumptions": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "required": ["max_tokens", "max_cost_usd", "max_wallclock_minutes"],
+      "properties": {
+        "max_tokens": { "type": "integer", "minimum": 0 },
+        "max_cost_usd": { "type": "number", "minimum": 0 },
+        "max_wallclock_minutes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "tools_credentials": {
+      "type": "array",
+      "description": "Declared tools and required credentials",
+      "items": {
+        "type": "object",
+        "required": ["tool", "scopes"],
+        "properties": {
+          "tool": { "type": "string" },
+          "scopes": { "type": "array", "items": { "type": "string" } },
+          "rate_limits": {
+            "type": "object",
+            "properties": {
+              "rpm": { "type": "integer", "minimum": 0 },
+              "rpd": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "stakeholders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "role"],
+        "properties": {
+          "name": { "type": "string" },
+          "role": { "type": "string" },
+          "email": { "type": "string", "format": "email" }
+        }
+      }
+    },
+    "prior_context": {
+      "type": "array",
+      "description": "Links or IDs to prior reports, datasets, or notes",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

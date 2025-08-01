@@ -42,13 +42,21 @@ class ResearchExecutionResult:
     secondary_paradigm: Optional[str]
     search_queries_executed: List[Dict[str, Any]]
     raw_results: Dict[str, List[SearchResult]]  # Results by API
+    # Back-compat: keep original attribute and add a safe alias
     filtered_results: List[SearchResult]
+    # Alias to avoid AttributeError in any consumer expecting 'results'
+    # Note: property defined below to mirror filtered_results
     credibility_scores: Dict[str, float]  # Domain -> score
     execution_metrics: Dict[str, Any]
     cost_breakdown: Dict[str, float]
     secondary_results: List[SearchResult] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
     deep_research_content: Optional[str] = None
+
+    # Provide a read-only alias so obj.results returns filtered_results
+    @property
+    def results(self) -> List[SearchResult]:
+        return self.filtered_results
 
 
 class DeterministicMerger:
@@ -305,6 +313,107 @@ class CostMonitor:
         return await cache_manager.get_daily_api_costs(date)
 
 
+class RetryPolicy:
+    """Standardized retry/backoff policy configuration."""
+    def __init__(self, max_attempts: int = 3, base_delay_sec: float = 0.5, max_delay_sec: float = 8.0) -> None:
+        self.max_attempts = max_attempts
+        self.base_delay_sec = base_delay_sec
+        self.max_delay_sec = max_delay_sec
+
+
+@dataclass
+class ToolCapability:
+    name: str
+    cost_per_call_usd: float = 0.0
+    rpm_limit: Optional[int] = None
+    rpd_limit: Optional[int] = None
+    typical_latency_ms: Optional[int] = None
+    failure_types: List[str] = field(default_factory=list)
+    healthy: bool = True
+    last_health_check: Optional[datetime] = None
+
+
+class ToolRegistry:
+    """Registry for tool capabilities, costs, limits, and health status."""
+    def __init__(self) -> None:
+        self._tools: Dict[str, ToolCapability] = {}
+
+    def register(self, capability: ToolCapability) -> None:
+        self._tools[capability.name] = capability
+
+    def get(self, name: str) -> Optional[ToolCapability]:
+        return self._tools.get(name)
+
+    def list(self) -> List[ToolCapability]:
+        return list(self._tools.values())
+
+    def set_health(self, name: str, healthy: bool) -> None:
+        cap = self._tools.get(name)
+        if cap:
+            cap.healthy = healthy
+            cap.last_health_check = datetime.now()
+
+
+@dataclass
+class Budget:
+    max_tokens: int
+    max_cost_usd: float
+    max_wallclock_minutes: int
+
+
+@dataclass
+class PlannerCheckpoint:
+    name: str
+    description: str
+    done: bool = False
+
+
+@dataclass
+class Plan:
+    objective: str
+    checkpoints: List[PlannerCheckpoint]
+    budget: Budget
+    stop_conditions: Dict[str, Any] = field(default_factory=dict)
+    consumed_cost_usd: float = 0.0
+    consumed_tokens: int = 0
+    started_at: datetime = field(default_factory=datetime.now)
+
+    def can_spend(self, additional_cost_usd: float, additional_tokens: int) -> bool:
+        within_cost = (self.consumed_cost_usd + additional_cost_usd) <= self.budget.max_cost_usd
+        within_tokens = (self.consumed_tokens + additional_tokens) <= self.budget.max_tokens
+        return within_cost and within_tokens
+
+    def spend(self, cost_usd: float, tokens: int) -> None:
+        self.consumed_cost_usd += max(0.0, cost_usd)
+        self.consumed_tokens += max(0, tokens)
+
+
+class BudgetAwarePlanner:
+    """Simple budget-aware planner that selects tools and enforces spend."""
+    def __init__(self, registry: ToolRegistry, retry_policy: Optional[RetryPolicy] = None) -> None:
+        self.registry = registry
+        self.retry_policy = retry_policy or RetryPolicy()
+
+    def select_tools(self, preferred: List[str]) -> List[str]:
+        tools: List[str] = []
+        for name in preferred:
+            cap = self.registry.get(name)
+            if cap and cap.healthy:
+                tools.append(name)
+        return tools
+
+    def estimate_cost(self, tool_name: str, calls: int = 1) -> float:
+        cap = self.registry.get(tool_name)
+        return (cap.cost_per_call_usd * calls) if cap else 0.0
+
+    def record_tool_spend(self, plan: Plan, tool_name: str, calls: int, tokens: int = 0) -> bool:
+        cost = self.estimate_cost(tool_name, calls)
+        if not plan.can_spend(cost, tokens):
+            return False
+        plan.spend(cost, tokens)
+        return True
+
+
 class UnifiedResearchOrchestrator:
     """Unified Research Orchestrator combining all features"""
 
@@ -316,6 +425,11 @@ class UnifiedResearchOrchestrator:
         self.early_filter = EarlyRelevanceFilter()
         self.brave_enabled = False
         self.credibility_enabled = True
+
+        # Orchestration additions
+        self.tool_registry = ToolRegistry()
+        self.retry_policy = RetryPolicy()
+        self.planner = BudgetAwarePlanner(self.tool_registry, self.retry_policy)
 
         # Metrics
         self._search_metrics = {
@@ -1220,18 +1334,21 @@ class UnifiedResearchOrchestrator:
             "results": results_dicts,
             "metadata": {
                 "total_results": len(results_dicts),
-                "queries_executed": len(legacy_result.search_queries_executed),
+                "queries_executed": len(getattr(legacy_result, "search_queries_executed", []) or []),
                 "sources_used": list(set(r.get("source_api", "unknown") for r in results_dicts)),
                 "credibility_summary": {
-                    "average_score": sum(legacy_result.credibility_scores.values()) / max(len(legacy_result.credibility_scores), 1)
+                    "average_score": (
+                        sum((legacy_result.credibility_scores or {}).values()) / max(len((legacy_result.credibility_scores or {})), 1)
+                        if getattr(legacy_result, "credibility_scores", None) else 0.0
+                    )
                 },
                 "deduplication_stats": {
-                    "original_count": legacy_result.execution_metrics.get("raw_results_count", 0),
+                    "original_count": (legacy_result.execution_metrics or {}).get("raw_results_count", 0) if getattr(legacy_result, "execution_metrics", None) else 0,
                     "final_count": len(results_dicts)
                 },
-                "search_metrics": legacy_result.execution_metrics,
-                "processing_time": legacy_result.execution_metrics.get("processing_time_seconds", 0),
-                "paradigm": legacy_result.paradigm
+                "search_metrics": getattr(legacy_result, "execution_metrics", {}) or {},
+                "processing_time": ((legacy_result.execution_metrics or {}).get("processing_time_seconds", 0) if getattr(legacy_result, "execution_metrics", None) else 0),
+                "paradigm": getattr(legacy_result, "paradigm", "unknown")
             }
         }
 

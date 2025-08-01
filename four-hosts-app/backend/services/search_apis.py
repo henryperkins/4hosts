@@ -4,29 +4,27 @@ Implements Google Custom Search, Bing Search, and Academic APIs
 """
 
 import asyncio
-import aiohttp
 import json
 import logging
-from typing import Dict, List, Any, Optional, Union
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus, unquote, urlparse, urlunparse
-import hashlib
 import os
-import time
 import re
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from dotenv import load_dotenv
+import string
+import time
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
-from urllib.parse import urlparse
+
+import aiohttp
+import fitz  # PyMuPDF
 import nltk
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-import string
-
-from bs4 import BeautifulSoup
-
-import fitz  # PyMuPDF
+from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
+                    wait_exponential)
 
 # Download NLTK data if not present
 try:
@@ -51,21 +49,21 @@ logger = logging.getLogger(__name__)
 
 class URLNormalizer:
     """Handles URL normalization and DOI canonicalization"""
-    
+
     @staticmethod
     def normalize_url(url: str) -> str:
         """Normalize URL to prevent malformed requests"""
         if not url or not isinstance(url, str):
             return ""
-            
+
         # Remove extra whitespace
         url = url.strip()
-        
+
         # Handle common DOI patterns
         if url.startswith("10."):
             # Bare DOI - prepend doi.org
             return f"https://doi.org/{url}"
-            
+
         if "doi.org/" in url:
             # Extract and normalize DOI
             doi_match = re.search(r'doi\.org/(.+)', url)
@@ -78,19 +76,19 @@ class URLNormalizer:
                     except Exception:
                         pass
                 return f"https://doi.org/{doi}"
-        
+
         # Parse URL components
         try:
             parsed = urlparse(url)
-            
+
             # Ensure scheme
             if not parsed.scheme:
                 url = f"https://{url}"
                 parsed = urlparse(url)
-            
+
             # Normalize domain
             netloc = parsed.netloc.lower()
-            
+
             # Handle percent-encoded paths carefully
             path = parsed.path
             if path and '%' in path:
@@ -102,7 +100,7 @@ class URLNormalizer:
                         path = decoded
                 except Exception:
                     pass  # Keep original if decoding fails
-            
+
             # Reconstruct URL
             normalized = urlunparse((
                 parsed.scheme,
@@ -112,13 +110,13 @@ class URLNormalizer:
                 parsed.query,
                 parsed.fragment
             ))
-            
+
             return normalized
-            
+
         except Exception as e:
             logger.warning(f"URL normalization failed for {url}: {e}")
             return url
-    
+
     @staticmethod
     def is_valid_url(url: str) -> bool:
         """Check if URL is well-formed"""
@@ -131,19 +129,19 @@ class URLNormalizer:
 
 class CircuitBreaker:
     """Circuit breaker for domains with repeated failures"""
-    
+
     def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 300):
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.failure_counts = {}
         self.last_failure_time = {}
         self.blocked_domains = set()
-    
+
     def should_allow_request(self, domain: str) -> bool:
         """Check if requests to domain should be allowed"""
         if domain not in self.blocked_domains:
             return True
-            
+
         # Check if recovery period has passed
         if domain in self.last_failure_time:
             elapsed = time.time() - self.last_failure_time[domain]
@@ -152,18 +150,21 @@ class CircuitBreaker:
                 self.blocked_domains.discard(domain)
                 self.failure_counts[domain] = 0
                 return True
-                
+
         return False
-    
+
     def record_failure(self, domain: str):
         """Record a failure for the domain"""
         self.failure_counts[domain] = self.failure_counts.get(domain, 0) + 1
         self.last_failure_time[domain] = time.time()
-        
+
         if self.failure_counts[domain] >= self.failure_threshold:
-            logger.warning(f"Circuit breaker triggered for {domain} after {self.failure_counts[domain]} failures")
+            logger.warning(
+                f"Circuit breaker triggered for {domain} after "
+                f"{self.failure_counts[domain]} failures"
+            )
             self.blocked_domains.add(domain)
-    
+
     def record_success(self, domain: str):
         """Record a success for the domain"""
         if domain in self.failure_counts:
@@ -171,19 +172,21 @@ class CircuitBreaker:
 
 
 class RespectfulFetcher:
-    """Fetches content while respecting robots.txt and rate limits"""
-    
+    """Fetches content while respecting robots.txt and rate limits."""
+
     def __init__(self):
-        self.robot_parsers = {}
-        self.last_fetch = {}
-        self.user_agent = "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)"
+        self.robot_parsers: Dict[str, RobotFileParser] = {}
+        self.last_fetch: Dict[str, float] = {}
+        self.user_agent = (
+            "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)"
+        )
         self.circuit_breaker = CircuitBreaker()
-        
+
     async def can_fetch(self, url: str) -> bool:
         """Check robots.txt before fetching"""
         parsed = urlparse(url)
         domain = f"{parsed.scheme}://{parsed.netloc}"
-        
+
         if domain not in self.robot_parsers:
             try:
                 rp = RobotFileParser()
@@ -194,9 +197,9 @@ class RespectfulFetcher:
                 logger.debug(f"Could not fetch robots.txt for {domain}: {e}")
                 # If we can't fetch robots.txt, we'll be conservative and allow
                 return True
-                
+
         return self.robot_parsers[domain].can_fetch(self.user_agent, url)
-    
+
     async def respectful_fetch(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
         """Fetch with rate limiting and robots.txt compliance"""
         # Normalize URL first
@@ -204,27 +207,27 @@ class RespectfulFetcher:
         if not normalized_url or not URLNormalizer.is_valid_url(normalized_url):
             logger.warning(f"Invalid URL after normalization: {url} -> {normalized_url}")
             return None
-        
+
         domain = urlparse(normalized_url).netloc
-        
+
         # Check circuit breaker
         if not self.circuit_breaker.should_allow_request(domain):
             logger.debug(f"Circuit breaker blocking requests to {domain}")
             return None
-            
+
         # Check robots.txt
         if not await self.can_fetch(normalized_url):
             logger.debug(f"Robots.txt disallows fetching {normalized_url}")
             return None
-            
+
         # Rate limit per domain (1 second between requests)
         if domain in self.last_fetch:
             elapsed = time.time() - self.last_fetch[domain]
             if elapsed < 1.0:
                 await asyncio.sleep(1.0 - elapsed)
-                
+
         self.last_fetch[domain] = time.time()
-        
+
         # Fetch with proper headers and record result
         try:
             content = await fetch_and_parse_url(session, normalized_url)
@@ -237,27 +240,39 @@ class RespectfulFetcher:
 
 
 @retry(
-    stop=stop_after_attempt(3), 
+    stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(aiohttp.ClientResponseError)
+    retry=retry_if_exception_type(aiohttp.ClientError),
 )
 async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
-    """Fetch URL content with ethical headers and parse it to remove HTML tags or extract text from PDF"""
-    # Use proper headers to identify ourselves
+    """
+    Fetch URL content with ethical headers and parse it to remove HTML tags
+    or extract text from PDF.
+    """
     headers = {
-        'User-Agent': 'FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
+        "User-Agent": (
+            "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
     }
-    
+
     try:
-        async with session.get(url, timeout=10, headers=headers, allow_redirects=True) as response:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with session.get(
+            url, timeout=timeout, headers=headers, allow_redirects=True
+        ) as response:
             if response.status == 200:
-                content_type = response.headers.get("Content-Type", "").lower()
+                content_type = (
+                    response.headers.get("Content-Type", "") or ""
+                ).lower()
                 if "application/pdf" in content_type:
                     pdf_content = await response.read()
                     with fitz.open(stream=pdf_content, filetype="pdf") as doc:
@@ -266,33 +281,28 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                 else:
                     html_content = await response.text()
                     soup = BeautifulSoup(html_content, "html.parser")
-                    # Remove script and style elements
                     for script in soup(["script", "style"]):
                         script.extract()
                     return soup.get_text(separator=" ", strip=True)
             elif response.status == 403:
-                logger.debug(f"Access denied (403) for {url} - will use search snippet instead")
+                logger.debug(f"Access denied (403) for {url}")
                 return ""
             elif response.status == 429:
-                logger.warning(f"Rate limited (429) for {url} - consider reducing request frequency")
+                logger.warning(f"Rate limited (429) for {url}")
                 return ""
             elif 500 <= response.status < 600:
-                # 5xx errors - server issues, worth retrying
-                logger.warning(f"Server error ({response.status}) for {url} - may retry")
-                raise aiohttp.ClientResponseError(
-                    request_info=response.request_info,
-                    history=response.history,
-                    status=response.status
-                )
+                logger.warning(f"Server error ({response.status}) for {url}")
+                response.raise_for_status()
             else:
                 logger.warning(f"Failed to fetch {url}, status: {response.status}")
                 return ""
-    except aiohttp.ClientTimeout:
-        logger.warning(f"Timeout fetching {url} - site may be slow or blocking automated requests")
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logger.warning(f"Network error fetching {url}: {e}")
         return ""
     except Exception as e:
-        logger.error(f"Error fetching or parsing {url}: {e}")
+        logger.error(f"Error fetching or parsing {url}: {e}", exc_info=True)
         return ""
+    return ""
 
 
 @dataclass
@@ -361,155 +371,172 @@ class RateLimiter:
 
 
 class QueryOptimizer:
-    """Optimizes search queries for better relevance"""
-    
+    """
+    Optimizes search queries by preserving user intent through entity extraction,
+    intelligent stopword removal, and multi-query expansion.
+    """
     def __init__(self):
         self.stop_words = set(stopwords.words('english'))
-        # Common search modifiers that reduce relevance
+        # A more conservative set of noise terms
         self.noise_terms = {
-            'about', 'regarding', 'concerning', 'related', 'information',
-            'details', 'explain', 'describe', 'what', 'how', 'why', 'when',
-            'where', 'who', 'which', 'should', 'could', 'would', 'might'
+            'information', 'details', 'find', 'show', 'tell'
         }
-        
-    def extract_key_terms(self, query: str) -> List[str]:
-        """Extract key terms from query for better search relevance"""
-        # First extract important compound terms
-        compound_terms = []
-        query_lower = query.lower()
-        
-        # Common compound terms to preserve
-        compound_patterns = [
-            r'cutting[\-\s]edge',
-            r'state[\-\s]of[\-\s]the[\-\s]art',
-            r'artificial intelligence',
-            r'machine learning',
-            r'deep learning',
-            r'neural network[s]?',
-            r'large language model[s]?',
+        # Known technical compound terms
+        self.known_entities = [
+            'context engineering', 'web applications', 'artificial intelligence',
+            'machine learning', 'deep learning', 'neural network', 'neural networks',
+            'large language model', 'large language models', 'state of the art'
         ]
-        
-        for pattern in compound_patterns:
-            if re.search(pattern, query_lower):
-                match = re.search(pattern, query_lower).group()
-                compound_terms.append(match)
-                # Remove from query to avoid duplication
-                query_lower = re.sub(pattern, '', query_lower)
-        
-        # Tokenize and lowercase remaining query
-        tokens = word_tokenize(query_lower)
-        
-        # Remove punctuation and stop words
-        key_terms = [
-            token for token in tokens
-            if token not in string.punctuation
-            and token not in self.stop_words
-            and token not in self.noise_terms
-            and len(token) > 2  # Skip very short words
+
+    def _extract_entities(self, query: str) -> Tuple[List[str], str]:
+        """Extracts quoted phrases and known entities from the query."""
+        entities = []
+        temp_query = query
+
+        # 1. Extract quoted phrases
+        quoted_phrases = re.findall(r'"([^"]+)"', temp_query)
+        for phrase in quoted_phrases:
+            entities.append(phrase)
+            temp_query = temp_query.replace(f'"{phrase}"', "")
+
+        # 2. Extract known technical entities
+        for entity in self.known_entities:
+            if entity in temp_query.lower():
+                match = re.search(re.escape(entity), temp_query, re.IGNORECASE)
+                if match:
+                    entities.append(match.group(0))
+                    temp_query = temp_query.replace(match.group(0), "")
+
+        # 3. Extract potential proper nouns (e.g., "Maeve")
+        proper_nouns = re.findall(r"\b[A-Z][a-z]+\b", temp_query)
+        common_words = {"I", "A"}
+        for noun in proper_nouns:
+            if noun not in common_words and noun.lower() not in self.stop_words:
+                entities.append(noun)
+                temp_query = temp_query.replace(noun, "")
+
+        return list(set(entities)), temp_query
+
+    def _intelligent_stopword_removal(self, text: str) -> List[str]:
+        """Removes stopwords and noise terms, preserving query structure."""
+        tokens = word_tokenize(text.lower())
+        tokens = [t for t in tokens if t not in self.noise_terms]
+        tokens = [
+            t for t in tokens
+            if t not in self.stop_words and t not in string.punctuation
         ]
-        
-        # Identify phrases (consecutive key terms)
-        phrases = self._extract_phrases(query, key_terms)
-        
-        # Combine compound terms first, then phrases, then individual terms
-        return compound_terms + phrases + key_terms
-    
-    def _extract_phrases(self, original_query: str, key_terms: List[str]) -> List[str]:
-        """Extract meaningful phrases from the query"""
-        phrases = []
-        query_lower = original_query.lower()
-        
-        # Common phrase patterns
-        phrase_patterns = [
-            r'"([^"]+)"',  # Quoted phrases
-            r'(\w+\s+\w+\s+\w+)',  # Three-word phrases
-            r'(\w+\s+\w+)',  # Two-word phrases
-        ]
-        
-        for pattern in phrase_patterns:
-            matches = re.findall(pattern, query_lower)
-            for match in matches:
-                # Check if the phrase contains at least one key term
-                if any(term in match for term in key_terms):
-                    phrases.append(match.strip())
-        
-        return list(set(phrases))  # Remove duplicates
-    
+        return tokens
+
+    def get_key_terms(self, query: str) -> List[str]:
+        """Extracts all significant entities and keywords from a query."""
+        protected_entities, remaining_text = self._extract_entities(query)
+        keywords = self._intelligent_stopword_removal(remaining_text)
+        # Return entities without quotes and keywords
+        return [e.replace('"', '') for e in protected_entities] + keywords
+
+    def generate_query_variations(self, query: str) -> Dict[str, str]:
+        """
+        Generates a dictionary of query variations to improve search recall.
+        """
+        protected_entities, remaining_text = self._extract_entities(query)
+
+        # Clean the remaining text
+        keywords = self._intelligent_stopword_removal(remaining_text)
+
+        # Combine protected entities (quoted) and keywords
+        all_terms = [f'"{e}"' for e in protected_entities] + keywords
+
+        if not all_terms:
+            # Fallback to a simple cleaned query if no terms are extracted
+            primary_query = ' '.join(self._intelligent_stopword_removal(query))
+            if not primary_query: return {"primary": query} # Ultimate fallback
+        else:
+            primary_query = " AND ".join(all_terms)
+
+        # Generate variations
+        variations = {
+            "primary": primary_query
+        }
+
+        # Semantic variation: use OR for some terms
+        if len(protected_entities) > 1:
+            semantic_query = f"({' OR '.join([f'\"{e}\"' for e in protected_entities])}) AND {' '.join(keywords)}"
+            variations["semantic"] = semantic_query
+        else:
+            variations["semantic"] = primary_query.replace(" AND ", " ")
+
+        # Question variation
+        question_starters = ['what is', 'how does', 'explain']
+        if not any(query.lower().startswith(s) for s in question_starters):
+            variations["question"] = (
+                "what is the relationship between "
+                f"{' and '.join(all_terms)}"
+            )
+
+        return variations
+
     def optimize_query(self, query: str, paradigm: Optional[str] = None) -> str:
-        """Optimize query for search engines while maintaining intent"""
-        # Extract key terms
-        key_terms = self.extract_key_terms(query)
-        
-        # If query is already short and focused, return as-is
-        if len(query.split()) <= 5 and not any(term in query.lower() for term in self.noise_terms):
-            return query
-        
-        # Build optimized query
-        if key_terms:
-            # For longer queries, focus on key terms
-            if len(key_terms) > 5:
-                # Take most important terms (beginning and end tend to be more important)
-                important_terms = key_terms[:3] + key_terms[-2:]
-                return ' '.join(important_terms)
-            else:
-                return ' '.join(key_terms)
-        
-        # Fallback to original if no optimization possible
-        return query
+        """
+        Returns the primary, most precise query variation.
+        This method maintains compatibility with the existing interface.
+        """
+        variations = self.generate_query_variations(query)
+        logger.info(f"Generated query variations for '{query}': {variations}")
+        return variations.get("primary", query)
 
 
 class ContentRelevanceFilter:
     """Filters search results for relevance at retrieval time"""
-    
+
     def __init__(self):
         self.query_optimizer = QueryOptimizer()
-        
+
     def calculate_relevance_score(self, result: SearchResult, original_query: str, key_terms: List[str]) -> float:
         """Calculate relevance score for a search result"""
         score = 0.0
-        
+
         # Extract text for analysis
         text_content = f"{result.title} {result.snippet}".lower()
-        
+
         # 1. Key term frequency (40% weight)
         term_frequency_score = self._calculate_term_frequency(text_content, key_terms)
         score += term_frequency_score * 0.4
-        
+
         # 2. Title relevance (30% weight)
         title_score = self._calculate_title_relevance(result.title.lower(), key_terms)
         score += title_score * 0.3
-        
+
         # 3. Content freshness (10% weight)
         freshness_score = self._calculate_freshness_score(result.published_date)
         score += freshness_score * 0.1
-        
+
         # 4. Source type bonus (10% weight)
         source_score = self._calculate_source_type_score(result)
         score += source_score * 0.1
-        
+
         # 5. Exact phrase matching (10% weight)
         phrase_score = self._calculate_phrase_match_score(text_content, original_query)
         score += phrase_score * 0.1
-        
+
         return min(1.0, score)
-    
+
     def _calculate_term_frequency(self, text: str, key_terms: List[str]) -> float:
         """Calculate normalized term frequency score"""
         if not key_terms:
             return 0.0
-            
+
         matches = sum(1 for term in key_terms if term in text)
         return matches / len(key_terms)
-    
+
     def _calculate_title_relevance(self, title: str, key_terms: List[str]) -> float:
         """Calculate title relevance score"""
         if not key_terms:
             return 0.0
-            
+
         # Higher score for terms appearing in title
         title_matches = sum(1 for term in key_terms if term in title)
         base_score = title_matches / len(key_terms)
-        
+
         # Bonus for exact order matching
         if len(key_terms) >= 2:
             consecutive_matches = 0
@@ -518,16 +545,16 @@ class ContentRelevanceFilter:
                     consecutive_matches += 1
             if consecutive_matches > 0:
                 base_score = min(1.0, base_score + 0.2)
-        
+
         return base_score
-    
+
     def _calculate_freshness_score(self, published_date: Optional[datetime]) -> float:
         """Calculate content freshness score"""
         if not published_date:
             return 0.5  # Neutral score for unknown dates
-            
+
         days_old = (datetime.now(timezone.utc) - published_date).days
-        
+
         if days_old <= 7:
             return 1.0
         elif days_old <= 30:
@@ -538,53 +565,56 @@ class ContentRelevanceFilter:
             return 0.4
         else:
             return 0.2
-    
+
     def _calculate_source_type_score(self, result: SearchResult) -> float:
         """Calculate source type score based on result type and domain"""
         # Academic sources get higher base score
         if result.result_type == "academic":
             return 0.9
-        
+
         # Check for primary source indicators
         primary_indicators = [
             '.gov', '.edu', '.org',
             'official', 'foundation', 'institute',
             'journal', 'research', 'university'
         ]
-        
+
         domain_lower = result.domain.lower()
         if any(indicator in domain_lower for indicator in primary_indicators):
             result.is_primary_source = True
             return 0.8
-        
+
         # News sources
         if result.result_type == "news":
             return 0.7
-        
+
         # Default web sources
         return 0.5
-    
+
     def _calculate_phrase_match_score(self, text: str, original_query: str) -> float:
         """Calculate score for exact phrase matching"""
         # Look for quoted phrases in the original query
         quoted_phrases = re.findall(r'"([^"]+)"', original_query)
-        
+
         if not quoted_phrases:
             return 0.5  # Neutral score if no quoted phrases
-        
+
         matches = sum(1 for phrase in quoted_phrases if phrase.lower() in text)
         return matches / len(quoted_phrases)
-    
-    def filter_results(self, results: List[SearchResult], original_query: str, min_relevance: float = 0.25) -> List[SearchResult]:
-        """Filter and rank results by relevance with higher threshold"""
-        # Increased default threshold from 0.15 to 0.25 for better performance
-        
-        # Early filtering for known problematic domains
+
+    def filter_results(
+        self,
+        results: List[SearchResult],
+        original_query: str,
+        min_relevance: float = 0.25,
+    ) -> List[SearchResult]:
+        """Filter and rank results by relevance with a higher threshold."""
+        # Domains known to block scrapers or have heavy paywalls
         blocked_domains = {
-            'sciencedirect.com', 'springer.com', 'wiley.com', 
-            'jstor.org', 'tandfonline.com', 'sage.com'
+            "sciencedirect.com", "springer.com", "wiley.com", "jstor.org",
+            "tandfonline.com", "sagepub.com",
         }
-        
+
         pre_filtered = []
         for result in results:
             if any(blocked in result.domain for blocked in blocked_domains):
@@ -592,22 +622,22 @@ class ContentRelevanceFilter:
                 result.content = f"Summary from search results: {result.snippet}"
                 result.raw_data['content_source'] = 'search_api_snippet'
             pre_filtered.append(result)
-        
+
         # Extract key terms once
-        key_terms = self.query_optimizer.extract_key_terms(original_query)
-        
+        key_terms = self.query_optimizer.get_key_terms(original_query)
+
         # Calculate relevance scores
         for result in pre_filtered:
             result.relevance_score = self.calculate_relevance_score(result, original_query, key_terms)
-        
+
         # Filter by minimum relevance
         filtered = [r for r in pre_filtered if r.relevance_score >= min_relevance]
-        
+
         # Sort by relevance score (descending)
         filtered.sort(key=lambda x: x.relevance_score, reverse=True)
-        
+
         logger.info(f"Filtered {len(results)} results to {len(filtered)} with min relevance {min_relevance}")
-        
+
         return filtered
 
 
@@ -661,48 +691,50 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         self.base_url = "https://customsearch.googleapis.com/customsearch/v1"
 
     @retry(
-        stop=stop_after_attempt(3), 
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
     )
-    async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
-        """Search using Google Custom Search API with proper error handling"""
+    async def search(
+        self, query: str, config: SearchConfig
+    ) -> List[SearchResult]:
+        """Search using Google Custom Search API with proper error handling."""
         await self.rate_limiter.wait_if_needed()
 
         # Validate parameters to prevent 400 errors
         if not query or not query.strip():
             logger.error("Empty query provided to Google search")
             return []
-            
+
         # Optimize query for better relevance
         optimized_query = self.query_optimizer.optimize_query(query)
         logger.info(f"Optimized query: '{query}' -> '{optimized_query}'")
-            
+
         if not self.api_key:
             logger.error("Google API key not configured")
             return []
-            
+
         if not self.search_engine_id:
             logger.error("Google search engine ID not configured")
             return []
 
         # Clean and validate query
         clean_query = optimized_query.strip()[:2048]  # Google has a query length limit
-        
+
         params = {
             "key": self.api_key,
             "cx": self.search_engine_id,
             "q": clean_query,
             "num": min(config.max_results, 10),
         }
-        
+
         # Add optional parameters only if they have valid values
         if config.language and config.language != "auto":
             params["lr"] = f"lang_{config.language}"
-            
+
         if config.region and config.region.lower() != "global":
             params["gl"] = config.region
-            
+
         if config.safe_search:
             # Google Custom Search API only accepts "active" or "off"
             # Map "moderate" to "active" for compatibility
@@ -731,31 +763,41 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                         # Try to parse as JSON first for structured error info
                         try:
                             error_data = await response.json()
-                            logger.error(f"Google API error: {response.status} - {error_data}")
-                            if 'error' in error_data:
-                                error_details = error_data['error']
-                                logger.error(f"Google API error details: {error_details.get('message', 'Unknown error')}")
-                                logger.error(f"Error code: {error_details.get('code', 'Unknown')}")
-                        except Exception:
-                            # If not JSON, get as text
+                            error = error_data.get("error", {})
+                            message = error.get("message", "Unknown error")
+                            code = error.get("code", "N/A")
+                            logger.error(
+                                f"Google API error: {response.status} - "
+                                f"Code: {code}, Message: {message}"
+                            )
+                        except (json.JSONDecodeError, aiohttp.ClientError):
                             error_body = await response.text()
-                            logger.error(f"Google API error: {response.status} - {error_body}")
-                    except Exception:
-                        logger.error(f"Google API error: {response.status} - Could not read response body")
-                    
+                            logger.error(
+                                f"Google API error: {response.status} - {error_body}"
+                            )
+                    except Exception as read_e:
+                        logger.error(
+                            f"Google API error: {response.status}. "
+                            f"Could not read response body: {read_e}"
+                        )
                     return []
-        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:
-            logger.error(f"Google search failed: {str(e)}")
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.error(f"Google search failed: {e}")
             return []
         except Exception as e:
-            logger.error(f"Unexpected error in Google search: {str(e)}")
+            logger.error(f"Unexpected error in Google search: {e}", exc_info=True)
             return []
 
     def _parse_google_results(self, data: Dict[str, Any]) -> List[SearchResult]:
-        """Parse Google API response"""
+        """Parse Google API response."""
         results = []
+        items = data.get("items", [])
+        if not isinstance(items, list):
+            return []
 
-        for item in data.get("items", []):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
             result = SearchResult(
                 title=item.get("title", ""),
                 url=item.get("link", ""),
@@ -765,9 +807,8 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                 raw_data=item,
             )
             results.append(result)
-
         return results
-    
+
     @staticmethod
     def enhance_results_with_snippets(results: List[SearchResult]) -> List[SearchResult]:
         """Enhance results using search snippets when full content unavailable"""
@@ -791,10 +832,10 @@ class ArxivAPI(BaseSearchAPI):
     async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
         """Search ArXiv for academic papers"""
         await self.rate_limiter.wait_if_needed()
-        
+
         # Optimize query for academic search
         optimized_query = self.query_optimizer.optimize_query(query)
-        
+
         params = {
             "search_query": f"all:{optimized_query}",
             "start": 0,
@@ -808,9 +849,10 @@ class ArxivAPI(BaseSearchAPI):
                 if response.status == 200:
                     xml_data = await response.text()
                     results = self._parse_arxiv_results(xml_data)
-                    # Apply relevance filtering with higher threshold for academic
-                    filtered_results = self.relevance_filter.filter_results(results, query, min_relevance=0.4)
-                    return filtered_results
+                    # Apply relevance filtering with higher threshold
+                    return self.relevance_filter.filter_results(
+                        results, query, min_relevance=0.4
+                    )
                 else:
                     logger.error(f"ArXiv API error: {response.status}")
                     return []
@@ -833,27 +875,27 @@ class ArxivAPI(BaseSearchAPI):
                 link_elem = entry.find("atom:id", namespace)
                 published_elem = entry.find("atom:published", namespace)
 
-                if title_elem is not None and link_elem is not None:
+                if title_elem is not None and link_elem is not None and title_elem.text:
                     published_date = None
-                    if published_elem is not None:
+                    if published_elem is not None and published_elem.text:
                         try:
-                            # Normalize to UTC timezone-aware datetime
                             dt_str = published_elem.text.replace("Z", "+00:00")
                             published_date = datetime.fromisoformat(dt_str)
-                            # Ensure it's UTC if no timezone info
                             if published_date.tzinfo is None:
-                                published_date = published_date.replace(tzinfo=timezone.utc)
-                        except Exception:
+                                published_date = published_date.replace(
+                                    tzinfo=timezone.utc
+                                )
+                        except (ValueError, TypeError):
                             pass
+
+                    snippet_text = ""
+                    if summary_elem is not None and summary_elem.text:
+                        snippet_text = (summary_elem.text[:300] + "...")
 
                     result = SearchResult(
                         title=title_elem.text.strip(),
-                        url=link_elem.text,
-                        snippet=(
-                            (summary_elem.text[:300] + "...")
-                            if summary_elem is not None
-                            else ""
-                        ),
+                        url=link_elem.text or "",
+                        snippet=snippet_text,
                         source="arxiv",
                         published_date=published_date,
                         result_type="academic",
@@ -875,12 +917,16 @@ class BraveSearchAPI(BaseSearchAPI):
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10)
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
     )
-    async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
-        """Search using Brave Search API with comprehensive result parsing"""
+    async def search(
+        self, query: str, config: SearchConfig
+    ) -> List[SearchResult]:
+        """Search using Brave Search API with comprehensive result parsing."""
         await self.rate_limiter.wait_if_needed()
-        
+
         # Optimize query
         optimized_query = self.query_optimizer.optimize_query(query)
 
@@ -926,11 +972,16 @@ class BraveSearchAPI(BaseSearchAPI):
             ) as response:
                 # Check rate limit headers
                 if "x-ratelimit-remaining" in response.headers:
-                    remaining = response.headers["x-ratelimit-remaining"].split(", ")
-                    if remaining and int(remaining[0]) < 5:
-                        logger.warning(
-                            f"Brave API rate limit low: {remaining[0]} requests remaining this second"
-                        )
+                    try:
+                        remaining_str = response.headers["x-ratelimit-remaining"]
+                        remaining = int(remaining_str.split(",")[0])
+                        if remaining < 5:
+                            logger.warning(
+                                f"Brave API rate limit low: {remaining} "
+                                "requests remaining this second"
+                            )
+                    except (ValueError, IndexError):
+                        pass  # Ignore if header is malformed
 
                 if response.status == 200:
                     data = await response.json()
@@ -944,9 +995,12 @@ class BraveSearchAPI(BaseSearchAPI):
                 elif response.status == 429:
                     retry_after = response.headers.get("retry-after", "60")
                     logger.warning(
-                        f"Brave API rate limit exceeded. Retry after {retry_after} seconds"
+                        f"Brave API rate limit exceeded. "
+                        f"Retry after {retry_after} seconds"
                     )
-                    raise Exception(f"Rate limit exceeded. Retry after {retry_after}s")
+                    raise aiohttp.ClientError(
+                        f"Rate limit exceeded. Retry after {retry_after}s"
+                    )
                 else:
                     logger.error(f"Brave API error: {response.status}")
                     return []
@@ -955,119 +1009,43 @@ class BraveSearchAPI(BaseSearchAPI):
             raise
 
     def _parse_brave_results(self, data: Dict[str, Any]) -> List[SearchResult]:
-        """Parse Brave API response according to documented structure"""
+        """Parse Brave API response according to documented structure."""
         results = []
+        result_types = ["web", "news", "faq", "discussions"]
 
-        # Parse web results
-        web_results = data.get("web", {}).get("results", [])
-        for item in web_results:
-            # Parse age to published date if available
-            published_date = None
-            if "age" in item:
-                try:
-                    # Brave returns ISO format timestamps - normalize to UTC
-                    dt_str = item["age"].replace("Z", "+00:00")
-                    published_date = datetime.fromisoformat(dt_str)
-                    # Ensure it's UTC if no timezone info
-                    if published_date.tzinfo is None:
-                        published_date = published_date.replace(tzinfo=timezone.utc)
-                except Exception:
-                    pass
+        for r_type in result_types:
+            for item in data.get(r_type, {}).get("results", []):
+                if not isinstance(item, dict):
+                    continue
 
-            # Extract domain from meta_url if available
-            domain = ""
-            if "meta_url" in item and "hostname" in item["meta_url"]:
-                domain = item["meta_url"]["hostname"]
-            elif "url" in item:
-                from urllib.parse import urlparse
+                published_date = None
+                if item.get("age"):
+                    try:
+                        dt_str = item["age"].replace("Z", "+00:00")
+                        published_date = datetime.fromisoformat(dt_str)
+                        if published_date.tzinfo is None:
+                            published_date = published_date.replace(
+                                tzinfo=timezone.utc
+                            )
+                    except (ValueError, TypeError):
+                        pass
 
-                domain = urlparse(item["url"]).netloc
-
-            result = SearchResult(
-                title=item.get("title", ""),
-                url=item.get("url", ""),
-                snippet=item.get("description", ""),
-                source="brave_search",
-                domain=domain,
-                published_date=published_date,
-                result_type="web",
-                raw_data=item,
-            )
-            results.append(result)
-
-        # Parse news results
-        news_results = data.get("news", {}).get("results", [])
-        for item in news_results:
-            published_date = None
-            if "age" in item:
-                try:
-                    # Normalize to UTC timezone-aware datetime
-                    dt_str = item["age"].replace("Z", "+00:00")
-                    published_date = datetime.fromisoformat(dt_str)
-                    # Ensure it's UTC if no timezone info
-                    if published_date.tzinfo is None:
-                        published_date = published_date.replace(tzinfo=timezone.utc)
-                except Exception:
-                    pass
-
-            # Extract source info
-            source_info = item.get("source", "")
-            domain = item.get("domain", "")
-            if not domain and "url" in item:
-                from urllib.parse import urlparse
-
-                domain = urlparse(item["url"]).netloc
-
-            result = SearchResult(
-                title=item.get("title", ""),
-                url=item.get("url", ""),
-                snippet=item.get("description", ""),
-                source="brave_search",
-                domain=domain,
-                result_type="news",
-                published_date=published_date,
-                bias_rating=source_info,  # Store source name as bias rating
-                raw_data=item,
-            )
-            results.append(result)
-
-        # Parse FAQ results
-        faq_results = data.get("faq", {}).get("results", [])
-        for item in faq_results:
-            # FAQ results have question/answer format
-            snippet = f"Q: {item.get('question', '')}\nA: {item.get('answer', '')}"
-
-            result = SearchResult(
-                title=item.get("title", item.get("question", "")),
-                url=item.get("url", ""),
-                snippet=snippet[:300],  # Limit snippet length
-                source="brave_search",
-                domain=item.get("meta_url", {}).get("hostname", ""),
-                result_type="faq",
-                raw_data=item,
-            )
-            results.append(result)
-
-        # Parse discussion results
-        discussions = data.get("discussions", {}).get("results", [])
-        for item in discussions:
-            if "data" in item:
-                disc_data = item["data"]
-                snippet = disc_data.get("question", "")
-                if "top_comment" in disc_data:
-                    snippet += f"\n{disc_data['top_comment']}"
+                meta_url = item.get("meta_url", {})
+                domain = meta_url.get("hostname", "") if meta_url else ""
+                if not domain and item.get("url"):
+                    domain = urlparse(item["url"]).netloc
 
                 result = SearchResult(
-                    title=disc_data.get("title", ""),
+                    title=item.get("title", ""),
                     url=item.get("url", ""),
-                    snippet=snippet[:300],
+                    snippet=item.get("description", ""),
                     source="brave_search",
-                    domain=disc_data.get("forum_name", ""),
-                    result_type="discussion",
+                    domain=domain,
+                    published_date=published_date,
+                    result_type=r_type,
                     raw_data=item,
                 )
                 results.append(result)
-
         return results
 
 
@@ -1083,7 +1061,7 @@ class PubMedAPI(BaseSearchAPI):
     async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
         """Search PubMed for medical papers"""
         await self.rate_limiter.wait_if_needed()
-        
+
         # Optimize query for medical/scientific search
         optimized_query = self.query_optimizer.optimize_query(query)
 
@@ -1129,9 +1107,10 @@ class PubMedAPI(BaseSearchAPI):
                 if response.status == 200:
                     xml_data = await response.text()
                     results = self._parse_pubmed_results(xml_data)
-                    # Apply relevance filtering with higher threshold for medical
-                    filtered_results = self.relevance_filter.filter_results(results, query, min_relevance=0.4)
-                    return filtered_results
+                    # Apply relevance filtering with higher threshold
+                    return self.relevance_filter.filter_results(
+                        results, query, min_relevance=0.4
+                    )
                 else:
                     logger.error(f"PubMed fetch error: {response.status}")
                     return []
@@ -1154,21 +1133,22 @@ class PubMedAPI(BaseSearchAPI):
                 pmid_elem = article.find(".//PMID")
                 pub_date_elem = article.find(".//PubDate/Year")
 
-                if title_elem is not None and pmid_elem is not None:
+                if (title_elem is not None and title_elem.text and
+                        pmid_elem is not None and pmid_elem.text):
                     pmid = pmid_elem.text
                     url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
 
                     published_date = None
-                    if pub_date_elem is not None:
+                    if pub_date_elem is not None and pub_date_elem.text:
                         try:
                             year = int(pub_date_elem.text)
                             published_date = datetime(year, 1, 1, tzinfo=timezone.utc)
-                        except Exception:
+                        except (ValueError, TypeError):
                             pass
 
                     abstract = ""
                     if abstract_elem is not None and abstract_elem.text:
-                        abstract = abstract_elem.text[:300] + "..."
+                        abstract = (abstract_elem.text[:300] + "...")
 
                     result = SearchResult(
                         title=title_elem.text,
@@ -1189,56 +1169,65 @@ class PubMedAPI(BaseSearchAPI):
 
 class SemanticScholarAPI(BaseSearchAPI):
     """Semantic Scholar API for free academic paper search"""
-    
+
     def __init__(self, rate_limiter: Optional[RateLimiter] = None):
         super().__init__("", rate_limiter)  # No API key needed
         self.base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
-        
-    async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
-        """Search Semantic Scholar for academic papers"""
+
+    async def search(
+        self, query: str, config: SearchConfig
+    ) -> List[SearchResult]:
+        """Search Semantic Scholar for academic papers."""
         await self.rate_limiter.wait_if_needed()
-        
+
         params = {
             "query": query,
             "limit": min(config.max_results, 100),
-            "fields": "title,abstract,authors,year,url,citationCount,influentialCitationCount"
+            "fields": (
+                "title,abstract,authors,year,url,"
+                "citationCount,influentialCitationCount"
+            ),
         }
-        
+
         try:
-            async with self.session.get(self.base_url, params=params) as response:
+            async with self.session.get(
+                self.base_url, params=params
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
                     return self._parse_semantic_scholar_results(data)
                 else:
-                    logger.error(f"Semantic Scholar API error: {response.status}")
+                    logger.error(
+                        f"Semantic Scholar API error: {response.status}"
+                    )
                     return []
         except Exception as e:
-            logger.error(f"Semantic Scholar search failed: {str(e)}")
+            logger.error(f"Semantic Scholar search failed: {e}")
             return []
-            
+
     def _parse_semantic_scholar_results(self, data: Dict[str, Any]) -> List[SearchResult]:
         """Parse Semantic Scholar API response"""
         results = []
-        
+
         # Validate data structure
         if not isinstance(data, dict) or "data" not in data:
             logger.warning("Invalid Semantic Scholar response structure")
             return []
-            
+
         papers = data.get("data", [])
         if not isinstance(papers, list):
             logger.warning("Semantic Scholar 'data' field is not a list")
             return []
-        
+
         for paper in papers:
             # Skip invalid paper entries
             if not isinstance(paper, dict):
                 continue
-                
+
             # Build URL with validation
             paper_id = paper.get("paperId", "")
             url = f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else ""
-            
+
             # Extract year for published date
             published_date = None
             if year := paper.get("year"):
@@ -1247,20 +1236,20 @@ class SemanticScholarAPI(BaseSearchAPI):
                         published_date = datetime(year, 1, 1, tzinfo=timezone.utc)
                 except Exception:
                     pass
-                    
+
             # Build snippet from abstract with None guards
             snippet = paper.get("abstract") or ""
             if not snippet and paper.get("citationCount"):
                 citation_count = paper.get("citationCount", 0)
                 influential_count = paper.get("influentialCitationCount", 0)
                 snippet = f"Citations: {citation_count}, Influential citations: {influential_count}"
-            
+
             # Ensure snippet is string and handle None case
             if snippet is None:
                 snippet = ""
             elif not isinstance(snippet, str):
                 snippet = str(snippet)
-                
+
             result = SearchResult(
                 title=paper.get("title") or "",
                 url=url,
@@ -1272,30 +1261,34 @@ class SemanticScholarAPI(BaseSearchAPI):
                 raw_data=paper
             )
             results.append(result)
-            
+
         return results
 
 
 class CrossRefAPI(BaseSearchAPI):
     """CrossRef API for DOI metadata and open access papers"""
-    
+
     def __init__(self, email: Optional[str] = None, rate_limiter: Optional[RateLimiter] = None):
         super().__init__("", rate_limiter)  # No API key needed
         self.base_url = "https://api.crossref.org/works"
         self.email = email or os.getenv("CROSSREF_EMAIL", "research@fourhosts.ai")
-        
-    async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
-        """Search CrossRef for academic papers"""
+
+    async def search(
+        self, query: str, config: SearchConfig
+    ) -> List[SearchResult]:
+        """Search CrossRef for academic papers."""
         await self.rate_limiter.wait_if_needed()
-        
+
         params = {
             "query": query,
             "rows": min(config.max_results, 100),
-            "mailto": self.email  # Polite request with contact
+            "mailto": self.email,  # Polite request with contact
         }
-        
+
         try:
-            async with self.session.get(self.base_url, params=params) as response:
+            async with self.session.get(
+                self.base_url, params=params
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
                     return self._parse_crossref_results(data)
@@ -1303,13 +1296,13 @@ class CrossRefAPI(BaseSearchAPI):
                     logger.error(f"CrossRef API error: {response.status}")
                     return []
         except Exception as e:
-            logger.error(f"CrossRef search failed: {str(e)}")
+            logger.error(f"CrossRef search failed: {e}")
             return []
-            
+
     def _parse_crossref_results(self, data: Dict[str, Any]) -> List[SearchResult]:
         """Parse CrossRef API response"""
         results = []
-        
+
         for item in data.get("message", {}).get("items", []):
             # Get best URL (prefer open access)
             url = item.get("URL", "")
@@ -1318,19 +1311,19 @@ class CrossRefAPI(BaseSearchAPI):
                     if link.get("content-type") == "unspecified" and link.get("URL"):
                         url = link["URL"]
                         break
-                        
+
             # Parse published date
             published_date = None
-            if date_parts := item.get("published-print", {}).get("date-parts"):
+            date_parts = item.get("published-print", {}).get("date-parts", [[]])
+            if date_parts and date_parts[0]:
                 try:
-                    if date_parts[0]:
-                        year = date_parts[0][0]
-                        month = date_parts[0][1] if len(date_parts[0]) > 1 else 1
-                        day = date_parts[0][2] if len(date_parts[0]) > 2 else 1
-                        published_date = datetime(year, month, day, tzinfo=timezone.utc)
-                except Exception:
+                    year = date_parts[0][0]
+                    month = date_parts[0][1] if len(date_parts[0]) > 1 else 1
+                    day = date_parts[0][2] if len(date_parts[0]) > 2 else 1
+                    published_date = datetime(year, month, day, tzinfo=timezone.utc)
+                except (ValueError, TypeError, IndexError):
                     pass
-                    
+
             # Build snippet
             snippet = item.get("abstract", "")
             if not snippet:
@@ -1338,7 +1331,7 @@ class CrossRefAPI(BaseSearchAPI):
                 if authors:
                     author_names = [f"{a.get('given', '')} {a.get('family', '')}" for a in authors[:3]]
                     snippet = f"Authors: {', '.join(author_names)}"
-                    
+
             result = SearchResult(
                 title=" ".join(item.get("title", ["Untitled"])),
                 url=url,
@@ -1350,7 +1343,7 @@ class CrossRefAPI(BaseSearchAPI):
                 raw_data=item
             )
             results.append(result)
-            
+
         return results
 
 
@@ -1391,21 +1384,34 @@ class SearchAPIManager:
         for name, task in tasks:
             try:
                 api_results = await task
-                # Fetch full content for each result using respectful fetcher
-                for result in api_results:
-                    if result.url and not result.content:
-                        content = await self.respectful_fetcher.respectful_fetch(
-                            self.apis[name].session, result.url
+                # Fetch full content for each result
+                if api.session:
+                    content_tasks = [
+                        self.respectful_fetcher.respectful_fetch(
+                            api.session, result.url
                         )
+                        for result in api_results
+                        if result.url and not result.content
+                    ]
+                    fetched_contents = await asyncio.gather(*content_tasks)
+                    for result, content in zip(api_results, fetched_contents):
                         if content:
                             result.content = content
+
                 # Enhance with snippets if content unavailable
-                api_results = GoogleCustomSearchAPI.enhance_results_with_snippets(api_results)
-                
+                api_results = GoogleCustomSearchAPI.enhance_results_with_snippets(
+                    api_results
+                )
+
                 # Apply global relevance filtering
-                filtered_results = self.relevance_filter.filter_results(api_results, query, min_relevance=0.25)
+                filtered_results = self.relevance_filter.filter_results(
+                    api_results, query, min_relevance=0.25
+                )
                 results[name] = filtered_results
-                logger.info(f"{name}: {len(filtered_results)} results (from {len(api_results)} raw)")
+                logger.info(
+                    f"{name}: {len(filtered_results)} results "
+                    f"(from {len(api_results)} raw)"
+                )
             except Exception as e:
                 logger.error(f"{name} search failed: {str(e)}")
                 results[name] = []
@@ -1444,7 +1450,7 @@ class SearchAPIManager:
                 logger.error(f"Error during search API cleanup: {e}")
 
         self._initialized = False
-    
+
     async def fetch_with_fallback(self, result: SearchResult, session: aiohttp.ClientSession) -> str:
         """Try multiple methods to get content ethically"""
         # 1. Try respectful fetch with proper headers and robots.txt compliance
@@ -1454,10 +1460,10 @@ class SearchAPIManager:
                 result.content = content
                 result.raw_data['content_source'] = 'direct_fetch'
                 return content
-                
+
         # 2. Check if we have an academic identifier and use appropriate API
         url_lower = result.url.lower() if result.url else ""
-        
+
         # Try arXiv ID extraction
         if "arxiv.org" in url_lower:
             arxiv_id = self._extract_arxiv_id(result.url)
@@ -1466,7 +1472,7 @@ class SearchAPIManager:
                 logger.info(f"Fetching arXiv paper {arxiv_id} via API")
                 result.raw_data['content_source'] = 'arxiv_api'
                 # Abstract is already in snippet for arXiv results
-                
+
         # Try DOI extraction for CrossRef
         doi = self._extract_doi(result.url) or self._extract_doi(result.snippet)
         if doi:
@@ -1474,16 +1480,16 @@ class SearchAPIManager:
             # CrossRef results already include abstracts in snippets
             result.raw_data['doi'] = doi
             result.raw_data['content_source'] = 'crossref_metadata'
-            
+
         # 3. Use search snippet as fallback
         if result.snippet and not result.content:
             result.content = f"Summary from search results: {result.snippet}"
             result.raw_data['content_type'] = 'snippet_only'
             result.raw_data['content_source'] = 'search_api_snippet'
             return result.snippet
-            
+
         return result.content or ""
-    
+
     def _extract_doi(self, text: str) -> Optional[str]:
         """Extract DOI from text"""
         if not text:
@@ -1492,7 +1498,7 @@ class SearchAPIManager:
         doi_pattern = r'10\.\d{4,9}/[-._;()/:\w]+'
         match = re.search(doi_pattern, text)
         return match.group(0) if match else None
-        
+
     def _extract_arxiv_id(self, url: str) -> Optional[str]:
         """Extract arXiv ID from URL"""
         if not url:
@@ -1514,7 +1520,7 @@ class SearchAPIManager:
         # Normalize query for better cache hits
         normalized_query = self._normalize_query_for_cache(query)
         cache_key = f"{normalized_query}:{config.max_results}:{config.language}"
-        
+
         # Check cache first
         if self.cache_manager:
             try:
@@ -1536,26 +1542,29 @@ class SearchAPIManager:
                         logger.info(
                             f"Used {api_name} for search, got {len(results)} results"
                         )
-                        # Fetch full content for each result using respectful fetcher
-                        for result in results:
-                            if result.url and not result.content:
-                                content = await self.respectful_fetcher.respectful_fetch(
-                                    api.session, result.url
-                                )
-                                if content:
-                                    result.content = content
+                        # Fetch full content for each result
+                        if api.session:
+                            for result in results:
+                                if result.url and not result.content:
+                                    content = await self.respectful_fetcher.respectful_fetch(
+                                        api.session, result.url
+                                    )
+                                    if content:
+                                        result.content = content
                         # Enhance with snippets if content unavailable
-                        results = GoogleCustomSearchAPI.enhance_results_with_snippets(results)
-                        
+                        results = GoogleCustomSearchAPI.enhance_results_with_snippets(
+                            results
+                        )
+
                         # Cache results
                         if self.cache_manager:
                             try:
-                                # Convert to dict for caching
                                 cache_data = [asdict(r) for r in results]
-                                await self.cache_manager.set(cache_key, cache_data, ttl=3600)
+                                await self.cache_manager.set(
+                                    cache_key, cache_data, ttl=3600
+                                )
                             except Exception as e:
                                 logger.warning(f"Cache set failed: {e}")
-                        
                         return results
                 except Exception as e:
                     logger.warning(f"{api_name} failed, trying next: {str(e)}")
@@ -1563,7 +1572,7 @@ class SearchAPIManager:
 
         logger.error("All search APIs failed")
         return []
-    
+
     def _normalize_query_for_cache(self, query: str) -> str:
         """Normalize query to improve cache hit rate"""
         import re
@@ -1583,15 +1592,11 @@ def create_search_manager(cache_manager=None) -> SearchAPIManager:
     brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY")
     pubmed_api_key = os.getenv("PUBMED_API_KEY")  # Optional
 
-    # Add Brave Search (can be primary if Google not available)
     if brave_api_key:
         brave_api = BraveSearchAPI(
             api_key=brave_api_key,
-            rate_limiter=RateLimiter(
-                calls_per_minute=100
-            ),  # Brave allows up to 2000/month on free tier
+            rate_limiter=RateLimiter(calls_per_minute=100),
         )
-        # If no Google API is configured, make Brave primary
         is_primary = not (google_api_key and google_engine_id)
         manager.add_api("brave", brave_api, is_primary=is_primary)
 
@@ -1614,13 +1619,13 @@ def create_search_manager(cache_manager=None) -> SearchAPIManager:
         rate_limiter=RateLimiter(calls_per_minute=10),  # Conservative rate
     )
     manager.add_api("pubmed", pubmed_api)
-    
+
     # Add Semantic Scholar (free, excellent for academic papers)
     semantic_scholar_api = SemanticScholarAPI(
         rate_limiter=RateLimiter(calls_per_minute=10)  # More conservative rate limit
     )
     manager.add_api("semantic_scholar", semantic_scholar_api)
-    
+
     # Add CrossRef (free, for DOI and open access content)
     crossref_api = CrossRefAPI(
         rate_limiter=RateLimiter(calls_per_minute=50)
