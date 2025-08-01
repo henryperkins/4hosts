@@ -4,20 +4,21 @@ Connects new components to the existing Four Hosts application
 """
 
 import logging
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List, Union
 from datetime import datetime
 
-from .answer_generator_continued import AnswerGenerationOrchestrator
-from .answer_generator_enhanced import EnhancedBernardAnswerGenerator, EnhancedMaeveAnswerGenerator
+from .answer_generator import EnhancedAnswerGeneratorV2, BernardAnswerGeneratorV2, MaeveAnswerGeneratorV2
 from .self_healing_system import self_healing_system
 from .ml_pipeline import ml_pipeline
 from .classification_engine import ClassificationEngine, HostParadigm
-from .answer_generator import SynthesisContext
+from models.context_models import HostParadigm as ModelHostParadigm
+from models.synthesis_models import SynthesisContext
+from .result_adapter import ResultAdapter, ResultListAdapter, adapt_results
 
 logger = logging.getLogger(__name__)
 
 
-class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
+class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
     """Enhanced orchestrator that integrates new components.
 
     This subclass extends the original ``AnswerGenerationOrchestrator`` while **preserving
@@ -53,8 +54,8 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
         super().__init__()
 
         # Replace basic generators with enhanced versions
-        self.generators[HostParadigm.BERNARD] = EnhancedBernardAnswerGenerator()
-        self.generators[HostParadigm.MAEVE] = EnhancedMaeveAnswerGenerator()
+        self.generators[HostParadigm.BERNARD] = BernardAnswerGeneratorV2()
+        self.generators[HostParadigm.MAEVE] = MaeveAnswerGeneratorV2()
 
         # Enable self-healing and ML features
         self.self_healing_enabled = True
@@ -125,7 +126,7 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
             if primary_paradigm is None:
                 raise ValueError("primary_paradigm must be supplied when using the context signature")
 
-            return await self._generate_from_context(context, primary_paradigm, secondary_paradigm)
+            return await self._generate_from_context_with_fallback(context, primary_paradigm, secondary_paradigm)
 
         # ------------------------------------------------------------------
         # Case 2 – LEGACY SIGNATURE: parameters passed individually (possibly as kwargs)
@@ -177,11 +178,63 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
         if dr_content := options.get("deep_research_content"):
             context.deep_research_content = dr_content  # type: ignore[attr-defined]
 
-        return await self._generate_from_context(context, primary_paradigm_enum, secondary_paradigm)
+        return await self._generate_from_context_with_fallback(context, primary_paradigm_enum, secondary_paradigm)
 
     # ------------------------------------------------------------------
     # Internal implementation – **moved unchanged** from the previous override
     # ------------------------------------------------------------------
+
+    async def _generate_from_context_with_fallback(
+        self,
+        context: SynthesisContext,
+        primary_paradigm: HostParadigm,
+        secondary_paradigm: Optional[HostParadigm] = None,
+    ) -> Any:
+        """Enhanced generation with partial success policy and result adapter."""
+        start_time = datetime.now()
+        query_id = context.metadata.get("research_id", f"query_{start_time.timestamp()}")
+        
+        # Normalize search results using ResultAdapter
+        try:
+            adapted_results = self._adapt_search_results(context.search_results)
+            context.search_results = adapted_results
+        except Exception as e:
+            logger.warning(f"Failed to adapt search results: {e}")
+            # Continue with original results
+    
+    def _adapt_search_results(self, search_results: Any) -> List[Dict[str, Any]]:
+        """Safely adapt search results to consistent format"""
+        if not search_results:
+            return []
+            
+        try:
+            # Use ResultAdapter to handle both dict and object formats
+            adapter = adapt_results(search_results)
+            
+            if isinstance(adapter, ResultListAdapter):
+                # Get valid results and convert to dict format
+                valid_results = adapter.get_valid_results()
+                return [result.to_dict() for result in valid_results]
+            else:
+                # Single result
+                if adapter.has_required_fields():
+                    return [adapter.to_dict()]
+                else:
+                    return []
+        except Exception as e:
+            logger.error(f"Error adapting search results: {e}")
+            # Fallback: try to convert to list of dicts manually
+            if isinstance(search_results, list):
+                adapted = []
+                for result in search_results:
+                    if isinstance(result, dict):
+                        adapted.append(result)
+                    elif hasattr(result, 'to_dict'):
+                        adapted.append(result.to_dict())
+                    elif hasattr(result, '__dict__'):
+                        adapted.append(result.__dict__.copy())
+                return adapted
+            return []
 
     async def _generate_from_context(
         self,
@@ -189,23 +242,25 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
         primary_paradigm: HostParadigm,
         secondary_paradigm: Optional[HostParadigm] = None,
     ) -> Any:
-        """Actual enhanced generation logic (extracted from the old implementation)."""
+        """Actual Enhanced generation logic with partial success policy."""
         start_time = datetime.now()
         query_id = context.metadata.get("research_id", f"query_{start_time.timestamp()}")
-        
+        errors = []
+        failed_paths = []
+
         try:
             # Check if self-healing recommends a different paradigm
             if self.self_healing_enabled:
                 recommended_paradigm = self_healing_system.get_paradigm_recommendation(
                     context.query, primary_paradigm
                 )
-                
+
                 if recommended_paradigm and recommended_paradigm != primary_paradigm:
                     logger.info(
                         f"Self-healing system recommends switching from {primary_paradigm} "
                         f"to {recommended_paradigm} for query: {context.query[:50]}..."
                     )
-                    
+
                     # Record the switch decision
                     await self_healing_system.record_query_performance(
                         query_id=query_id,
@@ -213,16 +268,16 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                         paradigm=primary_paradigm,
                         error="paradigm_switch_recommended",
                     )
-                    
+
                     # Use recommended paradigm
                     primary_paradigm = recommended_paradigm
-            
+
             # Generate answer using appropriate generator (support both enum and string keys)
             generator = self.generators.get(primary_paradigm) or self.generators.get(primary_paradigm.value)
             if generator is None:
                 raise ValueError(f"No generator registered for paradigm {primary_paradigm}")
             primary_answer = await generator.generate_answer(context)
-            
+
             # Record performance metrics
             response_time = (datetime.now() - start_time).total_seconds()
             await self_healing_system.record_query_performance(
@@ -232,7 +287,7 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                 answer=primary_answer,
                 response_time=response_time,
             )
-            
+
             # Record training example for ML pipeline
             if self.ml_enhanced and hasattr(context, "classification_result"):
                 await ml_pipeline.record_training_example(
@@ -242,19 +297,19 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                     predicted_paradigm=primary_paradigm,
                     synthesis_quality=primary_answer.synthesis_quality,
                 )
-            
+
             # Handle secondary paradigm if provided
             if secondary_paradigm:
                 secondary_generator = self.generators.get(secondary_paradigm) or self.generators.get(secondary_paradigm.value)
                 if secondary_generator is None:
                     secondary_generator = generator  # Fallback to primary to avoid crash
                 secondary_answer = await secondary_generator.generate_answer(context)
-                
+
                 # Integrate using mesh network
                 integrated = await self.mesh_network.integrate_paradigm_results(
                     primary_answer, secondary_answer
                 )
-                
+
                 # Update primary answer with integrated content
                 primary_answer.secondary_perspective = integrated.secondary_perspective
                 primary_answer.metadata["integration"] = {
@@ -262,34 +317,116 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                     "conflicts": len(integrated.conflicts_identified),
                     "synergies": len(integrated.synergies),
                 }
-            
+
             return primary_answer
-            
+
         except Exception as e:
+            error_msg = str(e)
+            errors.append(error_msg)
+            failed_paths.append(f"primary_generation_{primary_paradigm.value}")
             logger.error(f"Error in enhanced answer generation: {e}")
-            
+
             # Record failure
             await self_healing_system.record_query_performance(
                 query_id=query_id,
                 query_text=context.query,
                 paradigm=primary_paradigm,
-                error=str(e),
+                error=error_msg,
                 response_time=(datetime.now() - start_time).total_seconds(),
             )
+
+            # Partial success policy: return minimal answer with metadata
+            return await self._create_minimal_answer_with_fallback(
+                context, primary_paradigm, secondary_paradigm, errors, failed_paths
+            )
+    
+    async def _create_minimal_answer_with_fallback(
+        self,
+        context: SynthesisContext,
+        primary_paradigm: HostParadigm,
+        secondary_paradigm: Optional[HostParadigm],
+        errors: List[str],
+        failed_paths: List[str]
+    ) -> Any:
+        """Create minimal answer when primary generation fails"""
+        
+        # Try fallback paradigm if available
+        fallback_answer = None
+        if self.self_healing_enabled:
+            fallback_paradigm = self._get_fallback_paradigm(primary_paradigm)
+            if fallback_paradigm:
+                logger.info(f"Attempting fallback to {fallback_paradigm} paradigm")
+                try:
+                    fallback_generator = self.generators.get(fallback_paradigm) or self.generators.get(fallback_paradigm.value)
+                    if fallback_generator:
+                        fallback_answer = await fallback_generator.generate_answer(context)
+                        logger.info(f"Fallback to {fallback_paradigm} succeeded")
+                except Exception as fallback_error:
+                    logger.error(f"Fallback also failed: {fallback_error}")
+                    errors.append(f"fallback_{fallback_paradigm.value}: {str(fallback_error)}")
+                    failed_paths.append(f"fallback_generation_{fallback_paradigm.value}")
+        
+        # If fallback succeeded, return it with enhanced metadata
+        if fallback_answer:
+            fallback_answer.metadata = getattr(fallback_answer, 'metadata', {})
+            fallback_answer.metadata.update({
+                "partial_success": True,
+                "original_paradigm": primary_paradigm.value,
+                "fallback_paradigm": fallback_paradigm.value,
+                "errors": errors,
+                "failed_paths": failed_paths
+            })
+            return fallback_answer
+        
+        # Last resort: create minimal answer with raw search results
+        try:
+            from models.synthesis_models import SynthesisResult
             
-            # Try fallback paradigm if available
-            if self.self_healing_enabled:
-                fallback_paradigm = self._get_fallback_paradigm(primary_paradigm)
-                if fallback_paradigm:
-                    logger.info(f"Attempting fallback to {fallback_paradigm} paradigm")
-                    try:
-                        fallback_generator = self.generators.get(fallback_paradigm) or self.generators.get(fallback_paradigm.value)
-                        if fallback_generator:
-                            return await fallback_generator.generate_answer(context)
-                    except Exception as fallback_error:
-                        logger.error(f"Fallback also failed: {fallback_error}")
+            # Use ResultAdapter to safely extract information
+            adapter = adapt_results(context.search_results)
             
-            raise
+            if isinstance(adapter, ResultListAdapter):
+                valid_results = adapter.get_valid_results()[:5]  # Limit to top 5
+                links = [result.url for result in valid_results]
+                snippets = [result.snippet for result in valid_results if result.snippet]
+            else:
+                links = [adapter.url] if adapter.has_required_fields() else []
+                snippets = [adapter.snippet] if adapter.snippet else []
+            
+            minimal_content = f"""I encountered issues generating a complete answer for this query. Here's what I found:
+
+{chr(10).join(f"• {snippet[:200]}..." for snippet in snippets[:3])}
+
+For more information, please check these sources:
+{chr(10).join(f"- {link}" for link in links[:3])}"""
+            
+            minimal_answer = SynthesisResult(
+                query=context.query,
+                paradigm=primary_paradigm.value,
+                answer=minimal_content,
+                citations=links,
+                confidence_score=0.3,  # Low confidence due to failure
+                synthesis_quality=0.2,  # Low quality due to minimal processing
+                sources_count=len(links),
+                paradigm_alignment=0.1,  # Low alignment due to failure
+                metadata={
+                    "partial_success": True,
+                    "generation_failed": True,
+                    "errors": errors,
+                    "failed_paths": failed_paths,
+                    "fallback_used": "minimal_answer"
+                }
+            )
+            
+            return minimal_answer
+            
+        except Exception as minimal_error:
+            logger.error(f"Even minimal answer generation failed: {minimal_error}")
+            errors.append(f"minimal_answer: {str(minimal_error)}")
+            failed_paths.append("minimal_answer_generation")
+            
+            # Absolute last resort: raise with comprehensive error info
+            raise RuntimeError(f"Complete answer generation failure. Errors: {'; '.join(errors)}. Failed paths: {', '.join(failed_paths)}")
 
     def _get_fallback_paradigm(self, failed_paradigm: HostParadigm) -> Optional[HostParadigm]:
         """Get fallback paradigm based on failure"""
@@ -304,7 +441,7 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
 
 class EnhancedClassificationEngine(ClassificationEngine):
     """Enhanced classification engine that uses ML pipeline"""
-    
+
     def __init__(self):
         super().__init__()
         self.ml_enhanced = True
@@ -314,21 +451,21 @@ class EnhancedClassificationEngine(ClassificationEngine):
         """Enhanced classification with ML model"""
         # First get base classification
         result = await super().classify_query(query)
-        
+
         # If ML is available, also get ML prediction
         if self.ml_enhanced:
             try:
                 ml_paradigm, ml_confidence = await ml_pipeline.predict_paradigm(
                     query, result.features
                 )
-                
+
                 # If ML confidence is high and differs from rule-based, consider it
                 if ml_confidence > 0.8 and ml_paradigm != result.primary_paradigm:
                     logger.info(
                         f"ML model suggests {ml_paradigm} (conf: {ml_confidence:.2f}) "
                         f"vs rule-based {result.primary_paradigm}"
                     )
-                    
+
                     # Blend the results
                     if ml_confidence > result.confidence:
                         # ML is more confident, adjust primary paradigm
@@ -338,22 +475,22 @@ class EnhancedClassificationEngine(ClassificationEngine):
                         result.reasoning[ml_paradigm.value].append(
                             f"ML model prediction with {ml_confidence:.2f} confidence"
                         )
-                
+
             except Exception as e:
                 logger.error(f"Error in ML classification enhancement: {e}")
-        
+
         return result
 
 
 async def record_user_feedback(
-    query_id: str, 
+    query_id: str,
     satisfaction_score: float,
     paradigm_feedback: Optional[str] = None
 ) -> None:
     """Record user feedback for continuous improvement"""
     # Record in self-healing system
     await self_healing_system.record_user_feedback(query_id, satisfaction_score)
-    
+
     # If user suggests a different paradigm, record for ML training
     if paradigm_feedback:
         try:
@@ -377,11 +514,11 @@ def get_system_health_report() -> Dict[str, Any]:
         },
         "recommendations": [],
     }
-    
+
     # Add system-wide recommendations
     sh_report = report["components"]["self_healing"]
     ml_info = report["components"]["ml_pipeline"]
-    
+
     # Check if retraining is needed
     if ml_info.get("training_examples", 0) > 1000:
         report["recommendations"].append({
@@ -389,7 +526,7 @@ def get_system_health_report() -> Dict[str, Any]:
             "action": "Model retraining recommended",
             "reason": f"{ml_info['training_examples']} new examples available",
         })
-    
+
     # Check paradigm performance
     for paradigm_report in sh_report.get("paradigm_metrics", {}).values():
         if paradigm_report.get("performance_score", 1.0) < 0.6:
@@ -398,7 +535,7 @@ def get_system_health_report() -> Dict[str, Any]:
                 "action": f"Investigate {paradigm_report} paradigm performance",
                 "reason": "Performance score below threshold",
             })
-    
+
     return report
 
 
@@ -426,10 +563,10 @@ async def trigger_model_retraining() -> Dict[str, Any]:
             "message": f"Insufficient training examples. Need {ml_pipeline.min_training_samples}, "
                       f"have {len(ml_pipeline.training_examples)}",
         }
-    
+
     # Trigger retraining
     await ml_pipeline._retrain_model()
-    
+
     return {
         "status": "success",
         "message": "Model retraining initiated",
@@ -440,7 +577,7 @@ async def trigger_model_retraining() -> Dict[str, Any]:
 def get_paradigm_performance_metrics() -> Dict[str, Any]:
     """Get detailed paradigm performance metrics"""
     metrics = {}
-    
+
     for paradigm, perf in self_healing_system.performance_metrics.items():
         if perf.total_queries > 0:
             metrics[paradigm.value] = {
@@ -450,10 +587,10 @@ def get_paradigm_performance_metrics() -> Dict[str, Any]:
                 "avg_synthesis_quality": perf.avg_synthesis_quality,
                 "avg_user_satisfaction": perf.avg_user_satisfaction,
                 "avg_response_time": perf.avg_response_time,
-                "recent_trend": "improving" if len(perf.recent_scores) > 10 and 
+                "recent_trend": "improving" if len(perf.recent_scores) > 10 and
                                sum(s["confidence"] for s in list(perf.recent_scores)[-5:]) / 5 >
                                sum(s["confidence"] for s in list(perf.recent_scores)[-10:-5]) / 5
                                else "stable",
             }
-    
+
     return metrics

@@ -175,20 +175,33 @@ Respond in JSON format with a list of synergy descriptions. If no synergies, ret
         """
         Summarizes the secondary answer into a single section.
         """
-        secondary_content = f"From a {secondary_answer.paradigm} perspective, it's also crucial to consider the following:\n\n"
-        secondary_content += secondary_answer.summary
+        # Handle both dict and object formats for secondary_answer
+        paradigm = getattr(secondary_answer, 'paradigm', None) or secondary_answer.get('paradigm', 'unknown') if isinstance(secondary_answer, dict) else 'unknown'
+        summary = getattr(secondary_answer, 'summary', None) or secondary_answer.get('content', '') if isinstance(secondary_answer, dict) else ''
+        
+        secondary_content = f"From a {paradigm} perspective, it's also crucial to consider the following:\n\n"
+        secondary_content += summary
 
         key_insights = []
-        for section in secondary_answer.sections[
-            :2
-        ]:  # take insights from first two sections
-            key_insights.extend(section.key_insights)
+        # Handle both dict and object formats for secondary_answer
+        if hasattr(secondary_answer, 'sections') and secondary_answer.sections:
+            for section in secondary_answer.sections[
+                :2
+            ]:  # take insights from first two sections
+                if hasattr(section, 'key_insights'):
+                    key_insights.extend(section.key_insights)
+        elif isinstance(secondary_answer, dict):
+            # For dict format, extract insights from content
+            content = secondary_answer.get("content", "")
+            if content:
+                # Create basic insights from content (simplified)
+                key_insights = [f"Key insight from {secondary_answer.get('paradigm', 'unknown')} perspective"]
 
         return AnswerSection(
-            title=f"A {secondary_answer.paradigm.capitalize()} Perspective",
-            paradigm=secondary_answer.paradigm,
+            title=f"A {paradigm.capitalize()} Perspective",
+            paradigm=paradigm,
             content=secondary_content,
-            confidence=secondary_answer.confidence_score,
+            confidence=getattr(secondary_answer, 'confidence_score', None) or secondary_answer.get('synthesis_quality', 0.8) if isinstance(secondary_answer, dict) else 0.8,
             citations=[],  # Citations would need to be re-mapped in a real implementation
             word_count=len(secondary_content.split()),
             key_insights=key_insights[:3],

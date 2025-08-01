@@ -55,6 +55,7 @@ from services.credibility import get_source_credibility
 from services.llm_client import initialise_llm_client
 from services.research_store import research_store
 from services.context_engineering import context_pipeline
+from services.search_apis import create_search_manager
 
 # Import enhanced components
 from services.enhanced_integration import (
@@ -2172,45 +2173,130 @@ async def execute_real_research(
         # Check if we have deep research content
         deep_research_content = getattr(execution_result, "deep_research_content", None)
 
-        generated_answer = await answer_orchestrator.generate_answer(
-            paradigm=paradigm_name,
-            query=research.query,
-            search_results=search_results_for_synthesis,
-            context_engineering=context_engineering,
-            options={
-                "research_id": research_id,
-                "max_length": 2000,
-                "include_citations": True,
-                "deep_research_content": deep_research_content,  # Pass deep research content if available
-            },
-        )
+        # Enhanced logging before answer generation
+        logger.info(f"Starting answer generation with {len(search_results_for_synthesis)} results")
+        logger.debug(f"Search results types: {[type(r).__name__ for r in search_results_for_synthesis[:3]]}")
+        
+        try:
+            generated_answer = await answer_orchestrator.generate_answer(
+                paradigm=paradigm_name,
+                query=research.query,
+                search_results=search_results_for_synthesis,
+                context_engineering=context_engineering,
+                options={
+                    "research_id": research_id,
+                    "max_length": 2000,
+                    "include_citations": True,
+                    "deep_research_content": deep_research_content,  # Pass deep research content if available
+                },
+            )
+            
+            # Log the type and structure of generated_answer
+            logger.info(f"Answer generation completed. Type: {type(generated_answer)}")
+            if isinstance(generated_answer, dict):
+                logger.debug(f"Generated answer keys: {list(generated_answer.keys())}")
+                logger.debug(f"Generated answer paradigm: {generated_answer.get('paradigm', 'unknown')}")
+                sections_info = generated_answer.get('sections', 'missing')
+                logger.debug(f"Generated answer sections: {sections_info} (type: {type(sections_info)})")
+            else:
+                logger.debug(f"Generated answer attributes: {[attr for attr in dir(generated_answer) if not attr.startswith('_')]}")
+                
+        except Exception as e:
+            logger.error(f"Answer generation failed: {str(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise
 
-        # Format final result
+        # Format final result - handle both dict and object formats
         answer_sections = []
-        for section in generated_answer.sections:
-            answer_sections.append(
-                {
-                    "title": section.title,
-                    "paradigm": section.paradigm,
-                    "content": section.content,
-                    "confidence": section.confidence,
-                    "sources_count": len(section.citations),
-                }
-            )
-
-        citations_list = []
-        for cite_id, citation in generated_answer.citations.items():
-            citations_list.append(
-                {
-                    "id": cite_id,
-                    "title": citation.source_title,
-                    "source": citation.source_title,
-                    "url": citation.source_url,
-                    "snippet": getattr(citation, "snippet", ""),
-                    "credibility_score": citation.credibility_score,
-                    "paradigm_alignment": context_engineered_query.classification.primary_paradigm.value,
-                }
-            )
+        
+        # Defensive check: handle different return formats from generators
+        if generated_answer is None:
+            logger.error("Generated answer is None")
+            answer_sections = []
+            citations_list = []
+        elif isinstance(generated_answer, dict):
+            # Dictionary format from enhanced generators
+            # Extract sections count or create empty sections list
+            sections_count = generated_answer.get("sections", 0)
+            if isinstance(sections_count, int):
+                # Create basic sections structure for compatibility
+                content = generated_answer.get("content", "")
+                paradigm = generated_answer.get("paradigm", "bernard")
+                answer_sections.append({
+                    "title": "Research Summary",
+                    "paradigm": paradigm,
+                    "content": content,
+                    "confidence": generated_answer.get("synthesis_quality", 0.8),
+                    "sources_count": len(generated_answer.get("citations", [])),
+                })
+            else:
+                # Legacy sections format
+                for section in sections_count:
+                    answer_sections.append(
+                        {
+                            "title": getattr(section, "title", "Untitled"),
+                            "paradigm": getattr(section, "paradigm", "bernard"),
+                            "content": getattr(section, "content", ""),
+                            "confidence": getattr(section, "confidence", 0.8),
+                            "sources_count": len(getattr(section, "citations", [])),
+                        }
+                    )
+            
+            # Handle citations from dictionary format
+            citations_list = []
+            citations = generated_answer.get("citations", [])
+            if isinstance(citations, list):
+                for i, cite_id in enumerate(citations):
+                    citations_list.append({
+                        "id": cite_id,
+                        "title": f"Source {i+1}",
+                        "source": f"Source {i+1}",
+                        "url": "",
+                        "snippet": "",
+                        "credibility_score": 0.8,
+                        "paradigm_alignment": generated_answer.get("paradigm", "bernard"),
+                    })
+            elif isinstance(citations, dict):
+                for cite_id, citation in citations.items():
+                    citations_list.append({
+                        "id": cite_id,
+                        "title": getattr(citation, "source_title", f"Source {cite_id}"),
+                        "source": getattr(citation, "source_title", f"Source {cite_id}"),
+                        "url": getattr(citation, "source_url", ""),
+                        "snippet": getattr(citation, "snippet", ""),
+                        "credibility_score": getattr(citation, "credibility_score", 0.8),
+                        "paradigm_alignment": generated_answer.get("paradigm", "bernard"),
+                    })
+        else:
+            # Object format (legacy)
+            if hasattr(generated_answer, "sections") and generated_answer.sections:
+                for section in generated_answer.sections:
+                    answer_sections.append(
+                        {
+                            "title": section.title,
+                            "paradigm": section.paradigm,
+                            "content": section.content,
+                            "confidence": section.confidence,
+                            "sources_count": len(section.citations),
+                        }
+                    )
+            
+            citations_list = []
+            if hasattr(generated_answer, "citations") and generated_answer.citations:
+                for cite_id, citation in generated_answer.citations.items():
+                    citations_list.append(
+                        {
+                            "id": cite_id,
+                            "title": getattr(citation, "source_title", f"Source {cite_id}"),
+                            "source": getattr(citation, "source_title", f"Source {cite_id}"),
+                            "url": getattr(citation, "source_url", ""),
+                            "snippet": getattr(citation, "snippet", ""),
+                            "credibility_score": getattr(citation, "credibility_score", 0.8),
+                            "paradigm_alignment": context_engineered_query.classification.primary_paradigm.value,
+                        }
+                    )
 
         final_result = ResearchResult(
             research_id=research_id,

@@ -33,6 +33,7 @@ import type { ResearchResult, ParadigmClassification, ResearchOptions } from './
 const Navigation = () => {
   const { isAuthenticated, user, logout } = useAuth()
   const location = useLocation()
+  const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const { darkMode, toggleDarkMode } = useTheme()
 
@@ -176,9 +177,10 @@ const Navigation = () => {
               </div>
             </div>
             <button
-              onClick={() => {
-                logout()
+              onClick={async () => {
+                await logout()
                 closeMobileMenu()
+                navigate('/login')
               }}
               className="block w-full text-left px-4 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-200"
             >
@@ -194,6 +196,7 @@ const Navigation = () => {
 
 // Main research page component with enhanced animations
 const ResearchPage = () => {
+  const navigate = useNavigate()
   const [isLoading, setIsLoading] = useState(false)
   const [paradigmClassification, setParadigmClassification] = useState<ParadigmClassification | null>(null)
   const [results, setResults] = useState<ResearchResult | null>(null)
@@ -315,9 +318,14 @@ const ResearchPage = () => {
       }, 2000)
 
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred')
-      setIsLoading(false)
-      setShowProgress(false)
+      if (err instanceof Error && err.message.includes('No refresh token available')) {
+        // Authentication error - redirect to login
+        navigate('/login')
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred')
+        setIsLoading(false)
+        setShowProgress(false)
+      }
     }
   }
 

@@ -108,6 +108,14 @@ if [ -f "$BACKEND_DIR/.env" ]; then
                 docker network create fourhosts-network
             fi
             
+            # Build Brave MCP server image if it doesn't exist
+            if ! docker images | grep -q "brave-mcp-server"; then
+                echo "Building Brave MCP server Docker image..."
+                cd "$BACKEND_DIR/brave-search-mcp-server"
+                docker build -t brave-mcp-server:latest .
+                cd "$BACKEND_DIR"
+            fi
+            
             # Start Brave MCP server using Docker Compose
             echo "Starting Brave MCP server..."
             cd "$BACKEND_DIR"

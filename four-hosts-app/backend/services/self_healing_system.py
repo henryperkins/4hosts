@@ -12,7 +12,7 @@ from collections import defaultdict, deque
 import json
 
 from .classification_engine import HostParadigm, ClassificationResult
-from .answer_generator import GeneratedAnswer
+from models.synthesis_models import GeneratedAnswer
 from .monitoring import monitoring_service
 
 logger = logging.getLogger(__name__)

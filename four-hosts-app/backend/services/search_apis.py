@@ -9,8 +9,8 @@ import json
 import logging
 from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
-from urllib.parse import quote_plus
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote_plus, unquote, urlparse, urlunparse
 import hashlib
 import os
 import time
@@ -49,6 +49,127 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class URLNormalizer:
+    """Handles URL normalization and DOI canonicalization"""
+    
+    @staticmethod
+    def normalize_url(url: str) -> str:
+        """Normalize URL to prevent malformed requests"""
+        if not url or not isinstance(url, str):
+            return ""
+            
+        # Remove extra whitespace
+        url = url.strip()
+        
+        # Handle common DOI patterns
+        if url.startswith("10."):
+            # Bare DOI - prepend doi.org
+            return f"https://doi.org/{url}"
+            
+        if "doi.org/" in url:
+            # Extract and normalize DOI
+            doi_match = re.search(r'doi\.org/(.+)', url)
+            if doi_match:
+                doi = doi_match.group(1)
+                # Avoid double-encoding - decode first if needed
+                if '%' in doi:
+                    try:
+                        doi = unquote(doi)
+                    except Exception:
+                        pass
+                return f"https://doi.org/{doi}"
+        
+        # Parse URL components
+        try:
+            parsed = urlparse(url)
+            
+            # Ensure scheme
+            if not parsed.scheme:
+                url = f"https://{url}"
+                parsed = urlparse(url)
+            
+            # Normalize domain
+            netloc = parsed.netloc.lower()
+            
+            # Handle percent-encoded paths carefully
+            path = parsed.path
+            if path and '%' in path:
+                # Only decode if it appears to be over-encoded
+                try:
+                    decoded = unquote(path)
+                    # Check if decoding made it more readable
+                    if not re.search(r'%[0-9A-Fa-f]{2}', decoded):
+                        path = decoded
+                except Exception:
+                    pass  # Keep original if decoding fails
+            
+            # Reconstruct URL
+            normalized = urlunparse((
+                parsed.scheme,
+                netloc,
+                path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment
+            ))
+            
+            return normalized
+            
+        except Exception as e:
+            logger.warning(f"URL normalization failed for {url}: {e}")
+            return url
+    
+    @staticmethod
+    def is_valid_url(url: str) -> bool:
+        """Check if URL is well-formed"""
+        try:
+            result = urlparse(url)
+            return all([result.scheme, result.netloc])
+        except Exception:
+            return False
+
+
+class CircuitBreaker:
+    """Circuit breaker for domains with repeated failures"""
+    
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 300):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_counts = {}
+        self.last_failure_time = {}
+        self.blocked_domains = set()
+    
+    def should_allow_request(self, domain: str) -> bool:
+        """Check if requests to domain should be allowed"""
+        if domain not in self.blocked_domains:
+            return True
+            
+        # Check if recovery period has passed
+        if domain in self.last_failure_time:
+            elapsed = time.time() - self.last_failure_time[domain]
+            if elapsed > self.recovery_timeout:
+                logger.info(f"Circuit breaker recovery: allowing requests to {domain}")
+                self.blocked_domains.discard(domain)
+                self.failure_counts[domain] = 0
+                return True
+                
+        return False
+    
+    def record_failure(self, domain: str):
+        """Record a failure for the domain"""
+        self.failure_counts[domain] = self.failure_counts.get(domain, 0) + 1
+        self.last_failure_time[domain] = time.time()
+        
+        if self.failure_counts[domain] >= self.failure_threshold:
+            logger.warning(f"Circuit breaker triggered for {domain} after {self.failure_counts[domain]} failures")
+            self.blocked_domains.add(domain)
+    
+    def record_success(self, domain: str):
+        """Record a success for the domain"""
+        if domain in self.failure_counts:
+            self.failure_counts[domain] = max(0, self.failure_counts[domain] - 1)
+
+
 class RespectfulFetcher:
     """Fetches content while respecting robots.txt and rate limits"""
     
@@ -56,6 +177,7 @@ class RespectfulFetcher:
         self.robot_parsers = {}
         self.last_fetch = {}
         self.user_agent = "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)"
+        self.circuit_breaker = CircuitBreaker()
         
     async def can_fetch(self, url: str) -> bool:
         """Check robots.txt before fetching"""
@@ -77,13 +199,25 @@ class RespectfulFetcher:
     
     async def respectful_fetch(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
         """Fetch with rate limiting and robots.txt compliance"""
+        # Normalize URL first
+        normalized_url = URLNormalizer.normalize_url(url)
+        if not normalized_url or not URLNormalizer.is_valid_url(normalized_url):
+            logger.warning(f"Invalid URL after normalization: {url} -> {normalized_url}")
+            return None
+        
+        domain = urlparse(normalized_url).netloc
+        
+        # Check circuit breaker
+        if not self.circuit_breaker.should_allow_request(domain):
+            logger.debug(f"Circuit breaker blocking requests to {domain}")
+            return None
+            
         # Check robots.txt
-        if not await self.can_fetch(url):
-            logger.info(f"Robots.txt disallows fetching {url}")
+        if not await self.can_fetch(normalized_url):
+            logger.debug(f"Robots.txt disallows fetching {normalized_url}")
             return None
             
         # Rate limit per domain (1 second between requests)
-        domain = urlparse(url).netloc
         if domain in self.last_fetch:
             elapsed = time.time() - self.last_fetch[domain]
             if elapsed < 1.0:
@@ -91,10 +225,22 @@ class RespectfulFetcher:
                 
         self.last_fetch[domain] = time.time()
         
-        # Fetch with proper headers
-        return await fetch_and_parse_url(session, url)
+        # Fetch with proper headers and record result
+        try:
+            content = await fetch_and_parse_url(session, normalized_url)
+            if content:
+                self.circuit_breaker.record_success(domain)
+            return content
+        except Exception as e:
+            self.circuit_breaker.record_failure(domain)
+            raise
 
 
+@retry(
+    stop=stop_after_attempt(3), 
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(aiohttp.ClientResponseError)
+)
 async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
     """Fetch URL content with ethical headers and parse it to remove HTML tags or extract text from PDF"""
     # Use proper headers to identify ourselves
@@ -125,11 +271,19 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                         script.extract()
                     return soup.get_text(separator=" ", strip=True)
             elif response.status == 403:
-                logger.info(f"Access denied (403) for {url} - will use search snippet instead")
+                logger.debug(f"Access denied (403) for {url} - will use search snippet instead")
                 return ""
             elif response.status == 429:
                 logger.warning(f"Rate limited (429) for {url} - consider reducing request frequency")
                 return ""
+            elif 500 <= response.status < 600:
+                # 5xx errors - server issues, worth retrying
+                logger.warning(f"Server error ({response.status}) for {url} - may retry")
+                raise aiohttp.ClientResponseError(
+                    request_info=response.request_info,
+                    history=response.history,
+                    status=response.status
+                )
             else:
                 logger.warning(f"Failed to fetch {url}, status: {response.status}")
                 return ""
@@ -188,7 +342,7 @@ class RateLimiter:
 
     async def wait_if_needed(self):
         """Wait if rate limit would be exceeded"""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         # Remove calls older than 1 minute
         self.calls = [
             call_time
@@ -372,7 +526,7 @@ class ContentRelevanceFilter:
         if not published_date:
             return 0.5  # Neutral score for unknown dates
             
-        days_old = (datetime.now() - published_date).days
+        days_old = (datetime.now(timezone.utc) - published_date).days
         
         if days_old <= 7:
             return 1.0
@@ -683,9 +837,12 @@ class ArxivAPI(BaseSearchAPI):
                     published_date = None
                     if published_elem is not None:
                         try:
-                            published_date = datetime.fromisoformat(
-                                published_elem.text.replace("Z", "+00:00")
-                            )
+                            # Normalize to UTC timezone-aware datetime
+                            dt_str = published_elem.text.replace("Z", "+00:00")
+                            published_date = datetime.fromisoformat(dt_str)
+                            # Ensure it's UTC if no timezone info
+                            if published_date.tzinfo is None:
+                                published_date = published_date.replace(tzinfo=timezone.utc)
                         except Exception:
                             pass
 
@@ -808,10 +965,12 @@ class BraveSearchAPI(BaseSearchAPI):
             published_date = None
             if "age" in item:
                 try:
-                    # Brave returns ISO format timestamps
-                    published_date = datetime.fromisoformat(
-                        item["age"].replace("Z", "+00:00")
-                    )
+                    # Brave returns ISO format timestamps - normalize to UTC
+                    dt_str = item["age"].replace("Z", "+00:00")
+                    published_date = datetime.fromisoformat(dt_str)
+                    # Ensure it's UTC if no timezone info
+                    if published_date.tzinfo is None:
+                        published_date = published_date.replace(tzinfo=timezone.utc)
                 except Exception:
                     pass
 
@@ -842,9 +1001,12 @@ class BraveSearchAPI(BaseSearchAPI):
             published_date = None
             if "age" in item:
                 try:
-                    published_date = datetime.fromisoformat(
-                        item["age"].replace("Z", "+00:00")
-                    )
+                    # Normalize to UTC timezone-aware datetime
+                    dt_str = item["age"].replace("Z", "+00:00")
+                    published_date = datetime.fromisoformat(dt_str)
+                    # Ensure it's UTC if no timezone info
+                    if published_date.tzinfo is None:
+                        published_date = published_date.replace(tzinfo=timezone.utc)
                 except Exception:
                     pass
 
@@ -1000,7 +1162,7 @@ class PubMedAPI(BaseSearchAPI):
                     if pub_date_elem is not None:
                         try:
                             year = int(pub_date_elem.text)
-                            published_date = datetime(year, 1, 1)
+                            published_date = datetime(year, 1, 1, tzinfo=timezone.utc)
                         except Exception:
                             pass
 
@@ -1058,8 +1220,22 @@ class SemanticScholarAPI(BaseSearchAPI):
         """Parse Semantic Scholar API response"""
         results = []
         
-        for paper in data.get("data", []):
-            # Build URL
+        # Validate data structure
+        if not isinstance(data, dict) or "data" not in data:
+            logger.warning("Invalid Semantic Scholar response structure")
+            return []
+            
+        papers = data.get("data", [])
+        if not isinstance(papers, list):
+            logger.warning("Semantic Scholar 'data' field is not a list")
+            return []
+        
+        for paper in papers:
+            # Skip invalid paper entries
+            if not isinstance(paper, dict):
+                continue
+                
+            # Build URL with validation
             paper_id = paper.get("paperId", "")
             url = f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else ""
             
@@ -1067,17 +1243,26 @@ class SemanticScholarAPI(BaseSearchAPI):
             published_date = None
             if year := paper.get("year"):
                 try:
-                    published_date = datetime(year, 1, 1)
+                    if isinstance(year, int):
+                        published_date = datetime(year, 1, 1, tzinfo=timezone.utc)
                 except Exception:
                     pass
                     
-            # Build snippet from abstract
-            snippet = paper.get("abstract", "")
+            # Build snippet from abstract with None guards
+            snippet = paper.get("abstract") or ""
             if not snippet and paper.get("citationCount"):
-                snippet = f"Citations: {paper['citationCount']}, Influential citations: {paper.get('influentialCitationCount', 0)}"
+                citation_count = paper.get("citationCount", 0)
+                influential_count = paper.get("influentialCitationCount", 0)
+                snippet = f"Citations: {citation_count}, Influential citations: {influential_count}"
+            
+            # Ensure snippet is string and handle None case
+            if snippet is None:
+                snippet = ""
+            elif not isinstance(snippet, str):
+                snippet = str(snippet)
                 
             result = SearchResult(
-                title=paper.get("title", ""),
+                title=paper.get("title") or "",
                 url=url,
                 snippet=snippet[:300] + "..." if len(snippet) > 300 else snippet,
                 source="semantic_scholar",
@@ -1142,7 +1327,7 @@ class CrossRefAPI(BaseSearchAPI):
                         year = date_parts[0][0]
                         month = date_parts[0][1] if len(date_parts[0]) > 1 else 1
                         day = date_parts[0][2] if len(date_parts[0]) > 2 else 1
-                        published_date = datetime(year, month, day)
+                        published_date = datetime(year, month, day, tzinfo=timezone.utc)
                 except Exception:
                     pass
                     

@@ -90,7 +90,7 @@ class MCPIntegration:
         response = await self._send_request(server, request)
         
         if response.error:
-            logger.error(f"Error discovering tools from {server_name}: {response.error}")
+            logger.debug(f"Error discovering tools from {server_name}: {response.error}")
             return []
         
         # Convert MCP tools to Azure OpenAI format
@@ -132,7 +132,7 @@ class MCPIntegration:
         response = await self._send_request(server, request)
         
         if response.error:
-            logger.error(f"Tool execution error: {response.error}")
+            logger.warning(f"Tool execution error: {response.error}")
             raise Exception(f"MCP tool execution failed: {response.error}")
         
         return response.result
@@ -159,10 +159,10 @@ class MCPIntegration:
                 data = await response.json()
                 return MCPResponse(**data)
         except asyncio.TimeoutError:
-            logger.error(f"Timeout connecting to MCP server {server.name}")
+            logger.debug(f"Timeout connecting to MCP server {server.name}")
             return MCPResponse(error={"code": -32000, "message": "Connection timeout"})
         except Exception as e:
-            logger.error(f"Error connecting to MCP server {server.name}: {e}")
+            logger.debug(f"Error connecting to MCP server {server.name}: {e}")
             return MCPResponse(error={"code": -32001, "message": str(e)})
     
     def get_all_tools(self) -> List[MCPToolDefinition]:
