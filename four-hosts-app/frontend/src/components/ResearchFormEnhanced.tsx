@@ -49,8 +49,8 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
       return
     }
 
-    if (trimmedQuery.length < 3) {
-      setError('Query must be at least 3 characters long')
+    if (trimmedQuery.length < 10) {
+      setError('Query must be at least 10 characters long')
       return
     }
 
@@ -88,7 +88,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             errorMessage={error}
             className="border-2"
             required
-            minLength={3}
+            minLength={10}
             aria-describedby={error ? "query-error" : undefined}
           />
         </div>

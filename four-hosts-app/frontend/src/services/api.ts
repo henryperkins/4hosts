@@ -220,8 +220,17 @@ class APIService {
     })
 
     if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.detail || 'Failed to submit research')
+      let message = 'Failed to submit research'
+      try {
+        const error = await response.json()
+        const detail = (error && error.detail) || (error && error.error)
+        if (Array.isArray(detail) && detail.length > 0) {
+          message = String(detail[0])
+        } else if (typeof detail === 'string' && detail.trim()) {
+          message = detail
+        }
+      } catch {}
+      throw new Error(message)
     }
 
     return response.json()
@@ -239,11 +248,21 @@ class APIService {
     })
 
     if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.detail || 'Failed to submit deep research')
+      let message = 'Failed to submit deep research'
+      try {
+        const error = await response.json()
+        const detail = (error && error.detail) || (error && error.error)
+        if (Array.isArray(detail) && detail.length > 0) {
+          message = String(detail[0])
+        } else if (typeof detail === 'string' && detail.trim()) {
+          message = detail
+        }
+      } catch {}
+      throw new Error(message)
     }
 
-    return response.json()
+    const data = await response.json()
+    return data
   }
 
   async getResearchStatus(researchId: string): Promise<ResearchStatusResponse> {
@@ -254,7 +273,8 @@ class APIService {
       throw new Error(error.detail || 'Failed to get research status')
     }
 
-    return response.json()
+    const data = await response.json()
+    return data
   }
 
   async getResearchResults(researchId: string): Promise<ResearchResult> {
@@ -309,16 +329,21 @@ class APIService {
     }
   }
 
-  async getUserResearchHistory(limit = 10, offset = 0): Promise<ResearchHistoryItem[]> {
+  async getUserResearchHistory(limit = 10, offset = 0): Promise<{ history: ResearchHistoryItem[]; total: number; limit: number; offset: number }> {
     const response = await this.fetchWithAuth(`/research/history?limit=${limit}&offset=${offset}`)
-
+  
     if (!response.ok) {
       const error = await response.json()
       throw new Error(error.detail || 'Failed to get research history')
     }
-
+  
     const data = await response.json()
-    return data.history || []
+    return {
+      history: data.history || [],
+      total: typeof data.total === 'number' ? data.total : (data.history ? data.history.length : 0),
+      limit: typeof data.limit === 'number' ? data.limit : limit,
+      offset: typeof data.offset === 'number' ? data.offset : offset
+    }
   }
 
   async exportResearch(researchId: string, format: 'pdf' | 'json' | 'csv' = 'pdf'): Promise<Blob> {

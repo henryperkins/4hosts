@@ -10,8 +10,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.pool import NullPool, QueuePool
+from sqlalchemy.pool import NullPool
 from sqlalchemy import event, text
 
 from database.models import Base
@@ -73,7 +72,9 @@ class DatabaseConfig:
                     "jit": "off",
                 },
                 "command_timeout": 60,
-                "ssl": self.ssl_mode,
+                # Remove driver-unsupported libpq-style ssl modes for asyncpg;
+                # if SSL is required, configure an ssl.SSLContext and pass here.
+                # "ssl": None,
             },
         }
 
@@ -310,16 +311,27 @@ class ConnectionPoolMonitor:
         self.engine = engine
 
     def get_pool_status(self) -> dict:
-        """Get current pool status"""
+        """Get current pool status (robust to different pool types)"""
         pool = self.engine.pool
+        try:
+            size = getattr(pool, "size", lambda: 0)()
+            checked_in = getattr(pool, "checkedin", lambda: 0)()
+            checked_out = getattr(pool, "checkedout", lambda: 0)()
+            overflow = getattr(pool, "overflow", lambda: 0)()
+            total = getattr(pool, "total", lambda: size)()
+            status = "healthy" if (checked_in > 0) or (total and (total - checked_out) > 0) else "degraded"
+        except Exception:
+            size = checked_in = checked_out = overflow = total = 0
+            status = "unknown"
 
         return {
-            "size": pool.size(),
-            "checked_in": pool.checkedin(),
-            "checked_out": pool.checkedout(),
-            "overflow": pool.overflow(),
-            "total": pool.total(),
-            "status": "healthy" if pool.checkedin() > 0 else "exhausted",
+            "pool_class": pool.__class__.__name__,
+            "size": size,
+            "checked_in": checked_in,
+            "checked_out": checked_out,
+            "overflow": overflow,
+            "total": total,
+            "status": status,
         }
 
     async def reset_pool(self):

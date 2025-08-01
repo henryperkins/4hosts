@@ -345,7 +345,7 @@ class SearchResult:
             self.domain = urlparse(self.url).netloc.lower()
         
         # Generate content hash for deduplication
-        if self.title and self.snippet:
+        if self.title and self.snippet and isinstance(self.title, str) and isinstance(self.snippet, str):
             content_str = f"{self.title.lower().strip()}{self.snippet.lower().strip()}"
             self.content_hash = hashlib.md5(content_str.encode()).hexdigest()
 
@@ -980,8 +980,8 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         await self.rate_limiter.wait_if_needed()
 
         # Validate parameters to prevent 400 errors
-        if not query or not query.strip():
-            logger.error("Empty query provided to Google search")
+        if not query or not isinstance(query, str) or not query.strip():
+            logger.error("Empty or invalid query provided to Google search")
             return []
 
         # Generate query variations for better coverage

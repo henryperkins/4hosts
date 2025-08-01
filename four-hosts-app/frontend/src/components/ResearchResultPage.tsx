@@ -1,0 +1,112 @@
+import { useState, useEffect } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { AlertCircle } from 'lucide-react'
+import { LoadingSpinner } from './ui/LoadingSpinner'
+import { Card, CardHeader, CardTitle, CardContent, CardFooter } from './ui/Card'
+import { Button } from './ui/Button'
+import { Alert } from './ui/Alert'
+import { ResultsDisplayEnhanced } from './ResultsDisplayEnhanced'
+import { ResultsDisplayIdeaBrowser } from './ResultsDisplayIdeaBrowser'
+import api from '../services/api'
+import type { ResearchResult } from '../types'
+
+export const ResearchResultPage = () => {
+  const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const [results, setResults] = useState<ResearchResult | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [useIdeaBrowser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('useIdeaBrowser')
+      return saved ? JSON.parse(saved) : false
+    } catch {
+      return false
+    }
+  })
+
+  useEffect(() => {
+    const loadResults = async () => {
+      if (!id) return
+
+      try {
+        const data = await api.getResearchResults(id)
+        
+        // Terminal staged responses
+        if ((data as any)?.status === 'failed' || (data as any)?.status === 'cancelled') {
+          setError(`Research ${(data as any).status}`)
+          return
+        }
+        
+        // Non-final staged responses
+        if ((data as any)?.status && !['completed','failed','cancelled'].includes((data as any).status)) {
+          navigate('/')
+          return
+        }
+        
+        setResults(data)
+      } catch {
+        setError('Failed to load research results')
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    loadResults()
+  }, [id, navigate])
+
+  if (isLoading) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="flex flex-col items-center justify-center py-12">
+          <LoadingSpinner size="xl" variant="primary" text="Loading research results..." />
+        </div>
+      </div>
+    )
+  }
+
+  if (error || !results) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <Card className="text-center">
+          <CardHeader>
+            <div className="flex justify-center mb-4">
+              <AlertCircle className="h-16 w-16 text-red-500" />
+            </div>
+            <CardTitle>Research Unavailable</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-text-muted mb-6">
+              {error || 'Results not found'}
+            </p>
+          </CardContent>
+          <CardFooter>
+            <div className="flex gap-4 justify-center">
+              <Button
+                variant="secondary"
+                onClick={() => window.history.back()}
+              >
+                Go Back
+              </Button>
+              <Button variant="primary" asChild>
+                <Link to="/history">
+                  View History
+                </Link>
+              </Button>
+            </div>
+          </CardFooter>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {useIdeaBrowser ? (
+        <ResultsDisplayIdeaBrowser results={results} />
+      ) : (
+        <ResultsDisplayEnhanced results={results} />
+      )}
+    </div>
+  )
+}

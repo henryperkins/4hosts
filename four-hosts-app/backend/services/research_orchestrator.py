@@ -249,9 +249,9 @@ class EarlyRelevanceFilter:
             return False
 
         # Minimum content check
-        if not result.title or len(result.title.strip()) < 10:
+        if not result.title or not isinstance(result.title, str) or len(result.title.strip()) < 10:
             return False
-        if not result.snippet or len(result.snippet.strip()) < 20:
+        if not result.snippet or not isinstance(result.snippet, str) or len(result.snippet.strip()) < 20:
             return False
 
         # Language detection (basic check for non-English)

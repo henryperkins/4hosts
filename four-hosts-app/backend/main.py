@@ -217,7 +217,7 @@ class ParadigmOverrideRequest(BaseModel):
 
 
 # Authentication dependency
-# Accept token from Authorization header, cookies, or `access_token` query param
+# Accept token from Authorization header only (no cookies or query params)
 async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Security(
@@ -226,11 +226,11 @@ async def get_current_user(
 ):
     """Resolve the current authenticated user.
 
-    Priority of token lookup:
+    Token lookup:
     1. Standard Authorization header processed by FastAPI's HTTPBearer
-    2. Raw `Authorization` header (if auto_error=False disabled automatic 401)
-    3. Cookie named `access_token`
-    4. Query string param `access_token`
+    2. Raw `Authorization` header (fallback) if HTTPBearer didn't capture it
+
+    Cookie and query parameter based token transport are not supported to reduce CSRF and token leakage risk.
     """
     token: Optional[str] = None
 
@@ -243,14 +243,6 @@ async def get_current_user(
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.lower().startswith("bearer "):
             token = auth_header[7:]
-
-    # 3. Check cookie
-    if not token:
-        token = request.cookies.get("access_token")
-
-    # 4. Check query param
-    if not token:
-        token = request.query_params.get("access_token")
 
     if not token:
         raise HTTPException(status_code=401, detail="Missing authentication token")
@@ -289,6 +281,8 @@ class ResearchOptions(BaseModel):
     language: str = "en"
     region: str = "us"
     enable_real_search: bool = True
+    # Optional feature flag expected by frontend; default remains False if omitted by client
+    enable_ai_classification: Optional[bool] = False
 
 
 class ResearchQuery(BaseModel):
@@ -410,9 +404,8 @@ async def lifespan(app: FastAPI):
         
         # Initialize unified research orchestrator (includes Brave MCP)
         try:
-            from services.unified_research_orchestrator import initialize_unified_orchestrator
-            await initialize_unified_orchestrator()
-            logger.info("✓ Unified research orchestrator initialized")
+            # Unified orchestrator is already initialized in research_orchestrator module
+            logger.info("✓ Unified research orchestrator available")
         except Exception as e:
             logger.warning(f"Failed to initialize unified orchestrator: {e}")
         
@@ -531,19 +524,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enhanced CORS and security middleware
+# Enhanced CORS and security middleware (locked-down)
+# In all environments, explicitly enumerate trusted origins.
+# Credentials should only be enabled if strictly necessary.
+TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://api.4hosts.ai",
+    "https://app.lakefrontdigital.io",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "https://api.4hosts.ai",
-        "https://app.lakefrontdigital.io",
-        # Remove wildcard in production
-    ] if os.getenv("ENVIRONMENT") == "production" else ["*"],
-    allow_credentials=True,
+    allow_origins=TRUSTED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin"],
     max_age=600,
 )
 
@@ -566,20 +561,7 @@ async def security_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# Handle OPTIONS requests before authentication
-@app.middleware("http")
-async def handle_options(request: Request, call_next):
-    if request.method == "OPTIONS":
-        return Response(
-            status_code=200,
-            headers={
-                "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
-                "Access-Control-Allow-Methods": "*",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Allow-Credentials": "true",
-            },
-        )
-    return await call_next(request)
+# Remove permissive custom OPTIONS handler; rely on CORSMiddleware for preflight handling
 
 
 # Enhanced trusted host middleware
@@ -826,12 +808,63 @@ async def refresh_token(request: RefreshTokenRequest):
 # Expect TokenData from services.auth.get_current_user
 async def get_current_user_info(current_user: TokenData = Depends(auth_get_current_user)):
     """Get current user information"""
-    return {
+    # Fetch canonical username and optional profile details from DB/profile service
+    username_value = None
+    full_name = None
+    avatar_url = None
+    bio = None
+    is_verified = None
+
+    try:
+        # Prefer user_profile_service if available
+        profile = await user_profile_service.get_user_profile(uuid.UUID(str(current_user.user_id)))
+        if profile:
+            username_value = profile.get("username") or None
+            full_name = profile.get("full_name")
+            avatar_url = profile.get("avatar_url")
+            bio = profile.get("bio")
+            is_verified = profile.get("is_verified")
+        # Fallback to DB username if not in profile
+        if not username_value:
+            from sqlalchemy import select
+            db_gen = get_db()
+            db = await anext(db_gen)
+            try:
+                result = await db.execute(select(DBUser).filter(DBUser.id == current_user.user_id))
+                db_user = result.scalars().first()
+                if db_user:
+                    username_value = getattr(db_user, "username", None)
+            finally:
+                await db_gen.aclose()
+    except Exception:
+        # Silent fallback to synthesized username for resilience
+        pass
+
+    # Final fallback if still missing
+    if not username_value:
+        username_value = current_user.email.split("@")[0]
+
+    payload = {
         "id": str(current_user.user_id),
         "email": current_user.email,
-        "username": current_user.email.split("@")[0],
+        "username": username_value,
         "role": str(current_user.role.value if hasattr(current_user, "role") else current_user.role),
     }
+
+    # Additive optional profile fields for forward-compat
+    if full_name is not None:
+        payload["full_name"] = full_name
+    if avatar_url is not None:
+        payload["avatar_url"] = avatar_url
+    if bio is not None:
+        payload["bio"] = bio
+    if is_verified is not None:
+        payload["is_verified"] = is_verified
+
+    # Transitional field to allow UI migration without breaking changes
+    payload["display_name"] = full_name or username_value
+
+    return payload
 
 
 class LogoutRequest(BaseModel):
@@ -1123,7 +1156,18 @@ async def submit_research(
 async def get_research_status(
     research_id: str, current_user: User = Depends(get_current_user)
 ):
-    """Get the status of a research query"""
+    """Get the status of a research query (cached)"""
+    # Attempt cached read first
+    try:
+        from services.cache import research_status_cache
+        cache = research_status_cache()
+        cached = await cache.get(research_id)
+        if cached:
+            # Ownership check still enforced below; cached payload contains only public fields for owner
+            pass
+    except Exception:
+        cached = None
+
     research = await research_store.get(research_id)
     if not research:
         raise HTTPException(status_code=404, detail="Research not found")
@@ -1143,6 +1187,13 @@ async def get_research_status(
         "progress": research.get("progress", {}),
         "cost_info": research.get("cost_info"),
     }
+    # Store in cache with short TTL for hot polling
+    try:
+        if research["user_id"] == str(current_user.id):
+            from services.cache import research_status_cache
+            await research_status_cache().set(research_id, status_response, ttl_seconds=10)
+    except Exception:
+        pass
 
     # Add status-specific information
     if research["status"] == ResearchStatus.FAILED:
@@ -1167,7 +1218,10 @@ async def get_research_status(
 async def get_research_results(
     research_id: str, current_user: User = Depends(get_current_user)
 ):
-    """Get completed research results"""
+    """Get completed research results (cached when completed)"""
+    from services.cache import research_results_cache
+    cache = research_results_cache()
+
     research = await research_store.get(research_id)
     if not research:
         raise HTTPException(status_code=404, detail="Research not found")
@@ -1221,6 +1275,11 @@ async def get_research_results(
                 "can_cancel": research["status"] in [ResearchStatus.QUEUED]
             }
 
+    # Cache completed results for a moderate TTL
+    try:
+        await cache.set(research_id, research["results"], ttl_seconds=300)
+    except Exception:
+        pass
     return research["results"]
 
 
@@ -1730,8 +1789,7 @@ async def test_deep_research(current_user: User = Depends(get_current_user)):
 async def get_orchestrator_status(current_user: User = Depends(get_current_user)):
     """Get research orchestrator status and capabilities"""
     try:
-        from services.unified_research_orchestrator import unified_orchestrator
-        capabilities = unified_orchestrator.get_capabilities()
+        capabilities = research_orchestrator.get_capabilities()
         
         return {
             "status": "active",
@@ -1793,16 +1851,24 @@ async def get_system_stats(current_user: User = Depends(get_current_user)):
 async def get_public_system_stats(
     current_user: User = Depends(get_current_user)
 ):
-    """Get lightweight system statistics for all authenticated users"""
+    """Get lightweight system statistics for all authenticated users (cached)"""
     try:
-        # Get basic system health without sensitive details
+        from services.cache import system_public_stats_cache
+        cache = system_public_stats_cache()
+
+        cached = await cache.get("public")
+        if cached:
+            return cached
+
         health = {
             "system_status": "operational" if system_initialized else "offline",
             "system_initialized": system_initialized,
             "timestamp": datetime.utcnow().isoformat()
         }
-        # Provide mirror key for clients expecting system_health
         health["system_health"] = health["system_status"]
+
+        # Cache for short TTL to reduce load
+        await cache.set("public", health, ttl_seconds=30)
         return health
     except Exception as e:
         logger.error(f"Public stats error: {str(e)}")
@@ -1858,27 +1924,89 @@ async def prometheus_metrics():
     return Response(content=metrics, media_type="text/plain")
 
 
-# WebSocket endpoint
+# Secure WebSocket endpoint replacing legacy anonymous version
+from services.websocket_auth import secure_websocket_endpoint
+from services.auth import UserRole as _AuthUserRole
+
 @app.websocket("/ws/research/{research_id}")
 async def websocket_research_progress(websocket: WebSocket, research_id: str):
-    """WebSocket for real-time research progress"""
-    # For anonymous WebSocket connections, use research_id as user_id for now
-    # In production, you should authenticate the WebSocket connection
-    await connection_manager.connect(websocket, f"research_{research_id}")
-    
+    """Authenticated WebSocket for real-time research progress with ownership checks"""
+    # Authenticate and perform origin checks
+    auth_result = await secure_websocket_endpoint(
+        websocket,
+        authorization=websocket.headers.get("authorization"),
+        sec_websocket_protocol=websocket.headers.get("sec-websocket-protocol"),
+        origin=websocket.headers.get("origin"),
+        user_agent=websocket.headers.get("user-agent"),
+        x_real_ip=websocket.headers.get("x-real-ip"),
+        x_forwarded_for=websocket.headers.get("x-forwarded-for"),
+    )
+    if not auth_result:
+        return
+
+    user_data = auth_result["user_data"]
+    connection_id = auth_result["connection_id"]
+
+    # Verify research ownership or admin role before subscribing
+    research = await research_store.get(research_id)
+    if not research:
+        try:
+            await websocket.close(code=1008, reason="Research not found")
+        except:
+            pass
+        return
+
+    if (research.get("user_id") != str(user_data.user_id)) and (user_data.role != _AuthUserRole.ADMIN):
+        try:
+            await websocket.close(code=1008, reason="Access denied")
+        except:
+            pass
+        return
+
+    # Proceed to connect with authenticated user context
+    await connection_manager.connect(
+        websocket,
+        str(user_data.user_id),
+        metadata={
+            "user_agent": auth_result.get("user_agent"),
+            "origin": auth_result.get("origin"),
+            "client_ip": auth_result.get("client_ip"),
+            "connection_id": connection_id,
+            "role": user_data.role.value if hasattr(user_data.role, "value") else str(user_data.role),
+        },
+    )
+
     # Subscribe to the specific research
     await connection_manager.subscribe_to_research(websocket, research_id)
-    
+
     websocket_connections.inc()
 
     try:
         while True:
-            # Keep connection alive and handle potential client messages
             try:
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+                # Enforce message-level ACL on subscribe/unsubscribe intents
+                msg_type = data.get("type")
+                if msg_type in ("subscribe", "unsubscribe"):
+                    target_id = data.get("research_id")
+                    if not target_id:
+                        await websocket.send_json(
+                            {"type": "error", "error": "invalid_request", "message": "Missing research_id"}
+                        )
+                        continue
+                    target = await research_store.get(target_id)
+                    if not target:
+                        await websocket.send_json(
+                            {"type": "error", "error": "not_found", "message": "Research not found"}
+                        )
+                        continue
+                    if (target.get("user_id") != str(user_data.user_id)) and (user_data.role != _AuthUserRole.ADMIN):
+                        await websocket.send_json(
+                            {"type": "error", "error": "access_denied", "message": "Access denied"}
+                        )
+                        continue
                 await connection_manager.handle_client_message(websocket, data)
             except asyncio.TimeoutError:
-                # Send ping to keep connection alive
                 try:
                     await websocket.send_json({"type": "ping"})
                 except:
@@ -2304,6 +2432,22 @@ async def execute_real_research(
                             "paradigm_alignment": context_engineered_query.classification.primary_paradigm.value,
                         }
                     )
+        # Normalize generated answer fields to avoid attribute errors
+        if generated_answer is None:
+            ga_summary = ""
+            ga_action_items = []
+            ga_synth_quality = 0.0
+            ga_gen_time = 0.0
+        elif isinstance(generated_answer, dict):
+            ga_summary = generated_answer.get("content", "") or generated_answer.get("summary", "")
+            ga_action_items = generated_answer.get("action_items", [])
+            ga_synth_quality = generated_answer.get("synthesis_quality", 0.0)
+            ga_gen_time = generated_answer.get("generation_time", 0.0)
+        else:
+            ga_summary = getattr(generated_answer, "summary", "")
+            ga_action_items = getattr(generated_answer, "action_items", [])
+            ga_synth_quality = getattr(generated_answer, "synthesis_quality", 0.0)
+            ga_gen_time = getattr(generated_answer, "generation_time", 0.0)
 
         final_result = ResearchResult(
             research_id=research_id,

@@ -245,7 +245,7 @@ class ConnectionManager:
     async def handle_client_message(
         self, websocket: WebSocket, message: Dict[str, Any]
     ):
-        """Handle incoming message from client"""
+        """Handle incoming message from client with per-message authorization"""
         message_type = message.get("type")
 
         if message_type == "ping":
@@ -256,16 +256,62 @@ class ConnectionManager:
                     data={"timestamp": datetime.now(timezone.utc).isoformat()},
                 ),
             )
+            return
 
-        elif message_type == "subscribe":
+        # Get authenticated user context from connection metadata
+        meta = self.connection_metadata.get(websocket, {})
+        user_id = meta.get("user_id")
+        user_role = meta.get("client_info", {}).get("role") or meta.get("role")
+
+        # Enforce ACL on subscribe/unsubscribe
+        if message_type in ("subscribe", "unsubscribe"):
             research_id = message.get("research_id")
-            if research_id:
+            if not research_id:
+                await self.send_to_websocket(
+                    websocket,
+                    WSMessage(
+                        type=WSEventType.ERROR,
+                        data={"error": "invalid_request", "message": "Missing research_id"},
+                    ),
+                )
+                return
+
+            # Verify ownership or admin
+            try:
+                from services.research_store import research_store  # local import to avoid cycles
+                research = await research_store.get(research_id)
+            except Exception:
+                research = None
+
+            is_admin = str(user_role).lower() == "admin"
+            if not research:
+                await self.send_to_websocket(
+                    websocket,
+                    WSMessage(
+                        type=WSEventType.ERROR,
+                        data={"error": "not_found", "message": "Research not found"},
+                    ),
+                )
+                return
+
+            if (research.get("user_id") != str(user_id)) and not is_admin:
+                await self.send_to_websocket(
+                    websocket,
+                    WSMessage(
+                        type=WSEventType.ERROR,
+                        data={"error": "access_denied", "message": "Access denied"},
+                    ),
+                )
+                return
+
+            if message_type == "subscribe":
                 await self.subscribe_to_research(websocket, research_id)
-
-        elif message_type == "unsubscribe":
-            research_id = message.get("research_id")
-            if research_id:
+            else:
                 await self.unsubscribe_from_research(websocket, research_id)
+            return
+
+        # Forward other message types unchanged
+        # (Extend here with explicit schema validation as needed)
 
     def get_connection_stats(self) -> Dict[str, Any]:
         """Get connection statistics"""
@@ -414,6 +460,12 @@ class ProgressTracker:
         await self.connection_manager.broadcast_to_research(
             research_id, WSMessage(type=WSEventType.RESEARCH_PROGRESS, data=update_data)
         )
+        # Invalidate cached status for this research
+        try:
+            from services.cache import research_status_cache
+            await research_status_cache().delete(research_id)
+        except Exception as e:
+            logger.debug(f"Cache invalidation (status) failed: {e}")
 
     async def report_source_found(self, research_id: str, source: Dict[str, Any]):
         """Report a new source found"""
@@ -486,6 +538,13 @@ class ProgressTracker:
                 },
             ),
         )
+        # Invalidate cached status and results for this research
+        try:
+            from services.cache import research_status_cache, research_results_cache
+            await research_status_cache().delete(research_id)
+            await research_results_cache().delete(research_id)
+        except Exception as e:
+            logger.debug(f"Cache invalidation (complete) failed: {e}")
 
         # Clean up after delay
         await asyncio.sleep(300)  # Keep for 5 minutes
@@ -513,6 +572,12 @@ class ProgressTracker:
                 },
             ),
         )
+        # Invalidate cached status for this research
+        try:
+            from services.cache import research_status_cache
+            await research_status_cache().delete(research_id)
+        except Exception as e:
+            logger.debug(f"Cache invalidation (failed) failed: {e}")
 
         # Clean up
         if research_id in self.research_progress:

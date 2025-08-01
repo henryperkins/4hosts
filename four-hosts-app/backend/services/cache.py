@@ -16,6 +16,19 @@ from contextlib import asynccontextmanager
 
 from .search_apis import SearchResult
 
+# Lightweight helpers to provide namespaced caches for app features.
+# These wrap the existing CacheManager instance in this module.
+# If Redis is disabled, these still function using the current implementation.
+async def _ensure_initialized():
+    # Keep for API symmetry if initialization is required in future
+    pass
+
+def research_status_cache_key(research_id: str) -> str:
+    return f"research_status:{research_id}"
+
+def research_results_cache_key(research_id: str) -> str:
+    return f"research_results:{research_id}"
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,6 +49,10 @@ class CacheManager:
             "source_credibility": 30 * 24 * 3600,  # 30 days
             "api_cost_tracking": 24 * 3600,  # 24 hours
             "user_preferences": 30 * 24 * 3600,  # 30 days
+            # additional feature caches with short TTLs
+            "research_status": 10,  # seconds
+            "research_results": 300,  # seconds
+            "system_public_stats": 30,  # seconds
         }
 
     async def initialize(self):

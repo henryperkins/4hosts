@@ -236,10 +236,11 @@ def create_access_token(
     else:
         expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
+    # Encode temporal claims as integer epoch seconds for robust decoding
     to_encode.update(
         {
-            "exp": expire,
-            "iat": now,
+            "exp": int(expire.timestamp()),
+            "iat": int(now.timestamp()),
             "jti": secrets.token_urlsafe(16),  # JWT ID for revocation
         }
     )
@@ -598,11 +599,9 @@ class AuthService:
 
             # Generate key
             api_key = generate_api_key()
-            key_id = f"key_{secrets.token_hex(8)}"
 
-            # Create key record in database
+            # Create key record in database (let DB assign UUID primary key)
             db_api_key = DBAPIKey(
-                id=key_id,
                 key_hash=hash_api_key(api_key),
                 user_id=user_id,
                 name=key_name,

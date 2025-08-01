@@ -98,7 +98,7 @@ user_saved_searches = Table(
     Column(
         "saved_at", DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     ),
-    Column("tags", ARRAY(String), default=[]),
+    Column("tags", ARRAY(String), default=list),
     Column("notes", Text),
 )
 
@@ -130,7 +130,7 @@ class User(Base):
     full_name = Column(String(255))
     avatar_url = Column(String(500))
     bio = Column(Text)
-    preferences = Column(JSONB, default={})
+    preferences = Column(JSONB, default=dict)
 
     # Status
     is_active = Column(Boolean, default=True, nullable=False)
@@ -186,8 +186,8 @@ class APIKey(Base):
 
     # Permissions
     role = Column(Enum(UserRole), nullable=False)
-    allowed_origins = Column(ARRAY(String), default=[])
-    allowed_ips = Column(ARRAY(String), default=[])
+    allowed_origins = Column(ARRAY(String), default=list)
+    allowed_ips = Column(ARRAY(String), default=list)
     rate_limit_tier = Column(String(50), default="standard")
 
     # Usage
@@ -234,7 +234,7 @@ class ResearchQuery(Base):
     # Classification
     primary_paradigm = Column(Enum(ParadigmType), nullable=False)
     secondary_paradigm = Column(Enum(ParadigmType))
-    paradigm_scores = Column(JSONB, default={})
+    paradigm_scores = Column(JSONB, default=dict)
     classification_confidence = Column(Float)
     paradigm_override = Column(Enum(ParadigmType))  # User override
 
@@ -242,7 +242,7 @@ class ResearchQuery(Base):
     depth = Column(Enum(ResearchDepth), default=ResearchDepth.STANDARD, nullable=False)
     max_sources = Column(Integer, default=100)
     include_secondary = Column(Boolean, default=True)
-    custom_prompts = Column(JSONB, default={})
+    custom_prompts = Column(JSONB, default=dict)
 
     # Status
     status = Column(Enum(ResearchStatus), default=ResearchStatus.QUEUED, nullable=False)
@@ -327,11 +327,11 @@ class ResearchSource(Base):
     relevance_score = Column(Float)
     credibility_score = Column(Float)
     bias_score = Column(Float)
-    paradigm_alignment = Column(JSONB, default={})
+    paradigm_alignment = Column(JSONB, default=dict)
 
     # Metadata
     source_type = Column(String(50))  # article, academic, social, etc.
-    source_metadata = Column(JSONB, default={})
+    source_metadata = Column(JSONB, default=dict)
 
     # Status
     is_analyzed = Column(Boolean, default=False)
@@ -370,12 +370,12 @@ class ResearchAnswer(Base):
 
     # Summary
     executive_summary = Column(Text)
-    paradigm_summary = Column(JSONB, default={})  # Per-paradigm summaries
+    paradigm_summary = Column(JSONB, default=dict)  # Per-paradigm summaries
 
     # Sections
-    sections = Column(JSONB, default=[])  # Array of section objects
-    key_insights = Column(JSONB, default=[])
-    action_items = Column(JSONB, default=[])
+    sections = Column(JSONB, default=list)  # Array of section objects
+    key_insights = Column(JSONB, default=list)
+    action_items = Column(JSONB, default=list)
 
     # Quality metrics
     synthesis_quality_score = Column(Float)
@@ -457,10 +457,10 @@ class Webhook(Base):
 
     # Options
     is_active = Column(Boolean, default=True, nullable=False)
-    headers = Column(JSONB, default={})
+    headers = Column(JSONB, default=dict)
     timeout = Column(Integer, default=30)
     retry_policy = Column(
-        JSONB, default={"max_attempts": 3, "initial_delay": 1, "max_delay": 60}
+        JSONB, default=lambda: {"max_attempts": 3, "initial_delay": 1, "max_delay": 60}
     )
 
     # Statistics
@@ -621,7 +621,7 @@ class WebhookDelivery(Base):
     # Response
     response_status = Column(Integer)
     response_body = Column(Text)
-    response_headers = Column(JSONB)
+    response_headers = Column(JSONB, default=dict)
 
     # Error tracking
     error = Column(Text)
@@ -666,7 +666,7 @@ class Export(Base):
     file_path = Column(Text)  # S3 or local path
 
     # Options used
-    options = Column(JSONB, default={})
+    options = Column(JSONB, default=dict)
 
     # Status
     status = Column(
@@ -718,7 +718,7 @@ class UsageMetrics(Base):
     compute_seconds = Column(Float, default=0)
 
     # Paradigm distribution
-    paradigm_distribution = Column(JSONB, default={})
+    paradigm_distribution = Column(JSONB, default=dict)
 
     # Indexes
     __table_args__ = (
