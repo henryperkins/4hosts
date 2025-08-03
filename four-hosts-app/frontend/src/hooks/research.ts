@@ -1,18 +1,27 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "../services/queryClient";
 
-const baseUrl = (import.meta as any).env?.VITE_API_BASE_URL || "/";
+const baseUrl = "/"; // Use Vite proxy with relative paths so cookies stay on 5173
 
 async function api(path: string, init: RequestInit = {}) {
-  const res = await fetch(new URL(path, baseUrl), {
+  const res = await fetch(new URL(path, window.location.origin).pathname.startsWith('/')
+    ? path
+    : new URL(path, baseUrl).toString(), {
     ...init,
     headers: { "Content-Type": "application/json", ...(init.headers || {}) },
+    credentials: 'include'
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || res.statusText);
   }
-  return res.json();
+  // Parse JSON safely
+  const text = await res.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return {} as any;
+  }
 }
 
 export function useResearchStatus(researchId: string) {
@@ -35,7 +44,7 @@ export function useResearchResults(researchId: string) {
 
 export function useSubmitResearch() {
   return useMutation({
-    mutationFn: (body: any) =>
+    mutationFn: (body: { query: string; options: any }) =>
       api(`/research/query`, {
         method: "POST",
         body: JSON.stringify(body),

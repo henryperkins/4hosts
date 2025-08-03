@@ -381,19 +381,19 @@ app = FastAPI(
 def get_csrf_token(request: Request, response: Response):
     # Debug log to verify endpoint is reached
     logger.info(f"CSRF token endpoint accessed from {request.client.host}")
-    
+
     # Check if a valid CSRF token already exists
     existing_token = request.cookies.get("csrf_token")
-    
+
     if existing_token:
         # Return the existing token
         logger.debug(f"Returning existing CSRF token: {existing_token}")
         return {"csrf_token": existing_token}
-    
+
     # Generate a new token only if none exists
     token = secrets.token_urlsafe(16)
     logger.debug(f"Generating new CSRF token: {token}")
-    
+
     # Only use secure cookies in production
     is_production = os.getenv("ENVIRONMENT") == "production"
     same_site = "none" if is_production else "lax"  # Cross-site cookies in production
@@ -418,20 +418,26 @@ async def csrf_protection_middleware(request: Request, call_next):
         "/health",
         "/ws",  # WebSocket connections
         "/api/health",
+        # Exempt pure session/token management and idempotent endpoints
+        "/auth/refresh",
+        "/auth/user",
+        "/research/history",
+        "/research/status",
+        "/system/public-stats",
     ]
-    
+
     # Skip CSRF check for GET, HEAD, OPTIONS requests and exempt routes
-    if (request.method in ["POST", "PUT", "DELETE", "PATCH"] and 
+    if (request.method in ["POST", "PUT", "DELETE", "PATCH"] and
         not any(request.url.path.startswith(route) for route in csrf_exempt_routes)):
-        
+
         csrf_token_from_cookie = request.cookies.get("csrf_token")
         csrf_token_from_header = request.headers.get("X-CSRF-Token")
-        
+
         # Debug logging
         logger.debug(f"CSRF check for {request.url.path}")
         logger.debug(f"Cookie token: {csrf_token_from_cookie}")
         logger.debug(f"Header token: {csrf_token_from_header}")
-        
+
         if not csrf_token_from_cookie or not csrf_token_from_header or csrf_token_from_cookie != csrf_token_from_header:
             logger.warning(f"CSRF token mismatch on {request.url.path}: cookie={csrf_token_from_cookie}, header={csrf_token_from_header}")
             # Return clean 403 response instead of raising exception
@@ -444,7 +450,7 @@ async def csrf_protection_middleware(request: Request, call_next):
                     "request_id": getattr(request.state, "request_id", "unknown"),
                 },
             )
-    
+
     response = await call_next(request)
     return response
 
@@ -479,21 +485,21 @@ async def lifespan(app: FastAPI):
         # Initialize LLM client
         await initialise_llm_client()
         logger.info("✓ LLM client initialized")
-        
+
         # Store search manager for cleanup with cache integration
         from services.cache import cache_manager
         search_manager = create_search_manager(cache_manager=cache_manager)
         await search_manager.initialize()
         app.state.search_manager = search_manager
         logger.info("✓ Search manager initialized with cache")
-        
+
         # Initialize unified research orchestrator (includes Brave MCP)
         try:
             # Unified orchestrator is already initialized in research_orchestrator module
             logger.info("✓ Unified research orchestrator available")
         except Exception as e:
             logger.warning(f"Failed to initialize unified orchestrator: {e}")
-        
+
         # Preload Hugging Face model to avoid cold start
         try:
             from services.hf_zero_shot import get_classifier
@@ -555,7 +561,7 @@ async def lifespan(app: FastAPI):
         if background_llm_manager:
             await background_llm_manager.cleanup()
             logger.info("✓ Background LLM manager cleaned up")
-        
+
         # Cleanup research orchestrator
         if hasattr(research_orchestrator, "cleanup"):
             await research_orchestrator.cleanup()
@@ -567,24 +573,24 @@ async def lifespan(app: FastAPI):
 
         # Graceful task shutdown using task registry
         from services.task_registry import task_registry
-        
+
         # Show active tasks before shutdown
         active_tasks = await task_registry.get_active_tasks()
         if active_tasks:
             logger.info(f"Active tasks before shutdown: {len(active_tasks)}")
             for task_id, info in active_tasks.items():
                 logger.debug(f"  - {info['name']} (priority: {info['priority']}, done: {info['done']})")
-        
+
         # Perform graceful shutdown with 30 second timeout
         shutdown_results = await task_registry.graceful_shutdown(timeout=30.0)
-        
+
         # Log shutdown results
         if shutdown_results:
             completed = sum(1 for r in shutdown_results.values() if r == "completed")
             cancelled = sum(1 for r in shutdown_results.values() if r == "cancelled")
             failed = sum(1 for r in shutdown_results.values() if "failed" in r)
             logger.info(f"Task shutdown complete: {completed} completed, {cancelled} cancelled, {failed} failed")
-        
+
         # Final cleanup of any untracked tasks (shouldn't be any if everything uses the registry)
         remaining_tasks = [task for task in asyncio.all_tasks() if not task.done() and task != asyncio.current_task()]
         if remaining_tasks:
@@ -628,16 +634,16 @@ app.add_middleware(
 async def security_middleware(request: Request, call_next):
     """Block malicious requests early"""
     path = request.url.path.lower()
-    
+
     # Block PHP file requests - return 404 to reduce info leakage
     if path.endswith(('.php', '.asp', '.jsp')):
         return Response(status_code=404, content="Not Found")
-    
+
     # Block common attack patterns - return 404 for admin paths
     attack_patterns = ['/admin', '/wp-admin', '/.env', '/config']
     if any(pattern in path for pattern in attack_patterns):
         return Response(status_code=404, content="Not Found")
-    
+
     return await call_next(request)
 
 
@@ -683,13 +689,13 @@ async def request_id_middleware(request: Request, call_next):
 async def get_active_tasks(current_user: Any = Depends(get_current_user)):
     """Get information about active background tasks"""
     from services.task_registry import task_registry
-    
+
     # Only admins can view system tasks
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Admin access required")
-    
+
     active_tasks = await task_registry.get_active_tasks()
-    
+
     # Group by priority
     tasks_by_priority = {
         "critical": [],
@@ -697,7 +703,7 @@ async def get_active_tasks(current_user: Any = Depends(get_current_user)):
         "normal": [],
         "low": []
     }
-    
+
     for task_id, info in active_tasks.items():
         tasks_by_priority[info["priority"]].append({
             "id": task_id,
@@ -706,7 +712,7 @@ async def get_active_tasks(current_user: Any = Depends(get_current_user)):
             "done": info["done"],
             "cancelled": info["cancelled"]
         })
-    
+
     return {
         "total_active_tasks": len(active_tasks),
         "tasks_by_priority": tasks_by_priority,
@@ -833,7 +839,7 @@ async def login(login_data: UserLogin, response: Response):
     is_production = os.getenv("ENVIRONMENT") == "production"
     same_site = "none" if is_production else "lax"
     secure_flag = True if is_production else False
-    
+
     response.set_cookie(
         key="access_token",
         value=access_token,
@@ -850,7 +856,7 @@ async def login(login_data: UserLogin, response: Response):
         samesite=same_site,
         max_age=60 * 60 * 24 * 7,  # 7 days
     )
-    
+
     # Return the expected format with user data
     return {
         "success": True,
@@ -874,12 +880,12 @@ class RefreshTokenRequest(BaseModel):
 async def refresh_token(request: Request, response: Response):
     """Refresh access token using secure token rotation"""
     refresh_token = request.cookies.get("refresh_token")
-    
+
     # Validate the token first to get user info
     token_info = await token_manager.validate_refresh_token(refresh_token)
     if not token_info:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-    
+
     # Then rotate the refresh token
     token_result = await token_manager.rotate_refresh_token(refresh_token)
     if not token_result:
@@ -907,7 +913,7 @@ async def refresh_token(request: Request, response: Response):
         is_production = os.getenv("ENVIRONMENT") == "production"
         same_site = "none" if is_production else "lax"
         secure_flag = True if is_production else False
-        
+
         response.set_cookie(
             key="access_token",
             value=access_token,
@@ -1019,7 +1025,7 @@ async def logout(
     # Handle case where user is already logged out
     if not current_user:
         return {"message": "Successfully logged out"}
-    
+
     refresh_token = request.refresh_token if request else None
     # Revoke the access token using its JTI
     if current_user and current_user.jti:
@@ -1919,7 +1925,7 @@ async def get_orchestrator_status(current_user: User = Depends(get_current_user)
     """Get research orchestrator status and capabilities"""
     try:
         capabilities = research_orchestrator.get_capabilities()
-        
+
         return {
             "status": "active",
             "capabilities": capabilities,
@@ -2440,7 +2446,7 @@ async def execute_real_research(
         # Enhanced logging before answer generation
         logger.info(f"Starting answer generation with {len(search_results_for_synthesis)} results")
         logger.debug(f"Search results types: {[type(r).__name__ for r in search_results_for_synthesis[:3]]}")
-        
+
         try:
             generated_answer = await answer_orchestrator.generate_answer(
                 paradigm=paradigm_name,
@@ -2454,7 +2460,7 @@ async def execute_real_research(
                     "deep_research_content": deep_research_content,  # Pass deep research content if available
                 },
             )
-            
+
             # Log the type and structure of generated_answer
             logger.info(f"Answer generation completed. Type: {type(generated_answer)}")
             if isinstance(generated_answer, dict):
@@ -2464,7 +2470,7 @@ async def execute_real_research(
                 logger.debug(f"Generated answer sections: {sections_info} (type: {type(sections_info)})")
             else:
                 logger.debug(f"Generated answer attributes: {[attr for attr in dir(generated_answer) if not attr.startswith('_')]}")
-                
+
         except Exception as e:
             logger.error(f"Answer generation failed: {str(e)}")
             logger.error(f"Exception type: {type(e)}")
@@ -2474,7 +2480,7 @@ async def execute_real_research(
 
         # Format final result - handle both dict and object formats
         answer_sections = []
-        
+
         # Defensive check: handle different return formats from generators
         if generated_answer is None:
             logger.error("Generated answer is None")
@@ -2507,7 +2513,7 @@ async def execute_real_research(
                             "sources_count": len(getattr(section, "citations", [])),
                         }
                     )
-            
+
             # Handle citations from dictionary format
             citations_list = []
             citations = generated_answer.get("citations", [])
@@ -2546,7 +2552,7 @@ async def execute_real_research(
                             "sources_count": len(section.citations),
                         }
                     )
-            
+
             citations_list = []
             if hasattr(generated_answer, "citations") and generated_answer.citations:
                 for cite_id, citation in generated_answer.citations.items():

@@ -1,8 +1,8 @@
 import type { ParadigmClassification, ResearchResult, ResearchHistoryItem, UserPreferences, Paradigm, ResearchOptions, User } from '../types'
 import { CSRFProtection } from './csrf-protection'
-import type { 
-  AuthTokenResponse, 
-  LoginResponse, 
+import type {
+  AuthTokenResponse,
+  LoginResponse,
   MetricsData,
   WebSocketMessage
 } from '../types/api-types'
@@ -15,7 +15,7 @@ import {
   validateMetricsData
 } from '../utils/validation'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || ''
+const API_BASE_URL = import.meta.env.VITE_API_URL || '' // keep empty to use Vite proxy-relative paths in dev
 
 // Re-export for backward compatibility
 export type AuthTokens = AuthTokenResponse
@@ -68,14 +68,18 @@ class APIService {
       const csrfToken = await CSRFProtection.getToken()
       if (csrfToken) {
         headers['X-CSRF-Token'] = csrfToken
+      } else {
+        // Fallback: attempt to fetch CSRF then retry once with the token
       }
     }
 
-    const fullUrl = `${API_BASE_URL}${url}`;
-    const response = await fetch(fullUrl, { 
-      ...options, 
+    // Use relative path when API_BASE_URL is empty to leverage Vite proxy and same-origin cookies
+    const fullUrl = API_BASE_URL ? `${API_BASE_URL}${url}` : url;
+    const response = await fetch(fullUrl, {
+      ...options,
       headers,
-      credentials: 'include' // Always include cookies
+      // Ensure CORS includes credentials and Vite proxy preserves cookies
+      credentials: 'include'
     });
 
     // Handle CSRF token mismatch
@@ -125,7 +129,7 @@ class APIService {
       Accept: 'application/json',
       'X-CSRF-Token': await CSRFProtection.getToken()
     }
-    const fullUrl = `${API_BASE_URL}/auth/refresh`;
+    const fullUrl = API_BASE_URL ? `${API_BASE_URL}/auth/refresh` : `/auth/refresh`;
     const response = await fetch(fullUrl, {
       method: 'POST',
       headers,
@@ -156,8 +160,8 @@ class APIService {
     if (!response.ok) {
       const errorData = await response.json()
       if (isErrorResponse(errorData)) {
-        const message = typeof errorData.detail === 'string' 
-          ? errorData.detail 
+        const message = typeof errorData.detail === 'string'
+          ? errorData.detail
           : errorData.error
         throw new Error(message)
       }
@@ -208,7 +212,7 @@ class APIService {
 
   async logout(): Promise<void> {
     try {
-      await this.fetchWithAuth('/auth/logout', { 
+      await this.fetchWithAuth('/auth/logout', {
         method: 'POST'
         // No body needed - cookies will be cleared by backend
       })
@@ -352,12 +356,12 @@ class APIService {
 
   async getUserResearchHistory(limit = 10, offset = 0): Promise<{ history: ResearchHistoryItem[]; total: number; limit: number; offset: number }> {
     const response = await this.fetchWithAuth(`/research/history?limit=${limit}&offset=${offset}`)
-  
+
     if (!response.ok) {
       const error = await response.json()
       throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to get research history')
     }
-  
+
     const data = await response.json()
     return {
       history: data.history || [],

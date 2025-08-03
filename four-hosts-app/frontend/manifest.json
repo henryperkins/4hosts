@@ -23,18 +23,25 @@
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-512.svg",
-      "sizes": "512x512",
-      "type": "image/svg+xml",
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
       "purpose": "any"
     }
   ],
-  "categories": ["productivity", "utilities", "research"],
+  "categories": [
+    "productivity",
+    "utilities",
+    "research"
+  ],
   "lang": "en",
   "dir": "ltr",
   "prefer_related_applications": false,
   "screenshots": [],
-  "display_override": ["standalone", "minimal-ui"],
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "shortcuts": [
     {
       "name": "New Research",

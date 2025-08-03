@@ -12,12 +12,12 @@ export class SecureAPIClient {
   }
 
   private async request<T>(
-    endpoint: string, 
+    endpoint: string,
     options: RequestOptions = {},
     csrfRetry = false
   ): Promise<T> {
     const { skipCSRF = false, ...fetchOptions } = options
-    
+
     // Default options for security
     const secureOptions: RequestInit = {
       ...fetchOptions,
@@ -36,7 +36,9 @@ export class SecureAPIClient {
       }
     }
 
-    const response = await fetch(`${this.baseURL}${endpoint}`, secureOptions)
+    // Use relative path when baseURL is empty to leverage Vite proxy
+    const url = this.baseURL ? `${this.baseURL}${endpoint}` : endpoint
+    const response = await fetch(url, secureOptions)
 
     // Handle CSRF token mismatch
     if (response.status === 403 && !csrfRetry) {
@@ -71,14 +73,15 @@ export class SecureAPIClient {
 
   private async refreshToken(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseURL}/auth/refresh`, {
+      const url = this.baseURL ? `${this.baseURL}/auth/refresh` : `/auth/refresh`
+      const response = await fetch(url, {
         method: 'POST',
         credentials: 'include',
         headers: {
           'X-CSRF-Token': await CSRFProtection.getToken()
         }
       })
-      
+
       return response.ok
     } catch {
       return false
