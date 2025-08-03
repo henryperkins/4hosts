@@ -48,7 +48,7 @@ export const DeepResearchDashboard: React.FC<DeepResearchDashboardProps> = ({ on
       setIsLoading(true)
       const data = await api.getDeepResearchStatus()
       setDeepResearches((data as { deep_research_queries?: DeepResearchItem[] }).deep_research_queries || [])
-    } catch (error) {
+    } catch {
       // Failed to load deep research status
       toast.error('Failed to load deep research data')
     } finally {

@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts'
 import { Activity, TrendingUp, Users, Clock, Database, AlertCircle, Eye, MousePointer, Target, Zap } from 'lucide-react'
 import api from '../services/api'
-import type { SystemStats } from '../services/api'
+import type { MetricsData } from '../types/api-types'
 import { getParadigmHexColor } from '../constants/paradigm'
 
-// Mock A/B test data - in production, this would come from your analytics service
 interface ABTestMetrics {
   standardView: {
     sessions: number
@@ -23,11 +22,44 @@ interface ABTestMetrics {
   }
 }
 
+const MetricCard = React.memo<{
+  icon: React.ElementType
+  title: string
+  value: string | number
+  subtitle?: string
+  trend?: number
+  color?: string
+}>(({ icon: Icon, title, value, subtitle, trend, color = 'text-blue-600' }) => (
+  <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-100">
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-sm text-gray-600 mb-1">{title}</p>
+        <p className="text-2xl font-bold text-gray-900">{value}</p>
+        {subtitle && (
+          <p className="text-sm text-gray-500 mt-1">{subtitle}</p>
+        )}
+      </div>
+      <div className={`p-3 rounded-lg bg-opacity-10 ${color.replace('text-', 'bg-')}`}>
+        <Icon className={`h-6 w-6 ${color}`} />
+      </div>
+    </div>
+    {trend !== undefined && (
+      <div className="mt-4 flex items-center">
+        <TrendingUp className={`h-4 w-4 ${trend > 0 ? 'text-green-500' : 'text-red-500'}`} />
+        <span className={`text-sm ml-1 ${trend > 0 ? 'text-green-500' : 'text-red-500'}`}>
+          {Math.abs(trend)}%
+        </span>
+      </div>
+    )}
+  </div>
+))
+
 export const MetricsDashboard: React.FC = () => {
-  const [stats, setStats] = useState<SystemStats | null>(null)
+  const [stats, setStats] = useState<MetricsData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [abTestMetrics] = useState<ABTestMetrics>({
+  
+  const abTestMetrics = useMemo<ABTestMetrics>(() => ({
     standardView: {
       sessions: 1247,
       completionRate: 0.68,
@@ -42,25 +74,18 @@ export const MetricsDashboard: React.FC = () => {
       errorRate: 0.02,
       engagement: 0.89
     }
-  })
+  }), [])
 
-  useEffect(() => {
-    loadStats()
-    const interval = setInterval(loadStats, 30000) // Refresh every 30 seconds
-    return () => clearInterval(interval)
-  }, [])
-
-  const loadStats = async () => {
+  const loadStats = useCallback(async () => {
     try {
       const data = await api.getSystemStatsSafe()
-      // Normalize to SystemStats-like shape for rendering
-      const normalized: SystemStats = {
-        total_queries: (data as any).total_queries ?? 0,
-        active_research: (data as any).active_research ?? 0,
-        paradigm_distribution: (data as any).paradigm_distribution ?? {},
-        average_processing_time: (data as any).average_processing_time ?? 0,
-        cache_hit_rate: (data as any).cache_hit_rate ?? 0,
-        system_health: (data as any).system_status ?? (data as any).system_health ?? 'healthy'
+      const normalized: MetricsData = {
+        total_queries: data.total_queries ?? 0,
+        active_research: data.active_research ?? 0,
+        paradigm_distribution: data.paradigm_distribution ?? {},
+        average_processing_time: data.average_processing_time ?? 0,
+        cache_hit_rate: data.cache_hit_rate ?? 0,
+        system_health: data.system_health ?? 'healthy'
       }
       setStats(normalized)
       setError(null)
@@ -69,7 +94,49 @@ export const MetricsDashboard: React.FC = () => {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    loadStats()
+    const interval = setInterval(loadStats, 30000)
+    return () => clearInterval(interval)
+  }, [loadStats])
+
+  const paradigmData = useMemo(() => {
+    if (!stats?.paradigm_distribution) return []
+    
+    return Object.entries(stats.paradigm_distribution)
+      .map(([paradigm, count]) => ({
+        name: paradigm.charAt(0).toUpperCase() + paradigm.slice(1),
+        value: count,
+        color: getParadigmHexColor(paradigm as 'dolores' | 'teddy' | 'bernard' | 'maeve')
+      }))
+      .filter(item => item.value > 0)
+  }, [stats?.paradigm_distribution])
+
+  // A/B Test comparison data - not currently used but available for future features
+  // const _abTestComparisonData = useMemo(() => [
+  //   {
+  //     metric: 'Completion Rate',
+  //     standard: (abTestMetrics.standardView.completionRate * 100).toFixed(1),
+  //     ideaBrowser: (abTestMetrics.ideaBrowserView.completionRate * 100).toFixed(1)
+  //   },
+  //   {
+  //     metric: 'Time to Insight (s)',
+  //     standard: abTestMetrics.standardView.avgTimeToInsight.toFixed(1),
+  //     ideaBrowser: abTestMetrics.ideaBrowserView.avgTimeToInsight.toFixed(1)
+  //   },
+  //   {
+  //     metric: 'Engagement',
+  //     standard: (abTestMetrics.standardView.engagement * 100).toFixed(1),
+  //     ideaBrowser: (abTestMetrics.ideaBrowserView.engagement * 100).toFixed(1)
+  //   },
+  //   {
+  //     metric: 'Error Rate',
+  //     standard: (abTestMetrics.standardView.errorRate * 100).toFixed(2),
+  //     ideaBrowser: (abTestMetrics.ideaBrowserView.errorRate * 100).toFixed(2)
+  //   }
+  // ], [abTestMetrics])
 
   if (isLoading) {
     return (
@@ -92,63 +159,39 @@ export const MetricsDashboard: React.FC = () => {
     )
   }
 
-  const paradigmData = Object.entries(stats.paradigm_distribution).map(([paradigm, count]) => ({
-    name: paradigm.charAt(0).toUpperCase() + paradigm.slice(1),
-    value: count,
-    paradigm: paradigm,
-  }))
-
-  const healthColor = {
-    healthy: 'text-green-600 bg-green-100',
-    degraded: 'text-yellow-600 bg-yellow-100',
-    critical: 'text-red-600 bg-red-100',
-  }[stats.system_health]
-
   return (
     <div className="space-y-6">
-      {/* Header Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Total Queries</p>
-              <p className="text-2xl font-bold text-gray-900">{stats.total_queries.toLocaleString()}</p>
-            </div>
-            <Users className="h-8 w-8 text-blue-600" />
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Active Research</p>
-              <p className="text-2xl font-bold text-gray-900">{stats.active_research}</p>
-            </div>
-            <Activity className="h-8 w-8 text-green-600" />
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Avg Processing Time</p>
-              <p className="text-2xl font-bold text-gray-900">{stats.average_processing_time.toFixed(1)}s</p>
-            </div>
-            <Clock className="h-8 w-8 text-purple-600" />
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">System Health</p>
-              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${healthColor}`}>
-                {stats.system_health.charAt(0).toUpperCase() + stats.system_health.slice(1)}
-              </span>
-            </div>
-            <Database className="h-8 w-8 text-gray-600" />
-          </div>
-        </div>
+        <MetricCard
+          icon={Activity}
+          title="Total Queries"
+          value={stats?.total_queries || 0}
+          subtitle="All time"
+          trend={12}
+        />
+        <MetricCard
+          icon={Users}
+          title="Active Research"
+          value={stats?.active_research || 0}
+          subtitle="Currently processing"
+          color="text-green-600"
+        />
+        <MetricCard
+          icon={Clock}
+          title="Avg Processing Time"
+          value={`${(stats?.average_processing_time || 0).toFixed(1)}s`}
+          subtitle="Per query"
+          trend={-8}
+          color="text-purple-600"
+        />
+        <MetricCard
+          icon={Database}
+          title="Cache Hit Rate"
+          value={`${((stats?.cache_hit_rate || 0) * 100).toFixed(1)}%`}
+          subtitle="Performance boost"
+          trend={5}
+          color="text-orange-600"
+        />
       </div>
 
       {/* Charts */}
@@ -169,7 +212,7 @@ export const MetricsDashboard: React.FC = () => {
                 dataKey="value"
               >
                 {paradigmData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={getParadigmHexColor(entry.paradigm)} />
+                  <Cell key={`cell-${index}`} fill={entry.color} />
                 ))}
               </Pie>
               <Tooltip />
@@ -221,13 +264,13 @@ export const MetricsDashboard: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="text-center">
             <p className="text-3xl font-bold text-blue-600">
-              {Math.round(((paradigmData.find(p => p.paradigm === 'dolores')?.value ?? 0) / stats.total_queries) * 100)}%
+              {Math.round(((paradigmData.find(p => p.name.toLowerCase() === 'dolores')?.value ?? 0) / stats.total_queries) * 100)}%
             </p>
             <p className="text-sm text-gray-600 mt-1">Truth-seeking queries</p>
           </div>
           <div className="text-center">
             <p className="text-3xl font-bold text-green-600">
-              {Math.round(((paradigmData.find(p => p.paradigm === 'bernard')?.value ?? 0) / stats.total_queries) * 100)}%
+              {Math.round(((paradigmData.find(p => p.name.toLowerCase() === 'bernard')?.value ?? 0) / stats.total_queries) * 100)}%
             </p>
             <p className="text-sm text-gray-600 mt-1">Analytical queries</p>
           </div>

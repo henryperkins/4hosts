@@ -1,21 +1,16 @@
 import React from 'react'
 import { BrowserRouter as Router } from 'react-router-dom'
-import { Navigation } from './components/Navigation'
-import { ResearchPage } from './components/ResearchPage'
-import { ResearchResultPage } from './components/ResearchResultPage'
 import { Button } from './components/ui/Button'
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from './components/ui/Card'
 import { LoadingSpinner } from './components/ui/LoadingSpinner'
 import { Alert } from './components/ui/Alert'
 import { ToggleSwitch } from './components/ui/ToggleSwitch'
 import { PageTransition } from './components/ui/PageTransition'
-import { ThemeContext } from './contexts/ThemeContext'
-import { AuthProvider } from './contexts/AuthContext'
 import { Home, Settings, User, AlertCircle } from 'lucide-react'
 
 // Mock theme provider for preview
 const MockThemeProvider = ({ children }: { children: React.ReactNode }) => {
-  const [darkMode, setDarkMode] = React.useState(false)
+  const [darkMode] = React.useState(false)
   
   React.useEffect(() => {
     if (darkMode) {
@@ -26,9 +21,9 @@ const MockThemeProvider = ({ children }: { children: React.ReactNode }) => {
   }, [darkMode])
 
   return (
-    <ThemeContext.Provider value={{ darkMode, toggleDarkMode: () => setDarkMode(!darkMode) }}>
+    <div className={darkMode ? 'dark' : ''}>
       {children}
-    </ThemeContext.Provider>
+    </div>
   )
 }
 
@@ -174,7 +169,7 @@ const ComponentShowcase = () => {
 const App = () => {
   return (
     <MockThemeProvider>
-      <AuthProvider>
+      {/* Auth not needed for preview */}
         <Router>
           <div className="min-h-screen bg-surface transition-colors duration-200">
             <PageTransition>
@@ -182,7 +177,7 @@ const App = () => {
             </PageTransition>
           </div>
         </Router>
-      </AuthProvider>
+      {/* End auth wrapper */}
     </MockThemeProvider>
   )
 }

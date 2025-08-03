@@ -382,7 +382,7 @@ api.connectWebSocket(researchId, (message) => {
     setIsCancelling(true)
     try {
       await api.cancelResearch(researchId)
-    } catch (error) {
+    } catch {
       // Failed to cancel research
     } finally {
       setIsCancelling(false)

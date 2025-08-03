@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useLayoutEffect } from 'react'
 import { Clock, X, Search, Database, Brain, CheckCircle, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 import { Button } from './ui/Button'
@@ -16,14 +16,14 @@ interface ResearchProgressProps {
 }
 
 interface ProgressUpdate {
-  status: 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
+  status: StatusType
   progress?: number
   message?: string
   timestamp: string
 }
 
 interface WebSocketData {
-  status?: 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
+  status?: StatusType
   progress?: number
   message?: string
   query?: string
@@ -84,7 +84,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
       
       api.connectWebSocket(researchId, (message) => {
         setIsConnecting(false)
-        const data = message.data as any
+        const data = message.data
         
         // Handle different message types
         let statusUpdate: WebSocketData | undefined
@@ -109,10 +109,10 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             // Add source to previews
             if (data.source) {
               setSourcePreviews(prev => [...prev.slice(-4), {
-                title: data.source.title,
-                domain: data.source.domain,
-                snippet: data.source.snippet,
-                credibility: data.source.credibility_score
+                title: data.source?.title || '',
+                domain: data.source?.domain || '',
+                snippet: data.source?.snippet || '',
+                credibility: data.source?.credibility_score || 0
               }])
             }
             break
@@ -158,9 +158,9 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             break
           case 'credibility.check':
             statusUpdate = {
-              message: `Checking credibility: ${data.domain} (${(data.score * 100).toFixed(0)}%)`
+              message: `Checking credibility: ${data.domain} (${((data.score || 0) * 100).toFixed(0)}%)`
             }
-            if (data.score > 0.7) {
+            if ((data.score || 0) > 0.7) {
               setStats(prev => ({ ...prev, highQualitySources: prev.highQualitySources + 1 }))
             }
             break
@@ -185,16 +185,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           timestamp: new Date().toISOString(),
         }
 
-        setUpdates(prev => {
-          const newUpdates = [...prev, update]
-          // Auto-scroll to bottom when new update arrives
-          setTimeout(() => {
-            if (updatesContainerRef.current) {
-              updatesContainerRef.current.scrollTop = updatesContainerRef.current.scrollHeight
-            }
-          }, 100)
-          return newUpdates
-        })
+        setUpdates(prev => [...prev, update])
         
         if (data.status) {
           setCurrentStatus(data.status)
@@ -218,12 +209,19 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     }
   }, [researchId, currentStatus, onComplete, onCancel])
 
+  // Auto-scroll to bottom when updates change
+  useLayoutEffect(() => {
+    if (updatesContainerRef.current) {
+      updatesContainerRef.current.scrollTop = updatesContainerRef.current.scrollHeight
+    }
+  }, [updates])
+
   const handleCancel = async () => {
     setIsCancelling(true)
     try {
       await api.cancelResearch(researchId)
       // Status will be updated via WebSocket
-    } catch (error) {
+    } catch {
       // Failed to cancel research
       // You might want to show a toast error here
     } finally {

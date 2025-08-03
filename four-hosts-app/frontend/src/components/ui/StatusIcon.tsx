@@ -9,7 +9,7 @@ import {
   CircleX
 } from 'lucide-react'
 
-export type StatusType = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'warning' | 'info'
+export type StatusType = 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'warning' | 'info'
 
 interface StatusIconProps {
   status: StatusType
@@ -47,6 +47,12 @@ export const StatusIcon: React.FC<StatusIconProps> = ({
       icon: Loader,
       color: 'text-blue-500',
       label: label || 'Processing',
+      animation: animated ? 'animate-spin' : ''
+    },
+    in_progress: {
+      icon: Loader,
+      color: 'text-blue-500',
+      label: label || 'In Progress',
       animation: animated ? 'animate-spin' : ''
     },
     completed: {
@@ -133,6 +139,10 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
       solid: 'bg-blue-500 text-white',
       subtle: 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800'
     },
+    in_progress: {
+      solid: 'bg-blue-500 text-white',
+      subtle: 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800'
+    },
     completed: {
       solid: 'bg-green-500 text-white',
       subtle: 'bg-green-100 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-800'
@@ -200,6 +210,7 @@ export const StatusDot: React.FC<StatusDotProps> = ({
   const statusColors = {
     pending: 'bg-gray-500',
     processing: 'bg-blue-500',
+    in_progress: 'bg-blue-500',
     completed: 'bg-green-500',
     failed: 'bg-red-500',
     cancelled: 'bg-orange-500',

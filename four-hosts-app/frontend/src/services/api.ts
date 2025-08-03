@@ -1,29 +1,26 @@
 import type { ParadigmClassification, ResearchResult, ResearchHistoryItem, UserPreferences, Paradigm, ResearchOptions, User } from '../types'
-import { AuthErrorHandler } from './api-auth'
+import { CSRFProtection } from './csrf-protection'
+import type { 
+  AuthTokenResponse, 
+  LoginResponse, 
+  MetricsData,
+  WebSocketMessage
+} from '../types/api-types'
+import {
+  isErrorResponse
+} from '../types/api-types'
+import {
+  validateLoginResponse,
+  validateWebSocketMessage,
+  validateMetricsData
+} from '../utils/validation'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
-// Type definitions for API responses
-export interface AuthTokens {
-  access_token: string
-  token_type: string
-  refresh_token?: string
-}
-
-export interface SystemStats {
-  total_queries: number
-  active_research: number
-  paradigm_distribution: Record<string, number>
-  average_processing_time: number
-  cache_hit_rate: number
-  system_health: 'healthy' | 'degraded' | 'critical'
-}
-
-export interface WSMessage {
-  type: string
-  data: Record<string, unknown>
-  timestamp?: string
-}
+// Re-export for backward compatibility
+export type AuthTokens = AuthTokenResponse
+export type SystemStats = MetricsData
+export type WSMessage = WebSocketMessage
 
 export interface ResearchStatusResponse {
   research_id: string
@@ -43,13 +40,10 @@ export interface ResearchStatusResponse {
 // ... (rest of the interfaces are the same)
 
 class APIService {
-  private authToken: string | null = null
   private isRefreshing = false
   private failedQueue: { resolve: (value: string) => void; reject: (reason: Error) => void }[] = []
 
-  constructor() {
-    this.authToken = localStorage.getItem('auth_token')
-  }
+  constructor() {}
 
   private processFailedQueue(error: Error | null, token: string | null = null) {
     this.failedQueue.forEach(prom => {
@@ -62,19 +56,42 @@ class APIService {
     this.failedQueue = [];
   }
 
-  private async fetchWithAuth(url: string, options: RequestInit = {}, isRetry = false): Promise<Response> {
+  private async fetchWithAuth(url: string, options: RequestInit = {}, isRetry = false, csrfRetry = false): Promise<Response> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json',
       ...(options.headers as Record<string, string> || {}),
     }
 
-    if (this.authToken) {
-      headers['Authorization'] = `Bearer ${this.authToken}`
+    // Add CSRF token for state-changing requests
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(options.method || 'GET')) {
+      const csrfToken = await CSRFProtection.getToken()
+      if (csrfToken) {
+        headers['X-CSRF-Token'] = csrfToken
+      }
     }
 
     const fullUrl = `${API_BASE_URL}${url}`;
-    const response = await fetch(fullUrl, { ...options, headers });
+    const response = await fetch(fullUrl, { 
+      ...options, 
+      headers,
+      credentials: 'include' // Always include cookies
+    });
+
+    // Handle CSRF token mismatch
+    if (response.status === 403 && !csrfRetry) {
+      try {
+        const errorData = await response.json();
+        if (errorData.detail === 'CSRF token mismatch') {
+          console.log('CSRF token mismatch detected, refreshing token...');
+          CSRFProtection.clearToken();
+          await CSRFProtection.getToken(true); // Force refresh
+          return this.fetchWithAuth(url, options, isRetry, true);
+        }
+      } catch {
+        // If we can't parse the error, continue with normal flow
+      }
+    }
 
     if (response.status === 401 && !isRetry) {
       if (this.isRefreshing) {
@@ -102,22 +119,17 @@ class APIService {
     return response;
   }
 
-  async refreshToken(): Promise<AuthTokens> {
-    const refreshToken = AuthErrorHandler.getRefreshToken();
-    if (!refreshToken) {
-      throw new Error('No refresh token available');
-    }
-
-    // Call refresh without Authorization header to avoid stale bearer
+  async refreshToken(): Promise<AuthTokenResponse> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      'X-CSRF-Token': await CSRFProtection.getToken()
     }
     const fullUrl = `${API_BASE_URL}/auth/refresh`;
     const response = await fetch(fullUrl, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      credentials: 'include' // Refresh token in httpOnly cookie
     });
 
     if (!response.ok) {
@@ -131,28 +143,33 @@ class APIService {
     }
 
     const tokens = await response.json();
-    this.authToken = tokens.access_token;
-    AuthErrorHandler.storeAuthTokens(tokens.access_token, tokens.refresh_token);
+    // Tokens now stored as httpOnly cookies by backend
     return tokens;
   }
 
-  async register(username: string, email: string, password: string): Promise<AuthTokens> {
+  async register(username: string, email: string, password: string): Promise<AuthTokenResponse> {
     const response = await this.fetchWithAuth('/auth/register', {
       method: 'POST',
       body: JSON.stringify({ username, email, password, role: 'free' }),
     })
 
     if (!response.ok) {
-      // ... (error handling as before)
+      const errorData = await response.json()
+      if (isErrorResponse(errorData)) {
+        const message = typeof errorData.detail === 'string' 
+          ? errorData.detail 
+          : errorData.error
+        throw new Error(message)
+      }
+      throw new Error('Registration failed')
     }
 
     const tokens = await response.json()
-    this.authToken = tokens.access_token
-    AuthErrorHandler.storeAuthTokens(tokens.access_token, tokens.refresh_token)
+    // Tokens now stored as httpOnly cookies by backend
     return tokens
   }
 
-  async login(emailOrUsername: string, password: string): Promise<AuthTokens> {
+  async login(emailOrUsername: string, password: string): Promise<LoginResponse> {
     // Email-only login enforced by backend
     const isEmail = emailOrUsername.includes('@')
     if (!isEmail) {
@@ -168,13 +185,15 @@ class APIService {
       let message = 'Login failed'
       try {
         const err = await response.json()
-        const detail = err?.detail || err?.error || ''
-        if (response.status === 401 || /Invalid credentials/i.test(detail)) {
-          message = 'Invalid credentials'
-        } else if (response.status === 503) {
-          message = 'Service unavailable. Please try again later.'
-        } else if (detail) {
-          message = detail
+        if (isErrorResponse(err)) {
+          const detail = typeof err.detail === 'string' ? err.detail : err.error
+          if (response.status === 401 || (detail && /Invalid credentials/i.test(detail))) {
+            message = 'Invalid credentials'
+          } else if (response.status === 503) {
+            message = 'Service unavailable. Please try again later.'
+          } else if (detail) {
+            message = detail
+          }
         }
       } catch {
         // keep default
@@ -182,25 +201,23 @@ class APIService {
       throw new Error(message)
     }
 
-    const tokens = await response.json()
-    this.authToken = tokens.access_token
-    AuthErrorHandler.storeAuthTokens(tokens.access_token, tokens.refresh_token)
-    return tokens
+    const loginData = await response.json()
+    // Validate response at runtime
+    return validateLoginResponse(loginData)
   }
 
   async logout(): Promise<void> {
-    const refreshToken = AuthErrorHandler.getRefreshToken()
     try {
       await this.fetchWithAuth('/auth/logout', { 
-        method: 'POST',
-        body: JSON.stringify({ refresh_token: refreshToken })
+        method: 'POST'
+        // No body needed - cookies will be cleared by backend
       })
     } catch {
-      // If logout fails (e.g., 401), we still want to clear local tokens
-      // Logout request failed, clearing local tokens anyway
+      // If logout fails (e.g., 401), we still want to clear session
+      // Logout request failed, but cookies will expire
     }
-    this.authToken = null
-    AuthErrorHandler.clearAuthTokens()
+    // Clear CSRF token on logout
+    CSRFProtection.clearToken()
     this.disconnectWebSocket()
   }
 
@@ -229,7 +246,9 @@ class APIService {
         } else if (typeof detail === 'string' && detail.trim()) {
           message = detail
         }
-      } catch {}
+      } catch {
+        // Failed to parse error response
+      }
       throw new Error(message)
     }
 
@@ -257,7 +276,9 @@ class APIService {
         } else if (typeof detail === 'string' && detail.trim()) {
           message = detail
         }
-      } catch {}
+      } catch {
+        // Failed to parse error response
+      }
       throw new Error(message)
     }
 
@@ -270,7 +291,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to get research status')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to get research status')
     }
 
     const data = await response.json()
@@ -282,7 +303,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to get research results')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to get research results')
     }
 
     const data = await response.json()
@@ -325,7 +346,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to cancel research')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to cancel research')
     }
   }
 
@@ -334,7 +355,7 @@ class APIService {
   
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to get research history')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to get research history')
     }
   
     const data = await response.json()
@@ -351,7 +372,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to export research')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to export research')
     }
 
     return response.blob()
@@ -366,7 +387,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to classify query')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to classify query')
     }
 
     const data = await response.json()
@@ -378,7 +399,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to get paradigm explanation')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to get paradigm explanation')
     }
 
     return response.json()
@@ -393,7 +414,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to update preferences')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to update preferences')
     }
   }
 
@@ -402,7 +423,11 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to get preferences')
+      if (isErrorResponse(error)) {
+        const message = typeof error.detail === 'string' ? error.detail : error.error
+        throw new Error(message || 'Failed to get preferences')
+      }
+      throw new Error('Failed to get preferences')
     }
 
     const data = await response.json()
@@ -410,26 +435,29 @@ class APIService {
   }
 
   // System Stats APIs
-  async getSystemStats(): Promise<SystemStats> {
+  async getSystemStats(): Promise<MetricsData> {
     const response = await this.fetchWithAuth('/system/stats')
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({} as any))
-      // normalize to a consistent error message
-      throw new Error((error as any).detail || 'Failed to get system stats')
+      const error = await response.json().catch(() => null)
+      if (isErrorResponse(error)) {
+        const message = typeof error.detail === 'string' ? error.detail : error.error
+        throw new Error(message || 'Failed to get system stats')
+      }
+      throw new Error('Failed to get system stats')
     }
 
     // Map backend keys if needed (system_status -> system_health)
     const data = await response.json()
     if (data && typeof data === 'object') {
-      if (data.system_status && !data.system_health) {
+      if ('system_status' in data && !('system_health' in data)) {
         data.system_health = data.system_status
       }
     }
-    return data
+    return validateMetricsData(data)
   }
 
-  async getSystemStatsSafe(): Promise<SystemStats | Partial<SystemStats>> {
+  async getSystemStatsSafe(): Promise<MetricsData | Partial<MetricsData>> {
     try {
       return await this.getSystemStats();
     } catch (e) {
@@ -447,21 +475,25 @@ class APIService {
     }
   }
 
-  async getPublicSystemStats(): Promise<Partial<SystemStats>> {
+  async getPublicSystemStats(): Promise<Partial<MetricsData>> {
     const response = await this.fetchWithAuth('/system/public-stats')
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({} as any))
-      throw new Error((error as any).detail || 'Failed to get public system stats')
+      const error = await response.json().catch(() => null)
+      if (isErrorResponse(error)) {
+        const message = typeof error.detail === 'string' ? error.detail : error.error
+        throw new Error(message || 'Failed to get public system stats')
+      }
+      throw new Error('Failed to get public system stats')
     }
 
     const data = await response.json()
     if (data && typeof data === 'object') {
-      if ((data as any).system_status && !(data as any).system_health) {
-        (data as any).system_health = (data as any).system_status
+      if ('system_status' in data && !('system_health' in data)) {
+        data.system_health = data.system_status
       }
     }
-    return data
+    return data as Partial<MetricsData>
   }
 
   // WebSocket Management
@@ -486,7 +518,10 @@ class APIService {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
-        onMessage(message)
+        const validated = validateWebSocketMessage(message)
+        if (validated) {
+          onMessage(validated)
+        }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error)
       }
@@ -538,7 +573,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to submit feedback')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to submit feedback')
     }
   }
 
@@ -550,7 +585,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to resume deep research')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to resume deep research')
     }
   }
 
@@ -559,7 +594,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to get deep research status')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to get deep research status')
     }
 
     return response.json()
@@ -571,7 +606,7 @@ class APIService {
 
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(error.detail || 'Failed to get source credibility')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to get source credibility')
     }
 
     return response.json()

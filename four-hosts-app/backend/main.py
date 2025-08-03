@@ -33,6 +33,10 @@ from pydantic import BaseModel, Field, EmailStr, HttpUrl
 from dotenv import load_dotenv
 import uvicorn
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
+import secrets
+
+# CSRF Protection
+CSRF_TOKEN_SECRET = secrets.token_urlsafe(32)
 
 # Load environment variables
 load_dotenv()
@@ -227,15 +231,16 @@ async def get_current_user(
     """Resolve the current authenticated user.
 
     Token lookup:
-    1. Standard Authorization header processed by FastAPI's HTTPBearer
-    2. Raw `Authorization` header (fallback) if HTTPBearer didn't capture it
+    1. `access_token` cookie
+    2. Standard Authorization header processed by FastAPI's HTTPBearer
+    3. Raw `Authorization` header (fallback) if HTTPBearer didn't capture it
 
     Cookie and query parameter based token transport are not supported to reduce CSRF and token leakage risk.
     """
-    token: Optional[str] = None
+    token: Optional[str] = request.cookies.get("access_token")
 
     # 1. Token provided via normal HTTPBearer dependency
-    if credentials and credentials.credentials:
+    if not token and credentials and credentials.credentials:
         token = credentials.credentials
 
     # 2. Manually inspect Authorization header if not captured
@@ -256,6 +261,7 @@ async def get_current_user(
     # Map to lightweight user object
     user = SimpleNamespace(
         id=token_data.user_id,
+        user_id=token_data.user_id,  # Include both for backward compatibility
         email=token_data.email,
         role=(
             UserRole(token_data.role)
@@ -362,6 +368,85 @@ class WebhookCreate(BaseModel):
 
 # In-memory storage - will be replaced by research_store
 system_initialized = False
+
+# Create FastAPI App early (needed for decorators)
+app = FastAPI(
+    title="Four Hosts Research API",
+    version="3.0.0",
+    description="Full-featured paradigm-aware research with integrated Context Engineering Pipeline"
+)
+
+# CSRF Protection Routes
+@app.get("/api/csrf-token")
+def get_csrf_token(request: Request, response: Response):
+    # Debug log to verify endpoint is reached
+    logger.info(f"CSRF token endpoint accessed from {request.client.host}")
+    
+    # Check if a valid CSRF token already exists
+    existing_token = request.cookies.get("csrf_token")
+    
+    if existing_token:
+        # Return the existing token
+        logger.debug(f"Returning existing CSRF token: {existing_token}")
+        return {"csrf_token": existing_token}
+    
+    # Generate a new token only if none exists
+    token = secrets.token_urlsafe(16)
+    logger.debug(f"Generating new CSRF token: {token}")
+    
+    # Only use secure cookies in production
+    is_production = os.getenv("ENVIRONMENT") == "production"
+    same_site = "none" if is_production else "lax"  # Cross-site cookies in production
+    secure_flag = True if is_production else False
+    response.set_cookie(
+        key="csrf_token",
+        value=token,
+        httponly=False,
+        secure=secure_flag,
+        samesite=same_site,
+    )
+    return {"csrf_token": token}
+
+@app.middleware("http")
+async def csrf_protection_middleware(request: Request, call_next):
+    # Skip CSRF check for certain routes
+    csrf_exempt_routes = [
+        "/api/csrf-token",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+        "/health",
+        "/ws",  # WebSocket connections
+        "/api/health",
+    ]
+    
+    # Skip CSRF check for GET, HEAD, OPTIONS requests and exempt routes
+    if (request.method in ["POST", "PUT", "DELETE", "PATCH"] and 
+        not any(request.url.path.startswith(route) for route in csrf_exempt_routes)):
+        
+        csrf_token_from_cookie = request.cookies.get("csrf_token")
+        csrf_token_from_header = request.headers.get("X-CSRF-Token")
+        
+        # Debug logging
+        logger.debug(f"CSRF check for {request.url.path}")
+        logger.debug(f"Cookie token: {csrf_token_from_cookie}")
+        logger.debug(f"Header token: {csrf_token_from_header}")
+        
+        if not csrf_token_from_cookie or not csrf_token_from_header or csrf_token_from_cookie != csrf_token_from_header:
+            logger.warning(f"CSRF token mismatch on {request.url.path}: cookie={csrf_token_from_cookie}, header={csrf_token_from_header}")
+            # Return clean 403 response instead of raising exception
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "HTTP Error",
+                    "detail": "CSRF token mismatch",
+                    "status_code": 403,
+                    "request_id": getattr(request.state, "request_id", "unknown"),
+                },
+            )
+    
+    response = await call_next(request)
+    return response
 
 
 # Application Lifespan Manager
@@ -516,13 +601,8 @@ async def lifespan(app: FastAPI):
     logger.info("👋 Shutdown complete")
 
 
-# Create FastAPI App
-app = FastAPI(
-    title="Four Hosts Research API",
-    version="3.0.0",
-    description="Full-featured paradigm-aware research with integrated Context Engineering Pipeline",
-    lifespan=lifespan,
-)
+# Update app with lifespan
+app.router.lifespan_context = lifespan
 
 # Enhanced CORS and security middleware (locked-down)
 # In all environments, explicitly enumerate trusted origins.
@@ -536,9 +616,9 @@ TRUSTED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=TRUSTED_ORIGINS,
-    allow_credentials=False,
+    allow_credentials=True,  # Changed from False to enable cross-origin cookies
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "Origin"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-CSRF-Token"],  # Added X-CSRF-Token
     max_age=600,
 )
 
@@ -549,14 +629,14 @@ async def security_middleware(request: Request, call_next):
     """Block malicious requests early"""
     path = request.url.path.lower()
     
-    # Block PHP file requests
+    # Block PHP file requests - return 404 to reduce info leakage
     if path.endswith(('.php', '.asp', '.jsp')):
-        return Response(status_code=403, content="Forbidden")
+        return Response(status_code=404, content="Not Found")
     
-    # Block common attack patterns
+    # Block common attack patterns - return 404 for admin paths
     attack_patterns = ['/admin', '/wp-admin', '/.env', '/config']
     if any(pattern in path for pattern in attack_patterns):
-        return Response(status_code=403, content="Forbidden")
+        return Response(status_code=404, content="Not Found")
     
     return await call_next(request)
 
@@ -727,8 +807,8 @@ async def register(user_data: UserCreate):
     )
 
 
-@app.post("/auth/login", response_model=Token, tags=["authentication"])
-async def login(login_data: UserLogin):
+@app.post("/auth/login", tags=["authentication"])
+async def login(login_data: UserLogin, response: Response):
     """Login with email and password"""
     # Convert to auth module's UserLogin model
     from services.auth import UserLogin as AuthUserLogin
@@ -749,22 +829,51 @@ async def login(login_data: UserLogin):
         user_id=str(user.id), device_id=None, ip_address=None, user_agent=None
     )
 
-    return Token(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer",
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    # Set cookie attributes for cross-site compatibility
+    is_production = os.getenv("ENVIRONMENT") == "production"
+    same_site = "none" if is_production else "lax"
+    secure_flag = True if is_production else False
+    
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=secure_flag,
+        samesite=same_site,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=secure_flag,
+        samesite=same_site,
+        max_age=60 * 60 * 24 * 7,  # 7 days
+    )
+    
+    # Return the expected format with user data
+    return {
+        "success": True,
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "name": user.full_name or user.username,  # Fallback to username if full_name is None
+            "role": user.role.value,
+            "created_at": user.created_at.isoformat() if user.created_at else datetime.utcnow().isoformat(),
+            "is_active": user.is_active
+        },
+        "message": "Login successful"
+    }
 
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
-@app.post("/auth/refresh", response_model=Token, tags=["authentication"])
-async def refresh_token(request: RefreshTokenRequest):
+@app.post("/auth/refresh", tags=["authentication"])
+async def refresh_token(request: Request, response: Response):
     """Refresh access token using secure token rotation"""
-    refresh_token = request.refresh_token
+    refresh_token = request.cookies.get("refresh_token")
     
     # Validate the token first to get user info
     token_info = await token_manager.validate_refresh_token(refresh_token)
@@ -794,19 +903,35 @@ async def refresh_token(request: RefreshTokenRequest):
             {"user_id": str(user.id), "email": user.email, "role": user.role}
         )
 
-        return Token(
-            access_token=access_token,
-            refresh_token=token_result["token"],
-            token_type="bearer",
-            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        # Set cookie attributes for cross-site compatibility
+        is_production = os.getenv("ENVIRONMENT") == "production"
+        same_site = "none" if is_production else "lax"
+        secure_flag = True if is_production else False
+        
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=secure_flag,
+            samesite=same_site,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         )
+        response.set_cookie(
+            key="refresh_token",
+            value=token_result["token"],
+            httponly=True,
+            secure=secure_flag,
+            samesite=same_site,
+            max_age=60 * 60 * 24 * 7,  # 7 days
+        )
+        return {"message": "Token refreshed"}
     finally:
         await db_gen.aclose()
 
 
 @app.get("/auth/user", tags=["authentication"])
-# Expect TokenData from services.auth.get_current_user
-async def get_current_user_info(current_user: TokenData = Depends(auth_get_current_user)):
+# Use local get_current_user that checks cookies first
+async def get_current_user_info(current_user: Any = Depends(get_current_user)):
     """Get current user information"""
     # Fetch canonical username and optional profile details from DB/profile service
     username_value = None
@@ -844,27 +969,27 @@ async def get_current_user_info(current_user: TokenData = Depends(auth_get_curre
     if not username_value:
         username_value = current_user.email.split("@")[0]
 
-    payload = {
+    # Get user from database to get created_at and is_active
+    from sqlalchemy import select
+    db_gen = get_db()
+    db = await anext(db_gen)
+    try:
+        result = await db.execute(select(DBUser).filter(DBUser.id == current_user.user_id))
+        db_user = result.scalars().first()
+        created_at = db_user.created_at.isoformat() if db_user and db_user.created_at else datetime.utcnow().isoformat()
+        is_active = db_user.is_active if db_user else True
+    finally:
+        await db_gen.aclose()
+
+    # Return format matching frontend expectations
+    return {
         "id": str(current_user.user_id),
         "email": current_user.email,
-        "username": username_value,
+        "name": full_name or username_value,
         "role": str(current_user.role.value if hasattr(current_user, "role") else current_user.role),
+        "created_at": created_at,
+        "is_active": is_active
     }
-
-    # Additive optional profile fields for forward-compat
-    if full_name is not None:
-        payload["full_name"] = full_name
-    if avatar_url is not None:
-        payload["avatar_url"] = avatar_url
-    if bio is not None:
-        payload["bio"] = bio
-    if is_verified is not None:
-        payload["is_verified"] = is_verified
-
-    # Transitional field to allow UI migration without breaking changes
-    payload["display_name"] = full_name or username_value
-
-    return payload
 
 
 class LogoutRequest(BaseModel):
@@ -886,10 +1011,11 @@ async def get_current_user_optional(
 
 @app.post("/auth/logout", tags=["authentication"])
 async def logout(
+    response: Response,
     request: Optional[LogoutRequest] = None,
     current_user: Optional[TokenData] = Depends(get_current_user_optional),
 ):
-    """Logout user by revoking tokens"""
+    """Logout user by revoking tokens and clearing cookies"""
     # Handle case where user is already logged out
     if not current_user:
         return {"message": "Successfully logged out"}
@@ -917,6 +1043,9 @@ async def logout(
     if current_user:
         await session_manager.end_all_user_sessions(current_user.user_id)
 
+    response.delete_cookie("access_token")
+    response.delete_cookie("refresh_token")
+    response.delete_cookie("csrf_token")
     return {"message": "Successfully logged out"}
 
 

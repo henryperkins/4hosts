@@ -24,13 +24,13 @@ export const ResearchHistory: React.FC = () => {
   useEffect(() => {
     const loadHistoryOnMount = async () => {
       try {
-        const items = await api.getUserResearchHistory(limit, 0)
-        if (items.length < limit) {
+        const response = await api.getUserResearchHistory(limit, 0)
+        if (response.history.length < limit) {
           setHasMore(false)
         }
-        setHistory(items)
-        setOffset(items.length)
-      } catch (error) {
+        setHistory(response.history)
+        setOffset(response.history.length)
+      } catch {
         // Failed to load history
       } finally {
         setIsLoading(false)
@@ -42,13 +42,13 @@ export const ResearchHistory: React.FC = () => {
 
   const loadHistory = async () => {
     try {
-      const items = await api.getUserResearchHistory(limit, offset)
-      if (items.length < limit) {
+      const response = await api.getUserResearchHistory(limit, offset)
+      if (response.history.length < limit) {
         setHasMore(false)
       }
-      setHistory(prev => [...prev, ...items])
-      setOffset(prev => prev + items.length)
-    } catch (error) {
+      setHistory(prev => [...prev, ...response.history])
+      setOffset(prev => prev + response.history.length)
+    } catch {
       // Failed to load history
     } finally {
       setIsLoading(false)
@@ -73,7 +73,7 @@ export const ResearchHistory: React.FC = () => {
           ? { ...item, status: 'cancelled' }
           : item
       ))
-    } catch (error) {
+    } catch {
       // Failed to cancel research
       // You might want to show a toast error here
     } finally {

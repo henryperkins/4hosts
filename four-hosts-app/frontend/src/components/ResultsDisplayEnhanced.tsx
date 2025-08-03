@@ -528,3 +528,5 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     </div>
   )
 }
+
+// Component is already exported above

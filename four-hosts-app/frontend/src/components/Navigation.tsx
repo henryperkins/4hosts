@@ -4,14 +4,15 @@ import { Home, History, User, BarChart3, Menu, X } from 'lucide-react'
 import { ToggleSwitch } from './ui/ToggleSwitch'
 import { Button } from './ui/Button'
 import { useAuth } from '../hooks/useAuth'
-import { useTheme } from '../contexts/ThemeContext'
+import { useDarkMode, useToggleDarkMode } from '../store/themeStore'
 
 export const Navigation = () => {
   const { isAuthenticated, user, logout } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const { darkMode, toggleDarkMode } = useTheme()
+  const darkMode = useDarkMode()
+  const toggleDarkMode = useToggleDarkMode()
 
   if (!isAuthenticated) return null
 

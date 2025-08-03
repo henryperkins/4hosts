@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertCircle } from 'lucide-react'
+// AlertCircle not currently used
 import { ToggleSwitch } from './ui/ToggleSwitch'
 import { Alert } from './ui/Alert'
 import { ResearchFormEnhanced } from './ResearchFormEnhanced'
@@ -97,9 +97,9 @@ export const ResearchPage = () => {
           setResults(resultsData)
 
           // Extract paradigm classification from results
-          if ((resultsData as any).paradigm_analysis && (resultsData as any).paradigm_analysis.primary) {
-            const primary = (resultsData as any).paradigm_analysis.primary
-            const secondary = (resultsData as any).paradigm_analysis.secondary
+          if (resultsData.paradigm_analysis && resultsData.paradigm_analysis.primary) {
+            const primary = resultsData.paradigm_analysis.primary
+            const secondary = resultsData.paradigm_analysis.secondary
             const distribution: Record<string, number> = { [primary.paradigm]: primary.confidence }
             
             if (secondary) {

@@ -4,7 +4,6 @@ Phase 5: Production-Ready Features
 """
 
 import time
-import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, Tuple
 from collections import defaultdict, deque
@@ -318,6 +317,7 @@ class RateLimitMiddleware:
             "/auth/login",
             "/auth/refresh",
             "/auth/user",
+            "/api/csrf-token",  # CSRF token endpoint must be accessible without auth
         ]
         if request.url.path in skip_paths:
             return await call_next(request)

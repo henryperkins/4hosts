@@ -1,69 +1,181 @@
-import React, { useState, useEffect } from 'react'
+import React, { useReducer, useEffect, useCallback, useMemo } from 'react'
 import { Settings2, Users } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import type { ResearchOptions } from '../types'
 import { Button } from './ui/Button'
 import { InputField } from './ui/InputField'
 
+interface ResearchFormState {
+  query: string
+  showAdvanced: boolean
+  error: string
+  paradigm: string
+  depth: 'quick' | 'standard' | 'deep' | 'deep_research'
+  options: ResearchOptions
+}
+
+type FormAction =
+  | { type: 'SET_QUERY'; payload: string }
+  | { type: 'SET_ERROR'; payload: string }
+  | { type: 'TOGGLE_ADVANCED' }
+  | { type: 'SET_PARADIGM'; payload: string }
+  | { type: 'SET_DEPTH'; payload: ResearchFormState['depth'] }
+  | { type: 'UPDATE_OPTIONS'; payload: Partial<ResearchOptions> }
+  | { type: 'RESET_FORM' }
+  | { type: 'INIT_FROM_PREFERENCES'; payload: { depth: ResearchFormState['depth']; enable_real_search: boolean } }
+
+function formReducer(state: ResearchFormState, action: FormAction): ResearchFormState {
+  switch (action.type) {
+    case 'SET_QUERY':
+      return { ...state, query: action.payload, error: '' }
+    case 'SET_ERROR':
+      return { ...state, error: action.payload }
+    case 'TOGGLE_ADVANCED':
+      return { ...state, showAdvanced: !state.showAdvanced }
+    case 'SET_PARADIGM':
+      return { ...state, paradigm: action.payload }
+    case 'SET_DEPTH':
+      return { ...state, depth: action.payload, options: { ...state.options, depth: action.payload } }
+    case 'UPDATE_OPTIONS':
+      return { ...state, options: { ...state.options, ...action.payload } }
+    case 'RESET_FORM':
+      return { ...state, query: '', error: '', paradigm: 'auto' }
+    case 'INIT_FROM_PREFERENCES':
+      return {
+        ...state,
+        depth: action.payload.depth,
+        options: {
+          ...state.options,
+          depth: action.payload.depth,
+          enable_real_search: action.payload.enable_real_search
+        }
+      }
+    default:
+      return state
+  }
+}
+
 interface ResearchFormEnhancedProps {
   onSubmit: (query: string, options: ResearchOptions) => void
   isLoading: boolean
 }
 
+// Commented out - not currently used
+// const ParadigmOption = React.memo<{
+//   value: string
+//   label: string
+//   icon: string
+//   description: string
+//   colorClass: string
+//   isSelected: boolean
+//   onSelect: (value: string) => void
+// }>(({ value, label, icon, description, colorClass, isSelected, onSelect }) => (
+//   <button
+//     type="button"
+//     onClick={() => onSelect(value)}
+//     className={`group w-full text-left px-4 py-3 rounded-lg border transition-all ${
+//       isSelected 
+//         ? 'border-primary bg-primary/10 shadow-sm' 
+//         : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+//     }`}
+//   >
+//     <div className="flex items-center gap-3">
+//       <span className="text-2xl">{icon}</span>
+//       <div className="flex-1">
+//         <div className={`font-medium ${colorClass}`}>{label}</div>
+//         <div className="text-xs text-gray-500 dark:text-gray-400">{description}</div>
+//       </div>
+//     </div>
+//   </button>
+// ))
+
 export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSubmit, isLoading }) => {
   const { user } = useAuth()
-  const [query, setQuery] = useState('')
-  const [showAdvanced, setShowAdvanced] = useState(false)
-  const [error, setError] = useState('')
-  const [paradigm, setParadigm] = useState('auto')
-  const [depth, setDepth] = useState<'quick' | 'standard' | 'deep' | 'deep_research'>(user?.preferences?.default_depth ?? 'standard')
+  
+  const initialState: ResearchFormState = {
+    query: '',
+    showAdvanced: false,
+    error: '',
+    paradigm: 'auto',
+    depth: 'standard',
+    options: {
+      depth: 'standard',
+      include_secondary: true,
+      max_sources: 50,
+      enable_real_search: true,
+      language: 'en',
+      region: 'us',
+      enable_ai_classification: true
+    }
+  }
 
-  const [options, setOptions] = useState<ResearchOptions>({
-    depth: user?.preferences?.default_depth || 'standard',
-    include_secondary: true,
-    max_sources: 50,
-    enable_real_search: user?.preferences?.enable_real_search !== false,
-    language: 'en',
-    region: 'us',
-    enable_ai_classification: true
-  })
+  const [state, dispatch] = useReducer(formReducer, initialState)
 
+  // Initialize from user preferences
   useEffect(() => {
-    // Update options when user preferences change
     if (user?.preferences) {
-      setOptions(prev => ({
-        ...prev,
-        depth: user.preferences?.default_depth || prev.depth,
-        enable_real_search: user.preferences?.enable_real_search !== false,
-      }))
+      dispatch({
+        type: 'INIT_FROM_PREFERENCES',
+        payload: {
+          depth: user.preferences.default_depth || 'standard',
+          enable_real_search: user.preferences.enable_real_search !== false
+        }
+      })
     }
   }, [user])
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault()
-    setError('')
-
-    const trimmedQuery = query.trim()
+    
+    const trimmedQuery = state.query.trim()
     if (!trimmedQuery) {
-      setError('Please enter a research query')
+      dispatch({ type: 'SET_ERROR', payload: 'Please enter a research query' })
       return
     }
 
     if (trimmedQuery.length < 10) {
-      setError('Query must be at least 10 characters long')
+      dispatch({ type: 'SET_ERROR', payload: 'Query must be at least 10 characters long' })
       return
     }
 
-    onSubmit(trimmedQuery, { ...options, depth })
-  }
+    onSubmit(trimmedQuery, state.options)
+  }, [state.query, state.options, onSubmit])
 
-  const paradigmOptions = [
+  const paradigmOptions = useMemo(() => [
     { value: 'auto', label: 'Auto', icon: '🔮', description: 'Let AI choose', colorClass: 'text-purple-600 dark:text-purple-400' },
     { value: 'dolores', label: 'Dolores', icon: '🛡️', description: 'Truth & Justice', colorClass: 'text-paradigm-dolores' },
     { value: 'bernard', label: 'Bernard', icon: '🧠', description: 'Analysis & Logic', colorClass: 'text-paradigm-bernard' },
     { value: 'teddy', label: 'Teddy', icon: '❤️', description: 'Care & Support', colorClass: 'text-paradigm-teddy' },
     { value: 'maeve', label: 'Maeve', icon: '📈', description: 'Strategy & Power', colorClass: 'text-paradigm-maeve' }
-  ]
+  ], [])
+
+  // Currently not used - for future deep research feature
+  // const _depthOptions = useMemo(() => [
+  //   { value: 'quick', label: 'Quick', description: 'Fast overview (5-10 sources)' },
+  //   { value: 'standard', label: 'Standard', description: 'Balanced research (10-25 sources)' },
+  //   { value: 'deep', label: 'Deep', description: 'Comprehensive analysis (25-50 sources)' },
+  //   { value: 'deep_research', label: 'Deep Research', description: 'Exhaustive investigation (50+ sources)', pro: true }
+  // ], [])
+
+  const handleQueryChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    dispatch({ type: 'SET_QUERY', payload: e.target.value })
+  }, [])
+
+  const handleParadigmSelect = useCallback((value: string) => {
+    dispatch({ type: 'SET_PARADIGM', payload: value })
+  }, [])
+
+  // Currently not used - for future depth selection
+  // const _handleDepthChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+  //   dispatch({ type: 'SET_DEPTH', payload: e.target.value as ResearchFormState['depth'] })
+  // }, [])
+
+  const toggleAdvanced = useCallback(() => {
+    dispatch({ type: 'TOGGLE_ADVANCED' })
+  }, [])
+
+  // Currently not used - for future access control
+  // const _canAccessDeepResearch = user?.role && ['pro', 'enterprise', 'admin'].includes(user.role)
 
   return (
     <form onSubmit={handleSubmit} className="card-hover animate-fade-in">
@@ -76,20 +188,17 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
           <InputField
             id="query"
             textarea
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value)
-              setError('')
-            }}
+            value={state.query}
+            onChange={handleQueryChange}
             placeholder="What would you like to research today?"
             rows={3}
             disabled={isLoading}
-            status={error ? 'error' : undefined}
-            errorMessage={error}
+            status={state.error ? 'error' : undefined}
+            errorMessage={state.error}
             className="border-2"
             required
             minLength={10}
-            aria-describedby={error ? "query-error" : undefined}
+            aria-describedby={state.error ? "query-error" : undefined}
           />
         </div>
 
@@ -103,21 +212,21 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
               <button
                 key={option.value}
                 type="button"
-                onClick={() => setParadigm(option.value)}
+                onClick={() => handleParadigmSelect(option.value)}
                 disabled={isLoading}
                 className={`relative p-3 rounded-lg border transition-colors
-                  ${paradigm === option.value
+                  ${state.paradigm === option.value
                     ? 'border-primary bg-primary/10 shadow-md'
                     : 'border-border hover:border-text-subtle bg-surface'
                   }
                   ${isLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-lg'}
                   group`}
-                aria-pressed={paradigm === option.value}
+                aria-pressed={state.paradigm === option.value}
                 aria-label={`${option.label}: ${option.description}`}
               >
                 <div className="text-center">
                   <div className={`text-2xl mb-1 ${
-                    paradigm === option.value ? 'animate-fade-in' : ''
+                    state.paradigm === option.value ? 'animate-fade-in' : ''
                   }`}>
                     {option.icon}
                   </div>
@@ -128,7 +237,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                     {option.description}
                   </div>
                 </div>
-                {paradigm === option.value && (
+                {state.paradigm === option.value && (
                   <div className="absolute inset-0 rounded-lg bg-primary/5 pointer-events-none" />
                 )}
               </button>
@@ -151,10 +260,10 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
               <button
                 key={option.value}
                 type="button"
-                onClick={() => setDepth(option.value as 'quick' | 'standard' | 'deep' | 'deep_research')}
+                onClick={() => dispatch({ type: 'SET_DEPTH', payload: option.value as 'quick' | 'standard' | 'deep' | 'deep_research' })}
                 disabled={isLoading || (option.value === 'deep_research' && user?.role === 'free')}
                 className={`flex-1 p-3 rounded-lg border transition-colors
-                  ${depth === option.value
+                  ${state.depth === option.value
                     ? 'border-primary bg-primary/10 shadow-md'
                     : 'border-border hover:border-text-subtle bg-surface'
                   }
@@ -178,24 +287,24 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
         <div className="animate-slide-up" style={{ animationDelay: '300ms' }}>
           <button
             type="button"
-            onClick={() => setShowAdvanced(!showAdvanced)}
+            onClick={toggleAdvanced}
             className="flex items-center gap-2 text-sm text-primary hover:text-primary/80 transition-colors"
           >
-            <Settings2 className={`h-4 w-4 transition-transform ${showAdvanced ? 'rotate-90' : ''}`} />
-            {showAdvanced ? 'Hide' : 'Show'} Advanced Options
+            <Settings2 className={`h-4 w-4 transition-transform ${state.showAdvanced ? 'rotate-90' : ''}`} />
+            {state.showAdvanced ? 'Hide' : 'Show'} Advanced Options
           </button>
         </div>
 
         {/* Advanced Options */}
-        {showAdvanced && (
+        {state.showAdvanced && (
           <div className="animate-slide-up space-y-4 p-4 bg-surface-subtle rounded-lg">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="flex items-center cursor-pointer group">
                   <input
                     type="checkbox"
-                    checked={options.enable_ai_classification}
-                    onChange={(e) => setOptions({ ...options, enable_ai_classification: e.target.checked })}
+                    checked={state.options.enable_ai_classification}
+                    onChange={(e) => dispatch({ type: 'UPDATE_OPTIONS', payload: { enable_ai_classification: e.target.checked } })}
                     className="h-4 w-4 text-primary focus:ring-primary border-border rounded"
                   />
                   <span className="ml-2 text-sm text-text">
@@ -212,8 +321,8 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                   type="number"
                   min="10"
                   max="200"
-                  value={options.max_sources || 100}
-                  onChange={(e) => setOptions({ ...options, max_sources: parseInt(e.target.value) })}
+                  value={state.options.max_sources || 100}
+                  onChange={(e) => dispatch({ type: 'UPDATE_OPTIONS', payload: { max_sources: parseInt(e.target.value) } })}
                   className="input text-sm"
                 />
               </div>
@@ -225,7 +334,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
         <div className="animate-slide-up" style={{ animationDelay: '400ms' }}>
           <Button
             type="submit"
-            disabled={!query.trim()}
+            disabled={!state.query.trim()}
             loading={isLoading}
             fullWidth
             icon={Users}

@@ -1,0 +1,5 @@
+{
+  "hooks": {
+    "postEdit": "/home/azureuser/4hosts/.claude/hooks/post-edit-cleanup.sh"
+  }
+}

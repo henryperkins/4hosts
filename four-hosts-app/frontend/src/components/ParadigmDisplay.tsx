@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { ParadigmClassification } from '../types'
 import { paradigmInfo, type Paradigm } from '../constants/paradigm'
 
@@ -5,7 +6,7 @@ interface ParadigmDisplayProps {
   classification: ParadigmClassification
 }
 
-function ParadigmDisplay({ classification }: ParadigmDisplayProps) {
+const ParadigmDisplayComponent = ({ classification }: ParadigmDisplayProps) => {
   // Validate that we have a valid primary paradigm
   if (!classification?.primary || !paradigmInfo[classification.primary as Paradigm]) {
     return (
@@ -79,4 +80,5 @@ function ParadigmDisplay({ classification }: ParadigmDisplayProps) {
   )
 }
 
+const ParadigmDisplay = memo(ParadigmDisplayComponent)
 export default ParadigmDisplay

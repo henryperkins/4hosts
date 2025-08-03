@@ -4,7 +4,7 @@ import { AlertCircle } from 'lucide-react'
 import { LoadingSpinner } from './ui/LoadingSpinner'
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from './ui/Card'
 import { Button } from './ui/Button'
-import { Alert } from './ui/Alert'
+// Alert component not currently used
 import { ResultsDisplayEnhanced } from './ResultsDisplayEnhanced'
 import { ResultsDisplayIdeaBrowser } from './ResultsDisplayIdeaBrowser'
 import api from '../services/api'
@@ -88,11 +88,11 @@ export const ResearchResultPage = () => {
               >
                 Go Back
               </Button>
-              <Button variant="primary" asChild>
-                <Link to="/history">
+              <Link to="/history">
+                <Button variant="primary">
                   View History
-                </Link>
-              </Button>
+                </Button>
+              </Link>
             </div>
           </CardFooter>
         </Card>

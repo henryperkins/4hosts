@@ -70,6 +70,7 @@ class User(BaseModel):
     id: str
     email: EmailStr
     username: str
+    full_name: Optional[str] = None
     role: UserRole = UserRole.FREE
     is_active: bool = True
     is_verified: bool = False
@@ -511,8 +512,13 @@ class AuthService:
                 id=str(db_user.id),
                 email=str(db_user.email),
                 username=str(db_user.username),
+                full_name=str(db_user.full_name) if db_user.full_name else None,
                 role=UserRole(db_user.role),
                 auth_provider=AuthProvider(db_user.auth_provider),
+                is_active=bool(db_user.is_active),
+                is_verified=bool(db_user.is_verified),
+                created_at=db_user.created_at,
+                last_login=db_user.last_login,
             )
 
             logger.info(f"Created user: {user.email}")
@@ -564,8 +570,13 @@ class AuthService:
                 id=str(db_user.id),
                 email=str(db_user.email),
                 username=str(db_user.username),
+                full_name=str(db_user.full_name) if db_user.full_name else None,
                 role=UserRole(db_user.role),
                 auth_provider=AuthProvider(db_user.auth_provider),
+                is_active=bool(db_user.is_active),
+                is_verified=bool(db_user.is_verified),
+                created_at=db_user.created_at,
+                last_login=db_user.last_login,
             )
 
             return user
