@@ -62,6 +62,9 @@ class APIService {
       Accept: 'application/json',
       ...(options.headers as Record<string, string> || {}),
     }
+    
+    // Remove any Authorization header since we're using cookies
+    delete headers['Authorization']
 
     // Add CSRF token for state-changing requests
     if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(options.method || 'GET')) {
@@ -125,11 +128,19 @@ class APIService {
         this.processFailedQueue(null, 'refreshed');
         // Add small delay to ensure cookies are set
         await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // After successful refresh, clear CSRF token to force refresh on next request
+        CSRFProtection.clearToken();
+        
         return this.fetchWithAuth(url, options, true);
       } catch (error) {
         console.error('Token refresh failed:', error);
         this.processFailedQueue(error instanceof Error ? error : new Error('Unknown error'), null);
-        this.logout(); // Or handle logout more gracefully
+        
+        // Clear auth state on token refresh failure
+        const { useAuthStore } = await import('../store/authStore')
+        useAuthStore.getState().reset()
+        
         return Promise.reject(error);
       } finally {
         this.isRefreshing = false;
@@ -227,14 +238,29 @@ class APIService {
 
   async logout(): Promise<void> {
     try {
-      await this.fetchWithAuth('/auth/logout', {
-        method: 'POST'
-        // No body needed - cookies will be cleared by backend
+      // Don't use fetchWithAuth for logout to avoid infinite loops
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      }
+      
+      // Add CSRF token if available
+      const csrfToken = await CSRFProtection.getToken()
+      if (csrfToken) {
+        headers['X-CSRF-Token'] = csrfToken
+      }
+      
+      const fullUrl = API_BASE_URL ? `${API_BASE_URL}/auth/logout` : '/auth/logout';
+      await fetch(fullUrl, {
+        method: 'POST',
+        headers,
+        credentials: 'include'
       })
     } catch {
       // If logout fails (e.g., 401), we still want to clear session
       // Logout request failed, but cookies will expire
     }
+    
     // Clear CSRF token on logout
     CSRFProtection.clearToken()
     this.disconnectWebSocket()
@@ -247,9 +273,18 @@ class APIService {
   async getCurrentUser(): Promise<User> {
     const response = await this.fetchWithAuth('/auth/user')
     if (!response.ok) {
-      throw new Error('Failed to get current user')
+      const errorData = await response.json().catch(() => null)
+      const message = errorData?.detail || 'Failed to get current user'
+      throw new Error(message)
     }
-    return await response.json()
+    const userData = await response.json()
+    
+    // Ensure the user data has the expected shape
+    if (!userData.id || !userData.email) {
+      throw new Error('Invalid user data received from server')
+    }
+    
+    return userData
   }
 
   // Research APIs

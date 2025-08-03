@@ -1008,13 +1008,30 @@ class LogoutRequest(BaseModel):
 
 # Optional auth dependency for logout
 async def get_current_user_optional(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Security(HTTPBearer(auto_error=False))
 ) -> Optional[TokenData]:
     """Get current user if authenticated, None otherwise"""
-    if not credentials:
+    # Check cookies first, then Authorization header
+    token: Optional[str] = request.cookies.get("access_token")
+    
+    # Token provided via normal HTTPBearer dependency
+    if not token and credentials and credentials.credentials:
+        token = credentials.credentials
+    
+    # Manually inspect Authorization header if not captured
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+    
+    if not token:
         return None
+    
     try:
-        return await auth_get_current_user(credentials)
+        # Create a mock HTTPAuthorizationCredentials object for auth_get_current_user
+        mock_credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        return await auth_get_current_user(mock_credentials)
     except Exception:
         return None
 
@@ -1022,7 +1039,8 @@ async def get_current_user_optional(
 @app.post("/auth/logout", tags=["authentication"])
 async def logout(
     response: Response,
-    request: Optional[LogoutRequest] = None,
+    request: Request,
+    logout_data: Optional[LogoutRequest] = None,
     current_user: Optional[TokenData] = Depends(get_current_user_optional),
 ):
     """Logout user by revoking tokens and clearing cookies"""
@@ -1030,7 +1048,7 @@ async def logout(
     if not current_user:
         return {"message": "Successfully logged out"}
 
-    refresh_token = request.refresh_token if request else None
+    refresh_token = logout_data.refresh_token if logout_data else None
     # Revoke the access token using its JTI
     if current_user and current_user.jti:
         await real_auth_service.revoke_token(
@@ -1066,14 +1084,14 @@ async def update_user_preferences(
 ):
     """Update the current user's preferences"""
     success = await user_profile_service.update_user_preferences(
-        uuid.UUID(str(current_user.id)), payload.preferences
+        uuid.UUID(str(current_user.user_id)), payload.preferences
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update preferences")
 
     # Return updated profile
     profile = await user_profile_service.get_user_profile(
-        uuid.UUID(str(current_user.id))
+        uuid.UUID(str(current_user.user_id))
     )
     return profile
 
@@ -1082,7 +1100,7 @@ async def update_user_preferences(
 async def get_user_preferences(current_user = Depends(get_current_user)):
     """Retrieve the current user's preferences"""
     profile = await user_profile_service.get_user_profile(
-        uuid.UUID(str(current_user.id))
+        uuid.UUID(str(current_user.user_id))
     )
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1127,7 +1145,7 @@ async def classify_paradigm(payload: ClassifyRequest, current_user = Depends(get
             "suggested_approach": get_paradigm_approach_suggestion(
                 classification.primary
             ),
-            "user_id": str(current_user.id),
+            "user_id": str(current_user.user_id),
         }
     except Exception as e:
         logger.error(f"Classification error: {str(e)}")
@@ -1149,7 +1167,7 @@ async def override_paradigm(
         raise HTTPException(status_code=404, detail="Research not found")
 
     # Ownership / permission check
-    if (research["user_id"] != str(current_user.id)) and current_user.role != UserRole.ADMIN:
+    if (research["user_id"] != str(current_user.user_id)) and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Update paradigm and reset status
@@ -1163,7 +1181,7 @@ async def override_paradigm(
             options=ResearchOptions(**research["options"]),
         )
         background_tasks.add_task(
-            execute_real_research, payload.research_id, research_query, str(current_user.id)
+            execute_real_research, payload.research_id, research_query, str(current_user.user_id)
         )
     except Exception as e:
         logger.warning(f"Failed to re-queue research {payload.research_id}: {e}")
@@ -1238,7 +1256,7 @@ async def submit_research(
         # Store research request
         research_data = {
             "id": research_id,
-            "user_id": str(current_user.id),
+            "user_id": str(current_user.user_id),
             "query": research.query,
             "options": research.options.dict(),
             "status": ResearchStatus.PROCESSING,
@@ -1250,13 +1268,13 @@ async def submit_research(
 
         # Execute real research
         background_tasks.add_task(
-            execute_real_research, research_id, research, str(current_user.id)
+            execute_real_research, research_id, research, str(current_user.user_id)
         )
 
         # Track in WebSocket
         await progress_tracker.start_research(
             research_id,
-            str(current_user.id),
+            str(current_user.user_id),
             research.query,
             classification.primary.value,
             research.options.depth.value,
@@ -1267,7 +1285,7 @@ async def submit_research(
             WebhookEvent.RESEARCH_STARTED,
             {
                 "research_id": research_id,
-                "user_id": str(current_user.id),
+                "user_id": str(current_user.user_id),
                 "query": research.query,
                 "paradigm": classification.primary.value,
             },
@@ -1328,7 +1346,7 @@ async def get_research_status(
     }
     # Store in cache with short TTL for hot polling
     try:
-        if research["user_id"] == str(current_user.id):
+        if research["user_id"] == str(current_user.user_id):
             from services.cache import research_status_cache
             await research_status_cache().set(research_id, status_response, ttl_seconds=10)
     except Exception:
@@ -1452,7 +1470,7 @@ async def cancel_research(
         # Update status to cancelled
         await research_store.update_field(research_id, "status", ResearchStatus.CANCELLED)
         await research_store.update_field(research_id, "cancelled_at", datetime.utcnow().isoformat())
-        await research_store.update_field(research_id, "cancelled_by", str(current_user.id))
+        await research_store.update_field(research_id, "cancelled_by", str(current_user.user_id))
 
         # Update progress tracker with cancellation
         try:
@@ -1469,7 +1487,7 @@ async def cancel_research(
                 data={
                     "research_id": research_id,
                     "message": "Research cancelled by user",
-                    "cancelled_by": str(current_user.id)
+                    "cancelled_by": str(current_user.user_id)
                 }
             )
             await connection_manager.broadcast_to_research(research_id, cancel_message)
@@ -1482,9 +1500,9 @@ async def cancel_research(
                 WebhookEvent.RESEARCH_CANCELLED,
                 {
                     "research_id": research_id,
-                    "user_id": str(current_user.id),
+                    "user_id": str(current_user.user_id),
                     "message": "Research cancelled by user",
-                    "cancelled_by": str(current_user.id),
+                    "cancelled_by": str(current_user.user_id),
                     "cancelled_at": datetime.utcnow().isoformat()
                 },
             )
@@ -1501,7 +1519,7 @@ async def cancel_research(
         logger.error(f"Failed to cancel research {research_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to cancel research")
 
-    logger.info(f"Research {research_id} cancelled by user {current_user.id}")
+    logger.info(f"Research {research_id} cancelled by user {current_user.user_id}")
 
     return {
         "research_id": research_id,
@@ -1561,7 +1579,7 @@ async def get_research_history(
     try:
         # Get research history for user
         user_research = await research_store.get_user_research(
-            str(current_user.id), limit + offset
+            str(current_user.user_id), limit + offset
         )
 
         # Sort by creation date (newest first)
@@ -1664,7 +1682,7 @@ async def submit_deep_research(
         # Store and execute
         research_data = {
             "id": research_id,
-            "user_id": str(current_user.id),
+            "user_id": str(current_user.user_id),
             "query": research_query.query, # Access query from the Pydantic model
             "options": research.options.dict(),
             "status": ResearchStatus.PROCESSING,
@@ -1677,13 +1695,13 @@ async def submit_deep_research(
 
         # Execute in background
         background_tasks.add_task(
-            execute_real_research, research_id, research, str(current_user.id)
+            execute_real_research, research_id, research, str(current_user.user_id)
         )
 
         # Track in WebSocket
         await progress_tracker.start_research(
             research_id,
-            str(current_user.id),
+            str(current_user.user_id),
             research_query.query, # Access query from the Pydantic model
             research_query.paradigm.value if research_query.paradigm else "auto",
             "deep_research",
@@ -1831,7 +1849,7 @@ async def get_domain_credibility(
             "fact_check_rating": credibility.fact_check_rating,
             "paradigm_alignment": credibility.paradigm_alignment,
             "reputation_factors": credibility.reputation_factors,
-            "checked_by": str(current_user.id),
+            "checked_by": str(current_user.user_id),
         }
     except Exception as e:
         logger.error(f"Credibility check error: {str(e)}")

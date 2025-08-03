@@ -145,13 +145,15 @@ export const useAuthStore = create<AuthState>()(
 
         checkAuth: async () => {
           try {
+            set({ loading: true })
             const user = await api.getCurrentUser()
             set({
               isAuthenticated: true,
               user,
               loading: false
             })
-          } catch {
+          } catch (error) {
+            console.log('Auth check failed:', error)
             set({
               isAuthenticated: false,
               user: null,
@@ -178,9 +180,12 @@ export const useAuthStore = create<AuthState>()(
         name: 'auth-store',
         version: 3, // Increment version to force storage reset
         storage: createJSONStorage(() => sessionStorage), // Use sessionStorage for better security
-        partialize: () => ({
+        partialize: (state) => ({
           // Don't persist authentication state - always verify with backend
           // This prevents stale auth state issues
+          // Only persist non-sensitive UI state if needed
+          wsConnected: state.wsConnected,
+          activeResearchId: state.activeResearchId
         }),
         onRehydrateStorage: () => (state) => {
           // Always check auth status with backend on app load
