@@ -12,7 +12,9 @@ export const AuthUserSchema = z.object({
   id: z.string(),
   email: z.string().email(),
   name: z.string().optional(),
-  role: z.enum(['FREE', 'BASIC', 'PRO', 'ENTERPRISE', 'ADMIN', 'free', 'basic', 'pro', 'enterprise', 'admin']),
+  role: z.enum(['FREE', 'BASIC', 'PRO', 'ENTERPRISE', 'ADMIN']).or(
+    z.enum(['free', 'basic', 'pro', 'enterprise', 'admin']).transform(val => val.toUpperCase() as 'FREE' | 'BASIC' | 'PRO' | 'ENTERPRISE' | 'ADMIN')
+  ),
   created_at: z.string(),
   is_active: z.boolean()
 })

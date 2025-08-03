@@ -97,8 +97,19 @@ class APIService {
       }
     }
 
-    if (response.status === 401 && !isRetry) {
+    if (response.status === 401) {
+      console.log(`401 error for ${url}, isRetry: ${isRetry}`);
+      
+      if (isRetry) {
+        // Already retried after refresh, authentication failed
+        console.error('Authentication failed after token refresh');
+        this.logout();
+        const errorMessage = 'Authentication required. Please log in again.';
+        return Promise.reject(new Error(errorMessage));
+      }
+      
       if (this.isRefreshing) {
+        console.log('Token refresh already in progress, queuing request');
         return new Promise((resolve, reject) => {
           this.failedQueue.push({ resolve, reject });
         })
@@ -106,12 +117,17 @@ class APIService {
       }
 
       this.isRefreshing = true;
+      console.log('Starting token refresh');
 
       try {
-        const newTokens = await this.refreshToken();
-        this.processFailedQueue(null, newTokens.access_token);
+        await this.refreshToken();
+        console.log('Token refresh successful, retrying request');
+        this.processFailedQueue(null, 'refreshed');
+        // Add small delay to ensure cookies are set
+        await new Promise(resolve => setTimeout(resolve, 100));
         return this.fetchWithAuth(url, options, true);
       } catch (error) {
+        console.error('Token refresh failed:', error);
         this.processFailedQueue(error instanceof Error ? error : new Error('Unknown error'), null);
         this.logout(); // Or handle logout more gracefully
         return Promise.reject(error);
@@ -123,7 +139,7 @@ class APIService {
     return response;
   }
 
-  async refreshToken(): Promise<AuthTokenResponse> {
+  async refreshToken(): Promise<void> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json',
@@ -146,9 +162,8 @@ class APIService {
       }
     }
 
-    const tokens = await response.json();
-    // Tokens now stored as httpOnly cookies by backend
-    return tokens;
+    // Backend sets new tokens as httpOnly cookies
+    // No need to handle response data
   }
 
   async register(username: string, email: string, password: string): Promise<AuthTokenResponse> {
@@ -223,6 +238,10 @@ class APIService {
     // Clear CSRF token on logout
     CSRFProtection.clearToken()
     this.disconnectWebSocket()
+    
+    // Clear auth store state to ensure frontend/backend sync
+    const { useAuthStore } = await import('../store/authStore')
+    useAuthStore.getState().reset()
   }
 
   async getCurrentUser(): Promise<User> {

@@ -404,6 +404,7 @@ def get_csrf_token(request: Request, response: Response):
         httponly=False,
         secure=secure_flag,
         samesite=same_site,
+        path="/",
     )
     return {"csrf_token": token}
 
@@ -847,6 +848,7 @@ async def login(login_data: UserLogin, response: Response):
         secure=secure_flag,
         samesite=same_site,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
     )
     response.set_cookie(
         key="refresh_token",
@@ -855,6 +857,7 @@ async def login(login_data: UserLogin, response: Response):
         secure=secure_flag,
         samesite=same_site,
         max_age=60 * 60 * 24 * 7,  # 7 days
+        path="/",
     )
 
     # Return the expected format with user data
@@ -906,7 +909,7 @@ async def refresh_token(request: Request, response: Response):
 
         # Create new access token
         access_token = create_access_token(
-            {"user_id": str(user.id), "email": user.email, "role": user.role}
+            {"user_id": str(user.id), "email": user.email, "role": user.role.value}
         )
 
         # Set cookie attributes for cross-site compatibility
@@ -929,6 +932,7 @@ async def refresh_token(request: Request, response: Response):
             secure=secure_flag,
             samesite=same_site,
             max_age=60 * 60 * 24 * 7,  # 7 days
+            path="/",
         )
         return {"message": "Token refreshed"}
     finally:
@@ -1049,16 +1053,16 @@ async def logout(
     if current_user:
         await session_manager.end_all_user_sessions(current_user.user_id)
 
-    response.delete_cookie("access_token")
-    response.delete_cookie("refresh_token")
-    response.delete_cookie("csrf_token")
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
+    response.delete_cookie("csrf_token", path="/")
     return {"message": "Successfully logged out"}
 
 
 # --- User Preferences Endpoints ---
 @app.put("/auth/preferences", tags=["authentication"])
 async def update_user_preferences(
-    payload: PreferencesPayload, current_user: User = Depends(get_current_user)
+    payload: PreferencesPayload, current_user = Depends(get_current_user)
 ):
     """Update the current user's preferences"""
     success = await user_profile_service.update_user_preferences(
@@ -1075,7 +1079,7 @@ async def update_user_preferences(
 
 
 @app.get("/auth/preferences", tags=["authentication"])
-async def get_user_preferences(current_user: User = Depends(get_current_user)):
+async def get_user_preferences(current_user = Depends(get_current_user)):
     """Retrieve the current user's preferences"""
     profile = await user_profile_service.get_user_profile(
         uuid.UUID(str(current_user.id))
@@ -1090,7 +1094,7 @@ class ClassifyRequest(BaseModel):
     query: str
 
 @app.post("/paradigms/classify", tags=["paradigms"])
-async def classify_paradigm(payload: ClassifyRequest, current_user: User = Depends(get_current_user)):
+async def classify_paradigm(payload: ClassifyRequest, current_user = Depends(get_current_user)):
     """Classify a query into paradigms"""
     try:
         query = payload.query
@@ -1135,7 +1139,7 @@ async def classify_paradigm(payload: ClassifyRequest, current_user: User = Depen
 async def override_paradigm(
     payload: ParadigmOverrideRequest,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """
     Force a specific paradigm for an existing research request and restart processing.
@@ -1186,7 +1190,7 @@ async def get_paradigm_explanation(paradigm: Paradigm):
 async def submit_research(
     research: ResearchQuery,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Submit a research query for paradigm-based analysis"""
     if not system_initialized:
@@ -1289,7 +1293,7 @@ async def submit_research(
 
 @app.get("/research/status/{research_id}", tags=["research"])
 async def get_research_status(
-    research_id: str, current_user: User = Depends(get_current_user)
+    research_id: str, current_user = Depends(get_current_user)
 ):
     """Get the status of a research query (cached)"""
     # Attempt cached read first
@@ -1351,7 +1355,7 @@ async def get_research_status(
 
 @app.get("/research/results/{research_id}", tags=["research"])
 async def get_research_results(
-    research_id: str, current_user: User = Depends(get_current_user)
+    research_id: str, current_user = Depends(get_current_user)
 ):
     """Get completed research results (cached when completed)"""
     from services.cache import research_results_cache
@@ -1420,7 +1424,7 @@ async def get_research_results(
 
 @app.post("/research/cancel/{research_id}", tags=["research"])
 async def cancel_research(
-    research_id: str, current_user: User = Depends(get_current_user)
+    research_id: str, current_user = Depends(get_current_user)
 ):
     """Cancel an ongoing research query"""
     research = await research_store.get(research_id)
@@ -1512,7 +1516,7 @@ async def cancel_research(
 async def export_research(
     research_id: str,
     format: str = "pdf",
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Export research results (requires BASIC subscription or higher)"""
     # Check if user has BASIC role or higher
@@ -1551,7 +1555,7 @@ async def export_research(
 # Research History Endpoint
 @app.get("/research/history", tags=["research"])
 async def get_research_history(
-    current_user: User = Depends(get_current_user), limit: int = 10, offset: int = 0
+    current_user = Depends(get_current_user), limit: int = 10, offset: int = 0
 ):
     """Get user's research history"""
     try:
@@ -1616,7 +1620,7 @@ class ResearchDeepQuery(BaseModel):
 async def submit_deep_research(
     research_query: ResearchDeepQuery,
     background_tasks: BackgroundTasks = None,
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """
     Submit a query for deep research using o3-deep-research model.
@@ -1707,7 +1711,7 @@ async def submit_deep_research(
 async def resume_deep_research(
     research_id: str,
     background_tasks: BackgroundTasks = None,
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Resume an interrupted deep research task"""
     if not system_initialized:
@@ -1763,7 +1767,7 @@ async def resume_deep_research(
 
 @app.get("/research/deep/status", tags=["research"])
 async def get_deep_research_status(
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Get status of all deep research queries for the current user"""
     # Check if user has PRO role or higher
@@ -1813,7 +1817,7 @@ async def get_deep_research_status(
 async def get_domain_credibility(
     domain: str,
     paradigm: Paradigm = Paradigm.BERNARD,
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Get credibility score for a specific domain"""
     try:
@@ -1842,7 +1846,7 @@ async def submit_research_feedback(
     research_id: str,
     satisfaction_score: float = Body(..., ge=0.0, le=1.0),
     paradigm_feedback: Optional[str] = Body(None),
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Submit feedback for a research query to improve the system"""
     research = await research_store.get(research_id)
@@ -1877,7 +1881,7 @@ async def submit_research_feedback(
 
 # Test Deep Research (Development Only)
 @app.get("/test/deep-research", tags=["test"])
-async def test_deep_research(current_user: User = Depends(get_current_user)):
+async def test_deep_research(current_user = Depends(get_current_user)):
     """Test deep research functionality (Admin only)"""
     # Check if user has ADMIN role
     if current_user.role != UserRole.ADMIN:
@@ -1921,7 +1925,7 @@ async def test_deep_research(current_user: User = Depends(get_current_user)):
 
 # Orchestrator Status
 @app.get("/system/orchestrator", tags=["system"])
-async def get_orchestrator_status(current_user: User = Depends(get_current_user)):
+async def get_orchestrator_status(current_user = Depends(get_current_user)):
     """Get research orchestrator status and capabilities"""
     try:
         capabilities = research_orchestrator.get_capabilities()
@@ -1943,7 +1947,7 @@ async def get_orchestrator_status(current_user: User = Depends(get_current_user)
 
 # System Stats (Admin/Enterprise only)
 @app.get("/system/stats", tags=["system"])
-async def get_system_stats(current_user: User = Depends(get_current_user)):
+async def get_system_stats(current_user = Depends(get_current_user)):
     """Get system performance statistics"""
     if current_user.role not in [UserRole.ADMIN, UserRole.ENTERPRISE]:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -2020,7 +2024,7 @@ async def admin_force_paradigm_switch_endpoint(
     query_id: str,
     new_paradigm: str,
     reason: str,
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Force a paradigm switch for a query (Admin only)"""
     if current_user.role != UserRole.ADMIN:
@@ -2031,7 +2035,7 @@ async def admin_force_paradigm_switch_endpoint(
 
 @app.post("/admin/ml/retrain", tags=["admin"])
 async def admin_trigger_retraining(
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Trigger ML model retraining (Admin only)"""
     if current_user.role != UserRole.ADMIN:
@@ -2042,7 +2046,7 @@ async def admin_trigger_retraining(
 
 @app.get("/admin/system/health", tags=["admin"])
 async def admin_system_health(
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Get comprehensive system health report (Admin only)"""
     if current_user.role != UserRole.ADMIN:

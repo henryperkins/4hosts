@@ -176,20 +176,16 @@ export const useAuthStore = create<AuthState>()(
       }),
       {
         name: 'auth-store',
-        version: 2,
+        version: 3, // Increment version to force storage reset
         storage: createJSONStorage(() => sessionStorage), // Use sessionStorage for better security
-        partialize: (state) => ({
-          // Only persist minimal auth state
-          isAuthenticated: state.isAuthenticated,
-          user: state.user
+        partialize: () => ({
+          // Don't persist authentication state - always verify with backend
+          // This prevents stale auth state issues
         }),
         onRehydrateStorage: () => (state) => {
-          // Check auth status after rehydration
-          if (state?.isAuthenticated && state.user) {
-            state.checkAuth()
-          } else {
-            state?.setLoading(false)
-          }
+          // Always check auth status with backend on app load
+          // This ensures frontend and backend are synchronized
+          state?.checkAuth()
         }
       }
     )
