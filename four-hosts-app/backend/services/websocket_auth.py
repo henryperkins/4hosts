@@ -139,15 +139,13 @@ async def authenticate_websocket(
     authorization: Optional[str] = Header(None),
     sec_websocket_protocol: Optional[str] = Header(None),
     origin: Optional[str] = Header(None),
-    token_query: Optional[str] = Query(None, alias="token"),
 ) -> Optional[TokenData]:
     """
     Authenticate WebSocket connection with enhanced security
 
     1. Check Origin header against allowed origins
     2. Extract token from Authorization header or Sec-WebSocket-Protocol
-    3. Fall back to query parameter if needed (deprecated)
-    4. Validate token and check revocation
+    3. Validate token and check revocation
     """
 
     # 1. Verify Origin
@@ -182,12 +180,6 @@ async def authenticate_websocket(
                 token = protocol[13:]  # Remove "access_token." prefix
                 break
 
-    # Fall back to query parameter (deprecated, log warning)
-    if not token and token_query:
-        logger.warning(
-            f"WebSocket using deprecated query parameter authentication from {origin}"
-        )
-        token = token_query
 
     if not token:
         await websocket.close(code=1008, reason="Missing authentication token")

@@ -700,7 +700,6 @@ def create_websocket_router(
         user_agent: Optional[str] = Header(None),
         x_real_ip: Optional[str] = Header(None),
         x_forwarded_for: Optional[str] = Header(None),
-        token: Optional[str] = Query(None),  # Deprecated, for backward compatibility
     ):
         """Enhanced WebSocket endpoint with security features"""
         # Use secure authentication

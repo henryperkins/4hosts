@@ -72,7 +72,7 @@ from services.self_healing_system import self_healing_system
 from services.ml_pipeline import ml_pipeline
 
 # Import production services
-from services.auth_service import AuthService
+from services.auth import AuthService
 from fastapi.exceptions import RequestValidationError
 from services.rate_limiter import RateLimiter, RateLimitMiddleware
 from services.monitoring import (
@@ -127,15 +127,13 @@ from services.auth import (
 )
 
 # Handle session_manager import safely
-try:
-    from services.auth import session_manager
-except ImportError:
-    # Create a mock session manager if not available
-    class MockSessionManager:
-        async def end_all_user_sessions(self, user_id: str):
-            pass
+# Session manager removed - no longer needed
+# Create a mock session manager for backward compatibility
+class MockSessionManager:
+    async def end_all_user_sessions(self, user_id: str):
+        pass
 
-    session_manager = MockSessionManager()
+session_manager = MockSessionManager()
 from services.token_manager import token_manager
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
