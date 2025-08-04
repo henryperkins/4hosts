@@ -1012,20 +1012,20 @@ async def get_current_user_optional(
     """Get current user if authenticated, None otherwise"""
     # Check cookies first, then Authorization header
     token: Optional[str] = request.cookies.get("access_token")
-    
+
     # Token provided via normal HTTPBearer dependency
     if not token and credentials and credentials.credentials:
         token = credentials.credentials
-    
+
     # Manually inspect Authorization header if not captured
     if not token:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.lower().startswith("bearer "):
             token = auth_header[7:]
-    
+
     if not token:
         return None
-    
+
     try:
         # Create a mock HTTPAuthorizationCredentials object for auth_get_current_user
         mock_credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
