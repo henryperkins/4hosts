@@ -14,6 +14,12 @@ from .classification_engine import ClassificationEngine, HostParadigm
 from models.context_models import HostParadigm as ModelHostParadigm
 from models.synthesis_models import SynthesisContext
 from .result_adapter import ResultAdapter, ResultListAdapter, adapt_results
+from backend.contracts import (
+    GeneratedAnswer as ContractAnswer,
+    ResearchStatus as ContractStatus,
+    to_source as contract_to_source,
+)
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +132,19 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
             if primary_paradigm is None:
                 raise ValueError("primary_paradigm must be supplied when using the context signature")
 
+            # Early zero-source guard (PR1): return structured failure, not None
+            try:
+                if not context.search_results:
+                    return ContractAnswer(
+                        status=ContractStatus.FAILED_NO_SOURCES,
+                        content_md="",
+                        citations=[],
+                        diagnostics={"reason": "no_sources"},
+                    )
+            except Exception:
+                # Defensive – continue to normal path
+                pass
+
             return await self._generate_from_context_with_fallback(context, primary_paradigm, secondary_paradigm)
 
         # ------------------------------------------------------------------
@@ -177,6 +196,15 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
         # Deep-research content may be attached via the options dict
         if dr_content := options.get("deep_research_content"):
             context.deep_research_content = dr_content  # type: ignore[attr-defined]
+
+        # Early zero-source guard (PR1) for legacy call path
+        if not context.search_results:
+            return ContractAnswer(
+                status=ContractStatus.FAILED_NO_SOURCES,
+                content_md="",
+                citations=[],
+                diagnostics={"reason": "no_sources"},
+            )
 
         return await self._generate_from_context_with_fallback(context, primary_paradigm_enum, secondary_paradigm)
 
@@ -278,6 +306,21 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
                 raise ValueError(f"No generator registered for paradigm {primary_paradigm}")
             primary_answer = await generator.generate_answer(context)
 
+            # Enforce non-null return (PR1)
+            if primary_answer is None:
+                from backend.contracts import GeneratedAnswer, ResearchStatus, Source, to_source
+
+                logger.warning("Generator returned None; substituting FAILED_NO_SOURCES answer")
+
+                minimal_sources = [to_source(r) for r in (context.search_results or [])][:3]
+
+                primary_answer = GeneratedAnswer(
+                    status=ResearchStatus.FAILED_NO_SOURCES,
+                    content_md="",
+                    citations=minimal_sources,
+                    diagnostics={"reason": "generator_returned_none"},
+                )
+
             # Record performance metrics
             response_time = (datetime.now() - start_time).total_seconds()
             await self_healing_system.record_query_performance(
@@ -298,24 +341,17 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
                     synthesis_quality=primary_answer.synthesis_quality,
                 )
 
-            # Handle secondary paradigm if provided
+            # Handle secondary paradigm if provided (legacy mesh integration removed)
             if secondary_paradigm:
                 secondary_generator = self.generators.get(secondary_paradigm) or self.generators.get(secondary_paradigm.value)
                 if secondary_generator is None:
                     secondary_generator = generator  # Fallback to primary to avoid crash
-                secondary_answer = await secondary_generator.generate_answer(context)
-
-                # Integrate using mesh network
-                integrated = await self.mesh_network.integrate_paradigm_results(
-                    primary_answer, secondary_answer
-                )
-
-                # Update primary answer with integrated content
-                primary_answer.secondary_perspective = integrated.secondary_perspective
+                _ = await secondary_generator.generate_answer(context)
+                # Record minimal integration metadata without mesh network dependency
                 primary_answer.metadata["integration"] = {
                     "secondary_paradigm": secondary_paradigm.value,
-                    "conflicts": len(integrated.conflicts_identified),
-                    "synergies": len(integrated.synergies),
+                    "conflicts": 0,
+                    "synergies": 0,
                 }
 
             return primary_answer
@@ -335,9 +371,30 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
                 response_time=(datetime.now() - start_time).total_seconds(),
             )
 
-            # Partial success policy: return minimal answer with metadata
-            return await self._create_minimal_answer_with_fallback(
-                context, primary_paradigm, secondary_paradigm, errors, failed_paths
+            # Structured failure (PR1): return contracts.GeneratedAnswer with explicit status
+            status = (
+                ContractStatus.TIMEOUT
+                if isinstance(e, (asyncio.TimeoutError,))
+                else ContractStatus.TOOL_ERROR
+            )
+            # Include a few citations when sources exist
+            citations = []
+            try:
+                adapted = context.search_results or []
+                for item in (adapted[:3] if isinstance(adapted, list) else []):
+                    citations.append(contract_to_source(item))
+            except Exception:
+                citations = []
+
+            return ContractAnswer(
+                status=status,
+                content_md="",
+                citations=citations,
+                diagnostics={
+                    "reason": "generation_exception",
+                    "error": error_msg,
+                    "failed_paths": failed_paths,
+                },
             )
     
     async def _create_minimal_answer_with_fallback(

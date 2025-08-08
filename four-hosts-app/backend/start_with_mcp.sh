@@ -64,7 +64,7 @@ if [ -d "venv" ]; then
 fi
 
 # Start the application
-python main.py
+python main_new.py
 
 # Cleanup on exit
 if [ -f .mcp_server.pid ]; then

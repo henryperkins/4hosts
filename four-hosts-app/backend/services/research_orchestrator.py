@@ -9,6 +9,9 @@ from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, field
+
+# Contracts
+from backend.contracts import ResearchStatus  # type: ignore
 import hashlib
 # json import removed (unused)
 import re
@@ -43,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+# NOTE: `ResearchStatus` introduced via contracts (PR1)
+# status defaults to OK but may indicate specific failure modes such as
+# FAILED_NO_SOURCES when the orchestrator could not find any relevant data.
 class ResearchExecutionResult:
     """Complete research execution result"""
     original_query: str
@@ -55,6 +61,7 @@ class ResearchExecutionResult:
     # Alias to avoid AttributeError in any consumer expecting 'results'
     # Note: property defined below to mirror filtered_results
     credibility_scores: Dict[str, float]  # Domain -> score
+    status: ResearchStatus = ResearchStatus.OK
     execution_metrics: Dict[str, Any]
     cost_breakdown: Dict[str, float]
     secondary_results: List[SearchResult] = field(default_factory=list)
@@ -978,6 +985,13 @@ class UnifiedResearchOrchestrator:
             metrics = metrics_dict
 
         # Create execution result
+        # Determine execution status based on availability of results
+        execution_status = (
+            ResearchStatus.FAILED_NO_SOURCES
+            if len(final_results) == 0
+            else ResearchStatus.OK
+        )
+
         result = ResearchExecutionResult(
             original_query=original_query,
             paradigm=paradigm,
@@ -989,6 +1003,7 @@ class UnifiedResearchOrchestrator:
             credibility_scores=credibility_scores,
             execution_metrics=metrics,
             cost_breakdown=cost_breakdown,
+            status=execution_status,
         )
 
         # Store in history
@@ -1800,7 +1815,8 @@ class UnifiedResearchOrchestrator:
                         "final_results_count": 0,
                         "deep_research_enabled": True
                     },
-                    cost_breakdown={}
+                    cost_breakdown={},
+                    status=ResearchStatus.FAILED_NO_SOURCES
                 )
             except Exception as e:
                 logger.error(f"Failed to construct minimal ResearchExecutionResult: {e}")

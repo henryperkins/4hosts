@@ -33,7 +33,6 @@ backend/
 │   ├── auth/               # Modularized authentication
 │   │   ├── password.py     # Password utilities
 │   │   └── tokens.py       # JWT token utilities
-│   ├── research_executor.py # Background research execution
 │   └── [existing services...]
 └── main_new.py             # New streamlined main application
 ```
@@ -60,7 +59,7 @@ backend/
 - **security.py**: CSRF protection, security headers, malicious request blocking
 
 #### Services Enhancements
-- **research_executor.py**: Extracted complex background research execution logic
+- Legacy cleanup: Removed unused `research_executor.py` after consolidating orchestration
 - **auth/**: Modularized authentication service with separate password and token utilities
 
 ### 3. Key Improvements
