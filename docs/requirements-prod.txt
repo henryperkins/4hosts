@@ -19,7 +19,7 @@ hiredis==2.3.2
 # Authentication
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
+python-multipart==0.0.18
 httpx==0.26.0
 
 # Monitoring & Logging
@@ -38,7 +38,7 @@ tenacity==8.2.3
 aiocache==0.12.2
 
 # Security
-cryptography==42.0.0
+cryptography==44.0.1
 
 # AI/ML Integration (mock implementations)
 openai==1.9.0
@@ -52,7 +52,7 @@ pandas==2.1.4
 # Export functionality
 reportlab==4.0.8
 openpyxl==3.1.2
-jinja2==3.1.3
+jinja2==3.1.6
 
 # WebSocket support
 websockets==12.0
