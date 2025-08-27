@@ -1,5 +1,5 @@
 aiohttp
-aioredis==
+aioredis==2.0.1
 aiosignal==1.4.0
 alembic==1.13.1
 annotated-types==0.7.0

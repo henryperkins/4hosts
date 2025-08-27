@@ -14,11 +14,11 @@ from .classification_engine import ClassificationEngine, HostParadigm
 from models.context_models import HostParadigm as ModelHostParadigm
 from models.synthesis_models import SynthesisContext
 from .result_adapter import ResultAdapter, ResultListAdapter, adapt_results
-from backend.contracts import (
-    GeneratedAnswer as ContractAnswer,
-    ResearchStatus as ContractStatus,
-    to_source as contract_to_source,
-)
+# from backend.contracts import (
+#     GeneratedAnswer as ContractAnswer,
+#     ResearchStatus as ContractStatus,
+#     to_source as contract_to_source,
+# )
 import asyncio
 
 logger = logging.getLogger(__name__)

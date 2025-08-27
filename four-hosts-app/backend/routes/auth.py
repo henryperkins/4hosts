@@ -40,12 +40,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
-@router.get("/csrf-token")
-def csrf_token_endpoint(request: Request, response: Response):
-    """Get CSRF token for authentication"""
-    return get_csrf_token(request, response)
-
-
 @router.post("/register", response_model=Token)
 async def register(user_data: UserCreate):
     """Register a new user"""

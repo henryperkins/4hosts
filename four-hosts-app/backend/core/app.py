@@ -8,7 +8,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -233,6 +233,18 @@ def setup_routes(app: FastAPI):
 
 def setup_custom_endpoints(app: FastAPI):
     """Setup custom endpoints"""
+    
+    @app.get("/api/csrf-token")
+    async def get_csrf_token_api(request: Request, response: Response):
+        """Get CSRF token for API calls"""
+        from middleware.security import get_csrf_token
+        return get_csrf_token(request, response)
+    
+    @app.post("/api/session/create")
+    async def create_session(request: Request, response: Response):
+        """Create a new session and return CSRF token"""
+        from middleware.security import get_csrf_token
+        return get_csrf_token(request, response)
 
     @app.get("/")
     async def root():

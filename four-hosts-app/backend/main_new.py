@@ -6,6 +6,10 @@ Four Hosts Research API - Refactored Main Application
 import os
 import logging
 import uvicorn
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from core.app import create_app
 

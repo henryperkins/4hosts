@@ -18,6 +18,7 @@ async def csrf_protection_middleware(request: Request, call_next):
     # CSRF exempt routes
     csrf_exempt_routes = [
         "/api/csrf-token",
+        "/api/session/create",
         "/docs",
         "/openapi.json",
         "/redoc",
