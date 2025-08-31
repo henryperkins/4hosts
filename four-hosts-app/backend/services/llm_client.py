@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any, AsyncIterator, Dict, List, Optional, Union, cast
 
 import httpx
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+from openai import AsyncOpenAI
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -76,7 +76,15 @@ _SYSTEM_PROMPTS: Dict[str, str] = {
 }
 
 
-from models.paradigms import normalize_to_internal_code
+# NOTE: Avoid importing models.paradigms at module import time to prevent
+# circular imports with services.classification_engine (which imports this module
+# during global initialization). We'll import lazily inside helper functions.
+
+
+def _norm_code(value: Union[str, "HostParadigm"]) -> str:
+    # Lazy import to break circular dependency
+    from models.paradigms import normalize_to_internal_code as _norm
+    return _norm(value)
 
 
 def _select_model(
@@ -90,7 +98,7 @@ def _select_model(
     """
     if explicit_model:
         return explicit_model
-    key = normalize_to_internal_code(paradigm)
+    key = _norm_code(paradigm)
     return _PARADIGM_MODEL_MAP.get(key, "gpt-4o-mini")
 
 
@@ -106,7 +114,7 @@ class LLMClient:
     """Asynchronous client wrapper for OpenAI and Azure OpenAI."""
 
     openai_client: Optional[AsyncOpenAI]
-    azure_client: Optional[AsyncAzureOpenAI]
+    azure_client: Optional[AsyncOpenAI]  # Azure also uses AsyncOpenAI with different base_url
 
     def __init__(self) -> None:
         self.openai_client = None
@@ -128,16 +136,26 @@ class LLMClient:
         api_version = os.getenv("AZURE_OPENAI_API_VERSION", "preview")
         
         if azure_key and endpoint and deployment:
-            # Clean up endpoint URL
+            # Use AsyncOpenAI with Azure endpoint (per documentation)
             endpoint = endpoint.rstrip("/")
+            if not endpoint.endswith("/"):
+                endpoint = f"{endpoint}/"
                 
-            self.azure_client = AsyncAzureOpenAI(
+            self.azure_client = AsyncOpenAI(
                 api_key=azure_key,
-                base_url=f"{endpoint}/openai/v1/",
-                api_version=api_version,
+                base_url=endpoint,
             )
-            logger.info("✓ Azure OpenAI client initialised for Responses API")
+            logger.info(f"✓ Azure OpenAI client initialised (endpoint: {endpoint})")
         else:
+            missing = []
+            if not azure_key:
+                missing.append("AZURE_OPENAI_API_KEY")
+            if not endpoint:
+                missing.append("AZURE_OPENAI_ENDPOINT")
+            if not deployment:
+                missing.append("AZURE_OPENAI_DEPLOYMENT")
+            if missing:
+                logger.debug(f"Azure OpenAI not configured - missing: {', '.join(missing)}")
             self.azure_client = None
             
         # OpenAI cloud
@@ -209,7 +227,7 @@ class LLMClient:
         """
         self._ensure_initialized()
         model_name = _select_model(paradigm, model)
-        paradigm_key = normalize_to_internal_code(paradigm)
+        paradigm_key = _norm_code(paradigm)
 
         # Build shared message list
         messages = [
@@ -252,8 +270,8 @@ class LLMClient:
         else:
             tool_choice = None                        # ensure we don't forward it
 
-        # ─── Azure OpenAI path (for o3 model) ───
-        if model_name in {"o3", "azure"} and self.azure_client:
+        # ─── Azure OpenAI path (for o3/o1 models) ───
+        if model_name in {"o3", "o1", "azure", "gpt-5-mini"} and self.azure_client:
             try:
                 deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
                 # Remove Azure-incompatible params
@@ -261,78 +279,57 @@ class LLMClient:
                 if tools and tool_choice:
                     azure_kwargs["tool_choice"] = self._wrap_tool_choice(tool_choice)
                     
-                # For o3, use the Responses API instead of Chat Completions
-                if hasattr(self.azure_client, 'responses'):
-                    # Convert messages to input format for Responses API
-                    input_content = []
-                    for msg in messages:
-                        msg_item = {
-                            "type": "message",
-                            "role": msg["role"],
-                            "content": msg["content"]
-                        }
-                        
-                        # Handle tool calls in assistant messages
-                        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                            msg_item["tool_calls"] = msg["tool_calls"]
-                        
-                        # Handle tool responses
-                        if msg.get("role") == "tool":
-                            msg_item["type"] = "tool"
-                            tool_call_id = msg.get("tool_call_id")
-                            if tool_call_id:
-                                msg_item["tool_call_id"] = tool_call_id
-                            name = msg.get("name")
-                            if name:
-                                msg_item["name"] = name
-                        
-                        input_content.append(msg_item)
-                    
-                    # Use Responses API for o3
-                    # Note: o3 doesn't support temperature/top_p parameters
-                    response_kwargs = {
-                        "model": deployment,
-                        "input": input_content,
-                        "max_output_tokens": azure_kwargs.get("max_completion_tokens", azure_kwargs.get("max_tokens", 2000)),
-                    }
-                    
-                    # Add tools if provided
-                    if tools:
-                        response_kwargs["tools"] = tools
-                        if tool_choice:
-                            response_kwargs["tool_choice"] = tool_choice
-                    
-                    # Check for background mode flag
-                    if kw.get("background_mode", False):
-                        response_kwargs["mode"] = "background"
-                        # Background mode returns immediately with a task ID
-                    
-                    if stream:
-                        response_kwargs["stream"] = stream
-                    
-                    op_res = await self.azure_client.responses.create(**response_kwargs)
-                    
-                    if stream:
-                        return self._iter_responses_stream(op_res)
-                    
-                    # Check for tool calls first
-                    if hasattr(op_res, 'output') and op_res.output:
-                        for output in op_res.output:
-                            if hasattr(output, 'tool_calls') and output.tool_calls:
-                                # Return the complete response for tool handling
-                                return op_res
-                    
-                    # Use safe extraction method
-                    return self._extract_content_safely(op_res)
+                # Use chat completions API with Azure client
+                # For o1/o3 models, adjust message format if needed
+                azure_messages = []
+                for msg in messages:
+                    role = msg.get("role", "user")
+                    # Convert "system" to "developer" for reasoning models
+                    if role == "system" and model_name in {"o3", "o1", "gpt-5-mini"}:
+                        role = "developer"
+                    azure_messages.append({"role": role, "content": msg.get("content", "")})
+                
+                # Build request for Azure
+                azure_request = {
+                    "model": deployment,
+                    "messages": azure_messages,
+                }
+                
+                # For reasoning models (o1/o3), use max_completion_tokens and reasoning_effort
+                if model_name in {"o3", "o1", "gpt-5-mini"}:
+                    max_tokens_val = kw.get("max_completion_tokens", kw.get("max_tokens", 2000))
+                    azure_request["max_completion_tokens"] = max_tokens_val
+                    azure_request["reasoning_effort"] = kw.get("reasoning_effort", "medium")
                 else:
-                    # Fallback to chat completions if responses API not available
-                    op_res = await self.azure_client.chat.completions.create(
-                        model=deployment,
-                        **azure_kwargs,
-                        stream=stream,
-                    )
+                    # Standard models use max_tokens and temperature
+                    azure_request["max_tokens"] = kw.get("max_tokens", 2000)
+                    azure_request["temperature"] = temperature
+                    azure_request["top_p"] = top_p
+                    azure_request["frequency_penalty"] = frequency_penalty
+                    azure_request["presence_penalty"] = presence_penalty
+                
+                # Add response format if specified
+                if response_format:
+                    azure_request["response_format"] = response_format
+                elif json_schema:
+                    azure_request["response_format"] = {"type": "json_schema", "json_schema": json_schema}
+                
+                # Add tools if provided
+                if tools:
+                    azure_request["tools"] = tools
+                    if tool_choice:
+                        azure_request["tool_choice"] = self._wrap_tool_choice(tool_choice)
+                
+                # Add stream if requested
+                if stream:
+                    azure_request["stream"] = stream
+                
+                op_res = await self.azure_client.chat.completions.create(**azure_request)
+                
                 if stream:
                     return self._iter_openai_stream(cast(AsyncIterator[Any], op_res))
+                
+                # Extract content from response
                 return self._extract_content_safely(op_res)
             except Exception as exc:
                 logger.error(f"Azure OpenAI request failed • {exc}")
@@ -403,22 +400,32 @@ class LLMClient:
 
         wrapped_choice = self._wrap_tool_choice(tool_choice)
         
-        # Use Azure for o3 model
-        if model_name in {"o3", "azure"} and self.azure_client:
-            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
-            op = await self.azure_client.chat.completions.create(
-                model=deployment,
-                messages=cast(Any, [
-                    {
-                        "role": _system_role_for(model_name),
-                        "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
-                    },
-                    {"role": "user", "content": prompt},
-                ]),
-                tools=cast(Any, tools),
-                tool_choice=cast(Any, wrapped_choice),
-                max_tokens=2_000,
-            )
+        # Use Azure for o3/o1 models
+        if model_name in {"o3", "o1", "azure", "gpt-5-mini"} and self.azure_client:
+            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
+            azure_msgs = [
+                {
+                    "role": _system_role_for(model_name),
+                    "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
+                },
+                {"role": "user", "content": prompt},
+            ]
+            
+            azure_req = {
+                "model": deployment,
+                "messages": cast(Any, azure_msgs),
+                "tools": cast(Any, tools),
+                "tool_choice": cast(Any, wrapped_choice),
+            }
+            
+            # Use appropriate token parameter for model type
+            if model_name in {"o3", "o1", "gpt-5-mini"}:
+                azure_req["max_completion_tokens"] = 2_000
+                azure_req["reasoning_effort"] = "medium"
+            else:
+                azure_req["max_tokens"] = 2_000
+            
+            op = await self.azure_client.chat.completions.create(**azure_req)
             result = {
                 "content": self._extract_content_safely(op) if not (op.choices and op.choices[0].message.tool_calls) else (op.choices[0].message.content or ""),
                 "tool_calls": op.choices[0].message.tool_calls or [] if op.choices else [],
@@ -472,18 +479,26 @@ class LLMClient:
         ]
 
 
-        # Use Azure for o3 model
-        if model_name in {"o3", "azure"} and self.azure_client:
-            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
-            op = await self.azure_client.chat.completions.create(
-                model=deployment,
-                messages=cast(Any, full_msgs),
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+        # Prefer Azure when available. For o1/o3 family use max_completion_tokens,
+        # for gpt-4o style deployments use standard chat params.
+        if self.azure_client:
+            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
+            azure_req = {
+                "model": deployment,
+                "messages": cast(Any, full_msgs),
+            }
+            
+            # Use appropriate parameters for model type
+            if model_name.startswith("o") or model_name in {"gpt-5-mini"}:
+                azure_req["max_completion_tokens"] = max_tokens
+                azure_req["reasoning_effort"] = "medium"
+            else:
+                azure_req["max_tokens"] = max_tokens
+                azure_req["temperature"] = temperature
+            
+            op = await self.azure_client.chat.completions.create(**azure_req)
             return self._extract_content_safely(op)
-        
-        # Use OpenAI
+        # Use OpenAI (cloud) if Azure not configured
         elif self.openai_client:
             op = await self.openai_client.chat.completions.create(
                 model=model_name,

@@ -197,7 +197,7 @@ class ConnectionManager:
     async def send_to_websocket(self, websocket: WebSocket, message: WSMessage):
         """Send a message to a specific WebSocket"""
         try:
-            await websocket.send_json(message.model_dump(mode="json"))
+            await websocket.send_json(self._transform_for_frontend(message))
         except Exception as e:
             logger.error(f"Error sending to WebSocket: {e}")
             await self.disconnect(websocket)
@@ -208,7 +208,7 @@ class ConnectionManager:
             disconnected = []
             for websocket in self.active_connections[user_id]:
                 try:
-                    await websocket.send_json(message.model_dump(mode="json"))
+                    await websocket.send_json(self._transform_for_frontend(message))
                 except Exception as e:
                     logger.error(f"Error sending to user {user_id}: {e}")
                     disconnected.append(websocket)
@@ -234,7 +234,7 @@ class ConnectionManager:
             disconnected = []
             for websocket in self.research_subscriptions[research_id]:
                 try:
-                    await websocket.send_json(message.model_dump(mode="json"))
+                    await websocket.send_json(self._transform_for_frontend(message))
                 except Exception as e:
                     logger.error(f"Error broadcasting to research {research_id}: {e}")
                     disconnected.append(websocket)
@@ -363,6 +363,62 @@ class ConnectionManager:
         
         logger.info("All WebSocket connections disconnected")
 
+    # --- Message Transformation ---
+    def _transform_for_frontend(self, ws_message: WSMessage) -> Dict[str, Any]:
+        """Transform backend WSMessage to frontend-validated format.
+
+        - Converts dotted research/source event names to underscored variants
+        - Preserves already-accepted dotted names (e.g., search.started)
+        - Ensures a top-level ISO timestamp string exists
+        """
+        type_mapping = {
+            # Research events → underscored
+            WSEventType.RESEARCH_STARTED: "research_started",
+            WSEventType.RESEARCH_PROGRESS: "research_progress",
+            WSEventType.RESEARCH_PHASE_CHANGE: "research_phase_change",
+            WSEventType.RESEARCH_COMPLETED: "research_completed",
+            WSEventType.RESEARCH_FAILED: "research_failed",
+            # Cancellation is not explicitly typed on the frontend; treat as progress w/ status
+            WSEventType.RESEARCH_CANCELLED: "research_progress",
+            # Source events → underscored
+            WSEventType.SOURCE_FOUND: "source_found",
+            # Not explicitly allowed by FE schema; treat as a progress-style update
+            WSEventType.SOURCE_ANALYZING: "research_progress",
+            WSEventType.SOURCE_ANALYZED: "source_analyzed",
+            # Connection/system events (already accepted as-is)
+            WSEventType.CONNECTED: "connected",
+            WSEventType.DISCONNECTED: "disconnected",
+            WSEventType.ERROR: "error",
+            WSEventType.PING: "ping",
+            WSEventType.PONG: "pong",
+            WSEventType.RATE_LIMIT_WARNING: "rate_limit.warning",
+            WSEventType.SYSTEM_NOTIFICATION: "system.notification",
+            # Search/analysis events (frontend accepts dotted variants)
+            WSEventType.SEARCH_STARTED: "search.started",
+            WSEventType.SEARCH_COMPLETED: "search.completed",
+            WSEventType.SEARCH_RETRY: "search.retry",
+            WSEventType.SYNTHESIS_STARTED: "synthesis.started",
+            WSEventType.SYNTHESIS_PROGRESS: "synthesis.progress",
+            WSEventType.SYNTHESIS_COMPLETED: "synthesis.completed",
+            WSEventType.CREDIBILITY_CHECK: "credibility.check",
+            WSEventType.DEDUPLICATION: "deduplication.progress",
+        }
+
+        # Clone data and, if cancelled event, include explicit status for UI hooks
+        data = dict(ws_message.data or {})
+        if ws_message.type == WSEventType.RESEARCH_CANCELLED and "status" not in data:
+            data["status"] = "cancelled"
+
+        # Ensure timestamp string
+        ts = ws_message.timestamp
+        ts_str = ts.isoformat() if isinstance(ts, (datetime,)) else str(ts)
+
+        return {
+            "type": type_mapping.get(ws_message.type, str(ws_message.type)),
+            "data": data,
+            "timestamp": ts_str,
+        }
+
 
 # --- Progress Tracker ---
 
@@ -453,6 +509,8 @@ class ProgressTracker:
             "progress": progress_data["progress"],
             "sources_found": progress_data["sources_found"],
             "sources_analyzed": progress_data["sources_analyzed"],
+            # Help frontend status rendering during progress
+            "status": "in_progress",
         }
 
         if custom_data:
@@ -489,6 +547,63 @@ class ProgressTracker:
                     "total_sources": self.research_progress[research_id][
                         "sources_found"
                     ],
+                },
+            ),
+        )
+
+    async def report_synthesis_started(self, research_id: str, strategy: str = "default"):
+        """Report that synthesis has started"""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.SYNTHESIS_STARTED,
+                data={
+                    "research_id": research_id,
+                    "strategy": strategy,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+        # Mirror as research_progress for current UI
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.RESEARCH_PROGRESS,
+                data={
+                    "research_id": research_id,
+                    "message": "Starting answer synthesis...",
+                    "progress": 80,
+                    "status": "in_progress",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+
+    async def report_synthesis_completed(self, research_id: str, sections: int, citations: int):
+        """Report that synthesis has completed"""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.SYNTHESIS_COMPLETED,
+                data={
+                    "research_id": research_id,
+                    "sections": sections,
+                    "citations": citations,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+        # Mirror as research_progress for current UI
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.RESEARCH_PROGRESS,
+                data={
+                    "research_id": research_id,
+                    "message": f"Answer synthesis completed ({sections} sections, {citations} citations)",
+                    "progress": 95,
+                    "status": "in_progress",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             ),
         )
@@ -601,6 +716,7 @@ class ResearchProgressTracker(ProgressTracker):
                     "research_id": research_id,
                     "message": message,
                     "progress": progress,
+                    "status": "in_progress",
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             )

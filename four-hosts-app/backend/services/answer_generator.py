@@ -11,6 +11,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from collections import Counter, defaultdict
 
+import os
 from models.context_models import (
     ClassificationResultSchema,
     ContextEngineeredQuerySchema,
@@ -285,10 +286,24 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
         
         # Generate content with LLM or fallback
         try:
+            # Isolation-only support: summarize findings
+            iso_lines = []
+            try:
+                if isinstance(context.context_engineering, dict):
+                    for m in (context.context_engineering.get("isolated_findings", {}).get("matches", []) or [])[:5]:
+                        dom = m.get("domain", "")
+                        for frag in (m.get("fragments", []) or [])[:1]:
+                            iso_lines.append(f"- [{dom}] {frag}")
+            except Exception:
+                pass
+            iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
+
             prompt = f"""
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
             Use passionate, urgent language that exposes injustice and calls for change.
+            Use only these Isolated Findings as evidence:
+            {iso_block}
             Length: {int(2000 * section_def['weight'])} words
             """
             
@@ -299,6 +314,8 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
                 temperature=0.7
             )
         except Exception as e:
+            if os.getenv("LLM_STRICT", "0") == "1":
+                raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
             content = self._generate_fallback_content(section_def, relevant_results)
         
@@ -512,22 +529,42 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
         # Generate content
         try:
             insights_summary = self._format_statistical_insights(statistical_insights[:5])
+            # Isolation-only support: include extracted findings if present
+            isolated = {}
+            try:
+                if isinstance(context.context_engineering, dict):
+                    isolated = context.context_engineering.get("isolated_findings", {}) or {}
+            except Exception:
+                isolated = {}
+            iso_lines = []
+            try:
+                for m in (isolated.get("matches", []) or [])[:5]:
+                    dom = m.get("domain", "")
+                    for frag in (m.get("fragments", []) or [])[:1]:
+                        iso_lines.append(f"- [{dom}] {frag}")
+            except Exception:
+                pass
+            iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
             
             prompt = f"""
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
-            
+
             Statistical insights available:
             {insights_summary}
-            
+
+            Isolated Findings (SSOTA Isolate Layer - use only these as evidence):
+            {iso_block}
+
             {f"Meta-analysis results: {meta_analysis}" if meta_analysis else ""}
-            
+
             Requirements:
             - Use precise scientific language
             - Include effect sizes, confidence intervals, and p-values where available
             - Distinguish correlation from causation
             - Acknowledge limitations
-            
+            - STRICT: Do not introduce claims not supported by the Isolated Findings above
+
             Length: {int(2000 * section_def['weight'])} words
             """
             
@@ -538,6 +575,8 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 temperature=0.3
             )
         except Exception as e:
+            if os.getenv("LLM_STRICT", "0") == "1":
+                raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
             content = self._generate_analytical_fallback(section_def, relevant_results, statistical_insights)
         
@@ -857,13 +896,28 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
         try:
             swot_summary = self._format_swot_for_prompt(swot_analysis)
             
+            # Isolation-only support
+            iso_lines = []
+            try:
+                if isinstance(context.context_engineering, dict):
+                    for m in (context.context_engineering.get("isolated_findings", {}).get("matches", []) or [])[:5]:
+                        dom = m.get("domain", "")
+                        for frag in (m.get("fragments", []) or [])[:1]:
+                            iso_lines.append(f"- [{dom}] {frag}")
+            except Exception:
+                pass
+            iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
+
             prompt = f"""
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
-            
+
             SWOT Analysis:
             {swot_summary}
-            
+
+            Use only these Isolated Findings as domain evidence:
+            {iso_block}
+
             Requirements:
             - Focus on actionable strategies and concrete recommendations
             - Include ROI considerations and resource implications
@@ -880,6 +934,8 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 temperature=0.5
             )
         except Exception as e:
+            if os.getenv("LLM_STRICT", "0") == "1":
+                raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
             content = self._generate_strategic_fallback(section_def, relevant_results, swot_analysis)
         
@@ -1112,6 +1168,18 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
         
         # Generate content
         try:
+            # Isolation-only support
+            iso_lines = []
+            try:
+                if isinstance(context.context_engineering, dict):
+                    for m in (context.context_engineering.get("isolated_findings", {}).get("matches", []) or [])[:5]:
+                        dom = m.get("domain", "")
+                        for frag in (m.get("fragments", []) or [])[:1]:
+                            iso_lines.append(f"- [{dom}] {frag}")
+            except Exception:
+                pass
+            iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
+
             prompt = f"""
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
@@ -1121,6 +1189,9 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             - Focus on human dignity and the power of community care
             - Emphasize resources, solutions, and paths forward
             - Include specific resources and support options
+            - STRICT: Ground all examples in the Isolated Findings below
+            Isolated Findings:
+            {iso_block}
             
             Length: {int(2000 * section_def['weight'])} words
             """
@@ -1132,6 +1203,8 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
                 temperature=0.6
             )
         except Exception as e:
+            if os.getenv("LLM_STRICT", "0") == "1":
+                raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
             content = self._generate_supportive_fallback(section_def, relevant_results)
         

@@ -23,10 +23,14 @@ from models.base import (
 )
 from core.dependencies import get_current_user
 from services.research_store import research_store
-from services.websocket_service import ResearchProgressTracker, progress_tracker as _ws_progress_tracker
+from services.websocket_service import (
+    ResearchProgressTracker,
+    progress_tracker as _ws_progress_tracker,
+    WSEventType,
+    WSMessage,
+)
 from services.enhanced_integration import (
     enhanced_classification_engine as classification_engine,
-    enhanced_answer_orchestrator,
 )
 from services.context_engineering import context_pipeline
 from services.research_orchestrator import research_orchestrator
@@ -48,7 +52,10 @@ webhook_manager = None
 
 
 async def execute_real_research(
-    research_id: str, research: ResearchQuery, user_id: str
+    research_id: str,
+    research: ResearchQuery,
+    user_id: str,
+    user_role: UserRole | str = UserRole.PRO,
 ):
     """Execute the full research pipeline and persist results.
 
@@ -69,6 +76,33 @@ async def execute_real_research(
 
         cls = await classification_engine.classify_query(research.query)
 
+        # Stream classification summary
+        try:
+            if progress_tracker:
+                primary = getattr(cls, "primary_paradigm", None)
+                secondary = getattr(cls, "secondary_paradigm", None)
+                confidence = float(getattr(cls, "confidence", 0.0) or 0.0)
+                dist = getattr(cls, "distribution", {}) or {}
+                # Build a compact distribution preview
+                dist_preview = ", ".join(
+                    f"{p.name.lower()}: {dist.get(p, 0.0):.2f}" for p in list(dist.keys())[:2]
+                ) if hasattr(primary, 'name') else ""
+                await progress_tracker.update_progress(
+                    research_id,
+                    None,
+                    8,
+                    custom_data={
+                        "message": (
+                            f"Classification → primary: {getattr(primary, 'name', primary)}, "
+                            f"secondary: {getattr(secondary, 'name', secondary) or 'n/a'}, "
+                            f"confidence: {confidence:.2f}"
+                            + (f"; dist: {dist_preview}" if dist_preview else "")
+                        )
+                    },
+                )
+        except Exception:
+            pass
+
         # 2) Context Engineering
         if progress_tracker:
             await progress_tracker.update_progress(research_id, "context_engineering", 15)
@@ -76,73 +110,149 @@ async def execute_real_research(
         # Use global pipeline to accumulate metrics
         ce = await context_pipeline.process_query(cls)
 
-        # 3) Search & Retrieval (initial)
+        # Stream context engineering summary for transparency
+        try:
+            if progress_tracker and ce:
+                doc_focus = getattr(ce.write_output, "documentation_focus", "") if hasattr(ce, "write_output") else ""
+                comp_ratio = getattr(ce.compress_output, "compression_ratio", None) if hasattr(ce, "compress_output") else None
+                token_budget = getattr(ce.compress_output, "token_budget", None) if hasattr(ce, "compress_output") else None
+                iso_strategy = getattr(ce.isolate_output, "isolation_strategy", "") if hasattr(ce, "isolate_output") else ""
+                searches = len(getattr(ce.select_output, "search_queries", []) or []) if hasattr(ce, "select_output") else 0
+                await progress_tracker.update_progress(
+                    research_id,
+                    None,
+                    20,
+                    custom_data={
+                        "message": (
+                            "Context: "
+                            + (f"focus='{doc_focus[:40]}', " if doc_focus else "")
+                            + (f"search_queries={searches}, " if searches else "")
+                            + (f"compression={comp_ratio*100:.0f}%, " if isinstance(comp_ratio, (int, float)) else "")
+                            + (f"token_budget={token_budget}, " if token_budget else "")
+                            + (f"isolation='{iso_strategy}'" if iso_strategy else "")
+                        ).rstrip(', ')
+                    },
+                )
+        except Exception:
+            pass
+
+        # 3) Search, Retrieval, and Synthesis via unified orchestrator
         if progress_tracker:
             await progress_tracker.update_progress(research_id, "search_retrieval", 25)
 
+        class _UserCtxShim:
+            def __init__(self, role: str, source_limit: int):
+                self.role = role
+                self.source_limit = source_limit
+
+        # Resolve user role string (e.g., 'PRO') for orchestrator context
+        user_role_name = (
+            user_role.name if hasattr(user_role, "name") else str(user_role).upper()
+        ) or "PRO"
         max_sources = int(getattr(research, "options", ResearchOptions()).max_sources)
-        legacy_result = await research_orchestrator.execute_paradigm_research(
-            ce,
-            max_results=max_sources,
-            progress_tracker=progress_tracker,
+        user_ctx = _UserCtxShim(user_role_name, max_sources)
+
+        orch_resp = await research_orchestrator.execute_research(
+            classification=cls,
+            context_engineered=ce,  # legacy shape is supported by the orchestrator
+            user_context=user_ctx,
+            progress_callback=progress_tracker,
             research_id=research_id,
+            enable_deep_research=(research.options.depth == ResearchDepth.DEEP_RESEARCH),
+            deep_research_mode=None,
+            synthesize_answer=True,
+            answer_options={"research_id": research_id, "max_length": 2000},
         )
 
-        # Agentic loop now handled in orchestrator. Keep route augmentation disabled by default.
-        ROUTE_AGENTIC_ENABLED = os.getenv("ROUTE_AGENTIC_ENABLED", "0") == "1"
-        if ROUTE_AGENTIC_ENABLED:
-            logger.info("Route-level agentic augmentation enabled via env flag")
+        # Normalize answer for frontend
+        answer_obj = orch_resp.get("answer")
+        # Normalize answer to frontend-friendly primitives
+        sections_payload = []
+        citations_payload = []
+        summary_text = ""
+        if answer_obj:
+            try:
+                summary_text = (
+                    getattr(answer_obj, "summary", None)
+                    or getattr(answer_obj, "content_md", None)
+                    or ""
+                )
 
-        # 4) Synthesis
-        if progress_tracker:
-            await progress_tracker.update_progress(research_id, "synthesis", 85)
+                # Sections
+                raw_sections = getattr(answer_obj, "sections", []) or []
+                for s in raw_sections:
+                    try:
+                        sections_payload.append(
+                            {
+                                "title": getattr(s, "title", ""),
+                                "paradigm": getattr(s, "paradigm", "bernard"),
+                                "content": getattr(s, "content", ""),
+                                "confidence": float(getattr(s, "confidence", 0.8) or 0.8),
+                                # Approximate: use number of citations referenced in the section
+                                "sources_count": len(getattr(s, "citations", []) or []),
+                                "citations": list(getattr(s, "citations", []) or []),
+                                "key_insights": list(getattr(s, "key_insights", []) or []),
+                            }
+                        )
+                    except Exception:
+                        continue
 
-        # Convert context engineering to a plain dict for synthesis context
-        ce_dict = asdict(ce)
+                # Citations (answer_obj.citations is a dict[str, Citation])
+                raw_citations = getattr(answer_obj, "citations", {}) or {}
+                if isinstance(raw_citations, dict):
+                    primary_paradigm = HOST_TO_MAIN_PARADIGM.get(
+                        getattr(cls, "primary_paradigm", None), Paradigm.BERNARD
+                    ).value
+                    for c in raw_citations.values():
+                        try:
+                            citations_payload.append(
+                                {
+                                    "id": getattr(c, "id", ""),
+                                    "source": getattr(c, "domain", ""),
+                                    "title": getattr(c, "source_title", ""),
+                                    "url": getattr(c, "source_url", ""),
+                                    "credibility_score": float(
+                                        getattr(c, "credibility_score", 0.5) or 0.5
+                                    ),
+                                    "paradigm_alignment": primary_paradigm,
+                                }
+                            )
+                        except Exception:
+                            continue
+            except Exception:
+                pass
 
-        # Map paradigm to main string used by synthesis orchestrator
-        primary_paradigm = HOST_TO_MAIN_PARADIGM.get(cls.primary_paradigm, Paradigm.BERNARD).value
-
-        # Use enhanced orchestrator (legacy signature)
-        primary_answer = await enhanced_answer_orchestrator.generate_answer(
-            paradigm=primary_paradigm,
-            query=research.query,
-            search_results=getattr(legacy_result, "filtered_results", []) or getattr(legacy_result, "results", []),
-            context_engineering=ce_dict,
-            options={"research_id": research_id},
-        )
-
-        # Normalize answer shape expected by frontend
         answer_payload = {
-            "summary": getattr(primary_answer, "summary", "") or getattr(primary_answer, "content_md", "") or "",
-            "sections": getattr(primary_answer, "sections", []) or [],
-            "action_items": getattr(primary_answer, "action_items", []) or [],
-            "citations": getattr(primary_answer, "citations", []) or [],
+            "summary": summary_text,
+            "sections": sections_payload,
+            "action_items": list(getattr(answer_obj, "action_items", []) or []),
+            "citations": citations_payload,
+            "metadata": getattr(answer_obj, "metadata", {}) or {},
         }
 
-        # Convert sources from orchestrator to API shape (after any agentic augmentation)
+        # Convert sources from orchestrator response results (already compressed/normalized)
         sources_payload = []
-        for r in (getattr(legacy_result, "filtered_results", []) or []):
+        for item in orch_resp.get("results", []) or []:
             try:
+                md = item.get("metadata", {}) or {}
                 sources_payload.append(
                     {
-                        "title": getattr(r, "title", "") or "",
-                        "url": getattr(r, "url", "") or "",
-                        "snippet": getattr(r, "snippet", "") or "",
-                        "domain": getattr(r, "domain", "") or "",
-                        "credibility_score": float(getattr(r, "credibility_score", 0.5) or 0.5),
-                        "published_date": getattr(r, "published_date", None),
-                        "source_type": getattr(r, "result_type", "web"),
+                        "title": item.get("title", "") or "",
+                        "url": item.get("url", "") or "",
+                        "snippet": item.get("snippet", "") or "",
+                        "domain": md.get("domain", "") or "",
+                        "credibility_score": float(item.get("credibility_score", 0.5) or 0.5),
+                        "published_date": md.get("published_date"),
+                        "source_type": md.get("result_type", "web"),
                     }
                 )
             except Exception:
-                # Skip malformed result entries defensively
                 continue
 
         # Build paradigm analysis summary for UI
         paradigm_analysis = {
             "primary": {
-                "paradigm": primary_paradigm,
+                "paradigm": HOST_TO_MAIN_PARADIGM.get(cls.primary_paradigm, Paradigm.BERNARD).value,
                 "confidence": float(getattr(cls, "confidence", 0.75) or 0.75),
                 "approach": getattr(ce.write_output, "documentation_focus", "")[:140] if hasattr(ce, "write_output") else "",
                 "focus": ", ".join((getattr(ce.write_output, "key_themes", []) or [])[:3]) if hasattr(ce, "write_output") else "",
@@ -150,38 +260,56 @@ async def execute_real_research(
         }
 
         # Aggregate metadata
-        exec_meta = getattr(legacy_result, "execution_metrics", {}) or {}
+        exec_meta = orch_resp.get("metadata", {}) or {}
         # Compose SSOTA context_layers summary
-        context_layers = {}
-        try:
-            context_layers = {
-                "write_focus": getattr(ce.write_output, "documentation_focus", ""),
-                "compression_ratio": float(getattr(ce.compress_output, "compression_ratio", 0.0) or 0.0),
-                "token_budget": int(getattr(ce.compress_output, "token_budget", 0) or 0),
-                "isolation_strategy": getattr(ce.isolate_output, "isolation_strategy", ""),
-                "search_queries_count": len(getattr(ce.select_output, "search_queries", []) or []),
-            }
-        except Exception:
-            context_layers = {}
+        context_layers = {
+            "write_focus": getattr(ce.write_output, "documentation_focus", "") if hasattr(ce, "write_output") else "",
+            "compression_ratio": float(getattr(ce.compress_output, "compression_ratio", 0.0) or 0.0) if hasattr(ce, "compress_output") else 0.0,
+            "token_budget": int(getattr(ce.compress_output, "token_budget", 0) or 0) if hasattr(ce, "compress_output") else 0,
+            "isolation_strategy": getattr(ce.isolate_output, "isolation_strategy", "") if hasattr(ce, "isolate_output") else "",
+            "search_queries_count": len(getattr(ce.select_output, "search_queries", []) or []) if hasattr(ce, "select_output") else 0,
+        }
 
         # Attach agent trace from orchestrator if present
-        agent_trace = []
-        try:
-            agent_trace = list((getattr(legacy_result, "execution_metrics", {}) or {}).get("agent_trace", []) or [])
-        except Exception:
-            agent_trace = []
+        agent_trace = list(exec_meta.get("agent_trace", []) or []) if isinstance(exec_meta, dict) else []
 
         metadata = {
             "total_sources_analyzed": len(sources_payload),
             "high_quality_sources": sum(1 for s in sources_payload if s.get("credibility_score", 0) >= 0.7),
-            "search_queries_executed": len(getattr(ce.select_output, "search_queries", []) or []),
+            "search_queries_executed": context_layers["search_queries_count"],
             "processing_time_seconds": float(exec_meta.get("processing_time", 0.0) or 0.0),
-            "synthesis_quality": getattr(primary_answer, "synthesis_quality", None),
-            "paradigms_used": [primary_paradigm],
+            "synthesis_quality": getattr(answer_obj, "synthesis_quality", None),
+            "paradigms_used": [paradigm_analysis["primary"]["paradigm"]],
             "research_depth": research.options.depth.value if hasattr(research, "options") else "standard",
             "context_layers": context_layers,
             "agent_trace": agent_trace,
+            "contradictions": exec_meta.get("contradictions", {"count": 0, "examples": []}),
         }
+
+        # Stream a compact agent trace snapshot for visibility
+        try:
+            if progress_tracker:
+                trace = list(exec_meta.get("agent_trace", []) or [])
+                for entry in trace[:5]:
+                    if not isinstance(entry, dict):
+                        continue
+                    action = entry.get("action") or entry.get("name") or "step"
+                    duration = entry.get("duration_ms") or entry.get("duration")
+                    message = f"Agent: {action}"
+                    if duration:
+                        try:
+                            ms = int(duration)
+                            message += f" ({ms} ms)"
+                        except Exception:
+                            pass
+                    await progress_tracker.update_progress(
+                        research_id,
+                        None,
+                        None,
+                        custom_data={"message": message},
+                    )
+        except Exception:
+            pass
 
         final_result = {
             "research_id": research_id,
@@ -191,7 +319,7 @@ async def execute_real_research(
             "answer": answer_payload,
             "sources": sources_payload,
             "metadata": metadata,
-            "cost_info": getattr(legacy_result, "cost_breakdown", {}),
+            "cost_info": {},
             "export_formats": {
                 "pdf": f"/v1/research/{research_id}/export/pdf",
                 "markdown": f"/v1/research/{research_id}/export/markdown",
@@ -279,7 +407,11 @@ async def submit_research(
 
         # Execute real research
         background_tasks.add_task(
-            execute_real_research, research_id, research, str(current_user.user_id)
+            execute_real_research,
+            research_id,
+            research,
+            str(current_user.user_id),
+            current_user.role,
         )
 
         # Track in WebSocket (if available)
@@ -485,6 +617,23 @@ async def cancel_research(
             "Research %s cancelled by user %s",
             research_id, current_user.user_id
         )
+
+        # Broadcast cancellation over WebSocket for live UIs
+        if progress_tracker:
+            try:
+                await progress_tracker.connection_manager.broadcast_to_research(
+                    research_id,
+                    WSMessage(
+                        type=WSEventType.RESEARCH_CANCELLED,
+                        data={
+                            "research_id": research_id,
+                            "status": "cancelled",
+                            "timestamp": datetime.utcnow().isoformat(),
+                        },
+                    ),
+                )
+            except Exception:
+                pass
 
         return {
             "research_id": research_id,

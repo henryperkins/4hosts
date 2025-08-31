@@ -6,7 +6,6 @@ import { Card, CardHeader, CardTitle, CardContent, CardFooter } from './ui/Card'
 import { Button } from './ui/Button'
 // Alert component not currently used
 import { ResultsDisplayEnhanced } from './ResultsDisplayEnhanced'
-import { ResultsDisplayIdeaBrowser } from './ResultsDisplayIdeaBrowser'
 import api from '../services/api'
 import type { ResearchResult } from '../types'
 
@@ -16,14 +15,7 @@ export const ResearchResultPage = () => {
   const [results, setResults] = useState<ResearchResult | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [useIdeaBrowser] = useState(() => {
-    try {
-      const saved = localStorage.getItem('useIdeaBrowser')
-      return saved ? JSON.parse(saved) : false
-    } catch {
-      return false
-    }
-  })
+  // IdeaBrowser view removed; always use Enhanced view
 
   useEffect(() => {
     const loadResults = async () => {
@@ -102,11 +94,7 @@ export const ResearchResultPage = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {useIdeaBrowser ? (
-        <ResultsDisplayIdeaBrowser results={results} />
-      ) : (
-        <ResultsDisplayEnhanced results={results} />
-      )}
+      <ResultsDisplayEnhanced results={results} />
     </div>
   )
 }

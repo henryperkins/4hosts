@@ -1,14 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 // AlertCircle not currently used
-import { ToggleSwitch } from './ui/ToggleSwitch'
 import { Alert } from './ui/Alert'
 import { ResearchFormEnhanced } from './ResearchFormEnhanced'
-import { ResearchFormIdeaBrowser } from './ResearchFormIdeaBrowser'
 import { ResearchProgress } from './ResearchProgress'
-import { ResearchProgressIdeaBrowser } from './ResearchProgressIdeaBrowser'
 import { ResultsDisplayEnhanced } from './ResultsDisplayEnhanced'
-import { ResultsDisplayIdeaBrowser } from './ResultsDisplayIdeaBrowser'
 import ParadigmDisplay from './ParadigmDisplay'
 import api from '../services/api'
 import type { ResearchResult, ParadigmClassification, ResearchOptions } from '../types'
@@ -21,15 +17,7 @@ export const ResearchPage = () => {
   const [error, setError] = useState<string | null>(null)
   const [currentResearchId, setCurrentResearchId] = useState<string | null>(null)
   const [showProgress, setShowProgress] = useState(false)
-  const [useIdeaBrowser, setUseIdeaBrowser] = useState(() => {
-    try {
-      const saved = localStorage.getItem('useIdeaBrowser')
-      return saved ? JSON.parse(saved) : false
-    } catch {
-      return false
-    }
-  })
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -39,6 +27,23 @@ export const ResearchPage = () => {
       }
     }
   }, [])
+
+  // Type helpers for staged/terminal statuses from results endpoint
+  type StagedStatus = 'queued' | 'processing' | 'in_progress' | 'failed' | 'cancelled'
+  const getStatus = (obj: unknown): StagedStatus | string | undefined => {
+    if (obj && typeof obj === 'object') {
+      const rec = obj as Record<string, unknown>
+      return typeof rec.status === 'string' ? rec.status : undefined
+    }
+    return undefined
+  }
+  const getMessage = (obj: unknown): string | undefined => {
+    if (obj && typeof obj === 'object') {
+      const rec = obj as Record<string, unknown>
+      return typeof rec.message === 'string' ? rec.message : undefined
+    }
+    return undefined
+  }
 
   const handleSubmit = async (query: string, options: ResearchOptions) => {
     setIsLoading(true)
@@ -70,11 +75,15 @@ export const ResearchPage = () => {
 
       pollIntervalRef.current = setInterval(async () => {
         try {
+          // Increment retries for each poll tick
+          retries++
+
           const resultsData = await api.getResearchResults(data.research_id)
 
           // Handle staged response (status present but not final)
-          const stagedStatuses = ['queued','processing','in_progress']
-          if ((resultsData as any)?.status && stagedStatuses.includes((resultsData as any).status)) {
+          const stagedStatuses: StagedStatus[] = ['queued','processing','in_progress']
+          const status = getStatus(resultsData)
+          if (status && stagedStatuses.includes(status as StagedStatus)) {
             if (retries >= maxRetries) {
               setError('Research timeout - please try again')
               setIsLoading(false)
@@ -85,8 +94,9 @@ export const ResearchPage = () => {
           }
 
           // Handle terminal staged failures
-          if ((resultsData as any)?.status === 'failed' || (resultsData as any)?.status === 'cancelled') {
-            setError(`Research ${(resultsData as any).status}: ${(resultsData as any).message || 'Please try again'}`)
+          if (status === 'failed' || status === 'cancelled') {
+            const message = getMessage(resultsData) || 'Please try again'
+            setError(`Research ${status}: ${message}`)
             setIsLoading(false)
             setShowProgress(false)
             clearInterval(pollIntervalRef.current!)
@@ -101,7 +111,7 @@ export const ResearchPage = () => {
             const primary = resultsData.paradigm_analysis.primary
             const secondary = resultsData.paradigm_analysis.secondary
             const distribution: Record<string, number> = { [primary.paradigm]: primary.confidence }
-            
+
             if (secondary) {
               distribution[secondary.paradigm] = secondary.confidence
             }
@@ -132,7 +142,6 @@ export const ResearchPage = () => {
             clearInterval(pollIntervalRef.current!)
           }
         }
-        retries++
       }, 2000)
 
     } catch (err) {
@@ -158,25 +167,7 @@ export const ResearchPage = () => {
         </p>
       </div>
 
-      {/* Toggle for IdeaBrowser mode */}
-      <div className="mb-4 flex items-center justify-center gap-3">
-        <label className="text-sm text-text-muted">Standard View</label>
-        <ToggleSwitch
-          checked={useIdeaBrowser}
-          onChange={(checked) => {
-            setUseIdeaBrowser(checked)
-            localStorage.setItem('useIdeaBrowser', JSON.stringify(checked))
-          }}
-          size="sm"
-        />
-        <label className="text-sm text-text-muted">IdeaBrowser View</label>
-      </div>
-
-      {useIdeaBrowser ? (
-        <ResearchFormIdeaBrowser onSubmit={handleSubmit} isLoading={isLoading} />
-      ) : (
-        <ResearchFormEnhanced onSubmit={handleSubmit} isLoading={isLoading} />
-      )}
+      <ResearchFormEnhanced onSubmit={handleSubmit} isLoading={isLoading} />
 
       {error && (
         <Alert variant="error" title="Research Error" className="mt-4">
@@ -192,35 +183,20 @@ export const ResearchPage = () => {
 
       {showProgress && currentResearchId && (
         <div className="animate-slide-up">
-          {useIdeaBrowser ? (
-            <ResearchProgressIdeaBrowser
-              researchId={currentResearchId}
-              onComplete={() => setShowProgress(false)}
-              onCancel={() => {
-                setShowProgress(false)
-                setCurrentResearchId(null)
-              }}
-            />
-          ) : (
-            <ResearchProgress
-              researchId={currentResearchId}
-              onComplete={() => setShowProgress(false)}
-              onCancel={() => {
-                setShowProgress(false)
-                setCurrentResearchId(null)
-              }}
-            />
-          )}
+          <ResearchProgress
+            researchId={currentResearchId}
+            onComplete={() => setShowProgress(false)}
+            onCancel={() => {
+              setShowProgress(false)
+              setCurrentResearchId(null)
+            }}
+          />
         </div>
       )}
 
       {results && !showProgress && (
         <div className="animate-fade-in">
-          {useIdeaBrowser ? (
-            <ResultsDisplayIdeaBrowser results={results} />
-          ) : (
-            <ResultsDisplayEnhanced results={results} />
-          )}
+          <ResultsDisplayEnhanced results={results} />
         </div>
       )}
     </div>

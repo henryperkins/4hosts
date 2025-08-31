@@ -102,7 +102,7 @@ class ContextLayer(ABC):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Dict[str, Any] = None,
+        previous_outputs: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Process input through this layer"""
         pass
@@ -203,7 +203,7 @@ class WriteLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Dict[str, Any] = None,
+        previous_outputs: Optional[Dict[str, Any]] = None,
     ) -> WriteLayerOutput:
         """Process query through Write layer"""
         start_time = datetime.now()
@@ -369,7 +369,7 @@ class SelectLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Dict[str, Any] = None,
+        previous_outputs: Optional[Dict[str, Any]] = None,
     ) -> SelectLayerOutput:
         """Process through Select layer"""
         start_time = datetime.now()
@@ -416,7 +416,7 @@ class SelectLayer(ContextLayer):
 
         return output
 
-    
+
 
 
 # --- Compress Layer Implementation ---
@@ -499,7 +499,7 @@ class CompressLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Dict[str, Any] = None,
+        previous_outputs: Optional[Dict[str, Any]] = None,
     ) -> CompressLayerOutput:
         """Process through Compress layer"""
         start_time = datetime.now()
@@ -675,7 +675,7 @@ class IsolateLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Dict[str, Any] = None,
+        previous_outputs: Optional[Dict[str, Any]] = None,
     ) -> IsolateLayerOutput:
         """Process through Isolate layer"""
         start_time = datetime.now()

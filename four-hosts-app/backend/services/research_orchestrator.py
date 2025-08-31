@@ -19,7 +19,8 @@ import re
 from models.context_models import (
     SearchResultSchema, ClassificationResultSchema,
     ContextEngineeredQuerySchema,
-    HostParadigm
+    HostParadigm,
+    QueryFeaturesSchema
 )
 from models.paradigms import normalize_to_internal_code
 from services.search_apis import (
@@ -34,12 +35,17 @@ from services.cache import (
     get_cached_search_results,
     cache_search_results,
 )
-from services.text_compression import text_compressor, query_compressor
+from services.text_compression import text_compressor, query_compressor, compress_search_results
 from services.deep_research_service import (
     deep_research_service,
     DeepResearchConfig,
     DeepResearchMode,
     initialize_deep_research,
+)
+from services.agentic_process import (
+    evaluate_coverage_from_sources,
+    summarize_domain_gaps,
+    propose_queries_enriched,
 )
 # SearchContextSize import removed (unused)
 
@@ -463,7 +469,8 @@ class UnifiedResearchOrchestrator:
         # Agentic loop configuration (can be overridden by env)
         self.agentic_config = {
             "enabled": True,
-            "enable_llm_critic": False,
+            # Enable LLM critic by default (can be disabled via env)
+            "enable_llm_critic": True,
             "max_iterations": 2,
             "coverage_threshold": 0.75,
             "max_new_queries_per_iter": 4,
@@ -472,6 +479,8 @@ class UnifiedResearchOrchestrator:
             import os
             if os.getenv("AGENTIC_ENABLE_LLM_CRITIC", "0") == "1":
                 self.agentic_config["enable_llm_critic"] = True
+            if os.getenv("AGENTIC_ENABLE_LLM_CRITIC", "0") == "0" and "AGENTIC_ENABLE_LLM_CRITIC" in os.environ:
+                self.agentic_config["enable_llm_critic"] = False
             if os.getenv("AGENTIC_DISABLE", "0") == "1":
                 self.agentic_config["enabled"] = False
         except Exception:
@@ -600,8 +609,22 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 research_id=research_id
             )
 
-            # Convert to new format
-            return self._convert_legacy_to_v2_result(result)
+            # Convert to new format and, if requested, synthesize an answer
+            v2 = self._convert_legacy_to_v2_result(result)
+            if synthesize_answer and _ANSWER_GEN_AVAILABLE:
+                try:
+                    synthesized_answer = await self._synthesize_answer(
+                        classification=classification,
+                        context_engineered=context_engineered,
+                        results=v2.get("results", []),
+                        research_id=research_id or f"research_{int(start_time.timestamp())}",
+                        options=answer_options or {},
+                    )
+                    if synthesized_answer is not None:
+                        v2["answer"] = synthesized_answer
+                except Exception as e:
+                    logger.error(f"Answer synthesis (legacy) failed: {e}")
+            return v2
 
         # Otherwise use V2 implementation
         # Optimize queries based on paradigm and user limits
@@ -693,6 +716,14 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     research_id=research_id or f"research_{int(start_time.timestamp())}",
                     options=answer_options or {},
                 )
+                # Attach contradiction summary to answer metadata if available
+                try:
+                    contradictions = processed_results.get("contradictions", {})
+                    if hasattr(synthesized_answer, "metadata") and isinstance(getattr(synthesized_answer, "metadata"), dict):
+                        synthesized_answer.metadata.setdefault("signals", {})
+                        synthesized_answer.metadata["signals"]["contradictions"] = contradictions
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Answer synthesis failed: {e}")
 
@@ -705,6 +736,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "sources_used": processed_results["sources_used"],
                 "credibility_summary": processed_results["credibility_summary"],
                 "deduplication_stats": processed_results["dedup_stats"],
+                "contradictions": processed_results.get("contradictions", {"count": 0, "examples": []}),
                 "search_metrics": {
                     "total_queries": int(self._search_metrics.get("total_queries", 0) if isinstance(self._search_metrics.get("total_queries"), int) else 0),
                     "total_results": int(self._search_metrics.get("total_results", 0) if isinstance(self._search_metrics.get("total_results"), int) else 0),
@@ -735,15 +767,26 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         sources: List[Dict[str, Any]] = []
         for r in results:
             try:
-                sources.append({
-                    "title": getattr(r, "title", ""),
-                    "url": getattr(r, "url", ""),
-                    "snippet": getattr(r, "snippet", ""),
-                    "domain": getattr(r, "domain", ""),
-                    "credibility_score": float(getattr(r, "credibility_score", 0.0) or 0.0),
-                    "published_date": getattr(r, "published_date", None),
-                    "result_type": getattr(r, "result_type", "web"),
-                })
+                if isinstance(r, dict):
+                    sources.append({
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": r.get("snippet", ""),
+                        "domain": r.get("domain", "") or r.get("host", ""),
+                        "credibility_score": float(r.get("credibility_score", 0.0) or 0.0),
+                        "published_date": r.get("published_date"),
+                        "result_type": r.get("result_type", "web"),
+                    })
+                else:
+                    sources.append({
+                        "title": getattr(r, "title", ""),
+                        "url": getattr(r, "url", ""),
+                        "snippet": getattr(r, "snippet", ""),
+                        "domain": getattr(r, "domain", ""),
+                        "credibility_score": float(getattr(r, "credibility_score", 0.0) or 0.0),
+                        "published_date": getattr(r, "published_date", None),
+                        "result_type": getattr(r, "result_type", "web"),
+                    })
             except Exception:
                 continue
 
@@ -752,6 +795,42 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             ce = context_engineered.model_dump() if hasattr(context_engineered, "model_dump") else context_engineered.dict()
         except Exception:
             ce = {}
+
+        # Isolation-only extraction: build findings strictly from Isolate layer patterns
+        try:
+            patterns = []
+            iso = getattr(context_engineered, "isolate_output", None)
+            if iso:
+                raw = getattr(iso, "extraction_patterns", []) or []
+                import re as _re
+                for p in raw:
+                    try:
+                        patterns.append(_re.compile(p, _re.IGNORECASE))
+                    except Exception:
+                        continue
+            findings: Dict[str, Any] = {"matches": [], "by_domain": {}, "focus_areas": getattr(getattr(context_engineered, "isolate_output", None), "focus_areas", [])}
+            for r in results:
+                try:
+                    text = " ".join([
+                        (r.get("title") if isinstance(r, dict) else getattr(r, "title", "")) or "",
+                        (r.get("snippet") if isinstance(r, dict) else getattr(r, "snippet", "")) or "",
+                    ])
+                    dom = (r.get("domain") if isinstance(r, dict) else getattr(r, "domain", "")) or ""
+                except Exception:
+                    continue
+                matched = []
+                for pat in patterns:
+                    for m in pat.finditer(text):
+                        frag = text[max(0, m.start()-80):m.end()+80]
+                        matched.append(frag.strip())
+                if matched:
+                    findings["matches"].append({"domain": dom, "fragments": matched[:3]})
+                    findings["by_domain"].setdefault(dom, 0)
+                    findings["by_domain"][dom] += 1
+            ce["isolated_findings"] = findings
+            ce["isolation_only"] = True
+        except Exception:
+            ce.setdefault("isolation_only", True)
 
         # Normalize paradigm code for generator
         from models.paradigms import normalize_to_internal_code
@@ -770,14 +849,43 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 metadata={"research_id": research_id},
             )
 
+        # Emit synthesis started (mirrored as research_progress by tracker)
+        try:
+            from services.websocket_service import progress_tracker as _pt
+            if _pt:
+                await _pt.report_synthesis_started(research_id)
+        except Exception:
+            pass
+
         # Call the generator using the legacy signature for broad compatibility
-        return await answer_orchestrator.generate_answer(
+        assert answer_orchestrator is not None, "Answer generation not available"
+        answer = await answer_orchestrator.generate_answer(
             paradigm=paradigm_code,
             query=getattr(context_engineered, "original_query", ""),
             search_results=sources,
             context_engineering=ce,
             options={"research_id": research_id, **options},
         )
+
+        # Emit synthesis completed with simple stats
+        try:
+            sections = 0
+            citations = 0
+            try:
+                sections = len(getattr(answer, "sections", []) or [])
+            except Exception:
+                pass
+            try:
+                citations = len(getattr(answer, "citations", []) or [])
+            except Exception:
+                pass
+            from services.websocket_service import progress_tracker as _pt
+            if _pt:
+                await _pt.report_synthesis_completed(research_id, sections, citations)
+        except Exception:
+            pass
+
+        return answer
 
     async def execute_paradigm_research(
         self,
@@ -880,55 +988,61 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         search_progress
                     )
 
-                config = SearchConfig(
-                    max_results=min(max_results, 50), language="en", region="us"
-                )
+            # Wire Select layer preferences into SearchConfig
+            try:
+                sel = getattr(context_engineered_query, "select_output", None)
+                prefs = list(getattr(sel, "source_preferences", []) or [])
+                excludes = list(getattr(sel, "exclusion_filters", []) or [])
+            except Exception:
+                prefs, excludes = [], []
+            config = SearchConfig(
+                max_results=min(max_results, 50),
+                language="en",
+                region="us",
+                source_types=prefs,
+                exclusion_keywords=excludes,
+            )
 
-                try:
-                    if not self.search_manager:
-                        raise RuntimeError("search_manager is not initialized")
-                    api_results = await self.search_manager.search_with_fallback(
-                        query, config
+            try:
+                sm = self.search_manager
+                if sm is None:
+                    raise RuntimeError("search_manager is not initialized")
+                api_results = await sm.search_with_fallback(query, config)
+
+                primary_api = "google"
+                cost = await self.cost_monitor.track_search_cost(primary_api, 1)
+                cost_breakdown[f"{query_type}_{query[:20]}"] = cost
+
+                for result in api_results:
+                    result.credibility_score = (
+                        result.credibility_score * weight
+                        if hasattr(result, "credibility_score")
+                        else weight
                     )
 
-                    primary_api = "google"
-                    cost = await self.cost_monitor.track_search_cost(primary_api, 1)
-                    cost_breakdown[f"{query_type}_{query[:20]}"] = cost
+                await cache_search_results(query, config_dict, paradigm, api_results)
+                all_results[f"{query_type}_{query[:30]}"] = api_results
 
-                    for result in api_results:
-                        result.credibility_score = (
-                            result.credibility_score * weight
-                            if hasattr(result, "credibility_score")
-                            else weight
-                        )
+                logger.info(f"Got {len(api_results)} results for: {query[:50]}...")
 
-                    await cache_search_results(
-                        query, config_dict, paradigm, api_results
+                if progress_tracker and research_id:
+                    await progress_tracker.report_search_completed(
+                        research_id, query, len(api_results)
                     )
-                    all_results[f"{query_type}_{query[:30]}"] = api_results
-
-                    logger.info(f"Got {len(api_results)} results for: {query[:50]}...")
-
-                    if progress_tracker and research_id:
-                        await progress_tracker.report_search_completed(
-                            research_id, query, len(api_results)
+                    for result in api_results[:3]:
+                        await progress_tracker.report_source_found(
+                            research_id,
+                            {
+                                "title": result.title,
+                                "url": result.url,
+                                "domain": result.domain,
+                                "snippet": result.snippet[:200] if result.snippet else "",
+                                "credibility_score": getattr(result, "credibility_score", 0.5)
+                            }
                         )
-
-                        for result in api_results[:3]:
-                            await progress_tracker.report_source_found(
-                                research_id,
-                                {
-                                    "title": result.title,
-                                    "url": result.url,
-                                    "domain": result.domain,
-                                    "snippet": result.snippet[:200] if result.snippet else "",
-                                    "credibility_score": getattr(result, "credibility_score", 0.5)
-                                }
-                            )
-
-                except Exception as e:
-                    logger.error(f"Search failed for '{query}': {str(e)}")
-                    all_results[f"{query_type}_{query[:30]}"] = []
+            except Exception as e:
+                logger.error(f"Search failed for '{query}': {str(e)}")
+                all_results[f"{query_type}_{query[:30]}"] = []
 
         # Combine all results with validation
         combined_results = []
@@ -986,6 +1100,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # Agentic loop (optional): Plan → Act → Critique → Revise
         try:
+            # Initialize agentic loop state for type safety
+            initial_sources: List[Dict[str, Any]] = []
+            coverage: float = 0.0
+            missing: List[str] = []
             if self.agentic_config.get("enabled") and hasattr(context_engineered_query, "write_output"):
                 # Build initial sources view for critique
                 initial_sources = []
@@ -999,35 +1117,46 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     except Exception:
                         continue
 
-                from services.agentic_process import (
-                    evaluate_coverage_from_sources,
-                    summarize_domain_gaps,
-                    propose_queries_enriched,
-                )
+                # agentic_process imports moved to module level
                 coverage, missing = evaluate_coverage_from_sources(
                     original_query, context_engineered_query, initial_sources
                 )
 
                 # Optional LLM critic
-                if self.agentic_config.get("enable_llm_critic"):
-                    from services.llm_critic import llm_coverage_and_claims
+            if self.agentic_config.get("enable_llm_critic"):
+                from services.llm_critic import llm_coverage_and_claims
+                try:
+                    themes = getattr(context_engineered_query.write_output, "key_themes", []) or []
+                    focus = getattr(context_engineered_query.isolate_output, "focus_areas", []) or []
+                    lm = await llm_coverage_and_claims(original_query, paradigm, themes, focus, initial_sources)
+                    coverage = max(coverage, float(lm.get("coverage_score", coverage)))
+                    if isinstance(lm.get("missing_facets"), list):
+                        missing = list({*missing, *[str(x) for x in lm["missing_facets"] if x]})
+                    # Record critic diagnostics
+                    metrics_entry = {
+                        "step": "llm_critic",
+                        "coverage": coverage,
+                        "warnings": lm.get("warnings", []),
+                        "flagged_sources": lm.get("flagged_sources", [])
+                    }
+                    # Stream coverage delta to UI
                     try:
-                        themes = getattr(context_engineered_query.write_output, "key_themes", []) or []
-                        focus = getattr(context_engineered_query.isolate_output, "focus_areas", []) or []
-                        lm = await llm_coverage_and_claims(original_query, paradigm, themes, focus, initial_sources)
-                        coverage = max(coverage, float(lm.get("coverage_score", coverage)))
-                        if isinstance(lm.get("missing_facets"), list):
-                            missing = list({*missing, *[str(x) for x in lm["missing_facets"] if x]})
-                        # Record critic diagnostics
-                        metrics_entry = {
-                            "step": "llm_critic",
-                            "coverage": coverage,
-                            "warnings": lm.get("warnings", []),
-                            "flagged_sources": lm.get("flagged_sources", [])
-                        }
-                        # Attach to execution metrics later via metrics_dict
-                    except Exception as e:
-                        metrics_entry = {"step": "llm_critic", "error": str(e)}
+                        if progress_tracker and research_id:
+                            await progress_tracker.update_progress(
+                                research_id,
+                                None,
+                                None,
+                                custom_data={
+                                    "message": f"Critic coverage: {int(coverage*100)}% | flagged: {len(metrics_entry['flagged_sources'])}",
+                                    "coverage": coverage,
+                                    "flagged": len(metrics_entry['flagged_sources'])
+                                },
+                            )
+                    except Exception:
+                        pass
+                    # Attach to execution metrics later via metrics_dict
+                except Exception as e:
+                    metrics_entry = {"step": "llm_critic", "error": str(e)}
                     # Stash into a local list for merging into metrics_dict below
                     locals().setdefault("_agent_trace", []).append(metrics_entry)
 
@@ -1061,7 +1190,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                                 logger.info("Agentic loop stopped by budget")
                                 break
                             config = SearchConfig(max_results=min(max_results, 30), language="en", region="us")
-                            api_results = await self.search_manager.search_with_fallback(q, config)
+                            sm = self.search_manager
+                            if sm is None:
+                                raise RuntimeError("search_manager is not initialized")
+                            api_results = await sm.search_with_fallback(q, config)
                             all_results[f"agentic_{q[:30]}"] = api_results
                             for res in api_results:
                                 if res and getattr(res, 'url', None):
@@ -1139,13 +1271,21 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             secondary_strategy = get_search_strategy(secondary_paradigm)
             secondary_query = f"{original_query} {secondary_paradigm}"
 
+            sel = getattr(context_engineered_query, "select_output", None)
+            prefs = list(getattr(sel, "source_preferences", []) or [])
+            excludes = list(getattr(sel, "exclusion_filters", []) or [])
             config = SearchConfig(
-                max_results=min(max_results // 2, 25), language="en", region="us"
+                max_results=min(max_results // 2, 25),
+                language="en",
+                region="us",
+                source_types=prefs,
+                exclusion_keywords=excludes,
             )
             try:
-                if not self.search_manager:
+                sm = self.search_manager
+                if sm is None:
                     raise RuntimeError("search_manager is not initialized")
-                api_results = await self.search_manager.search_with_fallback(
+                api_results = await sm.search_with_fallback(
                     secondary_query, config
                 )
                 secondary_results.extend(api_results)
@@ -1328,6 +1468,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         research_id: Optional[str]
     ) -> List[Dict[str, Any]]:
         """Execute searches with per-task timeout, retries, and deterministic ordering"""
+        sm = self.search_manager
+        if sm is None:
+            raise RuntimeError("search_manager is not initialized")
         entries: List[Dict[str, Any]] = []
         for qidx, query in enumerate(queries):
             for api in self._select_apis_for_paradigm(paradigm, user_context):
@@ -1356,10 +1499,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 try:
                     config = SearchConfig(max_results=20, language="en", region="us")
                     if self._supports_search_with_api:
-                        coro = self.search_manager.search_with_api(api, query, config)
+                        coro = sm.search_with_api(api, query, config)
                     else:
                         # Fallback will ignore api specificity; still tracked for metrics
-                        coro = self.search_manager.search_with_fallback(query, config)
+                        coro = sm.search_with_fallback(query, config)
 
                     # Per-attempt timeout
                     task_result = await asyncio.wait_for(coro, timeout=10)
@@ -1476,10 +1619,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         """Create a search task for specific API"""
         try:
             config = SearchConfig(max_results=20, language="en", region="us")
+            sm = self.search_manager
+            if sm is None:
+                raise RuntimeError("search_manager is not initialized")
             # Ensure the selected API is actually used by search manager if supported
-            if hasattr(self.search_manager, "search_with_api"):
+            if hasattr(sm, "search_with_api"):
                 task = asyncio.create_task(
-                    self.search_manager.search_with_api(
+                    sm.search_with_api(
                         api_name,
                         query,
                         config,
@@ -1489,7 +1635,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             else:
                 # Fallback to generic with_fallback
                 task = asyncio.create_task(
-                    self.search_manager.search_with_fallback(query, config),
+                    sm.search_with_fallback(query, config),
                     name=f"{api_name}_q{query_index}"
                 )
             if self.diagnostics.get("log_task_creation"):
@@ -1562,10 +1708,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 pass
 
             result_schema = SearchResultSchema(
-                url=merged_url,
                 title=merged.get('title', ''),
+                url=merged_url,
                 snippet=merged.get('snippet', ''),
+                source=domain or extra_meta.get("domain", "") or merged.get("search_api", "unknown"),
                 credibility_score=credibility_score,
+                relevance_score=float(merged.get('relevance_score', 0.5) or 0.5),
                 metadata=extra_meta
             )
 
@@ -1608,7 +1756,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 }
 
         try:
-            compressed_results = text_compressor.compress_search_results(
+            compressed_results = compress_search_results(
                 result_payload,
                 total_token_budget=3000
             )
@@ -1616,9 +1764,22 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 self._search_metrics.get("compression_plural_used", 0)
             ) + 1
         except Exception:
-            compressed_results = [
-                text_compressor.compress_search_result(item) for item in result_payload
-            ]
+            # Fallback: manual singular compression per item preserving dict shape
+            compressed_results = []
+            for item in result_payload:
+                if not isinstance(item, dict):
+                    continue
+                title = item.get("title", "") or ""
+                snippet = item.get("snippet", "") or ""
+                summary = text_compressor.compress_search_result(title, snippet)
+                short_title = title if len(title) <= 120 else title[:117] + "..."
+                new_item = dict(item)
+                new_item["title"] = short_title
+                new_item["snippet"] = summary
+                content_val = new_item.get("content")
+                if content_val:
+                    new_item["content"] = text_compressor.compress(str(content_val), max_length=1000)
+                compressed_results.append(new_item)
             self._search_metrics["compression_singular_used"] = int(
                 self._search_metrics.get("compression_singular_used", 0)
             ) + 1
@@ -1642,6 +1803,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             merged_compressed.append(item)
         compressed_results = merged_compressed
 
+        # Lightweight contradiction detection on compressed snippets
+        contradictions = self._detect_contradictions(compressed_results)
+
         return {
             "results": compressed_results,
             "sources_used": list(self._search_metrics.get('apis_used', set())) if isinstance(self._search_metrics.get('apis_used'), set) else [],
@@ -1651,8 +1815,56 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "deduplicated_count": len(deduplicated_results),
                 "final_count": len(limited_results),
                 "deduplication_rate": dedup_rate
-            }
+            },
+            "contradictions": contradictions,
         }
+
+    def _detect_contradictions(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Heuristic cross-source contradiction detector over snippets/titles.
+
+        Looks for opposing signal pairs (increase/decrease, effective/ineffective,
+        positive/no/negative correlation, causes/does not cause) across different
+        domains. Returns a small summary suitable for metadata/answer attachment.
+        """
+        if not items or len(items) < 2:
+            return {"count": 0, "examples": []}
+
+        import re
+        pairs = [
+            (re.compile(r"\b(increase(?:d|s)?|rise[s]?)\b", re.I), re.compile(r"\b(decrease(?:d|s)?|drop[s]?|lower)\b", re.I), "increase vs decrease"),
+            (re.compile(r"\bpositive\s+correlation|positively\s+correlated\b", re.I), re.compile(r"\bno\s+correlation|negative\s+correlation|negatively\s+correlated\b", re.I), "pos vs no/neg correlation"),
+            (re.compile(r"\b(effective|improv(es|ed)|beneficial)\b", re.I), re.compile(r"\b(ineffective|does\s+not\s+work|harms|detrimental)\b", re.I), "effective vs ineffective"),
+            (re.compile(r"\b(causes|leads\s+to|results\s+in)\b", re.I), re.compile(r"\b(does\s+not\s+cause|no\s+causal|unrelated)\b", re.I), "causal vs non-causal"),
+        ]
+
+        def txt(it: Dict[str, Any]) -> str:
+            return f"{it.get('title','')} {it.get('snippet','')}"
+
+        def domain(it: Dict[str, Any]) -> str:
+            md = it.get("metadata", {}) or {}
+            return (md.get("domain") or "").lower()
+
+        examples = []
+        n = len(items)
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = items[i], items[j]
+                da, db = domain(a), domain(b)
+                if not da or not db or da == db:
+                    continue
+                ta, tb = txt(a), txt(b)
+                for p1, p2, label in pairs:
+                    if p1.search(ta) and p2.search(tb) or p1.search(tb) and p2.search(ta):
+                        examples.append({
+                            "signal": label,
+                            "a_url": a.get("url", ""),
+                            "b_url": b.get("url", ""),
+                            "a_excerpt": (a.get("snippet", "") or a.get("title", ""))[:180],
+                            "b_excerpt": (b.get("snippet", "") or b.get("title", ""))[:180],
+                        })
+                        if len(examples) >= 5:
+                            return {"count": len(examples), "examples": examples}
+        return {"count": len(examples), "examples": examples}
 
     def _merge_duplicate_results(self, duplicates: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Merge duplicate results deterministically"""
@@ -1720,7 +1932,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         return filtered
 
-    def normalize_result_shape(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def normalize_result_shape(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Normalize result to ensure consistent shape with required fields"""
         url = (result.get('url') or '').strip()
         title = result.get('title')
@@ -1738,7 +1950,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             if allow_unlinked and result_type == "deep_research" and (title or snippet):
                 # Synthesize stable placeholder URL for traceability
                 safe_oid = origin_query_id or "deep"
-                synthesized = f"about:blank#citation-{safe_oid}-{hash((title or snippet)[:64]) & 0xFFFFFFFF}"
+                synthesized = f"about:blank#citation-{safe_oid}-{hash(((title or snippet) or '')[:64]) & 0xFFFFFFFF}"
                 url = synthesized
                 metadata = dict(metadata)
                 metadata["unlinked_citation"] = True
@@ -1866,7 +2078,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             # Synthesize URL when missing for deep_research to avoid downstream drops
             if not url:
                 safe_oid = "deep"
-                synthesized = f"about:blank#citation-{safe_oid}-{hash((title or snippet)[:64]) & 0xFFFFFFFF}"
+                synthesized = f"about:blank#citation-{safe_oid}-{hash(((title or snippet) or '')[:64]) & 0xFFFFFFFF}"
                 url = synthesized
             domain = url.split('/')[2] if ('/' in url and len(url.split('/')) > 2) else url
             deep_search_results.append({
@@ -2011,10 +2223,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         if classification is None:
             # Create a minimal default classification targeting analytical/Bernard to avoid None paths
             try:
+                orig_q = getattr(context_engineered, "original_query", "")
                 classification = ClassificationResultSchema(
+                    query=orig_q,
                     primary_paradigm=HostParadigm.BERNARD,
                     secondary_paradigm=None,
-                    confidence=0.9
+                    distribution={HostParadigm.BERNARD: 1.0},
+                    confidence=0.9,
+                    features=QueryFeaturesSchema(text=orig_q),
+                    reasoning={HostParadigm.BERNARD: ["default"]}
                 )
             except Exception:
                 # If constructor differs, try attribute assignment fallback
@@ -2111,10 +2328,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         "paradigm_alignment": getattr(classification, "primary_paradigm", HostParadigm.BERNARD)
                     })
                     shim = SearchResultSchema(
-                        url=url,
                         title=title,
+                        url=url,
                         snippet=snippet,
+                        source=(meta.get("domain") or source_api),
                         credibility_score=credibility_score,
+                        relevance_score=0.7,
                         metadata=meta
                     )
                     # Append as-is; downstream consumers typically accept SearchResult-like items
@@ -2124,9 +2343,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     # Fallback: try the SearchResult dataclass if available from services.search_apis
                     try:
                         shim2 = SearchResult(
-                            url=url,
                             title=title,
+                            url=url,
                             snippet=snippet,
+                            source=source_api,
                             domain=(url.split('/')[2] if url else ""),
                             content=snippet
                         )
@@ -2195,8 +2415,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         }
 
 
-# Global orchestrator instance
-research_orchestrator = UnifiedResearchOrchestrator()
+# Global orchestrator instance (use subclass with execute_research)
+research_orchestrator = ResearchOrchestrator()
 
 # Convenience functions for backward compatibility
 async def initialize_research_system():

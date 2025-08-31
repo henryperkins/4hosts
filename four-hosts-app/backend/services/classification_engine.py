@@ -15,15 +15,9 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Internal imports
-try:
-    from .llm_client import llm_client
-
-    LLM_AVAILABLE = True
-except ImportError:
-    llm_client = None
-    LLM_AVAILABLE = False
-    logger.warning("LLM client not available - classification will use rule-based only")
+# Internal imports - deferred to avoid circular dependency
+llm_client = None
+LLM_AVAILABLE = False
 
 # --- Core Enums and Models ---
 
@@ -798,12 +792,22 @@ class ClassificationEngine:
 
     def __init__(self, use_llm: bool = True, cache_enabled: bool = True):
         self.analyzer = QueryAnalyzer()
-        # Only enable LLM if it's available and requested
-        actual_use_llm = use_llm and LLM_AVAILABLE
+        # Try to import LLM client lazily
+        global llm_client, LLM_AVAILABLE
         if use_llm and not LLM_AVAILABLE:
-            logger.warning(
-                "LLM requested but not available - using rule-based classification"
-            )
+            try:
+                from .llm_client import llm_client as _llm_client
+                llm_client = _llm_client
+                LLM_AVAILABLE = True
+                logger.info("LLM client successfully imported")
+            except ImportError as e:
+                logger.warning(
+                    f"LLM client not available - using rule-based classification: {e}"
+                )
+                llm_client = None
+                LLM_AVAILABLE = False
+        
+        actual_use_llm = use_llm and LLM_AVAILABLE
         self.classifier = ParadigmClassifier(self.analyzer, actual_use_llm)
         self.cache_enabled = cache_enabled
         self.cache: Dict[str, ClassificationResult] = {} if cache_enabled else None

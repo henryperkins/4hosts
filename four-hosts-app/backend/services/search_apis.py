@@ -45,6 +45,85 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Structured logging helpers and tolerant schema models for API payloads
+from pydantic import BaseModel, ValidationError  # type: ignore
+from typing import Union
+
+MAX_LOG_BODY = int(os.getenv("SEARCH_LOG_BODY_MAX", "2048"))
+
+def _safe_truncate(value: Any, max_len: int = MAX_LOG_BODY) -> str:
+    try:
+        s = value if isinstance(value, str) else json.dumps(value, default=str)[:max_len]
+    except Exception:
+        try:
+            s = str(value)[:max_len]
+        except Exception:
+            s = "<unserializable>"
+    return s[:max_len]
+
+def _structured_log(level: str, event: str, meta: Dict[str, Any]):
+    # Ensure meta is JSON-serializable and bounded
+    record = {"event": event, **meta}
+    try:
+        msg = json.dumps(record, default=str)
+    except Exception:
+        # As a last resort, stringify fields individually
+        safe = {k: _safe_truncate(v) for k, v in record.items()}
+        msg = json.dumps(safe)
+    if level == "debug":
+        logger.debug(msg)
+    elif level == "warning":
+        logger.warning(msg)
+    elif level == "error":
+        logger.error(msg)
+    else:
+        logger.info(msg)
+
+def _log_api_event(event: str, level: str = "info", **kwargs):
+    # Truncate potentially large fields
+    headers = kwargs.get("headers")
+    if headers and isinstance(headers, dict):
+        # Cap number of headers and truncate values
+        capped = {}
+        for i, (k, v) in enumerate(headers.items()):
+            if i >= 25:
+                break
+            capped[str(k)] = _safe_truncate(v, 256)
+        kwargs["headers"] = capped
+    body_preview = kwargs.get("body_preview")
+    if body_preview is not None:
+        kwargs["body_preview"] = _safe_truncate(body_preview, MAX_LOG_BODY)
+    _structured_log(level, event, kwargs)
+
+async def _response_body_snippet(response, limit: int = MAX_LOG_BODY) -> str:
+    # Try reading text first, then bytes
+    try:
+        text = await response.text()
+        return text[:limit]
+    except Exception:
+        try:
+            data = await response.read()
+            return data[:limit].decode(errors="replace")
+        except Exception:
+            return "<unreadable-body>"
+
+# Minimal tolerant models for Semantic Scholar response
+class SSPaper(BaseModel):
+    paperId: Optional[str] = None
+    title: Optional[str] = None
+    abstract: Optional[Union[str, None]] = None
+    year: Optional[Union[int, str, None]] = None
+    url: Optional[str] = None
+    citationCount: Optional[Union[int, str, None]] = None
+    influentialCitationCount: Optional[Union[int, str, None]] = None
+    authors: Optional[List[Dict[str, Any]]] = None
+
+class SSPaperSearchResponse(BaseModel):
+    data: List[Union[Dict[str, Any], SSPaper]]
+    total: Optional[Union[int, str]] = None
+    next: Optional[Any] = None
+    offset: Optional[Union[int, str]] = None
+
 
 class URLNormalizer:
     """Handles URL normalization and DOI canonicalization"""
@@ -430,7 +509,10 @@ class SearchConfig:
     region: str = "us"
     safe_search: str = "moderate"
     date_range: Optional[str] = None  # "d", "w", "m", "y" for day/week/month/year
-    source_types: List[str] = field(default_factory=list)  # ["academic", "news", "web"]
+    # Preferred source types (boosted in ranking). Examples: "academic", "news", "web".
+    source_types: List[str] = field(default_factory=list)
+    # Exclusion keywords to down-rank or filter results (e.g., "opinion", "sensational").
+    exclusion_keywords: List[str] = field(default_factory=list)
     # Authority scoring configuration
     authority_whitelist: List[str] = field(default_factory=list)  # Preferred domains
     authority_blacklist: List[str] = field(default_factory=list)  # Blocked domains
@@ -803,6 +885,14 @@ class ContentRelevanceFilter:
                 result.is_primary_source = True
                 return score
 
+        # Prefer configured source types (gentle boost)
+        if config and config.source_types:
+            try:
+                if result.result_type in config.source_types:
+                    score = min(1.0, score + 0.15)
+            except Exception:
+                pass
+
         # Academic sources get higher base score
         if result.result_type == "academic":
             score = 0.9
@@ -875,6 +965,12 @@ class ContentRelevanceFilter:
 
         pre_filtered = []
         for result in results:
+            # Apply exclusion keywords (content-based) if provided
+            if config and getattr(config, 'exclusion_keywords', None):
+                hay = f"{result.title} {result.snippet}".lower()
+                if any(kw.lower() in hay for kw in config.exclusion_keywords):
+                    # Skip low-value content per selection policy
+                    continue
             if any(blocked in result.domain for blocked in blocked_domains):
                 # Skip content fetch for known blocking domains
                 result.content = f"Summary from search results: {result.snippet}"
@@ -1695,10 +1791,15 @@ class SemanticScholarAPI(BaseSearchAPI):
         super().__init__("", rate_limiter)  # No API key needed
         self.base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
+    )
     async def search(
         self, query: str, config: SearchConfig
     ) -> List[SearchResult]:
-        """Search Semantic Scholar for academic papers with basic 429 backoff."""
+        """Search Semantic Scholar with schema validation, structured logging, and resilient retries."""
         await self.rate_limiter.wait_if_needed()
 
         params = {
@@ -1710,100 +1811,303 @@ class SemanticScholarAPI(BaseSearchAPI):
             ),
         }
 
-        # Attempt up to 2 tries on 429 with capped backoff
-        tries = 0
-        while tries < 2:
-            tries += 1
-            try:
-                async with self._get_session().get(
-                    self.base_url, params=params
-                ) as response:
-                    if response.status == 200:
+        session = self._get_session()
+        headers = {"Accept": "application/json"}
+
+        try:
+            async with session.get(self.base_url, params=params, headers=headers) as response:
+                status = response.status
+                # Log basic response metadata eagerly
+                _log_api_event(
+                    "semantic_scholar_http_response",
+                    level="debug",
+                    endpoint=self.base_url,
+                    params=params,
+                    status=status,
+                    headers=dict(response.headers) if getattr(response, "headers", None) else {},
+                )
+
+                if status == 200:
+                    # Attempt to parse JSON; handle HTML/non-JSON gracefully
+                    try:
                         data = await response.json()
-                        return self._parse_semantic_scholar_results(data)
-                    if response.status == 429:
-                        # Respect Retry-After if present, otherwise exponential backoff
-                        ra = response.headers.get("retry-after")
-                        try:
-                            delay = min(60.0, float(ra)) if ra else min(30.0, 3.0 * tries)
-                        except Exception:
-                            delay = min(30.0, 3.0 * tries)
-                        logger.warning(
-                            f"Semantic Scholar rate limited (429). Backing off {delay:.1f}s (try {tries}/2)"
+                    except Exception as je:
+                        body_snippet = await _response_body_snippet(response)
+                        _log_api_event(
+                            "semantic_scholar_non_json_200",
+                            level="warning",
+                            endpoint=self.base_url,
+                            params=params,
+                            status=status,
+                            headers=dict(response.headers),
+                            body_preview=body_snippet,
+                            error=str(je),
                         )
-                        await asyncio.sleep(delay)
-                        # Loop to retry once
-                        continue
-                    # Other non-200 statuses
-                    logger.warning(
-                        f"Semantic Scholar API unexpected status: {response.status}"
+                        return []
+                    results = self._parse_semantic_scholar_results(data)
+                    # Log parsed diagnostics with pagination info if present
+                    try:
+                        total = data.get("total") if isinstance(data, dict) else None
+                        next_val = data.get("next") if isinstance(data, dict) else None
+                    except Exception:
+                        total, next_val = None, None
+                    _log_api_event(
+                        "semantic_scholar_parsed",
+                        level="debug",
+                        endpoint=self.base_url,
+                        params=params,
+                        status=status,
+                        total=total,
+                        next=next_val,
+                        results=len(results),
+                    )
+                    return results
+
+                if status == 429:
+                    # Respect server Retry-After and apply exponential backoff with jitter
+                    retry_after_hdr = response.headers.get("retry-after") if getattr(response, "headers", None) else None
+                    base_delay = float(os.getenv("SEARCH_RATE_LIMIT_BASE_DELAY", "2"))
+                    factor = float(os.getenv("SEARCH_RATE_LIMIT_BACKOFF_FACTOR", "2"))
+                    max_delay = float(os.getenv("SEARCH_RATE_LIMIT_MAX_DELAY", "30"))
+                    jitter_mode = os.getenv("SEARCH_RATE_LIMIT_JITTER", "full")  # 'none' | 'full'
+
+                    attempt_key = f"_ss_rate_attempts_{hash(self.base_url)}"
+                    attempts = getattr(session, attempt_key, 0) + 1
+                    setattr(session, attempt_key, attempts)
+
+                    computed = base_delay * (factor ** (attempts - 1))
+                    upper = min(max_delay, computed)
+                    server_retry = None
+                    if retry_after_hdr and retry_after_hdr.isdigit():
+                        try:
+                            server_retry = float(retry_after_hdr)
+                            upper = min(upper, server_retry)
+                        except ValueError:
+                            server_retry = None
+
+                    delay = upper
+                    if jitter_mode == "full":
+                        delay = random.uniform(0, upper)
+
+                    _log_api_event(
+                        "semantic_scholar_rate_limited",
+                        level="warning",
+                        endpoint=self.base_url,
+                        params=params,
+                        status=status,
+                        headers=dict(response.headers),
+                        retry_after=server_retry,
+                        attempts=attempts,
+                        backoff_delay=round(delay, 3),
+                        computed=round(computed, 3),
+                        max_delay=max_delay,
+                    )
+                    await asyncio.sleep(delay)
+                    # Raise to trigger tenacity retry
+                    raise RateLimitedError("429 Too Many Requests from Semantic Scholar")
+
+                if status == 202:
+                    # Content not ready; treat as transient non-fatal
+                    _log_api_event(
+                        "semantic_scholar_accepted_processing",
+                        level="debug",
+                        endpoint=self.base_url,
+                        params=params,
+                        status=status,
+                        headers=dict(response.headers),
                     )
                     return []
-            except Exception as e:
-                # Network / parsing issues
-                logger.error(f"Semantic Scholar search failed: {e}")
+
+                if 500 <= status < 600 or status in (408, 425):
+                    # Transient server/client timeouts -> structured log, then raise to retry
+                    body_snippet = await _response_body_snippet(response)
+                    _log_api_event(
+                        "semantic_scholar_transient_error",
+                        level="warning",
+                        endpoint=self.base_url,
+                        params=params,
+                        status=status,
+                        headers=dict(response.headers),
+                        body_preview=body_snippet,
+                    )
+                    response.raise_for_status()
+
+                # Other non-200 statuses: log and return empty gracefully
+                body_snippet = await _response_body_snippet(response)
+                _log_api_event(
+                    "semantic_scholar_non_ok",
+                    level="warning",
+                    endpoint=self.base_url,
+                    params=params,
+                    status=status,
+                    headers=dict(response.headers),
+                    body_preview=body_snippet,
+                )
                 return []
-        # If we exhausted retries
-        return []
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            _log_api_event(
+                "semantic_scholar_exception",
+                level="warning",
+                endpoint=self.base_url,
+                params=params,
+                error=str(e),
+            )
+            # Re-raise to allow tenacity to retry
+            raise
+        except Exception as e:
+            _log_api_event(
+                "semantic_scholar_unexpected_error",
+                level="error",
+                endpoint=self.base_url,
+                params=params,
+                error=str(e),
+            )
+            return []
 
     def _parse_semantic_scholar_results(self, data: Dict[str, Any]) -> List[SearchResult]:
-        """Parse Semantic Scholar API response"""
-        results = []
+        """Parse Semantic Scholar response with JSON schema validation and graceful fallbacks."""
+        results: List[SearchResult] = []
 
-        # Validate data structure
-        if not isinstance(data, dict) or "data" not in data:
-            logger.warning("Invalid Semantic Scholar response structure")
+        # Attempt schema validation but do not fail hard on ValidationError
+        validated = False
+        papers_list: List[Dict[str, Any]] = []
+
+        if isinstance(data, dict):
+            try:
+                # Tolerant validation; allows extra fields
+                SSPaperSearchResponse.model_validate(data)
+                validated = True
+            except ValidationError as ve:
+                _log_api_event(
+                    "semantic_scholar_schema_validation_failed",
+                    level="warning",
+                    error=str(ve)[:1000],
+                    keys=list(data.keys()),
+                )
+
+            # Prefer 'data' per docs; fall back to common alternates if missing
+            if isinstance(data.get("data"), list):
+                papers_list = cast(List[Dict[str, Any]], data.get("data"))
+            elif isinstance(data.get("papers"), list):
+                papers_list = cast(List[Dict[str, Any]], data.get("papers"))
+                _log_api_event(
+                    "semantic_scholar_schema_drift_detected",
+                    level="warning",
+                    note="Using 'papers' instead of 'data'",
+                    keys=list(data.keys()),
+                )
+            elif isinstance(data.get("results"), list):
+                papers_list = cast(List[Dict[str, Any]], data.get("results"))
+                _log_api_event(
+                    "semantic_scholar_schema_drift_detected",
+                    level="warning",
+                    note="Using 'results' instead of 'data'",
+                    keys=list(data.keys()),
+                )
+            elif isinstance(data.get("items"), list):
+                papers_list = cast(List[Dict[str, Any]], data.get("items"))
+                _log_api_event(
+                    "semantic_scholar_schema_drift_detected",
+                    level="warning",
+                    note="Using 'items' instead of 'data'",
+                    keys=list(data.keys()),
+                )
+            else:
+                # If dict but no recognizable list field
+                _log_api_event(
+                    "semantic_scholar_invalid_structure",
+                    level="warning",
+                    message="No list field found among ['data','papers','results','items']",
+                    keys=list(data.keys()),
+                )
+                return []
+        elif isinstance(data, list):
+            papers_list = cast(List[Dict[str, Any]], data)
+            _log_api_event(
+                "semantic_scholar_schema_drift_detected",
+                level="warning",
+                note="Top-level list payload encountered",
+            )
+        else:
+            _log_api_event(
+                "semantic_scholar_invalid_payload_type",
+                level="warning",
+                type=str(type(data)),
+            )
             return []
 
-        papers = data.get("data", [])
-        if not isinstance(papers, list):
-            logger.warning("Semantic Scholar 'data' field is not a list")
-            return []
-
-        for paper in papers:
-            # Skip invalid paper entries
-            if not isinstance(paper, dict):
+        # Parse each paper robustly
+        for raw in papers_list:
+            if not isinstance(raw, dict):
                 continue
 
-            # Build URL with validation
-            paper_id = paper.get("paperId", "")
-            url = f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else ""
+            paper_id = raw.get("paperId") or ""
+            url = raw.get("url") or (f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else "")
 
-            # Extract year for published date
+            # Year may be int or string; coerce safely
             published_date = None
-            if year := paper.get("year"):
+            year_val = raw.get("year")
+            try:
+                year_int = int(year_val) if year_val is not None else None
+                if year_int:
+                    published_date = datetime(year_int, 1, 1, tzinfo=timezone.utc)
+            except Exception:
+                pass
+
+            snippet = raw.get("abstract") or ""
+            if not snippet:
+                # Build minimal snippet from citation counts if available
                 try:
-                    if isinstance(year, int):
-                        published_date = datetime(year, 1, 1, tzinfo=timezone.utc)
+                    c = int(raw.get("citationCount") or 0)
                 except Exception:
-                    pass
+                    c = 0
+                try:
+                    ic = int(raw.get("influentialCitationCount") or 0)
+                except Exception:
+                    ic = 0
+                if c or ic:
+                    snippet = f"Citations: {c}, Influential citations: {ic}"
 
-            # Build snippet from abstract with None guards
-            snippet = paper.get("abstract") or ""
-            if not snippet and paper.get("citationCount"):
-                citation_count = paper.get("citationCount", 0)
-                influential_count = paper.get("influentialCitationCount", 0)
-                snippet = f"Citations: {citation_count}, Influential citations: {influential_count}"
-
-            # Ensure snippet is string and handle None case
             if snippet is None:
                 snippet = ""
             elif not isinstance(snippet, str):
                 snippet = str(snippet)
 
+            title = raw.get("title") or ""
+            if not isinstance(title, str):
+                try:
+                    title = str(title)
+                except Exception:
+                    title = ""
+
+            trimmed_snippet = snippet[:300] + "..." if len(snippet) > 300 else snippet
+            content_val = trimmed_snippet if trimmed_snippet else None
+
             result = SearchResult(
-                title=paper.get("title") or "",
+                title=title,
                 url=url,
-                snippet=snippet[:300] + "..." if len(snippet) > 300 else snippet,
+                snippet=trimmed_snippet,
                 source="semantic_scholar",
                 published_date=published_date,
                 result_type="academic",
                 domain="semanticscholar.org",
-                raw_data=paper,
-                # Use abstract as primary content to avoid fetching JS-rendered pages
-                content=(snippet[:300] + "..." if len(snippet) > 300 else snippet) if snippet else None
+                raw_data=raw,
+                content=content_val,
             )
             results.append(result)
+
+        if not validated:
+            # Emit a single summary log to aid monitoring of schema changes
+            try:
+                sample_keys = list(papers_list[0].keys()) if papers_list else []
+            except Exception:
+                sample_keys = []
+            _log_api_event(
+                "semantic_scholar_parsed_with_fallback",
+                level="warning",
+                count=len(results),
+                sample_keys=sample_keys[:25],
+            )
 
         return results
 
@@ -2123,12 +2427,12 @@ class SearchAPIManager:
                 logger.error(f"Error during search API cleanup: {e}")
 
         self._initialized = False
-    
+
     async def __aenter__(self):
         """Context manager entry - initialize all APIs"""
         await self.initialize()
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - cleanup all APIs"""
         await self.cleanup()
