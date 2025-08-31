@@ -24,7 +24,12 @@ from enum import Enum
 import re
 
 # Import database models and connection
-from database.models import User as DBUser, APIKey as DBAPIKey, UserRole as _DBUserRole
+from database.models import (
+    User as DBUser,
+    APIKey as DBAPIKey,
+    UserRole as _DBUserRole,
+    AuthProvider as DBAuthProvider,
+)
 from sqlalchemy import select
 from sqlalchemy.sql import ColumnElement
 from database.connection import get_db
@@ -494,13 +499,26 @@ class AuthService:
 
             # Create user in database
             # Let PostgreSQL UUID default generate the ID
+            # Normalize enum fields to database values (lowercase strings)
+            role_value = (
+                user_data.role.value
+                if hasattr(user_data.role, "value")
+                else str(user_data.role or UserRole.FREE.value)
+            )
+
+            auth_provider_value = (
+                user_data.auth_provider.value
+                if hasattr(user_data, "auth_provider") and hasattr(user_data.auth_provider, "value")
+                else DBAuthProvider.LOCAL.value
+            )
+
             db_user = DBUser(
                 email=user_data.email,
                 username=user_data.username,
                 password_hash=await hash_password(user_data.password),
-                role=user_data.role or UserRole.FREE,
+                role=role_value,
                 is_active=True,
-                auth_provider=user_data.auth_provider or AuthProvider.LOCAL,
+                auth_provider=auth_provider_value,
             )
 
             db.add(db_user)
@@ -667,5 +685,4 @@ class AuthService:
 
 # Create global auth service instance
 auth_service = AuthService()
-
 

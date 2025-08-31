@@ -5,6 +5,7 @@ and paradigm classifications
 """
 
 import redis.asyncio as redis
+import os
 import json
 import logging
 import hashlib
@@ -36,8 +37,9 @@ logger = logging.getLogger(__name__)
 class CacheManager:
     """Manages Redis caching with intelligent TTL and cost optimization"""
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
-        self.redis_url = redis_url
+    def __init__(self, redis_url: str | None = None):
+        # Respect REDIS_URL env when not explicitly provided
+        self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
         self.redis_pool = None
         self.hit_count = 0
         self.miss_count = 0

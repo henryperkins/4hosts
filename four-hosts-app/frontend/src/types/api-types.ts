@@ -75,10 +75,31 @@ export interface SearchResult {
 }
 
 export interface WebSocketMessage {
-  type: 'status' | 'progress' | 'result' | 'error' | 'research_progress' | 'research_phase_change' | 
-        'source_found' | 'source_analyzed' | 'research_completed' | 'research_failed' | 
-        'research_started' | 'search.started' | 'search.completed' | 'credibility.check' | 
-        'deduplication.progress'
+  type:
+    | 'status'
+    | 'progress'
+    | 'result'
+    | 'error'
+    // Connection/system events
+    | 'connected'
+    | 'disconnected'
+    | 'ping'
+    | 'pong'
+    | 'system.notification'
+    | 'rate_limit.warning'
+    // Research events
+    | 'research_progress'
+    | 'research_phase_change'
+    | 'source_found'
+    | 'source_analyzed'
+    | 'research_completed'
+    | 'research_failed'
+    | 'research_started'
+    // Search/analysis events
+    | 'search.started'
+    | 'search.completed'
+    | 'credibility.check'
+    | 'deduplication.progress'
   data: {
     status?: 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
     progress?: number
@@ -160,11 +181,20 @@ export function isLoginResponse(data: unknown): data is LoginResponse {
 }
 
 export function isWebSocketMessage(data: unknown): data is WebSocketMessage {
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    'type' in data &&
-    'data' in data &&
-    ['status', 'progress', 'result', 'error'].includes((data as WebSocketMessage).type)
-  )
+  if (
+    typeof data !== 'object' ||
+    data === null ||
+    !('type' in data) ||
+    !('data' in data)
+  ) {
+    return false
+  }
+  const t = (data as { type: string }).type
+  const allowed: WebSocketMessage['type'][] = [
+    'status', 'progress', 'result', 'error',
+    'connected', 'disconnected', 'ping', 'pong', 'system.notification', 'rate_limit.warning',
+    'research_progress', 'research_phase_change', 'source_found', 'source_analyzed', 'research_completed', 'research_failed', 'research_started',
+    'search.started', 'search.completed', 'credibility.check', 'deduplication.progress'
+  ]
+  return allowed.includes(t as WebSocketMessage['type'])
 }

@@ -1,0 +1,183 @@
+version: '3.9'
+
+# ============================================================================
+# FOUR HOSTS RESEARCH APPLICATION - DOCKER COMPOSE CONFIGURATION
+# ============================================================================
+# This stack runs the complete Four Hosts research system with:
+# - PostgreSQL database for persistent data storage
+# - Redis cache for session management and performance optimization
+# - FastAPI backend with paradigm-aware research capabilities
+# - React frontend for user interaction
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # DATABASE SERVICE - PostgreSQL
+  # ==========================================================================
+  # Primary data store for user accounts, research history, and system data
+  postgres:
+    image: postgres:15-alpine
+    container_name: fourhosts-postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: fourhosts
+    ports:
+      - "5432:5432"  # Expose PostgreSQL on standard port for local development
+    volumes:
+      # Persistent volume for database data (survives container restarts)
+      - postgres_data:/var/lib/postgresql/data
+      # Initialize database schema on first run (read-only mount)
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d fourhosts"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s  # Give database time to initialize
+    restart: unless-stopped
+    networks:
+      - fourhosts-network
+    labels:
+      com.fourhosts.service: "database"
+      com.fourhosts.description: "PostgreSQL database for user data and research history"
+
+  # ==========================================================================
+  # CACHE SERVICE - Redis
+  # ==========================================================================
+  # High-performance cache for sessions, rate limiting, and temporary data
+  redis:
+    image: redis:7-alpine
+    container_name: fourhosts-redis
+    ports:
+      - "6379:6379"  # Expose Redis on standard port for local development
+    volumes:
+      # Persistent volume for Redis data (optional persistence)
+      - redis_data:/data
+    command: redis-server --appendonly yes  # Enable persistence
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - fourhosts-network
+    labels:
+      com.fourhosts.service: "cache"
+      com.fourhosts.description: "Redis cache for sessions and performance optimization"
+
+  # ==========================================================================
+  # BACKEND SERVICE - FastAPI Application
+  # ==========================================================================
+  # Core research engine with paradigm classification and AI-powered answers
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fourhosts-backend
+    environment:
+      # Database connection (uses internal Docker network hostname)
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/fourhosts
+      
+      # Environment mode - development enables debug features and relaxed CORS
+      ENVIRONMENT: development
+      
+      # Cache connection (application gracefully handles Redis unavailability)
+      REDIS_URL: redis://redis:6379
+      
+      # NOTE: API keys for external services should be set via .env file or secrets
+      # Required keys: AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, BRAVE_API_KEY, etc.
+    depends_on:
+      # Wait for healthy services before starting
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"  # FastAPI on port 8000 (includes /docs for API documentation)
+    restart: unless-stopped
+    networks:
+      - fourhosts-network
+    labels:
+      com.fourhosts.service: "backend"
+      com.fourhosts.description: "FastAPI backend with paradigm research engine"
+      com.fourhosts.endpoints: "http://localhost:8000/docs"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ==========================================================================
+  # FRONTEND SERVICE - React Application
+  # ==========================================================================
+  # User interface for paradigm-aware research queries
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fourhosts-frontend
+    depends_on:
+      backend:
+        condition: service_started  # Frontend can start once backend is running
+    ports:
+      - "5173:80"  # Nginx serves React app on port 80, exposed as 5173 locally
+    restart: unless-stopped
+    networks:
+      - fourhosts-network
+    labels:
+      com.fourhosts.service: "frontend"
+      com.fourhosts.description: "React frontend for Four Hosts research interface"
+      com.fourhosts.url: "http://localhost:5173"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# ==========================================================================
+# VOLUMES - Persistent Data Storage
+# ==========================================================================
+volumes:
+  postgres_data:
+    # Using minimal configuration to maintain compatibility with existing volumes
+    # If you need to start fresh: docker-compose down -v
+  
+  redis_data:
+    # Using minimal configuration to maintain compatibility with existing volumes
+
+# ==========================================================================
+# NETWORKS - Internal Service Communication
+# ==========================================================================
+networks:
+  fourhosts-network:
+    name: fourhosts-network
+    driver: bridge
+    labels:
+      com.fourhosts.network: "main"
+      com.fourhosts.description: "Internal network for service communication"
+
+# ==========================================================================
+# USAGE INSTRUCTIONS
+# ==========================================================================
+# 1. Start all services:        docker-compose up -d
+# 2. View logs:                 docker-compose logs -f [service-name]
+# 3. Stop all services:         docker-compose down
+# 4. Reset data (careful!):     docker-compose down -v
+# 5. Rebuild after code changes: docker-compose up -d --build
+#
+# ACCESS POINTS:
+# - Frontend:      http://localhost:5173
+# - Backend API:   http://localhost:8000
+# - API Docs:      http://localhost:8000/docs
+# - PostgreSQL:    localhost:5432 (user/password/fourhosts)
+# - Redis:         localhost:6379
+#
+# MONITORING:
+# - Check service health:  docker-compose ps
+# - View resource usage:   docker stats
+# - Inspect logs:          docker-compose logs [postgres|redis|backend|frontend]
+# ==========================================================================

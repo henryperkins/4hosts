@@ -4,6 +4,7 @@ import toast from 'react-hot-toast'
 import api from '../services/api'
 import type { ResearchResult, AnswerSection } from '../types'
 import { getParadigmClass, getParadigmDescription } from '../constants/paradigm'
+import { ContextMetricsPanel } from './ContextMetricsPanel'
 
 interface ResultsDisplayEnhancedProps {
   results: ResearchResult
@@ -17,6 +18,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   const [showAllCitations, setShowAllCitations] = useState(false)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const [traceOpen, setTraceOpen] = useState(false)
 
   // Safely handle cases where answer might be undefined (failed research)
   const answer = results.integrated_synthesis 
@@ -267,7 +269,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
         )}
 
-        {/* Context Engineering Info */}
+        {/* Context Engineering Info (legacy key) */}
         {results.paradigm_analysis.context_engineering && (
           <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors duration-200">
             <h4 className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">Context Engineering Pipeline</h4>
@@ -287,6 +289,35 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               <div>
                 <p className="text-blue-700 dark:text-blue-300">Isolation Strategy</p>
                 <p className="font-semibold capitalize text-blue-900 dark:text-blue-100">{results.paradigm_analysis.context_engineering.isolation_strategy}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Context Engineering Info (SSOTA metadata.context_layers) */}
+        {results.metadata?.context_layers && (
+          <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors duration-200">
+            <h4 className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">Context Engineering Pipeline</h4>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+              <div>
+                <p className="text-blue-700 dark:text-blue-300">Write Focus</p>
+                <p className="font-semibold text-blue-900 dark:text-blue-100">{results.metadata.context_layers.write_focus || '—'}</p>
+              </div>
+              <div>
+                <p className="text-blue-700 dark:text-blue-300">Compression Ratio</p>
+                <p className="font-semibold text-blue-900 dark:text-blue-100">{(results.metadata.context_layers.compression_ratio * 100).toFixed(0)}%</p>
+              </div>
+              <div>
+                <p className="text-blue-700 dark:text-blue-300">Token Budget</p>
+                <p className="font-semibold text-blue-900 dark:text-blue-100">{results.metadata.context_layers.token_budget.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-blue-700 dark:text-blue-300">Search Queries</p>
+                <p className="font-semibold text-blue-900 dark:text-blue-100">{results.metadata.context_layers.search_queries_count}</p>
+              </div>
+              <div>
+                <p className="text-blue-700 dark:text-blue-300">Isolation Strategy</p>
+                <p className="font-semibold capitalize text-blue-900 dark:text-blue-100">{results.metadata.context_layers.isolation_strategy}</p>
               </div>
             </div>
           </div>
@@ -319,6 +350,61 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
         )}
       </div>
+
+      {/* Agent Trace (transparency) */}
+      {Array.isArray(results.metadata?.agent_trace) && results.metadata.agent_trace.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.55s' }}>
+          <button
+            onClick={() => setTraceOpen(!traceOpen)}
+            className="w-full text-left flex items-center justify-between"
+            aria-expanded={traceOpen}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Agentic Research Trace</h3>
+            {traceOpen ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+          </button>
+          {traceOpen && (
+            <div className="mt-3 space-y-2 text-sm text-gray-700 dark:text-gray-300">
+              {results.metadata.agent_trace.map((entry: any, idx: number) => (
+                <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded p-3">
+                  <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                    <Clock className="h-4 w-4" />
+                    <span className="uppercase tracking-wide text-xs font-semibold">{String(entry.step || 'revise')}</span>
+                    {typeof entry.iteration === 'number' && (
+                      <span className="text-xs">iter {entry.iteration}</span>
+                    )}
+                    {typeof entry.coverage === 'number' && (
+                      <span className="ml-auto text-xs">coverage {(entry.coverage * 100).toFixed(0)}%</span>
+                    )}
+                  </div>
+                  {Array.isArray(entry.proposed_queries) && entry.proposed_queries.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Proposed Queries</p>
+                      <ul className="list-disc list-inside space-y-1">
+                        {entry.proposed_queries.map((q: string, i: number) => (
+                          <li key={i} className="break-all">{q}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {Array.isArray(entry.warnings) && entry.warnings.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs text-amber-600 dark:text-amber-400">Warnings</p>
+                      <ul className="list-disc list-inside space-y-1">
+                        {entry.warnings.map((w: string, i: number) => (
+                          <li key={i}>{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Context Metrics (global W‑S‑C‑I telemetry) */}
+      <ContextMetricsPanel />
 
       {/* Mesh Network Analysis */}
       {integrated_synthesis && (

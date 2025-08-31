@@ -308,6 +308,7 @@ class RateLimitMiddleware:
         # Skip rate limiting for certain paths
         skip_paths = [
             "/health",
+            "/ready",
             "/metrics",
             "/docs",
             "/openapi.json",

@@ -780,6 +780,123 @@ def create_websocket_router(
             except:
                 pass
 
+    @router.websocket("/ws/research/{research_id}")
+    async def websocket_research_endpoint(
+        websocket: WebSocket,
+        research_id: str,
+        authorization: Optional[str] = Header(None),
+        sec_websocket_protocol: Optional[str] = Header(None),
+        origin: Optional[str] = Header(None),
+        user_agent: Optional[str] = Header(None),
+        x_real_ip: Optional[str] = Header(None),
+        x_forwarded_for: Optional[str] = Header(None),
+    ):
+        """
+        Authenticate and automatically subscribe this connection to the
+        provided research_id. Matches frontend expectation of connecting to
+        `/ws/research/{id}` without sending an explicit subscribe message.
+        """
+        # Authenticate the WebSocket handshake
+        auth_result = await secure_websocket_endpoint(
+            websocket,
+            authorization=authorization,
+            sec_websocket_protocol=sec_websocket_protocol,
+            origin=origin,
+            user_agent=user_agent,
+            x_real_ip=x_real_ip,
+            x_forwarded_for=x_forwarded_for,
+        )
+
+        if not auth_result:
+            return
+
+        user_data = auth_result["user_data"]
+        connection_id = auth_result["connection_id"]
+
+        try:
+            # Register connection with metadata
+            await connection_manager.connect(
+                websocket,
+                user_data.user_id,
+                metadata={
+                    "user_agent": auth_result["user_agent"],
+                    "origin": auth_result["origin"],
+                    "client_ip": auth_result["client_ip"],
+                    "connection_id": connection_id,
+                    "role": user_data.role.value,
+                },
+            )
+
+            # Verify access to research before subscribing
+            try:
+                from services.research_store import research_store  # local import
+                research = await research_store.get(research_id)
+            except Exception:
+                research = None
+
+            is_admin = str(user_data.role).lower() == "admin"
+            if (not research) or (
+                (str(research.get("user_id")) != str(user_data.user_id)) and not is_admin
+            ):
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "error": "access_denied",
+                        "message": "Access denied or research not found",
+                    }
+                )
+                await websocket.close(code=1008, reason="Access denied")
+                return
+
+            # Auto-subscribe to updates for this research
+            await connection_manager.subscribe_to_research(websocket, research_id)
+
+            # Pump incoming messages (e.g., ping) through handler
+            while True:
+                try:
+                    data = await websocket.receive_json()
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    # Non-JSON: try text ping
+                    try:
+                        text = await websocket.receive_text()
+                        if text.strip().lower() == "ping":
+                            await connection_manager.handle_client_message(
+                                websocket, {"type": "ping"}
+                            )
+                    except Exception:
+                        pass
+                    continue
+
+                if not await check_websocket_message_rate(
+                    user_data.user_id, user_data.role
+                ):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "error": "rate_limit_exceeded",
+                            "message": "Message rate limit exceeded. Please slow down.",
+                        }
+                    )
+                    continue
+
+                await connection_manager.handle_client_message(websocket, data)
+
+        except WebSocketDisconnect:
+            await connection_manager.disconnect(websocket)
+            await cleanup_websocket_connection(user_data.user_id, connection_id)
+        except Exception as e:
+            logger.error(
+                f"WebSocket (auto-subscribe) error for user {user_data.user_id}: {e}"
+            )
+            await connection_manager.disconnect(websocket)
+            await cleanup_websocket_connection(user_data.user_id, connection_id)
+            try:
+                await websocket.close(code=1011, reason="Internal server error")
+            except:
+                pass
+
     return router
 
 
@@ -832,5 +949,7 @@ class WebSocketIntegration:
 # --- Create global instances ---
 
 connection_manager = ConnectionManager()
-progress_tracker = ProgressTracker(connection_manager)
+# Use the compatibility alias so legacy callers invoking update_progress(message, progress)
+# continue to work while newer code can use the richer ProgressTracker API.
+progress_tracker = ResearchProgressTracker(connection_manager)
 ws_integration = WebSocketIntegration(connection_manager, progress_tracker)

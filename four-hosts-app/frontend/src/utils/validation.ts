@@ -69,10 +69,17 @@ export const ResearchResultSchema = z.object({
 })
 
 export const WebSocketMessageSchema = z.object({
-  type: z.enum(['status', 'progress', 'result', 'error', 'research_progress', 'research_phase_change', 
-        'source_found', 'source_analyzed', 'research_completed', 'research_failed', 
-        'research_started', 'search.started', 'search.completed', 'credibility.check', 
-        'deduplication.progress']),
+  type: z.enum([
+    // Generic
+    'status', 'progress', 'result', 'error',
+    // Connection/system events
+    'connected', 'disconnected', 'ping', 'pong', 'system.notification', 'rate_limit.warning',
+    // Research-specific events
+    'research_progress', 'research_phase_change', 'source_found', 'source_analyzed',
+    'research_completed', 'research_failed', 'research_started',
+    // Search and analysis events
+    'search.started', 'search.completed', 'credibility.check', 'deduplication.progress'
+  ]),
   data: z.object({
     status: z.enum(['pending', 'processing', 'in_progress', 'completed', 'failed', 'cancelled']).optional(),
     progress: z.number().optional(),

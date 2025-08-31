@@ -92,6 +92,8 @@ class SelfHealingSystem:
         
         # Monitoring loop will be started when needed
         self._monitoring_task = None
+        # External listeners for paradigm switch events
+        self._switch_listeners = []  # list[Callable[[ParadigmSwitchDecision, QueryPerformanceRecord], Awaitable[None]]]
 
     def _initialize_paradigm_affinities(self) -> Dict[str, Dict[HostParadigm, float]]:
         """Initialize paradigm affinities for different query types"""
@@ -323,7 +325,18 @@ class SelfHealingSystem:
         })
         
         # Notify monitoring service
-        await monitoring_service.track_paradigm_switch(decision)
+        await monitoring_service.track_paradigm_switch({
+            "original_paradigm": decision.original_paradigm.value,
+            "recommended_paradigm": decision.recommended_paradigm.value,
+            "confidence": decision.confidence,
+        })
+
+        # Notify registered listeners (e.g., webhook emitters)
+        for listener in list(self._switch_listeners):
+            try:
+                await listener(decision, record)
+            except Exception as e:
+                logger.warning("Switch listener failed: %s", e)
 
     def _calculate_paradigm_score(self, metrics: ParadigmPerformanceMetrics) -> float:
         """Calculate overall performance score for a paradigm"""
@@ -729,5 +742,16 @@ class SelfHealingSystem:
                 break
 
 
-# Create singleton instance
+    # Create singleton instance
 self_healing_system = SelfHealingSystem()
+
+
+def register_switch_listener(cb):
+    """Register an async callback for paradigm switch events.
+
+    The callback signature must be: async (decision, record) -> None
+    """
+    try:
+        self_healing_system._switch_listeners.append(cb)
+    except Exception:
+        pass

@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Four Hosts Frontend
-FROM node:18-alpine as builder
+FROM node:22-alpine as builder
 
 # Set working directory
 WORKDIR /app
@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm ci
 
 # Copy source code
 COPY . .
@@ -28,8 +28,8 @@ RUN apk add --no-cache \
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY default.conf /etc/nginx/conf.d/default.conf
 
-# Copy built application from builder
-COPY --from=builder /app/build /usr/share/nginx/html
+# Copy built application from builder (Vite builds to dist)
+COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Add non-root user
 RUN addgroup -g 1001 -S appuser && \

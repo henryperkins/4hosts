@@ -18,6 +18,18 @@ from models.context_models import (
 from services.llm_client import llm_client
 from services.text_compression import text_compressor
 from services.cache import cache_manager
+from utils.token_budget import (
+    estimate_tokens,
+    estimate_tokens_for_result,
+    trim_text_to_tokens,
+    select_items_within_budget,
+)
+from utils.injection_hygiene import (
+    sanitize_snippet,
+    flag_suspicious_snippet,
+    quarantine_note,
+    guardrail_instruction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +235,60 @@ class DoloresAnswerGeneratorV2(ParadigmAnswerGeneratorV2):
         """Generate a single section"""
         # Filter results relevant to this section
         relevant_results = self._filter_results_for_section(search_results, section_def)
+
+        # Enforce knowledge budget per section (if available)
+        knowledge_budget = 0
+        try:
+            # context may be synthesized by EnhancedIntegration; look for embedded budget
+            ce = context.get("context_engineering") or {}
+            compress_out = (
+                ce.get("compress_output")
+                or context.get("optimization_notes", {})
+            )
+            total_budget = int((compress_out or {}).get("token_budget", 0) or 0)
+            plan = (compress_out or {}).get("budget_plan") or {}
+            knowledge_budget = int(plan.get("knowledge", 0) or int(total_budget * 0.7))
+            # Allocate section share by weight
+            knowledge_budget = max(80, int(knowledge_budget * float(section_def.get("weight", 0.25))))
+        except Exception:
+            knowledge_budget = 0
+
+        if knowledge_budget > 0 and relevant_results:
+            # Convert pydantic objects to dicts if needed
+            results_dicts = []
+            for r in relevant_results:
+                try:
+                    results_dicts.append({
+                        "title": r.title,
+                        "snippet": r.snippet,
+                        "url": r.url,
+                        "metadata": r.metadata,
+                        "credibility_score": r.credibility_score or 0.0,
+                    })
+                except Exception:
+                    # Best-effort
+                    results_dicts.append(getattr(r, "__dict__", {}))
+
+            trimmed, used, dropped = select_items_within_budget(results_dicts, knowledge_budget)
+
+            # Rebuild SearchResultSchema list for prompt formatting
+            rebuilt: List[SearchResultSchema] = []
+            for rd in trimmed:
+                try:
+                    rebuilt.append(SearchResultSchema(
+                        title=rd.get("title", ""),
+                        url=rd.get("url", ""),
+                        snippet=rd.get("snippet", ""),
+                        source=rd.get("metadata", {}).get("domain", ""),
+                        credibility_score=rd.get("credibility_score", 0.0),
+                        relevance_score=0.0,
+                        paradigm_alignment={},
+                        metadata=rd.get("metadata", {}),
+                    ))
+                except Exception:
+                    pass
+            if rebuilt:
+                relevant_results = rebuilt
         
         # Create section-specific prompt
         section_prompt = f"""
@@ -230,7 +296,7 @@ Write the "{section_def['title']}" section focusing on: {section_def['focus']}
 
 Query: {context['query']}
 
-Use these specific sources:
+Use these specific sources (trimmed to fit context budget):
 {self._format_results_for_prompt(relevant_results[:5])}
 
 Requirements:
@@ -238,6 +304,8 @@ Requirements:
 - Cite specific examples and evidence of wrongdoing
 - Do not pull punches - name names and expose the guilty
 - Length: approximately {int(2000 * section_def['weight'])} words
+Safeguard:
+- {guardrail_instruction()}
 """
         
         # Generate content
@@ -296,12 +364,21 @@ Requirements:
         """Format search results for LLM prompt"""
         formatted = []
         for i, result in enumerate(results, 1):
+            # Sanitize and flag
+            domain = result.metadata.get('domain', 'Unknown')
+            snip = sanitize_snippet(result.snippet)
+            is_suspicious = flag_suspicious_snippet(snip)
+            if is_suspicious:
+                snip = snip[:200] + ("..." if len(snip) > 200 else "")
+                header = f"{quarantine_note(domain)}\n"
+            else:
+                header = ""
             formatted.append(f"""
 {i}. {result.title}
-Source: {result.metadata.get('domain', 'Unknown')}
+Source: {domain}
 URL: {result.url}
 Credibility: {result.credibility_score:.2f}
-Content: {result.snippet}
+{header}Content: {snip}
 """)
         return "\n".join(formatted)
     
@@ -327,8 +404,12 @@ Content: {result.snippet}
         
         # Generate sections
         sections = await self.generate_sections(
-            {"query": context.query, "paradigm": "dolores"},
-            search_results
+            {
+                "query": context.query,
+                "paradigm": "dolores",
+                "context_engineering": getattr(context, "context_engineering", {}),
+            },
+            search_results,
         )
         
         # Format answer
@@ -1429,8 +1510,12 @@ Requirements:
         
         # Generate sections with strategic analysis
         sections, insights, competitive, swot = await self.generate_sections(
-            {"query": context.query, "paradigm": "maeve"},
-            search_results
+            {
+                "query": context.query,
+                "paradigm": "maeve",
+                "context_engineering": getattr(context, "context_engineering", {}),
+            },
+            search_results,
         )
         
         # Format answer
@@ -1636,8 +1721,12 @@ Content: {result.snippet}
         
         # Generate sections
         sections = await self.generate_sections(
-            {"query": context.query, "paradigm": "teddy"},
-            search_results
+            {
+                "query": context.query,
+                "paradigm": "teddy",
+                "context_engineering": getattr(context, "context_engineering", {}),
+            },
+            search_results,
         )
         
         # Format answer

@@ -58,6 +58,8 @@ class CompressLayerOutput:
     priority_elements: List[str]
     removed_elements: List[str]
     token_budget: int
+    # Optional per-category budget plan in tokens
+    budget_plan: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -510,6 +512,23 @@ class CompressLayer(ContextLayer):
         complexity_multiplier = 1 + classification.features.complexity_score
         token_budget = int(base_tokens * complexity_multiplier * strategy["ratio"])
 
+        # Derive a simple budget plan for instructions/knowledge/tools/scratch
+        try:
+            from backend.utils.token_budget import compute_budget_plan  # type: ignore
+        except Exception:
+            # Local import fallback when relative path differs
+            try:
+                from utils.token_budget import compute_budget_plan  # type: ignore
+            except Exception:
+                compute_budget_plan = None  # type: ignore
+
+        budget_plan = {}
+        if compute_budget_plan:
+            budget_plan = compute_budget_plan(
+                token_budget,
+                {"instructions": 0.15, "knowledge": 0.70, "tools": 0.15, "scratch": 0.0},
+            )
+
         output = CompressLayerOutput(
             paradigm=paradigm,
             compression_ratio=strategy["ratio"],
@@ -517,6 +536,7 @@ class CompressLayer(ContextLayer):
             priority_elements=strategy["priorities"],
             removed_elements=strategy["remove"],
             token_budget=token_budget,
+            budget_plan=budget_plan,
         )
 
         # Log processing

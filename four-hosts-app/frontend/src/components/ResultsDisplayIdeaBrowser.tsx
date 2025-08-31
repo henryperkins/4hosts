@@ -43,6 +43,7 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
   const [isExporting, setIsExporting] = useState(false)
   const [exportFormat, setExportFormat] = useState<'json' | 'pdf' | 'csv' | null>(null)
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [traceOpen, setTraceOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('executive')
   const [showMetricsOverlay, setShowMetricsOverlay] = useState(true)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -718,6 +719,38 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
         </h3>
         {renderViewContent()}
       </div>
+
+      {/* Agent Trace (transparency) */}
+      {Array.isArray(results.metadata?.agent_trace) && results.metadata.agent_trace.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.15s' }}>
+          <button onClick={() => setTraceOpen(!traceOpen)} className="w-full text-left flex items-center justify-between" aria-expanded={traceOpen}>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Agentic Research Trace</h3>
+            {traceOpen ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+          </button>
+          {traceOpen && (
+            <ul className="mt-3 space-y-2 text-sm text-gray-700 dark:text-gray-300">
+              {results.metadata.agent_trace.map((e: any, i: number) => (
+                <li key={i} className="border border-gray-200 dark:border-gray-700 rounded p-3">
+                  <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                    <Clock className="h-4 w-4" />
+                    <span className="uppercase tracking-wide text-xs font-semibold">{String(e.step || 'revise')}</span>
+                    {typeof e.iteration === 'number' && <span className="text-xs">iter {e.iteration}</span>}
+                    {typeof e.coverage === 'number' && <span className="ml-auto text-xs">coverage {(e.coverage * 100).toFixed(0)}%</span>}
+                  </div>
+                  {Array.isArray(e.proposed_queries) && e.proposed_queries.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Proposed Queries</p>
+                      <ul className="list-disc list-inside space-y-1">
+                        {e.proposed_queries.map((q: string, j: number) => <li key={j} className="break-all">{q}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Additional sections only shown in certain view modes */}
       {viewMode === 'executive' && (

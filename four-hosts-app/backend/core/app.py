@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse
+from prometheus_client import generate_latest
 
 from core.config import TRUSTED_ORIGINS, get_allowed_hosts, is_production
 from middleware.security import (
@@ -20,6 +21,25 @@ from middleware.security import (
     security_middleware
 )
 from routes import auth_router, research_router, paradigms_router
+# New SSOTA-aligned routers
+try:
+    # These modules may be added during alignment
+    from routes.search import router as search_router
+except Exception:
+    search_router = None  # type: ignore
+try:
+    from routes.users import router as users_router
+except Exception:
+    users_router = None  # type: ignore
+try:
+    from routes.system import router as system_router
+except Exception:
+    system_router = None  # type: ignore
+from services.websocket_service import (
+    create_websocket_router,
+    connection_manager,
+    progress_tracker,
+)
 from utils.custom_docs import (
     custom_openapi,
     get_custom_swagger_ui_html,
@@ -93,6 +113,7 @@ async def lifespan(app: FastAPI):
             PrometheusMetrics,
             ApplicationInsights,
             create_monitoring_middleware,
+            HealthCheckService,
         )
         from prometheus_client import CollectorRegistry
 
@@ -100,18 +121,20 @@ async def lifespan(app: FastAPI):
         prometheus = PrometheusMetrics(metrics_registry)
         insights = ApplicationInsights(prometheus)
         monitoring_middleware = create_monitoring_middleware(prometheus, insights)
+        health_service = HealthCheckService()
 
         app.state.monitoring = {
             "prometheus": prometheus,
             "insights": insights,
             "middleware": monitoring_middleware,
+            "health": health_service,
         }
         logger.info("✓ Monitoring systems initialized")
 
         # Initialize production services
         from services.auth import auth_service
         from services.rate_limiter import RateLimiter
-        from services.webhook_manager import WebhookManager
+        from services.webhook_manager import WebhookManager, create_webhook_router, WebhookEvent
         from services.export_service import ExportService
 
         app.state.auth_service = auth_service
@@ -119,6 +142,66 @@ async def lifespan(app: FastAPI):
         app.state.webhook_manager = WebhookManager()
         app.state.export_service = ExportService()
         logger.info("✓ Production services initialized")
+
+        # Register health checks (readiness)
+        try:
+            from database.connection import database_health_check
+
+            async def _db_check():
+                return await database_health_check()
+
+            health_service.register_check("database", _db_check)
+
+            # Register Redis check only if cache initialized
+            if cache_success:
+                async def _redis_check():
+                    from services.cache import cache_manager
+                    async with cache_manager.get_client() as client:
+                        pong = await client.ping()
+                    return {"redis": "ok" if pong else "unresponsive"}
+
+                health_service.register_check("redis", _redis_check)
+
+            # Lightweight auth check
+            def _auth_check():
+                return {"loaded": True}
+
+            health_service.register_check("auth_service", _auth_check)
+            logger.info("✓ Readiness health checks registered")
+        except Exception as e:
+            logger.warning("Health check registration failed: %s", e)
+
+        # Mount webhook routes under /v1 using the initialized manager
+        try:
+            webhook_router = create_webhook_router(app.state.webhook_manager)
+            app.include_router(webhook_router, prefix="/v1")
+            logger.info("✓ Webhook routes mounted under /v1/webhooks")
+        except Exception as e:
+            logger.warning("Failed to mount webhook routes: %s", e)
+
+        # Register self-healing switch notifications to emit webhooks
+        try:
+            from services.self_healing_system import self_healing_system, register_switch_listener
+
+            async def _on_paradigm_switch(decision, record):
+                try:
+                    payload = {
+                        "research_id": getattr(record, "query_id", None),
+                        "from_paradigm": decision.original_paradigm.value,
+                        "to_paradigm": decision.recommended_paradigm.value,
+                        "confidence": decision.confidence,
+                        "reasons": decision.reasons,
+                        "expected_improvement": decision.expected_improvement,
+                        "risk_score": decision.risk_score,
+                    }
+                    await app.state.webhook_manager.trigger_event(WebhookEvent.PARADIGM_SWITCHED, payload)
+                except Exception as exc:
+                    logger.warning("Failed to emit paradigm.switch webhook: %s", exc)
+
+            register_switch_listener(_on_paradigm_switch)
+            logger.info("✓ Registered paradigm switch webhook listener")
+        except Exception as e:
+            logger.warning("Could not register paradigm switch listener: %s", e)
 
         system_initialized = True
         logger.info("🚀 Four Hosts Research System ready with all features!")
@@ -226,9 +309,22 @@ def setup_middleware(app: FastAPI):
 
 def setup_routes(app: FastAPI):
     """Configure routes"""
-    app.include_router(auth_router)
-    app.include_router(research_router)
-    app.include_router(paradigms_router)
+    # Mount all business routes under /v1 (SSOTA versioning)
+    app.include_router(auth_router, prefix="/v1")
+    app.include_router(research_router, prefix="/v1")
+    app.include_router(paradigms_router, prefix="/v1")
+
+    # Optional routers if present
+    if search_router is not None:
+        app.include_router(search_router, prefix="/v1")
+    if users_router is not None:
+        app.include_router(users_router, prefix="/v1")
+    if system_router is not None:
+        app.include_router(system_router, prefix="/v1")
+
+    # Mount WebSocket routes (for real-time research progress)
+    ws_router = create_websocket_router(connection_manager, progress_tracker)
+    app.include_router(ws_router)
 
 
 def setup_custom_endpoints(app: FastAPI):
@@ -314,3 +410,25 @@ def setup_custom_endpoints(app: FastAPI):
         return HTMLResponse(
             get_custom_redoc_html(openapi_url="/openapi.json")
         )
+
+    @app.get("/ready")
+    async def readiness():
+        health = getattr(app.state, "monitoring", {}).get("health")
+        if health:
+            return await health.get_readiness()
+        return {"ready": True, "checks": {}}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics():
+        try:
+            prometheus = getattr(app.state, "monitoring", {}).get("prometheus")
+            if not prometheus:
+                return Response(status_code=204)
+            content = generate_latest(prometheus.registry)
+            return Response(
+                content=content,
+                media_type="text/plain; version=0.0.4; charset=utf-8",
+            )
+        except Exception as e:
+            logger.error("Failed to render /metrics: %s", e)
+            return Response(status_code=500)

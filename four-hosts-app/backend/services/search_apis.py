@@ -494,7 +494,9 @@ class QueryOptimizer:
 
         # 1. Semantic variation: use OR for some terms
         if len(protected_entities) > 1:
-            semantic_query = f"({' OR '.join([f'\"{e}\"' for e in protected_entities])}) AND {' '.join(keywords)}"
+            # Build quoted entity list safely (avoid nested f-string escapes)
+            quoted_entities = [f'"{e}"' for e in protected_entities]
+            semantic_query = f"({ ' OR '.join(quoted_entities) }) AND {' '.join(keywords)}"
             variations["semantic"] = semantic_query
         else:
             variations["semantic"] = primary_query.replace(" AND ", " ")

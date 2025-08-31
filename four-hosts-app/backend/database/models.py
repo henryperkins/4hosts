@@ -121,9 +121,24 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     username = Column(String(100), unique=True, nullable=False, index=True)
     password_hash = Column(String(255))  # Null for OAuth users
-    role = Column(Enum(UserRole), default=UserRole.FREE, nullable=False)
+    # Ensure SQLAlchemy enum maps to existing Postgres type 'user_role'
+    role = Column(
+        Enum(
+            UserRole,
+            name="user_role",
+            values_callable=lambda e: [x.value for x in e],
+        ),
+        default=UserRole.FREE,
+        nullable=False,
+    )
     auth_provider = Column(
-        Enum(AuthProvider), default=AuthProvider.LOCAL, nullable=False
+        Enum(
+            AuthProvider,
+            name="auth_provider",
+            values_callable=lambda e: [x.value for x in e],
+        ),
+        default=AuthProvider.LOCAL,
+        nullable=False,
     )
 
     # Profile
@@ -185,7 +200,10 @@ class APIKey(Base):
     name = Column(String(100), nullable=False)
 
     # Permissions
-    role = Column(Enum(UserRole), nullable=False)
+    role = Column(
+        Enum(UserRole, name="user_role", values_callable=lambda e: [x.value for x in e]),
+        nullable=False,
+    )
     allowed_origins = Column(ARRAY(String), default=list)
     allowed_ips = Column(ARRAY(String), default=list)
     rate_limit_tier = Column(String(50), default="standard")
@@ -232,20 +250,35 @@ class ResearchQuery(Base):
     region = Column(String(10))
 
     # Classification
-    primary_paradigm = Column(Enum(ParadigmType), nullable=False)
-    secondary_paradigm = Column(Enum(ParadigmType))
+    primary_paradigm = Column(
+        Enum(ParadigmType, name="paradigm_type", values_callable=lambda e: [x.value for x in e]),
+        nullable=False,
+    )
+    secondary_paradigm = Column(
+        Enum(ParadigmType, name="paradigm_type", values_callable=lambda e: [x.value for x in e])
+    )
     paradigm_scores = Column(JSONB, default=dict)
     classification_confidence = Column(Float)
-    paradigm_override = Column(Enum(ParadigmType))  # User override
+    paradigm_override = Column(
+        Enum(ParadigmType, name="paradigm_type", values_callable=lambda e: [x.value for x in e])
+    )  # User override
 
     # Options
-    depth = Column(Enum(ResearchDepth), default=ResearchDepth.STANDARD, nullable=False)
+    depth = Column(
+        Enum(ResearchDepth, name="research_depth", values_callable=lambda e: [x.value for x in e]),
+        default=ResearchDepth.STANDARD,
+        nullable=False,
+    )
     max_sources = Column(Integer, default=100)
     include_secondary = Column(Boolean, default=True)
     custom_prompts = Column(JSONB, default=dict)
 
     # Status
-    status = Column(Enum(ResearchStatus), default=ResearchStatus.QUEUED, nullable=False)
+    status = Column(
+        Enum(ResearchStatus, name="research_status", values_callable=lambda e: [x.value for x in e]),
+        default=ResearchStatus.QUEUED,
+        nullable=False,
+    )
     progress = Column(Integer, default=0)
     current_phase = Column(String(50))
     error_message = Column(Text)
@@ -535,7 +568,10 @@ class ParadigmPerformance(Base):
     __tablename__ = "paradigm_performance"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    paradigm = Column(Enum(ParadigmType), nullable=False)
+    paradigm = Column(
+        Enum(ParadigmType, name="paradigm_type", values_callable=lambda e: [x.value for x in e]),
+        nullable=False,
+    )
     
     # Performance metrics
     total_queries = Column(Integer, default=0)
@@ -572,8 +608,14 @@ class MLTrainingData(Base):
     
     # Features
     query_features = Column(JSONB, nullable=False)  # Extracted features
-    true_paradigm = Column(Enum(ParadigmType), nullable=False)
-    predicted_paradigm = Column(Enum(ParadigmType), nullable=False)
+    true_paradigm = Column(
+        Enum(ParadigmType, name="paradigm_type", values_callable=lambda e: [x.value for x in e]),
+        nullable=False,
+    )
+    predicted_paradigm = Column(
+        Enum(ParadigmType, name="paradigm_type", values_callable=lambda e: [x.value for x in e]),
+        nullable=False,
+    )
     confidence_score = Column(Float)
     
     # Performance data
@@ -611,7 +653,10 @@ class WebhookDelivery(Base):
     )
 
     # Delivery details
-    event = Column(Enum(WebhookEvent), nullable=False)
+    event = Column(
+        Enum(WebhookEvent, name="webhook_event", values_callable=lambda e: [x.value for x in e]),
+        nullable=False,
+    )
     payload = Column(JSONB, nullable=False)
 
     # Status

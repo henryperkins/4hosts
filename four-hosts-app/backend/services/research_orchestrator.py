@@ -11,7 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 # Contracts
-from backend.contracts import ResearchStatus  # type: ignore
+from contracts import ResearchStatus  # type: ignore
 import hashlib
 # json import removed (unused)
 import re
@@ -46,9 +46,6 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-# NOTE: `ResearchStatus` introduced via contracts (PR1)
-# status defaults to OK but may indicate specific failure modes such as
-# FAILED_NO_SOURCES when the orchestrator could not find any relevant data.
 class ResearchExecutionResult:
     """Complete research execution result"""
     original_query: str
@@ -61,9 +58,11 @@ class ResearchExecutionResult:
     # Alias to avoid AttributeError in any consumer expecting 'results'
     # Note: property defined below to mirror filtered_results
     credibility_scores: Dict[str, float]  # Domain -> score
-    status: ResearchStatus = ResearchStatus.OK
+    # Non-default fields first
     execution_metrics: Dict[str, Any]
     cost_breakdown: Dict[str, float]
+    # Defaults after non-defaults to satisfy dataclass rules
+    status: ResearchStatus = ResearchStatus.OK
     secondary_results: List[SearchResult] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
     deep_research_content: Optional[str] = None
@@ -450,6 +449,22 @@ class UnifiedResearchOrchestrator:
         self.tool_registry = ToolRegistry()
         self.retry_policy = RetryPolicy()
         self.planner = BudgetAwarePlanner(self.tool_registry, self.retry_policy)
+        # Agentic loop configuration (can be overridden by env)
+        self.agentic_config = {
+            "enabled": True,
+            "enable_llm_critic": False,
+            "max_iterations": 2,
+            "coverage_threshold": 0.75,
+            "max_new_queries_per_iter": 4,
+        }
+        try:
+            import os
+            if os.getenv("AGENTIC_ENABLE_LLM_CRITIC", "0") == "1":
+                self.agentic_config["enable_llm_critic"] = True
+            if os.getenv("AGENTIC_DISABLE", "0") == "1":
+                self.agentic_config["enabled"] = False
+        except Exception:
+            pass
 
         # Metrics
         self._search_metrics = {
@@ -499,6 +514,12 @@ class UnifiedResearchOrchestrator:
             logger.warning(f"Brave MCP initialization failed: {e}")
 
         logger.info("✓ Unified Research Orchestrator V2 initialized")
+        # Register default tool capabilities for budget tracking
+        try:
+            self.tool_registry.register(ToolCapability(name="google", cost_per_call_usd=0.005, rpm_limit=100, typical_latency_ms=800))
+            self.tool_registry.register(ToolCapability(name="brave", cost_per_call_usd=0.0, rpm_limit=100, typical_latency_ms=600))
+        except Exception:
+            pass
 
     async def cleanup(self):
         """Cleanup resources"""
@@ -701,6 +722,14 @@ class UnifiedResearchOrchestrator:
 
         logger.info(f"Executing research for paradigm: {paradigm}")
 
+        # Initialize a simple plan/budget for the agentic loop
+        plan = Plan(
+            objective=original_query,
+            checkpoints=[PlannerCheckpoint(name="initial_search", description="Run base queries")],
+            budget=Budget(max_tokens=200_000, max_cost_usd=1.00, max_wallclock_minutes=2),
+            stop_conditions={"max_iterations": int(self.agentic_config.get("max_iterations", 2))}
+        )
+
         # Create search context
         search_context = SearchContext(
             original_query=original_query,
@@ -900,6 +929,111 @@ class UnifiedResearchOrchestrator:
 
         logger.info(f"Validation after dedup: {len(dedup_result['unique_results'])} -> {len(deduplicated_results)} valid results")
 
+        # Agentic loop (optional): Plan → Act → Critique → Revise
+        try:
+            if self.agentic_config.get("enabled") and hasattr(context_engineered_query, "write_output"):
+                # Build initial sources view for critique
+                initial_sources = []
+                for r in deduplicated_results[:25]:
+                    try:
+                        initial_sources.append({
+                            "title": getattr(r, "title", ""),
+                            "url": getattr(r, "url", ""),
+                            "snippet": getattr(r, "snippet", "")
+                        })
+                    except Exception:
+                        continue
+
+                from services.agentic_process import (
+                    evaluate_coverage_from_sources,
+                    summarize_domain_gaps,
+                    propose_queries_enriched,
+                )
+                coverage, missing = evaluate_coverage_from_sources(
+                    original_query, context_engineered_query, initial_sources
+                )
+
+                # Optional LLM critic
+                if self.agentic_config.get("enable_llm_critic"):
+                    from services.llm_critic import llm_coverage_and_claims
+                    try:
+                        themes = getattr(context_engineered_query.write_output, "key_themes", []) or []
+                        focus = getattr(context_engineered_query.isolate_output, "focus_areas", []) or []
+                        lm = await llm_coverage_and_claims(original_query, paradigm, themes, focus, initial_sources)
+                        coverage = max(coverage, float(lm.get("coverage_score", coverage)))
+                        if isinstance(lm.get("missing_facets"), list):
+                            missing = list({*missing, *[str(x) for x in lm["missing_facets"] if x]})
+                        # Record critic diagnostics
+                        metrics_entry = {
+                            "step": "llm_critic",
+                            "coverage": coverage,
+                            "warnings": lm.get("warnings", []),
+                            "flagged_sources": lm.get("flagged_sources", [])
+                        }
+                        # Attach to execution metrics later via metrics_dict
+                    except Exception as e:
+                        metrics_entry = {"step": "llm_critic", "error": str(e)}
+                    # Stash into a local list for merging into metrics_dict below
+                    locals().setdefault("_agent_trace", []).append(metrics_entry)
+
+                iterations = 0
+                max_iter = int(self.agentic_config.get("max_iterations", 2))
+                threshold = float(self.agentic_config.get("coverage_threshold", 0.75))
+                while coverage < threshold and iterations < max_iter:
+                    iterations += 1
+                    if progress_tracker and research_id:
+                        try:
+                            await progress_tracker.update_progress(
+                                research_id, f"Agentic iteration {iterations}", 55 + iterations * 5
+                            )
+                        except Exception:
+                            pass
+
+                    gaps = summarize_domain_gaps(initial_sources)
+                    proposed = propose_queries_enriched(
+                        original_query,
+                        paradigm,
+                        missing,
+                        gaps,
+                        max_new=int(self.agentic_config.get("max_new_queries_per_iter", 4)),
+                    )
+
+                    # Execute proposed queries and merge minimally
+                    for q in proposed:
+                        try:
+                            # Enforce budget per call
+                            if not self.planner.record_tool_spend(plan, "google", 1):
+                                logger.info("Agentic loop stopped by budget")
+                                break
+                            config = SearchConfig(max_results=min(max_results, 30), language="en", region="us")
+                            api_results = await self.search_manager.search_with_fallback(q, config)
+                            all_results[f"agentic_{q[:30]}"] = api_results
+                            for res in api_results:
+                                if res and getattr(res, 'url', None):
+                                    deduplicated_results.append(res)
+                        except Exception as e:
+                            logger.warning("Agentic query failed: %s", e)
+
+                    # Recompute coverage after augmentation
+                    initial_sources = [{
+                        "title": getattr(r, "title", ""),
+                        "url": getattr(r, "url", ""),
+                        "snippet": getattr(r, "snippet", "")
+                    } for r in deduplicated_results[:50]]
+                    coverage, missing = evaluate_coverage_from_sources(
+                        original_query, context_engineered_query, initial_sources
+                    )
+
+                    locals().setdefault("_agent_trace", []).append({
+                        "step": "revise",
+                        "iteration": iterations,
+                        "coverage": coverage,
+                        "proposed_queries": proposed,
+                        "pool_size": len(deduplicated_results),
+                    })
+        except Exception as agent_err:
+            logger.warning("Agentic loop error: %s", agent_err)
+
         if progress_tracker and research_id:
             await progress_tracker.report_deduplication(
                 research_id, len(combined_results), len(deduplicated_results)
@@ -979,6 +1113,18 @@ class UnifiedResearchOrchestrator:
             "duplicates_removed": dedup_result["duplicates_removed"],
             "credibility_checks": len(credibility_scores),
         }
+        # Budget used
+        try:
+            metrics_dict["agent_budget_spend_usd"] = float(getattr(plan, "consumed_cost_usd", 0.0))
+            metrics_dict["agent_budget_tokens"] = int(getattr(plan, "consumed_tokens", 0))
+        except Exception:
+            pass
+        # Attach agent trace if available
+        try:
+            if "_agent_trace" in locals() and locals()["_agent_trace"]:
+                metrics_dict["agent_trace"] = locals()["_agent_trace"]
+        except Exception:
+            pass
         if isinstance(metrics, dict):
             metrics.update(metrics_dict)
         else:

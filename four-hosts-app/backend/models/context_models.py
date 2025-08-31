@@ -175,3 +175,51 @@ class SearchResultSchema(BaseModel):
                 }
             }
         }
+
+
+# --- SSOTA W‑S‑C‑I Schemas (new) ---
+
+class WriteLayerOutputSchema(BaseModel):
+    paradigm: HostParadigm
+    documentation_focus: str
+    key_themes: List[str]
+    narrative_frame: str
+    search_priorities: List[str]
+
+
+class SelectLayerOutputSchema(BaseModel):
+    paradigm: HostParadigm
+    search_queries: List[Dict[str, Any]]
+    source_preferences: List[str]
+    exclusion_filters: List[str]
+    tool_selections: List[str]
+    max_sources: int
+
+
+class CompressLayerOutputSchema(BaseModel):
+    paradigm: HostParadigm
+    compression_ratio: float
+    compression_strategy: str
+    priority_elements: List[str]
+    removed_elements: List[str]
+    token_budget: int
+
+
+class IsolateLayerOutputSchema(BaseModel):
+    paradigm: HostParadigm
+    isolation_strategy: str
+    key_findings_criteria: List[str]
+    extraction_patterns: List[str]
+    focus_areas: List[str]
+    output_structure: Dict[str, Any]
+
+
+class ContextEngineeredQuerySSOTA(BaseModel):
+    original_query: str
+    classification: ClassificationResultSchema
+    write_output: WriteLayerOutputSchema
+    select_output: SelectLayerOutputSchema
+    compress_output: CompressLayerOutputSchema
+    isolate_output: IsolateLayerOutputSchema
+    processing_time: float
+    timestamp: datetime = Field(default_factory=datetime.now)

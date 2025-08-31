@@ -16,6 +16,18 @@ import {
 } from '../utils/validation'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '' // keep empty to use Vite proxy-relative paths in dev
+const API_PREFIX = '/v1'
+
+function normalizePath(url: string): string {
+  try {
+    if (!url || url.startsWith(API_PREFIX)) return url
+    const needsPrefix = [/^\/auth\//, /^\/research\//, /^\/paradigms\//, /^\/users\//, /^\/search\//, /^\/sources\//, /^\/system\//, /^\/webhooks\//]
+      .some((re) => re.test(url))
+    return needsPrefix ? `${API_PREFIX}${url}` : url
+  } catch {
+    return url
+  }
+}
 
 // Re-export for backward compatibility
 export type AuthTokens = AuthTokenResponse
@@ -77,7 +89,8 @@ class APIService {
     }
 
     // Use relative path when API_BASE_URL is empty to leverage Vite proxy and same-origin cookies
-    const fullUrl = API_BASE_URL ? `${API_BASE_URL}${url}` : url;
+    const path = normalizePath(url)
+    const fullUrl = API_BASE_URL ? `${API_BASE_URL}${path}` : path;
     const response = await fetch(fullUrl, {
       ...options,
       headers,
@@ -156,7 +169,8 @@ class APIService {
       Accept: 'application/json',
       'X-CSRF-Token': await CSRFProtection.getToken()
     }
-    const fullUrl = API_BASE_URL ? `${API_BASE_URL}/auth/refresh` : `/auth/refresh`;
+    const path = normalizePath('/auth/refresh')
+    const fullUrl = API_BASE_URL ? `${API_BASE_URL}${path}` : path;
     const response = await fetch(fullUrl, {
       method: 'POST',
       headers,
@@ -250,7 +264,8 @@ class APIService {
         headers['X-CSRF-Token'] = csrfToken
       }
       
-      const fullUrl = API_BASE_URL ? `${API_BASE_URL}/auth/logout` : '/auth/logout';
+      const path = normalizePath('/auth/logout')
+      const fullUrl = API_BASE_URL ? `${API_BASE_URL}${path}` : path;
       await fetch(fullUrl, {
         method: 'POST',
         headers,
@@ -425,8 +440,8 @@ class APIService {
     }
   }
 
-  async exportResearch(researchId: string, format: 'pdf' | 'json' | 'csv' = 'pdf'): Promise<Blob> {
-    const response = await this.fetchWithAuth(`/research/export/${researchId}?format=${format}`)
+  async exportResearch(researchId: string, format: 'pdf' | 'json' | 'csv' | 'markdown' | 'excel' = 'pdf'): Promise<Blob> {
+    const response = await this.fetchWithAuth(`/research/export/${researchId}/${format}`)
 
     if (!response.ok) {
       const error = await response.json()
@@ -533,6 +548,16 @@ class APIService {
     }
   }
 
+  // Context Metrics (W‑S‑C‑I)
+  async getContextMetrics(): Promise<Record<string, unknown>> {
+    const response = await this.fetchWithAuth('/system/context-metrics')
+    if (!response.ok) {
+      const error = await response.json().catch(() => null)
+      throw new Error((error && (error.detail || error.error)) || 'Failed to get context metrics')
+    }
+    return response.json()
+  }
+
   async getPublicSystemStats(): Promise<Partial<MetricsData>> {
     const response = await this.fetchWithAuth('/system/public-stats')
 
@@ -570,7 +595,13 @@ class APIService {
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
-      // WebSocket connected
+      // Emit a synthetic 'connected' event so UIs can clear connecting state
+      const synthetic: WebSocketMessage = {
+        type: 'connected',
+        data: { message: 'connected' },
+        timestamp: new Date().toISOString()
+      }
+      onMessage(synthetic)
     }
 
     ws.onmessage = (event) => {

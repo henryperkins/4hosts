@@ -28,6 +28,7 @@ from .classification_engine import HostParadigm, ClassificationResult
 from .context_engineering import ContextEngineeredQuery
 from .websocket_service import ResearchProgressTracker
 from .research_store import research_store
+from utils.token_budget import trim_text_to_tokens
 
 # Logging
 logger = logging.getLogger(__name__)
@@ -180,9 +181,17 @@ class DeepResearchService:
     async def initialize(self):
         """Initialize the service"""
         if not self._initialized:
-            self.client = get_responses_client()
-            self._initialized = True
-            logger.info("✓ Deep Research Service initialized")
+            try:
+                self.client = get_responses_client()
+                logger.info("✓ Deep Research Service initialized")
+            except Exception as e:
+                # Make initialization non-fatal when API key is missing in local/dev
+                logger.warning(
+                    "Deep Research disabled: %s. Set OPENAI_API_KEY to enable.", e
+                )
+                self.client = None
+            finally:
+                self._initialized = True
     
     # ─────────── Core Research Methods ───────────
     async def execute_deep_research(
@@ -253,6 +262,8 @@ class DeepResearchService:
                 )
             
             # Execute deep research
+            if not self.client:
+                raise RuntimeError("Deep research requires OPENAI_API_KEY; feature is disabled")
             response = await self.client.deep_research(
                 query=research_prompt,
                 system_prompt=system_prompt,
@@ -419,7 +430,17 @@ General requirements:
 - Structure findings clearly with headers and sections
 """)
         
-        return "\n\n".join(parts).strip()
+        prompt = "\n\n".join(parts).strip()
+        # Enforce instruction budget if available
+        try:
+            if context_engineering and getattr(context_engineering, "compress_output", None):
+                plan = getattr(context_engineering.compress_output, "budget_plan", {}) or {}
+                instr_budget = int(plan.get("instructions", 0)) if isinstance(plan, dict) else 0
+                if instr_budget > 0:
+                    prompt = trim_text_to_tokens(prompt, instr_budget)
+        except Exception:
+            pass
+        return prompt
     
     def _build_research_prompt(
         self,
@@ -442,7 +463,17 @@ General requirements:
         elif config.mode == DeepResearchMode.COMPREHENSIVE:
             parts.append("\nProvide a comprehensive analysis from multiple perspectives.")
         
-        return "\n".join(parts)
+        prompt = "\n".join(parts)
+        # Enforce knowledge budget if available
+        try:
+            if context_engineering and getattr(context_engineering, "compress_output", None):
+                plan = getattr(context_engineering.compress_output, "budget_plan", {}) or {}
+                knowledge_budget = int(plan.get("knowledge", 0)) if isinstance(plan, dict) else 0
+                if knowledge_budget > 0:
+                    prompt = trim_text_to_tokens(prompt, knowledge_budget)
+        except Exception:
+            pass
+        return prompt
     
     # ─────────── Response Processing ───────────
     def _process_response(

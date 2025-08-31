@@ -63,6 +63,14 @@ export interface ResearchResult {
     paradigms_used: Paradigm[]
     deep_research_enabled?: boolean
     research_depth?: string
+    context_layers?: {
+      write_focus: string
+      compression_ratio: number
+      token_budget: number
+      isolation_strategy: string
+      search_queries_count: number
+    }
+    agent_trace?: any[]
   },
   cost_info?: {
     search_api_costs?: number

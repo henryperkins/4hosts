@@ -179,7 +179,7 @@ class TokenManager:
         self, refresh_token: str, db: AsyncSession = None
     ) -> Optional[Dict[str, Any]]:
         """Validate a refresh token and return token info"""
-        if not refresh_token.startswith("fhrt_"):
+        if not refresh_token or not refresh_token.startswith("fhrt_"):
             return None
 
         if db is None:

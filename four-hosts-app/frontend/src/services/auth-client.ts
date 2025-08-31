@@ -53,7 +53,7 @@ class AuthClient {
     return response.json();
   }
 
-  async register(email: string, password: string, fullName: string): Promise<{ success: boolean; user: { id: string; email: string; name?: string; role: string }; message?: string }> {
+  async register(username: string, email: string, password: string, fullName?: string): Promise<{ success: boolean; user: { id: string; email: string; name?: string; role: string }; message?: string }> {
     // Ensure we have a CSRF token
     if (!this.csrfToken) {
       await this.getCsrfToken();
@@ -67,6 +67,7 @@ class AuthClient {
         'X-CSRF-Token': this.csrfToken!,
       },
       body: JSON.stringify({ 
+        username,
         email, 
         password, 
         full_name: fullName 
@@ -75,7 +76,16 @@ class AuthClient {
 
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(error.detail || 'Registration failed');
+      // Provide more specific error messages
+      let errorMessage = 'Registration failed';
+      if (response.status === 409) {
+        errorMessage = 'Username or email already exists. Please try a different one.';
+      } else if (response.status === 422) {
+        errorMessage = error.detail || 'Invalid registration data. Please check your input.';
+      } else if (error.detail) {
+        errorMessage = error.detail;
+      }
+      throw new Error(errorMessage);
     }
 
     return response.json();

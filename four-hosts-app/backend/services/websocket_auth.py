@@ -14,6 +14,7 @@ from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 
 from services.auth import decode_token, TokenData, UserRole, RATE_LIMITS
+from core.config import is_production
 from services.token_manager import token_manager
 
 logger = logging.getLogger(__name__)
@@ -148,21 +149,28 @@ async def authenticate_websocket(
     3. Validate token and check revocation
     """
 
-    # 1. Verify Origin
-    if origin and origin not in ALLOWED_ORIGINS:
-        # Check if it's a development environment
-        if not (
-            origin.startswith("http://localhost:")
-            or origin.startswith("http://127.0.0.1:")
-        ):
-            logger.warning(
-                f"WebSocket connection rejected from unauthorized origin: {origin}"
+    # 1. Verify Origin (relaxed in non-production)
+    if origin:
+        if is_production():
+            allowed = (
+                origin in ALLOWED_ORIGINS
+                or origin.startswith("http://localhost")
+                or origin.startswith("https://localhost")
+                or origin.startswith("http://127.0.0.1")
+                or origin.startswith("https://127.0.0.1")
             )
-            await websocket.close(code=1008, reason="Unauthorized origin")
-            return None
+            if not allowed:
+                logger.warning(
+                    f"WebSocket connection rejected from unauthorized origin: {origin}"
+                )
+                await websocket.close(code=1008, reason="Unauthorized origin")
+                return None
+        else:
+            # In dev, accept any localhost or container-based origins
+            pass
 
     # 2. Extract token (priority order)
-    token = None
+    token: Optional[str] = None
 
     # Try Authorization header first
     if authorization:
@@ -179,6 +187,23 @@ async def authenticate_websocket(
             if protocol.startswith("access_token."):
                 token = protocol[13:]  # Remove "access_token." prefix
                 break
+
+    # Fallback: try to read JWT from cookies (set by /auth/login)
+    if not token:
+        try:
+            cookie_header = websocket.headers.get("cookie") or websocket.headers.get("Cookie")
+            if cookie_header:
+                # Minimal cookie parsing to avoid extra deps
+                cookies = {}
+                for part in cookie_header.split(";"):
+                    if not part:
+                        continue
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        cookies[k.strip()] = v.strip()
+                token = cookies.get("access_token")
+        except Exception:
+            token = None
 
 
     if not token:

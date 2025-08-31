@@ -74,7 +74,7 @@ async def register(user_data: UserCreate):
 
 
 @router.post("/login")
-async def login(login_data: UserLogin, response: Response):
+async def login(login_data: UserLogin, response: Response, request: Request):
     """Login with email and password"""
     # Convert to auth module's UserLogin model
     from services.auth import UserLogin as AuthUserLogin
@@ -95,10 +95,10 @@ async def login(login_data: UserLogin, response: Response):
         user_id=str(user.id), device_id=None, ip_address=None, user_agent=None
     )
 
-    # Set cookie attributes for cross-site compatibility
-    production = is_production()
-    same_site = "none" if production else "lax"
-    secure_flag = True if production else False
+    # Set cookie attributes based on actual scheme to avoid Secure cookies over HTTP
+    is_https = request.url.scheme == "https"
+    same_site = "none" if is_https else "lax"
+    secure_flag = is_https
 
     response.set_cookie(
         key="access_token",
@@ -141,6 +141,9 @@ async def login(login_data: UserLogin, response: Response):
 async def refresh_token(request: Request, response: Response):
     """Refresh access token using secure token rotation"""
     refresh_token = request.cookies.get("refresh_token")
+    
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="No refresh token provided")
 
     # Validate the token first to get user info
     token_info = await token_manager.validate_refresh_token(refresh_token)
@@ -170,10 +173,10 @@ async def refresh_token(request: Request, response: Response):
             {"user_id": str(user.id), "email": user.email, "role": user.role.value}
         )
 
-        # Set cookie attributes for cross-site compatibility
-        production = is_production()
-        same_site = "none" if production else "lax"
-        secure_flag = True if production else False
+        # Set cookie attributes based on actual scheme
+        is_https = request.url.scheme == "https"
+        same_site = "none" if is_https else "lax"
+        secure_flag = is_https
 
         response.set_cookie(
             key="access_token",
