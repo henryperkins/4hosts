@@ -74,7 +74,7 @@ class APIService {
       Accept: 'application/json',
       ...(options.headers as Record<string, string> || {}),
     }
-    
+
     // Remove any Authorization header since we're using cookies
     delete headers['Authorization']
 
@@ -114,8 +114,25 @@ class APIService {
     }
 
     if (response.status === 401) {
+      // Determine if this is an auth bootstrap endpoint or we are clearly unauthenticated
+      const lowerPath = path.toLowerCase()
+      const isAuthBootstrap = [
+        '/v1/auth/login', '/auth/login',
+        '/v1/auth/register', '/auth/register',
+        '/v1/auth/user', '/auth/user',
+        '/v1/auth/refresh', '/auth/refresh',
+        '/v1/api/session/create', '/api/session/create'
+      ].some(p => lowerPath === p)
+      const { useAuthStore } = await import('../store/authStore')
+      const isAuthed = useAuthStore.getState().isAuthenticated
+
+      if (!isAuthed && isAuthBootstrap) {
+        // Do not attempt refresh loops for initial unauthenticated requests
+        return response
+      }
+
       console.log(`401 error for ${url}, isRetry: ${isRetry}`);
-      
+
       if (isRetry) {
         // Already retried after refresh, authentication failed
         console.error('Authentication failed after token refresh');
@@ -123,7 +140,7 @@ class APIService {
         const errorMessage = 'Authentication required. Please log in again.';
         return Promise.reject(new Error(errorMessage));
       }
-      
+
       if (this.isRefreshing) {
         console.log('Token refresh already in progress, queuing request');
         return new Promise((resolve, reject) => {
@@ -141,19 +158,19 @@ class APIService {
         this.processFailedQueue(null, 'refreshed');
         // Add small delay to ensure cookies are set
         await new Promise(resolve => setTimeout(resolve, 100));
-        
+
         // After successful refresh, clear CSRF token to force refresh on next request
         CSRFProtection.clearToken();
-        
+
         return this.fetchWithAuth(url, options, true);
       } catch (error) {
         console.error('Token refresh failed:', error);
         this.processFailedQueue(error instanceof Error ? error : new Error('Unknown error'), null);
-        
+
         // Clear auth state on token refresh failure
         const { useAuthStore } = await import('../store/authStore')
         useAuthStore.getState().reset()
-        
+
         return Promise.reject(error);
       } finally {
         this.isRefreshing = false;
@@ -257,13 +274,13 @@ class APIService {
         'Content-Type': 'application/json',
         Accept: 'application/json',
       }
-      
+
       // Add CSRF token if available
       const csrfToken = await CSRFProtection.getToken()
       if (csrfToken) {
         headers['X-CSRF-Token'] = csrfToken
       }
-      
+
       const path = normalizePath('/auth/logout')
       const fullUrl = API_BASE_URL ? `${API_BASE_URL}${path}` : path;
       await fetch(fullUrl, {
@@ -275,11 +292,11 @@ class APIService {
       // If logout fails (e.g., 401), we still want to clear session
       // Logout request failed, but cookies will expire
     }
-    
+
     // Clear CSRF token on logout
     CSRFProtection.clearToken()
     this.disconnectWebSocket()
-    
+
     // Clear auth store state to ensure frontend/backend sync
     const { useAuthStore } = await import('../store/authStore')
     useAuthStore.getState().reset()
@@ -293,12 +310,12 @@ class APIService {
       throw new Error(message)
     }
     const userData = await response.json()
-    
+
     // Ensure the user data has the expected shape
     if (!userData.id || !userData.email) {
       throw new Error('Invalid user data received from server')
     }
-    
+
     return userData
   }
 

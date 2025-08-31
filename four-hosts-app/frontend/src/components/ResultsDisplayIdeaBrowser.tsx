@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { 
-  Download, ExternalLink, Shield, AlertTriangle, 
+import {
+  Download, ExternalLink, Shield, AlertTriangle,
   Zap, GitMerge, Loader2, CheckCircle, AlertCircle, Clock, BarChart3,
-  TrendingUp, Target, Award, Layers, Eye, FileText, Map, Activity
+  TrendingUp, Target, Award, Layers, Eye, FileText, Map, Activity,
+  ChevronDown, ChevronUp
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
@@ -56,21 +57,21 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
     }
 
     // Calculate scores based on various metrics
-    const answerQuality = Math.min(10, 
-      (answer.sections?.length || 0) * 2 + 
+    const answerQuality = Math.min(10,
+      (answer.sections?.length || 0) * 2 +
       0
     )
-    
+
     const sourceDiversity = Math.min(10,
-      (results.metadata.total_sources_analyzed / 10) + 
+      (results.metadata.total_sources_analyzed / 10) +
       (results.metadata.paradigms_used.length * 2)
     )
-    
+
     const paradigmCoherence = Math.min(10,
       (results.paradigm_analysis.primary.confidence * 10) +
       (results.paradigm_analysis.secondary ? 2 : 0)
     )
-    
+
     const actionability = Math.min(10,
       (answer.action_items?.length || 0) * 2
     )
@@ -79,8 +80,8 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
   })
 
   // Safely handle cases where answer might be undefined
-  const answer = results.integrated_synthesis 
-    ? results.integrated_synthesis.primary_answer 
+  const answer = results.integrated_synthesis
+    ? results.integrated_synthesis.primary_answer
     : results.answer
   const { integrated_synthesis } = results
 
@@ -219,7 +220,7 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
   const renderExecutiveSummary = () => {
     const summary = integrated_synthesis ? integrated_synthesis.integrated_summary : answer.summary || 'No summary available'
     const keyInsights = answer.sections?.slice(0, 3) || []
-    
+
     return (
       <div className="space-y-4">
         <div className="prose dark:prose-invert max-w-none">
@@ -319,7 +320,7 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
           <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3">
             <div className="text-sm text-blue-600 dark:text-blue-400">Avg. Score</div>
             <div className="text-2xl font-bold text-blue-700 dark:text-blue-300">
-              {sources.length > 0 
+              {sources.length > 0
                 ? (sources.reduce((acc, s) => acc + s.credibility_score, 0) / sources.length * 100).toFixed(0)
                 : 0}%
             </div>
@@ -452,16 +453,16 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
                 <TrendingUp className={cn(
                   "h-4 w-4",
                   indicator.status === 'up' ? 'text-green-500' :
-                  indicator.status === 'down' ? 'text-red-500' :
-                  'text-gray-500'
+                    indicator.status === 'down' ? 'text-red-500' :
+                      'text-gray-500'
                 )} />
               </div>
               <div className="text-2xl font-bold text-gray-900 dark:text-gray-100">{indicator.value}</div>
               <div className={cn(
                 "text-sm font-medium mt-1",
                 indicator.status === 'up' ? 'text-green-600 dark:text-green-400' :
-                indicator.status === 'down' ? 'text-red-600 dark:text-red-400' :
-                'text-gray-600 dark:text-gray-400'
+                  indicator.status === 'down' ? 'text-red-600 dark:text-red-400' :
+                    'text-gray-600 dark:text-gray-400'
               )}>
                 {indicator.trend} from baseline
               </div>
@@ -513,15 +514,13 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
           </div>
 
           <div className="flex items-center gap-2">
-            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${
-              getParadigmClass(results.paradigm_analysis.primary.paradigm)
-            }`}>
+            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getParadigmClass(results.paradigm_analysis.primary.paradigm)
+              }`}>
               {getParadigmDescription(results.paradigm_analysis.primary.paradigm)}
             </span>
             {results.paradigm_analysis.secondary && (
-              <span className={`px-3 py-1 rounded-full text-sm font-medium border ${
-                getParadigmClass(results.paradigm_analysis.secondary.paradigm)
-              }`}>
+              <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getParadigmClass(results.paradigm_analysis.secondary.paradigm)
+                }`}>
                 + {getParadigmDescription(results.paradigm_analysis.secondary.paradigm)}
               </span>
             )}
@@ -601,7 +600,7 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
                 </Button>
               </div>
             </div>
-            
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className={cn("rounded-lg p-3 transition-all", getMetricBgColor(resultScoring.answerQuality))}>
                 <div className="flex items-center justify-between">
@@ -612,7 +611,7 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
                 </div>
                 <div className="text-xs text-gray-700 dark:text-gray-300 mt-1">Answer Quality</div>
               </div>
-              
+
               <div className={cn("rounded-lg p-3 transition-all", getMetricBgColor(resultScoring.sourceDiversity))}>
                 <div className="flex items-center justify-between">
                   <Layers className="h-4 w-4 opacity-50" />
@@ -622,7 +621,7 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
                 </div>
                 <div className="text-xs text-gray-700 dark:text-gray-300 mt-1">Source Diversity</div>
               </div>
-              
+
               <div className={cn("rounded-lg p-3 transition-all", getMetricBgColor(resultScoring.paradigmCoherence))}>
                 <div className="flex items-center justify-between">
                   <Target className="h-4 w-4 opacity-50" />
@@ -632,7 +631,7 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
                 </div>
                 <div className="text-xs text-gray-700 dark:text-gray-300 mt-1">Paradigm Coherence</div>
               </div>
-              
+
               <div className={cn("rounded-lg p-3 transition-all", getMetricBgColor(resultScoring.actionability))}>
                 <div className="flex items-center justify-between">
                   <Map className="h-4 w-4 opacity-50" />

@@ -31,6 +31,12 @@ export default defineConfig({
       ]
     },
     proxy: {
+      // Proxy versioned API root so relative calls like /v1/auth/login work
+      '/v1': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        ws: false,
+      },
       // Proxy auth routes directly
       '/auth': {
         target: 'http://localhost:8000',

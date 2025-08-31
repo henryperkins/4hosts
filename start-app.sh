@@ -30,10 +30,10 @@ fi
 # Function to cleanup on exit
 cleanup() {
     echo -e "\n\n🛑 Shutting down services..."
-    
+
     # Stop backend and frontend
     kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
-    
+
     # Stop MCP server if running
     if [ -f "$BACKEND_DIR/.mcp_server.pid" ]; then
         MCP_PID=$(cat "$BACKEND_DIR/.mcp_server.pid")
@@ -41,14 +41,14 @@ cleanup() {
         kill $MCP_PID 2>/dev/null
         rm "$BACKEND_DIR/.mcp_server.pid"
     fi
-    
+
     # Stop Docker containers if running
     if [ "$MCP_STARTED" = "true" ] && command -v docker &> /dev/null; then
         echo "Stopping Docker containers..."
         cd "$BACKEND_DIR"
         docker compose -f docker-compose.mcp.yml down
     fi
-    
+
     exit
 }
 
@@ -97,55 +97,104 @@ BACKEND_DIR="$PROJECT_ROOT/four-hosts-app/backend"
 if [ -f "$BACKEND_DIR/.env" ]; then
     if grep -q "BRAVE_SEARCH_API_KEY=" "$BACKEND_DIR/.env" && ! grep -q "BRAVE_SEARCH_API_KEY=your_brave_search_api_key_here" "$BACKEND_DIR/.env"; then
         echo "✓ Brave API key detected"
-        
+
         # Check if Docker is available
         if command -v docker &> /dev/null; then
             echo "✓ Docker detected"
-            
+
             # Check if docker network exists, create if not
             if ! docker network inspect fourhosts-network &> /dev/null; then
                 echo "Creating Docker network..."
                 docker network create fourhosts-network
             fi
-            
-            # Build Brave MCP server image if it doesn't exist
-            if ! docker images | grep -q "brave-mcp-server"; then
-                echo "Building Brave MCP server Docker image..."
-                cd "$BACKEND_DIR/brave-search-mcp-server"
-                docker build -t brave-mcp-server:latest .
-                cd "$BACKEND_DIR"
+
+            # Build Brave MCP server image if it doesn't exist (clone repo if missing)
+            USE_NPX_MCP=false
+            if ! docker image inspect brave-mcp-server:latest >/dev/null 2>&1; then
+                echo "Preparing Brave MCP server source..."
+                MCP_DIR="$BACKEND_DIR/brave-search-mcp-server"
+                if [ ! -d "$MCP_DIR" ]; then
+                    echo "Cloning Brave MCP server repository..."
+                    if command -v git >/dev/null 2>&1; then
+                        git clone --depth 1 https://github.com/brave/brave-search-mcp-server.git "$MCP_DIR" || {
+                            echo "❌ Failed to clone Brave MCP server repository"
+                            USE_NPX_MCP=true
+                        }
+                    else
+                        echo "❌ git not found; cannot clone Brave MCP server"
+                        USE_NPX_MCP=true
+                    fi
+                else
+                    if command -v git >/dev/null 2>&1 && [ -d "$MCP_DIR/.git" ]; then
+                        echo "Updating Brave MCP server repository..."
+                        git -C "$MCP_DIR" pull --ff-only || true
+                    fi
+                fi
+
+                if [ "$USE_NPX_MCP" = "false" ]; then
+                    echo "Building Brave MCP server Docker image..."
+                    cd "$MCP_DIR"
+                    docker build -t brave-mcp-server:latest . || {
+                        echo "❌ Docker build failed"
+                        USE_NPX_MCP=true
+                    }
+                    cd "$BACKEND_DIR"
+                fi
             fi
-            
-            # Start Brave MCP server using Docker Compose
+
+            # Start Brave MCP server (Docker Compose or NPX fallback)
             echo "Starting Brave MCP server..."
             cd "$BACKEND_DIR"
-            docker compose -f docker-compose.mcp.yml up -d
-            MCP_STARTED=true
-            
-            # Wait for MCP server to be ready
-            echo "Waiting for MCP server to be ready..."
-            for i in {1..30}; do
-                if curl -s http://localhost:8080/health > /dev/null 2>&1; then
-                    echo "✓ Brave MCP server is ready"
-                    break
+
+            if [ "${USE_NPX_MCP:-false}" = "true" ]; then
+                if command -v npx &> /dev/null; then
+                    # Load API key from .env and start MCP server in background
+                    BRAVE_API_KEY_VAL="$(grep -E '^(BRAVE_API_KEY|BRAVE_SEARCH_API_KEY)=' .env | head -n1 | cut -d= -f2-)"
+                    if [ -z "$BRAVE_API_KEY_VAL" ]; then
+                        echo "❌ BRAVE_API_KEY not found in .env; cannot start NPX MCP server"
+                    else
+                        BRAVE_API_KEY="$BRAVE_API_KEY_VAL" npx -y @brave/brave-search-mcp-server --transport http --host 0.0.0.0 --port 8080 &
+                        MCP_PID=$!
+                        echo "✓ Brave MCP server started via NPX (PID: $MCP_PID)"
+                        # Save PID for cleanup
+                        echo $MCP_PID > .mcp_server.pid
+                    fi
+                else
+                    echo "❌ Could not start MCP server: Docker build failed and NPX not available"
                 fi
-                echo -n "."
-                sleep 1
-            done
-            echo ""
+            else
+                docker compose -f docker-compose.mcp.yml up -d
+                MCP_STARTED=true
+
+                # Wait for MCP server to be ready
+                echo "Waiting for MCP server to be ready..."
+                for i in {1..30}; do
+                    if curl -s http://localhost:8080/ping > /dev/null 2>&1; then
+                        echo "✓ Brave MCP server is ready"
+                        break
+                    fi
+                    echo -n "."
+                    sleep 1
+                done
+                echo ""
+            fi
         else
             echo "⚠️  Docker not found. Starting MCP server with NPX..."
-            
+
             # Check if NPX is available
             if command -v npx &> /dev/null; then
-                # Start MCP server in background
+                # Start MCP server in background (load API key from .env)
                 cd "$BACKEND_DIR"
-                npx @modelcontextprotocol/server-brave-search &
-                MCP_PID=$!
-                echo "✓ Brave MCP server started (PID: $MCP_PID)"
-                
-                # Save PID for cleanup
-                echo $MCP_PID > .mcp_server.pid
+                BRAVE_API_KEY_VAL="$(grep -E '^(BRAVE_API_KEY|BRAVE_SEARCH_API_KEY)=' .env | head -n1 | cut -d= -f2-)"
+                if [ -z "$BRAVE_API_KEY_VAL" ]; then
+                    echo "❌ BRAVE_API_KEY not found in .env; cannot start NPX MCP server"
+                else
+                    BRAVE_API_KEY="$BRAVE_API_KEY_VAL" npx -y @brave/brave-search-mcp-server --transport http --host 0.0.0.0 --port 8080 &
+                    MCP_PID=$!
+                    echo "✓ Brave MCP server started (PID: $MCP_PID)"
+                    # Save PID for cleanup
+                    echo $MCP_PID > .mcp_server.pid
+                fi
             else
                 echo "❌ Neither Docker nor NPX found. Skipping MCP server."
                 echo "   Install Docker or Node.js to enable Brave search."
@@ -171,6 +220,25 @@ fi
 
 cd "$BACKEND_DIR"
 
+# Ensure database is available (attempt simple TCP check on 5432)
+if ! (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1; then
+    echo "🗄️  Postgres not reachable on 5432. Attempting to start docker-compose services..."
+    if command -v docker >/dev/null 2>&1 && command -v docker compose >/dev/null 2>&1; then
+        docker compose up -d postgres redis 2>/dev/null || docker compose up -d
+        echo -n "   Waiting for Postgres to become healthy"
+        for i in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1; then
+                echo " - ready"
+                break
+            fi
+            echo -n "."
+            sleep 1
+        done
+    else
+        echo "⚠️  Docker/Compose not available; continuing and backend may fail to init DB."
+    fi
+fi
+
 # Check if virtual environment exists
 if [ ! -d "venv" ]; then
     echo "Creating Python virtual environment..."
@@ -185,7 +253,7 @@ pip install -r requirements.txt > /dev/null 2>&1
 export ENVIRONMENT=development
 
 # Start backend without watching venv directory
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --reload --reload-dir . --reload-exclude venv --reload-exclude __pycache__ --reload-exclude "*.pyc" --reload-exclude "*.log" --reload-exclude "test_*" &
+python -m uvicorn main_new:app --host 0.0.0.0 --port 8000 --workers 1 --reload --reload-dir . --reload-exclude venv --reload-exclude __pycache__ --reload-exclude "*.pyc" --reload-exclude "*.log" --reload-exclude "test_*" &
 BACKEND_PID=$!
 echo "✅ Backend started (PID: $BACKEND_PID)"
 echo "   Available at: http://localhost:8000"
