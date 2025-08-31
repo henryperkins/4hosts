@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 # Contracts
@@ -21,6 +21,7 @@ from models.context_models import (
     ContextEngineeredQuerySchema,
     HostParadigm
 )
+from models.paradigms import normalize_to_internal_code
 from services.search_apis import (
     SearchResult,
     SearchConfig,
@@ -41,6 +42,16 @@ from services.deep_research_service import (
     initialize_deep_research,
 )
 # SearchContextSize import removed (unused)
+
+# Optional: answer generation integration
+try:
+    from services.answer_generator import answer_orchestrator
+    from models.synthesis_models import SynthesisContext as SynthesisContextModel
+    _ANSWER_GEN_AVAILABLE = True
+except Exception:
+    _ANSWER_GEN_AVAILABLE = False
+    answer_orchestrator = None  # type: ignore
+    SynthesisContextModel = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -485,8 +496,8 @@ class UnifiedResearchOrchestrator:
         self._diag_samples = {"no_url": []}
         self._supports_search_with_api = False
 
-        # Performance tracking
-        self.execution_history = []
+        # Performance tracking (cap history to prevent unbounded memory growth)
+        self.execution_history = deque(maxlen=100)
 
         # Diagnostics toggles
         self.diagnostics = {
@@ -496,6 +507,19 @@ class UnifiedResearchOrchestrator:
             "enforce_url_presence": True,
             "enforce_per_result_origin": True
         }
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Small error/logging helper (applied in a few hot spots)
+    # ──────────────────────────────────────────────────────────────────────
+    def _log_and_continue(self, message: str, exc: Optional[Exception] = None, level: str = "warning") -> None:
+        try:
+            if exc:
+                getattr(logger, level, logger.warning)(f"{message}: {exc}")
+            else:
+                getattr(logger, level, logger.warning)(message)
+        except Exception:
+            # Never raise from logging – absolute last resort
+            logger.warning(message)
 
     async def initialize(self):
         """Initialize the orchestrator"""
@@ -545,6 +569,11 @@ class UnifiedResearchOrchestrator:
             }
         }
 
+
+# Backwards-compatibility alias for legacy imports/tests
+class ResearchOrchestrator(UnifiedResearchOrchestrator):
+    pass
+
     async def execute_research(
         self,
         classification: ClassificationResultSchema,
@@ -553,7 +582,9 @@ class UnifiedResearchOrchestrator:
         progress_callback: Optional[Any] = None,
         research_id: Optional[str] = None,
         enable_deep_research: bool = False,
-        deep_research_mode: Optional[DeepResearchMode] = None
+        deep_research_mode: Optional[DeepResearchMode] = None,
+        synthesize_answer: bool = False,
+        answer_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute research with all enhanced features"""
 
@@ -651,7 +682,21 @@ class UnifiedResearchOrchestrator:
 
         processed_results["metadata"]["processing_time"] = processing_time
 
-        return {
+        # Optional answer synthesis (P2)
+        synthesized_answer = None
+        if synthesize_answer and _ANSWER_GEN_AVAILABLE:
+            try:
+                synthesized_answer = await self._synthesize_answer(
+                    classification=classification,
+                    context_engineered=context_engineered,
+                    results=processed_results["results"],
+                    research_id=research_id or f"research_{int(start_time.timestamp())}",
+                    options=answer_options or {},
+                )
+            except Exception as e:
+                logger.error(f"Answer synthesis failed: {e}")
+
+        response = {
             "results": processed_results["results"],
             "metadata": {
                 **processed_results["metadata"],
@@ -661,14 +706,78 @@ class UnifiedResearchOrchestrator:
                 "credibility_summary": processed_results["credibility_summary"],
                 "deduplication_stats": processed_results["dedup_stats"],
                 "search_metrics": {
-                "total_queries": int(self._search_metrics.get("total_queries", 0) if isinstance(self._search_metrics.get("total_queries"), int) else 0),
-                "total_results": int(self._search_metrics.get("total_results", 0) if isinstance(self._search_metrics.get("total_results"), int) else 0),
-                "apis_used": list(self._search_metrics.get("apis_used", set())) if isinstance(self._search_metrics.get("apis_used"), set) else [],
-                "deduplication_rate": float(self._search_metrics.get("deduplication_rate", 0.0) if isinstance(self._search_metrics.get("deduplication_rate"), (int, float)) else 0.0)
+                    "total_queries": int(self._search_metrics.get("total_queries", 0) if isinstance(self._search_metrics.get("total_queries"), int) else 0),
+                    "total_results": int(self._search_metrics.get("total_results", 0) if isinstance(self._search_metrics.get("total_results"), int) else 0),
+                    "apis_used": list(self._search_metrics.get("apis_used", set())) if isinstance(self._search_metrics.get("apis_used"), set) else [],
+                    "deduplication_rate": float(self._search_metrics.get("deduplication_rate", 0.0) if isinstance(self._search_metrics.get("deduplication_rate"), (int, float)) else 0.0),
+                },
+                "paradigm": classification.primary_paradigm.value if hasattr(classification, "primary_paradigm") else "unknown",
             },
-                "paradigm": classification.primary_paradigm.value if hasattr(classification, 'primary_paradigm') else 'unknown'
-            }
         }
+        if synthesized_answer is not None:
+            response["answer"] = synthesized_answer
+        return response
+
+    async def _synthesize_answer(
+        self,
+        *,
+        classification: ClassificationResultSchema,
+        context_engineered: ContextEngineeredQuerySchema,
+        results: List[SearchResult],
+        research_id: str,
+        options: Dict[str, Any],
+    ) -> Any:
+        """Build a SynthesisContext from research outputs and invoke answer generator."""
+        if not _ANSWER_GEN_AVAILABLE:
+            raise RuntimeError("Answer generation not available")
+
+        # Prepare minimal list[dict] for generator consumption
+        sources: List[Dict[str, Any]] = []
+        for r in results:
+            try:
+                sources.append({
+                    "title": getattr(r, "title", ""),
+                    "url": getattr(r, "url", ""),
+                    "snippet": getattr(r, "snippet", ""),
+                    "domain": getattr(r, "domain", ""),
+                    "credibility_score": float(getattr(r, "credibility_score", 0.0) or 0.0),
+                    "published_date": getattr(r, "published_date", None),
+                    "result_type": getattr(r, "result_type", "web"),
+                })
+            except Exception:
+                continue
+
+        # Best effort context_engineering dict
+        try:
+            ce = context_engineered.model_dump() if hasattr(context_engineered, "model_dump") else context_engineered.dict()
+        except Exception:
+            ce = {}
+
+        # Normalize paradigm code for generator
+        from models.paradigms import normalize_to_internal_code
+        paradigm_code = normalize_to_internal_code(classification.primary_paradigm)
+
+        # Build synthesis context (not strictly required by the generator but useful for parity)
+        if SynthesisContextModel:
+            _ = SynthesisContextModel(
+                query=context_engineered.original_query,
+                paradigm=paradigm_code,
+                search_results=sources,
+                context_engineering=ce,
+                max_length=int(options.get("max_length", 2000)),
+                include_citations=bool(options.get("include_citations", True)),
+                tone=str(options.get("tone", "professional")),
+                metadata={"research_id": research_id},
+            )
+
+        # Call the generator using the legacy signature for broad compatibility
+        return await answer_orchestrator.generate_answer(
+            paradigm=paradigm_code,
+            query=getattr(context_engineered, "original_query", ""),
+            search_results=sources,
+            context_engineering=ce,
+            options={"research_id": research_id, **options},
+        )
 
     async def execute_paradigm_research(
         self,
@@ -702,23 +811,11 @@ class UnifiedResearchOrchestrator:
         classification = context_engineered_query.classification
         select_output = context_engineered_query.select_output
 
-        # Map enum values to paradigm names
-        paradigm_mapping = {
-            "revolutionary": "dolores",
-            "devotion": "teddy",
-            "analytical": "bernard",
-            "strategic": "maeve",
-        }
-
-        paradigm = paradigm_mapping.get(
-            classification.primary_paradigm.value,
-            "bernard",
-        )
+        # Normalize paradigm to internal code name
+        paradigm = normalize_to_internal_code(classification.primary_paradigm)
         secondary_paradigm = None
         if classification.secondary_paradigm:
-            secondary_paradigm = paradigm_mapping.get(
-                classification.secondary_paradigm.value, None
-            )
+            secondary_paradigm = normalize_to_internal_code(classification.secondary_paradigm)
 
         logger.info(f"Executing research for paradigm: {paradigm}")
 
@@ -741,40 +838,7 @@ class UnifiedResearchOrchestrator:
         strategy = get_search_strategy(paradigm)
 
         # Use search queries from Context Engineering Select layer with guards/normalization
-        raw_sq = getattr(select_output, "search_queries", None)
-        search_queries = []
-        if isinstance(raw_sq, list):
-            # Accept list of dicts or strings; coerce to list[dict]
-            for item in raw_sq:
-                if isinstance(item, dict):
-                    q = (item.get("query") or "").strip()
-                    if q:
-                        t = item.get("type", "generic")
-                        try:
-                            w = float(item.get("weight", 1.0) or 1.0)
-                        except Exception:
-                            w = 1.0
-                        search_queries.append({"query": q, "type": t, "weight": w})
-                elif isinstance(item, str):
-                    q = item.strip()
-                    if q:
-                        search_queries.append({"query": q, "type": "generic", "weight": 1.0})
-        elif isinstance(raw_sq, dict):
-            q = (raw_sq.get("query") or "").strip()
-            if q:
-                try:
-                    w = float(raw_sq.get("weight", 1.0) or 1.0)
-                except Exception:
-                    w = 1.0
-                search_queries.append({"query": q, "type": raw_sq.get("type", "generic"), "weight": w})
-        # Fallback if missing/empty
-        if not search_queries:
-            oq = getattr(context_engineered_query, "original_query", "") or ""
-            if oq:
-                search_queries = [{"query": oq, "type": "generic", "weight": 1.0}]
-            else:
-                # last resort default
-                search_queries = [{"query": "news", "type": "generic", "weight": 1.0}]
+        search_queries = self._select_queries_from_select(select_output, context_engineered_query)
         # Cap to 8
         search_queries = search_queries[:8]
 
@@ -886,7 +950,8 @@ class UnifiedResearchOrchestrator:
                     continue
 
                 # Check if content is not empty
-                if not getattr(result, 'content', '').strip():
+                content = getattr(result, 'content', '')
+                if content is None or not str(content).strip():
                     logger.warning(f"Result has empty content in query '{query_key}', skipping")
                     continue
 
@@ -912,16 +977,6 @@ class UnifiedResearchOrchestrator:
             if result is None:
                 logger.warning("Found None result after deduplication, skipping")
                 continue
-
-            # Ensure sections exist for answer generation
-            # Guard attribute access since SearchResult doesn't define 'sections' in dataclass
-            if not hasattr(result, 'sections') or result.sections is None:
-                try:
-                    setattr(result, 'sections', [])
-                except Exception:
-                    # If object is frozen or doesn't allow new attrs, skip silently
-                    pass
-
             validated_results.append(result)
 
         # Update deduplicated_results with validated ones
@@ -1073,6 +1128,7 @@ class UnifiedResearchOrchestrator:
 
         # Limit final results
         final_results = filtered_results[:max_results]
+        # Results now include a `sections` list by default in SearchResult; no dynamic setattr needed
 
         # Execute secondary search if applicable
         secondary_results = []
@@ -1130,12 +1186,77 @@ class UnifiedResearchOrchestrator:
         else:
             metrics = metrics_dict
 
-        # Create execution result
+        # Create and log final execution result via helper
+        return self._finalize_legacy_result(
+            original_query=original_query,
+            paradigm=paradigm,
+            secondary_paradigm=secondary_paradigm,
+            search_queries=search_queries,
+            all_results=all_results,
+            final_results=final_results,
+            secondary_results=secondary_results,
+            credibility_scores=credibility_scores,
+            metrics=metrics,
+            cost_breakdown=cost_breakdown,
+            processing_time=processing_time,
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Extracted helpers from legacy implementation (behavior preserved)
+    # ──────────────────────────────────────────────────────────────────────
+    def _select_queries_from_select(self, select_output: Any, context_engineered_query: Any) -> List[Dict[str, Any]]:
+        raw_sq = getattr(select_output, "search_queries", None)
+        search_queries: List[Dict[str, Any]] = []
+        if isinstance(raw_sq, list):
+            for item in raw_sq:
+                if isinstance(item, dict):
+                    q = (item.get("query") or "").strip()
+                    if q:
+                        t = item.get("type", "generic")
+                        try:
+                            w = float(item.get("weight", 1.0) or 1.0)
+                        except Exception as e:
+                            self._log_and_continue("Invalid weight in select query", e)
+                            w = 1.0
+                        search_queries.append({"query": q, "type": t, "weight": w})
+                elif isinstance(item, str):
+                    q = item.strip()
+                    if q:
+                        search_queries.append({"query": q, "type": "generic", "weight": 1.0})
+        elif isinstance(raw_sq, dict):
+            q = (raw_sq.get("query") or "").strip()
+            if q:
+                try:
+                    w = float(raw_sq.get("weight", 1.0) or 1.0)
+                except Exception as e:
+                    self._log_and_continue("Invalid weight in select query (dict)", e)
+                    w = 1.0
+                search_queries.append({"query": q, "type": raw_sq.get("type", "generic"), "weight": w})
+
+        if not search_queries:
+            oq = getattr(context_engineered_query, "original_query", "") or ""
+            if oq:
+                search_queries = [{"query": oq, "type": "generic", "weight": 1.0}]
+        return search_queries
+
+    def _finalize_legacy_result(
+        self,
+        *,
+        original_query: str,
+        paradigm: str,
+        secondary_paradigm: Optional[str],
+        search_queries: List[Dict[str, Any]],
+        all_results: Dict[str, List[SearchResult]],
+        final_results: List[SearchResult],
+        secondary_results: List[SearchResult],
+        credibility_scores: Dict[str, float],
+        metrics: Dict[str, Any],
+        cost_breakdown: Dict[str, float],
+        processing_time: float,
+    ) -> ResearchExecutionResult:
         # Determine execution status based on availability of results
         execution_status = (
-            ResearchStatus.FAILED_NO_SOURCES
-            if len(final_results) == 0
-            else ResearchStatus.OK
+            ResearchStatus.FAILED_NO_SOURCES if len(final_results) == 0 else ResearchStatus.OK
         )
 
         result = ResearchExecutionResult(
@@ -1153,36 +1274,36 @@ class UnifiedResearchOrchestrator:
         )
 
         # Store in history
-        self.execution_history.append(result)
+        try:
+            self.execution_history.append(result)
+        except Exception as e:
+            self._log_and_continue("Failed to append to execution history", e)
 
         logger.info(f"Research execution completed in {processing_time:.2f}s")
         logger.info(f"Final results: {len(final_results)} sources")
 
-        # Enhanced logging for debugging
+        # Enhanced logging for debugging (first 5 results)
         if final_results:
             logger.debug("Final results detailed breakdown:")
-            for i, result in enumerate(final_results[:5]):  # Log first 5 results
-                if result is None:
-                    logger.warning(f"Result {i} is None")
+            for i, r in enumerate(final_results[:5]):
+                if r is None:
+                    self._log_and_continue(f"Result {i} is None")
                     continue
-
-                title = getattr(result, 'title', 'No title')
-                url = getattr(result, 'url', 'No URL')
-                content_length = len(getattr(result, 'content', ''))
-                sections_count = len(getattr(result, 'sections', []))
-
-                logger.debug(f"  Result {i}: '{title[:50]}...' ({content_length} chars, {sections_count} sections) - {url}")
-
-                # Check for sections attribute specifically
-                if hasattr(result, 'sections'):
-                    if result.sections is None:
-                        logger.warning(f"  Result {i} has None sections attribute")
-                    elif not isinstance(result.sections, list):
-                        logger.warning(f"  Result {i} sections is not a list: {type(result.sections)}")
-                else:
-                    logger.warning(f"  Result {i} missing sections attribute")
+                try:
+                    title = getattr(r, 'title', 'No title')
+                    url = getattr(r, 'url', 'No URL')
+                    content_length = len(getattr(r, 'content', '') or '')
+                    sections = getattr(r, 'sections', [])
+                    sections_count = len(sections) if isinstance(sections, list) else 0
+                    logger.debug(
+                        f"  Result {i}: '{title[:50]}...' ({content_length} chars, {sections_count} sections) - {url}"
+                    )
+                    if not isinstance(sections, list):
+                        self._log_and_continue(f"  Result {i} sections is not a list: {type(sections)}")
+                except Exception as e:
+                    self._log_and_continue("Failed to log result breakdown", e)
         else:
-            logger.warning("No final results produced - this may cause downstream errors")
+            self._log_and_continue("No final results produced - this may cause downstream errors")
 
         return result
 

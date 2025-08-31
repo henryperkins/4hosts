@@ -19,9 +19,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import enhanced components
-from services.answer_generator_enhanced import (
-    EnhancedBernardAnswerGenerator, 
-    EnhancedMaeveAnswerGenerator
+from services.answer_generator import (
+    EnhancedBernardAnswerGenerator,
+    EnhancedMaeveAnswerGenerator,
 )
 from services.self_healing_system import self_healing_system
 from services.ml_pipeline import ml_pipeline

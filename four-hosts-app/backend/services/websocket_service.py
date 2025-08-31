@@ -862,7 +862,7 @@ def create_websocket_router(
                     # Non-JSON: try text ping
                     try:
                         text = await websocket.receive_text()
-                        if text.strip().lower() == "ping":
+                        if (text or "").strip().lower() == "ping":
                             await connection_manager.handle_client_message(
                                 websocket, {"type": "ping"}
                             )

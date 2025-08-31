@@ -11,42 +11,33 @@ import os
 import re
 import string
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
 import aiohttp
-import os
 import random
 import fitz  # PyMuPDF
+# Suppress recoverable MuPDF errors from printing to stderr while keeping them in the warnings store.
+# This reduces noisy log lines like "MuPDF error: syntax error: could not parse color space (...)".
+try:
+    fitz.TOOLS.mupdf_display_errors(False)
+except Exception:
+    # Older PyMuPDF versions may not support this; ignore if unavailable.
+    pass
 import nltk
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from nltk.corpus import stopwords, wordnet
+from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import word_tokenize
 from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
                     wait_exponential)
 
-# Download NLTK data if not present
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
-try:
-    nltk.data.find('tokenizers/punkt_tab')
-except LookupError:
-    nltk.download('punkt_tab')
-try:
-    nltk.data.find('corpora/stopwords')
-except LookupError:
-    nltk.download('stopwords')
-try:
-    nltk.data.find('corpora/wordnet')
-except LookupError:
-    nltk.download('wordnet')
+# NLTK resources are resolved lazily; see _ensure_nltk_ready() below.
 
 # Load environment variables
 load_dotenv()
@@ -184,23 +175,41 @@ class RespectfulFetcher:
 
     def __init__(self):
         self.robot_parsers: Dict[str, RobotFileParser] = {}
+        self.robots_checked_at: Dict[str, float] = {}
         self.last_fetch: Dict[str, float] = {}
         self.user_agent = (
             "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)"
         )
         self.circuit_breaker = CircuitBreaker()
+        # Domains we intentionally do not fetch directly (JS-heavy, paywalled, or TDM-only)
+        # Can be overridden with SEARCH_FETCH_DOMAIN_BLOCKLIST env var (comma-separated)
+        default_block = [
+            "semanticscholar.org",
+            "api.wiley.com",
+            "onlinelibrary.wiley.com",
+        ]
+        env_block = os.getenv("SEARCH_FETCH_DOMAIN_BLOCKLIST", "")
+        extra = [d.strip().lower() for d in env_block.split(",") if d.strip()]
+        self.blocked_domains: Set[str] = set([d.lower() for d in default_block] + extra)
+        self.robots_ttl = int(os.getenv("SEARCH_ROBOTS_TTL", "86400"))
 
     async def can_fetch(self, url: str) -> bool:
         """Check robots.txt before fetching"""
         parsed = urlparse(url)
         domain = f"{parsed.scheme}://{parsed.netloc}"
 
-        if domain not in self.robot_parsers:
+        now = time.time()
+        needs_refresh = (
+            domain not in self.robot_parsers
+            or (domain in self.robots_checked_at and now - self.robots_checked_at[domain] > self.robots_ttl)
+        )
+        if needs_refresh:
             try:
                 rp = RobotFileParser()
                 rp.set_url(f"{domain}/robots.txt")
                 await asyncio.to_thread(rp.read)
                 self.robot_parsers[domain] = rp
+                self.robots_checked_at[domain] = now
             except Exception as e:
                 logger.debug(f"Could not fetch robots.txt for {domain}: {e}")
                 # If we can't fetch robots.txt, we'll be conservative and allow
@@ -217,6 +226,11 @@ class RespectfulFetcher:
             return None
 
         domain = urlparse(normalized_url).netloc
+
+        # Skip blocked domains entirely; rely on API metadata/snippets instead
+        if any(domain == blocked or domain.endswith("." + blocked) for blocked in self.blocked_domains):
+            logger.debug(f"Skipping direct fetch for blocked domain {domain}")
+            return None
 
         # Check circuit breaker
         if not self.circuit_breaker.should_allow_request(domain):
@@ -247,10 +261,14 @@ class RespectfulFetcher:
             raise
 
 
+class RateLimitedError(aiohttp.ClientError):
+    """Raised on HTTP 429 to trigger tenacity retry with backoff."""
+    pass
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(aiohttp.ClientError),
+    retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
 )
 async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
     """
@@ -284,7 +302,18 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                 if "application/pdf" in content_type:
                     pdf_content = await response.read()
                     with fitz.open(stream=pdf_content, filetype="pdf") as doc:
-                        text = "".join(page.get_text() for page in doc)
+                        text_parts: List[str] = []
+                        for page in doc:
+                            p = cast(Any, page)
+                            try:
+                                text_parts.append(p.get_text())
+                            except Exception:
+                                try:
+                                    # Fallback for older PyMuPDF versions
+                                    text_parts.append(p.getText())  # type: ignore[attr-defined]
+                                except Exception:
+                                    continue
+                        text = "".join(text_parts)
                     return text
                 else:
                     html_content = await response.text()
@@ -297,7 +326,6 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                 return ""
             elif response.status == 429:
                 # Exponential backoff with jitter
-                # Read attempt count from header if service provides, else simulate by embedding attempt in retry-after (not standard)
                 retry_after_hdr = response.headers.get('retry-after')
                 # Configuration
                 base_delay = float(os.getenv('SEARCH_RATE_LIMIT_BASE_DELAY', '2'))
@@ -310,26 +338,32 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                 attempts = getattr(session, attempt_key, 0) + 1
                 setattr(session, attempt_key, attempts)
 
-                # If server provided an explicit retry-after, honor it as upper bound
+                # Compute an upper bound for jitter that respects max_delay and server hints
+                computed = base_delay * (factor ** (attempts - 1))
+                upper = min(max_delay, computed)
                 server_retry = None
                 if retry_after_hdr and retry_after_hdr.isdigit():
                     try:
-                        server_retry = int(retry_after_hdr)
+                        server_retry = float(retry_after_hdr)
+                        # If server suggests a smaller wait, tighten our upper bound
+                        upper = min(upper, server_retry)
                     except ValueError:
                         server_retry = None
 
-                computed = base_delay * (factor ** (attempts - 1))
-                delay = min(computed, max_delay)
+                delay = upper
                 if jitter == 'full':
-                    delay = random.uniform(0, delay)
-                if server_retry is not None:
-                    delay = min(delay, server_retry)
+                    delay = random.uniform(0, upper)
 
-                # Safety cap (never exceed max_delay even if server asks for more unless explicitly allowed)
                 logger.warning(
-                    f"Rate limited (429) for {url}, attempt {attempts}, backing off {delay:.2f}s (server={server_retry}, computed={computed:.2f})"
+                    f"Rate limited (429) for {url}, attempt {attempts}, backing off {delay:.2f}s (server={server_retry}, computed={computed:.2f}, max={max_delay})"
                 )
                 await asyncio.sleep(delay)
+                # Raise to allow @retry to handle another attempt
+                raise RateLimitedError(f"429 Too Many Requests: {url}")
+            elif response.status == 202:
+                # Many sites (e.g., Semantic Scholar pages) respond 202 when content isn't ready.
+                # Treat as a transient, low-severity condition; do not spam warnings.
+                logger.debug(f"Content not ready (202) for {url}")
                 return ""
             elif 500 <= response.status < 600:
                 logger.warning(f"Server error ({response.status}) for {url}")
@@ -371,6 +405,8 @@ class SearchResult:
     last_modified: Optional[datetime] = None
     # Content hash for deduplication
     content_hash: Optional[str] = None
+    # Sections of extracted/structured content (expected by orchestrator/answer generation)
+    sections: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.domain and self.url:
@@ -407,17 +443,14 @@ class RateLimiter:
 
     def __init__(self, calls_per_minute: int = 100):
         self.calls_per_minute = calls_per_minute
-        self.calls = []
+        self.calls: deque[datetime] = deque()
 
     async def wait_if_needed(self):
         """Wait if rate limit would be exceeded"""
         now = datetime.now(timezone.utc)
         # Remove calls older than 1 minute
-        self.calls = [
-            call_time
-            for call_time in self.calls
-            if now - call_time < timedelta(minutes=1)
-        ]
+        while self.calls and (now - self.calls[0]) >= timedelta(minutes=1):
+            self.calls.popleft()
 
         if len(self.calls) >= self.calls_per_minute:
             # Wait until oldest call is > 1 minute old
@@ -435,7 +468,10 @@ class QueryOptimizer:
     intelligent stopword removal, and multi-query expansion.
     """
     def __init__(self):
-        self.stop_words = set(stopwords.words('english'))
+        self.use_nltk = _ensure_nltk_ready()
+        self.stop_words = set(stopwords.words('english')) if self.use_nltk else {
+            'the','a','an','and','or','but','of','in','on','for','to','with','by','is','are','was','were','be','as','at','it','this','that','from'
+        }
         # A more conservative set of noise terms
         self.noise_terms = {
             'information', 'details', 'find', 'show', 'tell'
@@ -487,7 +523,10 @@ class QueryOptimizer:
 
     def _intelligent_stopword_removal(self, text: str) -> List[str]:
         """Removes stopwords and noise terms, preserving query structure."""
-        tokens = word_tokenize(text.lower())
+        if self.use_nltk:
+            tokens = word_tokenize(text.lower())
+        else:
+            tokens = re.findall(r"\b\w+\b", text.lower())
         tokens = [t for t in tokens if t not in self.noise_terms]
         tokens = [
             t for t in tokens
@@ -579,6 +618,8 @@ class QueryOptimizer:
     def _expand_synonyms(self, terms: List[str]) -> List[str]:
         """Expand terms with synonyms using WordNet"""
         expanded = []
+        if not self.use_nltk:
+            return terms[:]
         for term in terms:
             # Add original term
             expanded.append(term)
@@ -587,8 +628,12 @@ class QueryOptimizer:
             if synsets:
                 synonyms = set()
                 for syn in synsets[:2]:  # Limit synsets
-                    for lemma in syn.lemmas()[:3]:  # Limit lemmas
-                        synonym = lemma.name().replace('_', ' ')
+                    try:
+                        lemma_names = cast(Any, syn).lemma_names()  # type: ignore[attr-defined]
+                    except Exception:
+                        lemma_names = []
+                    for name in list(lemma_names)[:3]:
+                        synonym = name.replace('_', ' ')
                         if synonym.lower() != term.lower():
                             synonyms.add(synonym)
                 expanded.extend(list(synonyms)[:2])  # Add max 2 synonyms
@@ -858,42 +903,122 @@ class ContentRelevanceFilter:
         return filtered
 
     def _detect_cross_source_agreement(self, results: List[SearchResult], key_terms: List[str]) -> List[SearchResult]:
-        """Detect and score cross-source agreement on key claims"""
-        # Extract key claims from each result
-        claim_groups = defaultdict(list)
+        """Detect and score cross-domain agreement on key claims with semantic signatures.
+
+        Approach:
+        - Extract candidate sentences mentioning any key term from title/snippet (and content when available).
+        - Build a semantic signature per sentence (lemmatized tokens w/o stopwords).
+        - Group semantically-similar claims; compute agreement by number of distinct domains.
+        - Boost relevance for results that support high‑agreement claims and attach diagnostics.
+        """
+
+        if not results:
+            return results
+
+        # Helpers -----------------------------------------------------------
+        stop = set(stopwords.words('english'))
+        lemmatizer = WordNetLemmatizer()
+
+        def sent_split(text: str) -> List[str]:
+            # Lightweight sentence split; avoids bringing in heavy NLP deps
+            return re.split(r"[.!?]\s+", text)
+
+        def signature(sentence: str) -> Tuple[str, Set[str]]:
+            # Normalize, lemmatize, and remove stopwords/punct to form a claim signature
+            tokens = re.findall(r"\w+", sentence.lower())
+            lemmas: List[str] = []
+            for t in tokens:
+                if t in stop or len(t) < 3:
+                    continue
+                try:
+                    lemmas.append(lemmatizer.lemmatize(t))
+                except Exception:
+                    lemmas.append(t)
+            # Keep top-N distinctive terms to reduce noise
+            top = lemmas[:20]
+            sig_set = set(top)
+            return (" ".join(sorted(sig_set)), sig_set)
+
+        # Build claim index -------------------------------------------------
+        # claim_key -> { 'domains': set(), 'results': [(result, sentence)], 'sig': set(), 'sample': str }
+        claims: Dict[str, Dict[str, Any]] = {}
+        key_terms_lc = [t.lower() for t in key_terms]
 
         for result in results:
-            # Extract potential claims (sentences containing key terms)
-            text = f"{result.title} {result.snippet}".lower()
-            sentences = text.split('.')
+            domain = (result.domain or result.source or "unknown").lower()
+            base_text = f"{result.title or ''} {result.snippet or ''}"
+            # Optionally include a small slice of content to catch richer claims
+            if result.content:
+                base_text = base_text + " " + (result.content[:400])
 
-            for sentence in sentences:
-                if any(term in sentence for term in key_terms):
-                    # Normalize claim for grouping
-                    normalized_claim = self._normalize_claim(sentence)
-                    if normalized_claim:
-                        claim_groups[normalized_claim].append(result)
+            for sent in sent_split(base_text):
+                s = sent.strip()
+                if not s:
+                    continue
+                # Must contain at least one key term
+                lc = s.lower()
+                if key_terms_lc and not any(k in lc for k in key_terms_lc):
+                    continue
+                norm = self._normalize_claim(s)
+                if not norm:
+                    continue
+                key, sig = signature(norm)
 
-        # Mark results that have consensus
-        consensus_results = set()
-        for claim, supporting_results in claim_groups.items():
-            if len(supporting_results) >= 2:
-                # Multiple sources agree on this claim
-                for result in supporting_results:
-                    consensus_results.add(id(result))
-                    # Boost relevance score for consensus
-                    result.relevance_score = min(1.0, result.relevance_score + 0.1)
-                    # Add consensus metadata
-                    if 'consensus_claims' not in result.raw_data:
-                        result.raw_data['consensus_claims'] = []
-                    result.raw_data['consensus_claims'].append({
-                        'claim': claim,
-                        'supporting_sources': len(supporting_results)
-                    })
+                # Merge with an existing close claim via Jaccard similarity on signatures
+                chosen_key = key
+                for existing_key, data in claims.items():
+                    old_sig: Set[str] = data.get('sig', set())
+                    if not old_sig or not sig:
+                        continue
+                    inter = len(old_sig & sig)
+                    uni = len(old_sig | sig)
+                    if uni and (inter / uni) >= 0.65:
+                        chosen_key = existing_key
+                        # Optionally expand the existing signature a bit
+                        data['sig'] = (old_sig | sig) if len(old_sig) < 40 else old_sig
+                        break
 
-        # Flag potential contradictions
+                entry = claims.setdefault(chosen_key, {
+                    'domains': set(), 'results': [], 'sig': sig, 'sample': norm
+                })
+                entry['domains'].add(domain)
+                entry['results'].append((result, norm))
+
+        # Compute agreement and apply boosts --------------------------------
+        for key, data in claims.items():
+            domains = list(data['domains'])
+            support_count = len(data['results'])
+            distinct_domains = len(domains)
+
+            # Require support from at least 2 distinct domains
+            if distinct_domains < 2 or support_count < 2:
+                continue
+
+            # Agreement score: emphasize independent domains, then total mentions
+            agreement = min(1.0, 0.7 * (distinct_domains / 3.0) + 0.3 * (support_count / 6.0))
+
+            # Apply per-result boost (cap total boost per result)
+            for result, claim_text in data['results']:
+                prior = getattr(result, 'relevance_score', 0.0) or 0.0
+                boost = min(0.2, 0.05 + 0.15 * agreement)
+                result.relevance_score = min(1.0, prior + boost)
+                # Attach diagnostics
+                result.raw_data.setdefault('consensus_claims', []).append({
+                    'claim': claim_text[:240],
+                    'agreement_score': round(agreement, 3),
+                    'supporting_domains': domains,
+                    'supporting_results': support_count,
+                })
+
+        # Flag potential contradictions using normalized groups --------------
+        # Build a map expected by _flag_contradictions: normalized_claim -> [results]
+        claim_groups: Dict[str, List[SearchResult]] = defaultdict(list)
+        for key, data in claims.items():
+            sample = data.get('sample') or key
+            for res, _ in data['results']:
+                claim_groups[sample].append(res)
+
         self._flag_contradictions(results, claim_groups)
-
         return results
 
     def _normalize_claim(self, sentence: str) -> Optional[str]:
@@ -962,6 +1087,14 @@ class BaseSearchAPI:
                 logger.debug(f"Closed session for {self.__class__.__name__}")
             except Exception as e:
                 logger.warning(f"Error closing session for {self.__class__.__name__}: {e}")
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        """Ensure an aiohttp session exists and is open; return it (non-Optional)."""
+        if self.session is None or getattr(self.session, "closed", True):
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+            self._session_closed = False
+        return self.session
 
     async def search(self, query: str, config: SearchConfig) -> List[SearchResult]:
         """Override in subclasses"""
@@ -1063,7 +1196,7 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
             params["dateRestrict"] = config.date_range
 
         try:
-            async with self.session.get(self.base_url, params=params) as response:
+            async with self._get_session().get(self.base_url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
                     results = self._parse_google_results(data)
@@ -1197,7 +1330,7 @@ class ArxivAPI(BaseSearchAPI):
         }
 
         try:
-            async with self.session.get(self.base_url, params=params) as response:
+            async with self._get_session().get(self.base_url, params=params) as response:
                 if response.status == 200:
                     xml_data = await response.text()
                     results = self._parse_arxiv_results(xml_data)
@@ -1252,7 +1385,7 @@ class ArxivAPI(BaseSearchAPI):
                             authors.append(name_elem.text)
 
                     author_str = ", ".join(authors[:3]) if authors else None
-                    if len(authors) > 3:
+                    if len(authors) > 3 and author_str is not None:
                         author_str += f" et al. ({len(authors)} authors)"
 
                     result = SearchResult(
@@ -1333,7 +1466,7 @@ class BraveSearchAPI(BaseSearchAPI):
                 params["result_filter"] = ",".join(result_filters)
 
         try:
-            async with self.session.get(
+            async with self._get_session().get(
                 self.base_url, headers=headers, params=params
             ) as response:
                 # Check rate limit headers
@@ -1437,13 +1570,15 @@ class PubMedAPI(BaseSearchAPI):
             "retmax": min(config.max_results, 100),
             "retmode": "json",
         }
+        email = os.getenv("PUBMED_EMAIL") or os.getenv("CROSSREF_EMAIL") or "research@fourhosts.ai"
+        search_params.update({"tool": "FourHostsResearch", "email": email})
 
         if self.api_key:
             search_params["api_key"] = self.api_key
 
         try:
             # Search for article IDs
-            async with self.session.get(
+            async with self._get_session().get(
                 f"{self.base_url}/esearch.fcgi", params=search_params
             ) as response:
                 if response.status != 200:
@@ -1462,11 +1597,12 @@ class PubMedAPI(BaseSearchAPI):
                 "id": ",".join(pmids[:20]),  # Limit to first 20 for performance
                 "retmode": "xml",
             }
+            fetch_params.update({"tool": "FourHostsResearch", "email": email})
 
             if self.api_key:
                 fetch_params["api_key"] = self.api_key
 
-            async with self.session.get(
+            async with self._get_session().get(
                 f"{self.base_url}/efetch.fcgi", params=fetch_params
             ) as response:
                 if response.status == 200:
@@ -1529,7 +1665,7 @@ class PubMedAPI(BaseSearchAPI):
                                 authors.append(name)
 
                     author_str = ", ".join(authors[:3]) if authors else None
-                    if len(authors) > 3:
+                    if len(authors) > 3 and author_str is not None:
                         author_str += f" et al."
 
                     result = SearchResult(
@@ -1562,7 +1698,7 @@ class SemanticScholarAPI(BaseSearchAPI):
     async def search(
         self, query: str, config: SearchConfig
     ) -> List[SearchResult]:
-        """Search Semantic Scholar for academic papers."""
+        """Search Semantic Scholar for academic papers with basic 429 backoff."""
         await self.rate_limiter.wait_if_needed()
 
         params = {
@@ -1574,21 +1710,41 @@ class SemanticScholarAPI(BaseSearchAPI):
             ),
         }
 
-        try:
-            async with self.session.get(
-                self.base_url, params=params
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return self._parse_semantic_scholar_results(data)
-                else:
-                    logger.error(
-                        f"Semantic Scholar API error: {response.status}"
+        # Attempt up to 2 tries on 429 with capped backoff
+        tries = 0
+        while tries < 2:
+            tries += 1
+            try:
+                async with self._get_session().get(
+                    self.base_url, params=params
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return self._parse_semantic_scholar_results(data)
+                    if response.status == 429:
+                        # Respect Retry-After if present, otherwise exponential backoff
+                        ra = response.headers.get("retry-after")
+                        try:
+                            delay = min(60.0, float(ra)) if ra else min(30.0, 3.0 * tries)
+                        except Exception:
+                            delay = min(30.0, 3.0 * tries)
+                        logger.warning(
+                            f"Semantic Scholar rate limited (429). Backing off {delay:.1f}s (try {tries}/2)"
+                        )
+                        await asyncio.sleep(delay)
+                        # Loop to retry once
+                        continue
+                    # Other non-200 statuses
+                    logger.warning(
+                        f"Semantic Scholar API unexpected status: {response.status}"
                     )
                     return []
-        except Exception as e:
-            logger.error(f"Semantic Scholar search failed: {e}")
-            return []
+            except Exception as e:
+                # Network / parsing issues
+                logger.error(f"Semantic Scholar search failed: {e}")
+                return []
+        # If we exhausted retries
+        return []
 
     def _parse_semantic_scholar_results(self, data: Dict[str, Any]) -> List[SearchResult]:
         """Parse Semantic Scholar API response"""
@@ -1643,7 +1799,9 @@ class SemanticScholarAPI(BaseSearchAPI):
                 published_date=published_date,
                 result_type="academic",
                 domain="semanticscholar.org",
-                raw_data=paper
+                raw_data=paper,
+                # Use abstract as primary content to avoid fetching JS-rendered pages
+                content=(snippet[:300] + "..." if len(snippet) > 300 else snippet) if snippet else None
             )
             results.append(result)
 
@@ -1671,7 +1829,7 @@ class CrossRefAPI(BaseSearchAPI):
         }
 
         try:
-            async with self.session.get(
+            async with self._get_session().get(
                 self.base_url, params=params
             ) as response:
                 if response.status == 200:
@@ -1692,10 +1850,17 @@ class CrossRefAPI(BaseSearchAPI):
             # Get best URL (prefer open access)
             url = item.get("URL", "")
             if "link" in item:
+                pdf_url, html_url = None, None
                 for link in item["link"]:
-                    if link.get("content-type") == "unspecified" and link.get("URL"):
-                        url = link["URL"]
-                        break
+                    ctype = (link.get("content-type") or "").lower()
+                    lurl = link.get("URL")
+                    if not lurl:
+                        continue
+                    if ctype == "application/pdf" and not pdf_url:
+                        pdf_url = lurl
+                    elif ctype in {"text/html", "unspecified"} and not html_url:
+                        html_url = lurl
+                url = pdf_url or html_url or url
 
             # Parse published date
             published_date = None
@@ -1741,9 +1906,21 @@ class SearchAPIManager:
         self._initialized = False
         self.respectful_fetcher = RespectfulFetcher()
         self.relevance_filter = ContentRelevanceFilter()
-        self.cache_manager = cache_manager
+        # Prefer passed cache manager; fall back to global cache manager from services.cache
+        try:
+            from .cache import cache_manager as global_cache_manager
+        except Exception:
+            global_cache_manager = None  # type: ignore
+        self.cache_manager = cache_manager or global_cache_manager
         # Deduplication with content hashing
-        self.dedup_threshold = 0.85  # Similarity threshold for near-duplicates
+        self.dedup_threshold = float(os.getenv("SEARCH_DEDUP_THRESHOLD", "0.72"))
+        # Bound concurrent content fetches to avoid rate limits / connection storms
+        try:
+            limit = int(os.getenv("SEARCH_FETCH_CONCURRENCY", "8"))
+            limit = max(1, min(limit, 32))
+        except ValueError:
+            limit = 8
+        self._fetch_semaphore = asyncio.Semaphore(limit)
 
     def add_api(self, name: str, api: BaseSearchAPI, is_primary: bool = False):
         """Add a search API"""
@@ -1803,11 +1980,14 @@ class SearchAPIManager:
                 api_results = await task
                 # Fetch full content for each result using the proper session for this API
                 api_obj = self.apis.get(name)
-                if api_obj and getattr(api_obj, "session", None):
+                if api_obj:
+                    session = api_obj._get_session()
+                    async def bounded_fetch(url: str):
+                        async with self._fetch_semaphore:
+                            return await self.respectful_fetcher.respectful_fetch(session, url)
+
                     content_tasks = [
-                        self.respectful_fetcher.respectful_fetch(
-                            api_obj.session, result.url
-                        )
+                        bounded_fetch(result.url)
                         for result in api_results
                         if result.url and not result.content
                     ]
@@ -1943,6 +2123,15 @@ class SearchAPIManager:
                 logger.error(f"Error during search API cleanup: {e}")
 
         self._initialized = False
+    
+    async def __aenter__(self):
+        """Context manager entry - initialize all APIs"""
+        await self.initialize()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - cleanup all APIs"""
+        await self.cleanup()
 
     async def fetch_with_fallback(self, result: SearchResult, session: aiohttp.ClientSession) -> str:
         """Try multiple methods to get content ethically"""
@@ -2014,13 +2203,16 @@ class SearchAPIManager:
         normalized_query = self._normalize_query_for_cache(query)
         cache_key = f"{normalized_query}:{config.max_results}:{config.language}"
 
-        # Check cache first
+        # Check cache first (use KV API when available)
         if self.cache_manager:
             try:
-                cached = await self.cache_manager.get(cache_key)
+                # Prefer generic KV API to avoid coupling to internal cache key schemes
+                if hasattr(self.cache_manager, 'get_kv'):
+                    cached = await self.cache_manager.get_kv(cache_key)
+                else:
+                    cached = None
                 if cached:
                     logger.info(f"Cache HIT for normalized query: {normalized_query}")
-                    # Convert cached data back to SearchResult objects
                     return [SearchResult(**item) for item in cached]
             except Exception as e:
                 logger.warning(f"Cache get failed: {e}")
@@ -2036,26 +2228,26 @@ class SearchAPIManager:
                             f"Used {api_name} for search, got {len(results)} results"
                         )
                         # Fetch full content for each result
-                        if api.session:
-                            for result in results:
-                                if result.url and not result.content:
+                        session = api._get_session()
+                        for result in results:
+                            if result.url and not result.content:
+                                async with self._fetch_semaphore:
                                     content = await self.respectful_fetcher.respectful_fetch(
-                                        api.session, result.url
+                                        session, result.url
                                     )
-                                    if content:
-                                        result.content = content
+                                if content:
+                                    result.content = content
                         # Enhance with snippets if content unavailable
                         results = GoogleCustomSearchAPI.enhance_results_with_snippets(
                             results
                         )
 
-                        # Cache results
+                        # Cache results via KV
                         if self.cache_manager:
                             try:
                                 cache_data = [asdict(r) for r in results]
-                                await self.cache_manager.set(
-                                    cache_key, cache_data, ttl=3600
-                                )
+                                if hasattr(self.cache_manager, 'set_kv'):
+                                    await self.cache_manager.set_kv(cache_key, cache_data, ttl=3600)
                             except Exception as e:
                                 logger.warning(f"Cache set failed: {e}")
                         return results
@@ -2126,6 +2318,26 @@ def create_search_manager(cache_manager=None) -> SearchAPIManager:
     manager.add_api("crossref", crossref_api)
 
     return manager
+
+def _ensure_nltk_ready() -> bool:
+    """Ensure NLTK resources exist without auto-downloading by default.
+    Set SEARCH_ALLOW_NLTK_DOWNLOADS=1 to permit downloads at runtime.
+    """
+    try:
+        nltk.data.find('tokenizers/punkt')
+        nltk.data.find('corpora/stopwords')
+        nltk.data.find('corpora/wordnet')
+        return True
+    except LookupError:
+        if os.getenv("SEARCH_ALLOW_NLTK_DOWNLOADS", "0") == "1":
+            try:
+                nltk.download('punkt', quiet=True)
+                nltk.download('stopwords', quiet=True)
+                nltk.download('wordnet', quiet=True)
+                return True
+            except Exception as e:
+                logger.warning(f"NLTK download failed; falling back: {e}")
+        return False
 
 
 # Example usage

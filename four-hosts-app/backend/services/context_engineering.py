@@ -514,7 +514,7 @@ class CompressLayer(ContextLayer):
 
         # Derive a simple budget plan for instructions/knowledge/tools/scratch
         try:
-            from backend.utils.token_budget import compute_budget_plan  # type: ignore
+            from utils.token_budget import compute_budget_plan  # type: ignore
         except Exception:
             # Local import fallback when relative path differs
             try:

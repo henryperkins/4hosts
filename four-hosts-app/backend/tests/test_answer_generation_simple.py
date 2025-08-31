@@ -26,15 +26,15 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    from services.answer_generator_continued import (
+    from services.answer_generator import (
         BernardAnswerGenerator,
         MaeveAnswerGenerator,
         AnswerGenerationOrchestrator,
     )
 
-    print("✓ Successfully imported continued generators")
+    print("✓ Successfully imported additional generators from services.answer_generator")
 except Exception as e:
-    print(f"❌ Failed to import continued generators: {e}")
+    print(f"❌ Failed to import generators: {e}")
     sys.exit(1)
 
 print("\n🧪 Testing Basic Functionality")

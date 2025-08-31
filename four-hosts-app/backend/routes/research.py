@@ -207,9 +207,14 @@ async def execute_real_research(
             await progress_tracker.complete_research(research_id, {"summary": answer_payload.get("summary", "")[:200]})
 
     except Exception as e:
-        logger.error("execute_real_research failed for %s: %s", research_id, str(e))
+        # Log full traceback for easier debugging and include exception type
+        logger.exception("execute_real_research failed for %s: %s", research_id, str(e))
         await research_store.update_field(research_id, "status", ResearchStatus.FAILED)
-        await research_store.update_field(research_id, "error", str(e))
+        await research_store.update_field(
+            research_id,
+            "error",
+            f"{e.__class__.__name__}: {str(e)}",
+        )
         if progress_tracker:
             await progress_tracker.fail_research(research_id, str(e))
 

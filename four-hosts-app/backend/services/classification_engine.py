@@ -734,12 +734,12 @@ Return as JSON with this structure:
                 logger.error(f"JSON parsing error: {e}")
                 logger.error(f"Raw response that failed to parse: {response_text}")
                 # Try to clean common issues
-                if response_text.strip().startswith("```json"):
+                if (response_text or "").strip().startswith("```json"):
                     # Remove markdown code block if present
-                    response_text = response_text.strip()
+                    response_text = (response_text or "").strip()
                     response_text = response_text.replace("```json", "").replace("```", "")
                     try:
-                        llm_result = json.loads(response_text.strip())
+                        llm_result = json.loads((response_text or "").strip())
                     except:
                         return {}
                 else:

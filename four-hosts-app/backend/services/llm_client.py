@@ -8,12 +8,11 @@ LLM Client for Four-Hosts Research Application
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 from enum import Enum
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Union, cast
 
 import httpx
 from openai import AsyncOpenAI, AsyncAzureOpenAI
@@ -45,6 +44,7 @@ class TruncationStrategy(Enum):
     DISABLED = "disabled"
 
 
+# Internal mapping keyed by internal code names
 _PARADIGM_MODEL_MAP: Dict[str, str] = {
     "dolores": "gpt-4o",
     "teddy": "gpt-4o-mini",
@@ -76,9 +76,22 @@ _SYSTEM_PROMPTS: Dict[str, str] = {
 }
 
 
-def _select_model(paradigm: str, explicit_model: str | None = None) -> str:
-    """Return the model to use, preferring an explicit value when provided."""
-    return explicit_model or _PARADIGM_MODEL_MAP.get(paradigm, "gpt-4o-mini")
+from models.paradigms import normalize_to_internal_code
+
+
+def _select_model(
+    paradigm: Union[str, "HostParadigm"],
+    explicit_model: str | None = None,
+) -> str:
+    """Return the model to use, preferring an explicit value when provided.
+
+    Accepts either a string (legacy "bernard" or enum value like "analytical")
+    or a HostParadigm enum instance.
+    """
+    if explicit_model:
+        return explicit_model
+    key = normalize_to_internal_code(paradigm)
+    return _PARADIGM_MODEL_MAP.get(key, "gpt-4o-mini")
 
 
 def _system_role_for(model: str) -> str:
@@ -178,7 +191,7 @@ class LLMClient:
         prompt: str,
         *,
         model: str | None = None,
-        paradigm: str = "bernard",
+        paradigm: Union[str, "HostParadigm"] = "bernard",
         max_tokens: int = 2_000,
         temperature: float = 0.7,
         top_p: float = 0.9,
@@ -189,7 +202,6 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         stream: bool = False,
-        stream_include_usage: bool = False,
     ) -> Union[str, AsyncIterator[str]]:
         """
         Chat-style completion with optional SSE stream support.
@@ -197,12 +209,13 @@ class LLMClient:
         """
         self._ensure_initialized()
         model_name = _select_model(paradigm, model)
+        paradigm_key = normalize_to_internal_code(paradigm)
 
         # Build shared message list
         messages = [
             {
                 "role": _system_role_for(model_name),
-                "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+                "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
             },
             {"role": "user", "content": prompt},
         ]
@@ -266,8 +279,12 @@ class LLMClient:
                         # Handle tool responses
                         if msg.get("role") == "tool":
                             msg_item["type"] = "tool"
-                            msg_item["tool_call_id"] = msg.get("tool_call_id")
-                            msg_item["name"] = msg.get("name")
+                            tool_call_id = msg.get("tool_call_id")
+                            if tool_call_id:
+                                msg_item["tool_call_id"] = tool_call_id
+                            name = msg.get("name")
+                            if name:
+                                msg_item["name"] = name
                         
                         input_content.append(msg_item)
                     
@@ -315,7 +332,7 @@ class LLMClient:
                         stream=stream,
                     )
                 if stream:
-                    return self._iter_openai_stream(op_res)
+                    return self._iter_openai_stream(cast(AsyncIterator[Any], op_res))
                 return self._extract_content_safely(op_res)
             except Exception as exc:
                 logger.error(f"Azure OpenAI request failed • {exc}")
@@ -334,7 +351,7 @@ class LLMClient:
                     stream=stream,
                 )
                 if stream:
-                    return self._iter_openai_stream(op_res)
+                    return self._iter_openai_stream(cast(AsyncIterator[Any], op_res))
                 return self._extract_content_safely(op_res)
             except Exception as exc:
                 logger.error(f"OpenAI request failed • {exc}")
@@ -351,7 +368,7 @@ class LLMClient:
         schema: Dict[str, Any],
         *,
         model: str | None = None,
-        paradigm: str = "bernard",
+        paradigm: Union[str, "HostParadigm"] = "bernard",
     ) -> Dict[str, Any]:
         """Return JSON matching the provided schema."""
         raw = await self.generate_completion(
@@ -376,11 +393,12 @@ class LLMClient:
         *,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = "auto",
         model: str | None = None,
-        paradigm: str = "bernard",
+        paradigm: Union[str, "HostParadigm"] = "bernard",
     ) -> Dict[str, Any]:
         """Invoke model with tool-calling enabled and return content + tool_calls."""
         self._ensure_initialized()
         model_name = _select_model(paradigm, model)
+        paradigm_key = normalize_to_internal_code(paradigm)
         result: Dict[str, Any] | None = None
 
         wrapped_choice = self._wrap_tool_choice(tool_choice)
@@ -390,15 +408,15 @@ class LLMClient:
             deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
             op = await self.azure_client.chat.completions.create(
                 model=deployment,
-                messages=[
+                messages=cast(Any, [
                     {
                         "role": _system_role_for(model_name),
-                        "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+                        "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
                     },
                     {"role": "user", "content": prompt},
-                ],
-                tools=tools,
-                tool_choice=wrapped_choice,
+                ]),
+                tools=cast(Any, tools),
+                tool_choice=cast(Any, wrapped_choice),
                 max_tokens=2_000,
             )
             result = {
@@ -409,15 +427,15 @@ class LLMClient:
         elif self.openai_client:
             op = await self.openai_client.chat.completions.create(
                 model=model_name,
-                messages=[
+                messages=cast(Any, [
                     {
                         "role": _system_role_for(model_name),
-                        "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+                        "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
                     },
                     {"role": "user", "content": prompt},
-                ],
-                tools=tools,
-                tool_choice=wrapped_choice,       # ← use string/dict directly for OpenAI
+                ]),
+                tools=cast(Any, tools),
+                tool_choice=cast(Any, wrapped_choice),       # ← use string/dict directly for OpenAI
                 max_tokens=2_000,
             )
             result = {
@@ -444,10 +462,11 @@ class LLMClient:
     ) -> str:
         """Multi-turn chat conversation helper (non-streaming)."""
         model_name = _select_model(paradigm, model)
+        paradigm_key = normalize_to_internal_code(paradigm)
         full_msgs = [
             {
                 "role": _system_role_for(model_name),
-                "content": _SYSTEM_PROMPTS.get(paradigm, ""),
+                "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
             },
             *messages,
         ]
@@ -458,7 +477,7 @@ class LLMClient:
             deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
             op = await self.azure_client.chat.completions.create(
                 model=deployment,
-                messages=full_msgs,
+                messages=cast(Any, full_msgs),
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
@@ -468,7 +487,7 @@ class LLMClient:
         elif self.openai_client:
             op = await self.openai_client.chat.completions.create(
                 model=model_name,
-                messages=full_msgs,
+                messages=cast(Any, full_msgs),
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
@@ -480,13 +499,13 @@ class LLMClient:
         self,
         prompt: str,
         *,
-        paradigm: str,
+        paradigm: Union[str, "HostParadigm"],
         max_tokens: int = 2_000,
         temperature: float = 0.7,
         model: str | None = None,
     ) -> str:
         """Generate content based on a specific paradigm's perspective."""
-        return await self.generate_completion(
+        result = await self.generate_completion(
             prompt=prompt,
             paradigm=paradigm,
             max_tokens=max_tokens,
@@ -494,6 +513,11 @@ class LLMClient:
             model=model,
             stream=False,
         )
+        # Ensure we return a string
+        if isinstance(result, str):
+            return result
+        # Should not happen with stream=False, but handle it defensively
+        return ""
     
     async def generate_background(
         self,

@@ -14,12 +14,11 @@ from services.answer_generator import (
     SynthesisContext,
     DoloresAnswerGenerator,
     TeddyAnswerGenerator,
-)
-from services.answer_generator_continued import (
     BernardAnswerGenerator,
     MaeveAnswerGenerator,
     AnswerGenerationOrchestrator,
     answer_orchestrator,
+    initialize_answer_generation,
 )
 
 
@@ -277,8 +276,6 @@ async def run_all_tests():
 
     # Initialize system
     print("\nInitializing Answer Generation System...")
-    from services.answer_generator_continued import initialize_answer_generation
-
     await initialize_answer_generation()
     print("✓ System initialized")
 

@@ -62,7 +62,8 @@ def propose_queries_from_missing(
     """
     Propose new queries mixing missing themes with paradigm-flavored modifiers.
     """
-    base = original_query.strip()
+    # Guard against None input
+    base = (original_query or "").strip()
     modifiers = {
         "dolores": ["investigation", "expose", "scandal"],
         "bernard": ["study", "evidence", "site:.edu OR site:.gov"],
@@ -72,7 +73,7 @@ def propose_queries_from_missing(
 
     proposals: List[str] = []
     for term in missing_terms[: max_new * 2]:
-        term = term.strip()
+        term = (term or "").strip()
         if not term:
             continue
         # Combine with top modifiers
@@ -155,4 +156,3 @@ def propose_queries_enriched(
                     return proposals
     # Fallback to simple combo
     return proposals or propose_queries_from_missing(base_query, paradigm, missing_terms, max_new=max_new)
-

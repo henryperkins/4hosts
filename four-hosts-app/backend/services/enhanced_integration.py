@@ -4,27 +4,27 @@ Connects new components to the existing Four Hosts application
 """
 
 import logging
-from typing import Dict, Optional, Any, List, Union
+from typing import Dict, Optional, Any, List, Union, cast
 from datetime import datetime
 
-from .answer_generator import EnhancedAnswerGeneratorV2, BernardAnswerGeneratorV2, MaeveAnswerGeneratorV2
+from .answer_generator import AnswerGenerationOrchestrator, BernardAnswerGenerator, MaeveAnswerGenerator
 from .self_healing_system import self_healing_system
 from .ml_pipeline import ml_pipeline
 from .classification_engine import ClassificationEngine, HostParadigm
-from models.context_models import HostParadigm as ModelHostParadigm
+from models.paradigms import normalize_to_enum
 from models.synthesis_models import SynthesisContext
 from .result_adapter import ResultAdapter, ResultListAdapter, adapt_results
-# from backend.contracts import (
-#     GeneratedAnswer as ContractAnswer,
-#     ResearchStatus as ContractStatus,
-#     to_source as contract_to_source,
-# )
+from contracts import (
+    GeneratedAnswer as ContractAnswer,
+    ResearchStatus as ContractStatus,
+    to_source as contract_to_source,
+)
 import asyncio
 
 logger = logging.getLogger(__name__)
 
 
-class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
+class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
     """Enhanced orchestrator that integrates new components.
 
     This subclass extends the original ``AnswerGenerationOrchestrator`` while **preserving
@@ -60,8 +60,8 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
         super().__init__()
 
         # Replace basic generators with enhanced versions
-        self.generators[HostParadigm.BERNARD] = BernardAnswerGeneratorV2()
-        self.generators[HostParadigm.MAEVE] = MaeveAnswerGeneratorV2()
+        self.generators[HostParadigm.BERNARD] = BernardAnswerGenerator()
+        self.generators[HostParadigm.MAEVE] = MaeveAnswerGenerator()
 
         # Enable self-healing and ML features
         self.self_healing_enabled = True
@@ -82,26 +82,8 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
 
         # Helper local function available to both call-paths -----------------
         def _resolve_paradigm(value: str | HostParadigm | None) -> HostParadigm | None:
-            """Translate various string representations (e.g. "bernard", "analytical") to
-            ``HostParadigm`` enum members.  Returns *None* if *value* is *None*."""
-            if value is None:
-                return None
-            if isinstance(value, HostParadigm):
-                return value
-            mapping = {
-                "dolores": HostParadigm.DOLORES,
-                "revolutionary": HostParadigm.DOLORES,
-                "teddy": HostParadigm.TEDDY,
-                "devotion": HostParadigm.TEDDY,
-                "bernard": HostParadigm.BERNARD,
-                "analytical": HostParadigm.BERNARD,
-                "maeve": HostParadigm.MAEVE,
-                "strategic": HostParadigm.MAEVE,
-            }
-            key = str(value).lower()
-            if key not in mapping:
-                raise ValueError(f"Unknown paradigm: {value}")
-            return mapping[key]
+            """Normalize a value to HostParadigm, or None if value is None."""
+            return normalize_to_enum(value)
 
         # ------------------------------------------------------------------
         # Case 1 – NEW SIGNATURE: first positional argument is a SynthesisContext instance
@@ -177,6 +159,10 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
         secondary_paradigm = kwargs.get("secondary_paradigm")
         secondary_paradigm = _resolve_paradigm(secondary_paradigm)
 
+        # Type narrowing for Pylance – ensure non-None
+        if primary_paradigm_enum is None:
+            raise TypeError("Invalid paradigm – could not resolve to HostParadigm")
+
         # Build ``SynthesisContext`` – replicate logic from the parent implementation
         options = options or {}
 
@@ -206,7 +192,7 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
                 diagnostics={"reason": "no_sources"},
             )
 
-        return await self._generate_from_context_with_fallback(context, primary_paradigm_enum, secondary_paradigm)
+        return await self._generate_from_context_with_fallback(context, cast(HostParadigm, primary_paradigm_enum), secondary_paradigm)
 
     # ------------------------------------------------------------------
     # Internal implementation – **moved unchanged** from the previous override
@@ -218,10 +204,15 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
         primary_paradigm: HostParadigm,
         secondary_paradigm: Optional[HostParadigm] = None,
     ) -> Any:
-        """Enhanced generation with partial success policy and result adapter."""
+        """Enhanced generation with partial success policy and result adapter.
+
+        This wrapper normalizes incoming search results and then delegates to
+        the core implementation. It exists to keep the public entrypoint
+        stable while allowing pre/post hooks (e.g., adaptation, fallbacks).
+        """
         start_time = datetime.now()
         query_id = context.metadata.get("research_id", f"query_{start_time.timestamp()}")
-        
+
         # Normalize search results using ResultAdapter
         try:
             adapted_results = self._adapt_search_results(context.search_results)
@@ -229,6 +220,9 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
         except Exception as e:
             logger.warning(f"Failed to adapt search results: {e}")
             # Continue with original results
+
+        # Delegate to the core generator; it handles exceptions and structured failures
+        return await self._generate_from_context(context, primary_paradigm, secondary_paradigm)
     
     def _adapt_search_results(self, search_results: Any) -> List[Dict[str, Any]]:
         """Safely adapt search results to consistent format"""
@@ -308,7 +302,7 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
 
             # Enforce non-null return (PR1)
             if primary_answer is None:
-                from backend.contracts import GeneratedAnswer, ResearchStatus, Source, to_source
+                from contracts import GeneratedAnswer, ResearchStatus, Source, to_source
 
                 logger.warning("Generator returned None; substituting FAILED_NO_SOURCES answer")
 
@@ -323,22 +317,27 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
 
             # Record performance metrics
             response_time = (datetime.now() - start_time).total_seconds()
+            # Only pass an answer object that exposes the metrics we need; otherwise pass None
+            has_metrics = hasattr(primary_answer, "confidence_score") or hasattr(primary_answer, "synthesis_quality")
+            perf_answer = primary_answer if has_metrics else None
             await self_healing_system.record_query_performance(
                 query_id=query_id,
                 query_text=context.query,
                 paradigm=primary_paradigm,
-                answer=primary_answer,
+                answer=cast(Any, perf_answer),
                 response_time=response_time,
             )
 
             # Record training example for ML pipeline
-            if self.ml_enhanced and hasattr(context, "classification_result"):
+            cls_res = getattr(context, "classification_result", None)
+            if self.ml_enhanced and cls_res is not None:
+                synth_quality = getattr(primary_answer, "synthesis_quality", getattr(primary_answer, "quality_score", None))
                 await ml_pipeline.record_training_example(
                     query_id=query_id,
                     query_text=context.query,
-                    features=context.classification_result.features,
+                    features=cls_res.features,
                     predicted_paradigm=primary_paradigm,
-                    synthesis_quality=primary_answer.synthesis_quality,
+                    synthesis_quality=synth_quality,
                 )
 
             # Handle secondary paradigm if provided (legacy mesh integration removed)
@@ -347,12 +346,18 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
                 if secondary_generator is None:
                     secondary_generator = generator  # Fallback to primary to avoid crash
                 _ = await secondary_generator.generate_answer(context)
-                # Record minimal integration metadata without mesh network dependency
-                primary_answer.metadata["integration"] = {
-                    "secondary_paradigm": secondary_paradigm.value,
-                    "conflicts": 0,
-                    "synergies": 0,
-                }
+                # Record minimal integration metadata without mesh network dependency (if supported)
+                meta = getattr(primary_answer, "metadata", None)
+                if isinstance(meta, dict):
+                    meta["integration"] = {
+                        "secondary_paradigm": secondary_paradigm.value,
+                        "conflicts": 0,
+                        "synergies": 0,
+                    }
+                    try:
+                        setattr(primary_answer, "metadata", meta)
+                    except Exception:
+                        pass
 
             return primary_answer
 
@@ -409,6 +414,7 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
         
         # Try fallback paradigm if available
         fallback_answer = None
+        fallback_paradigm_used: Optional[HostParadigm] = None
         if self.self_healing_enabled:
             fallback_paradigm = self._get_fallback_paradigm(primary_paradigm)
             if fallback_paradigm:
@@ -417,6 +423,7 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
                     fallback_generator = self.generators.get(fallback_paradigm) or self.generators.get(fallback_paradigm.value)
                     if fallback_generator:
                         fallback_answer = await fallback_generator.generate_answer(context)
+                        fallback_paradigm_used = fallback_paradigm
                         logger.info(f"Fallback to {fallback_paradigm} succeeded")
                 except Exception as fallback_error:
                     logger.error(f"Fallback also failed: {fallback_error}")
@@ -425,11 +432,18 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
         
         # If fallback succeeded, return it with enhanced metadata
         if fallback_answer:
-            fallback_answer.metadata = getattr(fallback_answer, 'metadata', {})
-            fallback_answer.metadata.update({
+            if hasattr(fallback_answer, "metadata") and isinstance(getattr(fallback_answer, "metadata"), dict):
+                meta = getattr(fallback_answer, "metadata")
+            else:
+                meta = {}
+                try:
+                    setattr(fallback_answer, "metadata", meta)
+                except Exception:
+                    meta = {}
+            meta.update({
                 "partial_success": True,
                 "original_paradigm": primary_paradigm.value,
-                "fallback_paradigm": fallback_paradigm.value,
+                "fallback_paradigm": fallback_paradigm_used.value if fallback_paradigm_used else "",
                 "errors": errors,
                 "failed_paths": failed_paths
             })
@@ -437,8 +451,6 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
         
         # Last resort: create minimal answer with raw search results
         try:
-            from models.synthesis_models import SynthesisResult
-            
             # Use ResultAdapter to safely extract information
             adapter = adapt_results(context.search_results)
             
@@ -457,25 +469,25 @@ class EnhancedAnswerGenerationOrchestrator(EnhancedAnswerGeneratorV2):
 For more information, please check these sources:
 {chr(10).join(f"- {link}" for link in links[:3])}"""
             
-            minimal_answer = SynthesisResult(
-                query=context.query,
-                paradigm=primary_paradigm.value,
-                answer=minimal_content,
-                citations=links,
-                confidence_score=0.3,  # Low confidence due to failure
-                synthesis_quality=0.2,  # Low quality due to minimal processing
-                sources_count=len(links),
-                paradigm_alignment=0.1,  # Low alignment due to failure
-                metadata={
-                    "partial_success": True,
-                    "generation_failed": True,
+            # Build minimal citations as contract Sources (best-effort)
+            citations = []
+            for link in links[:3]:
+                try:
+                    citations.append(contract_to_source({"url": link, "title": link}))
+                except Exception:
+                    continue
+
+            return ContractAnswer(
+                status=ContractStatus.TOOL_ERROR,
+                content_md=minimal_content,
+                citations=citations,
+                diagnostics={
+                    "reason": "minimal_fallback",
                     "errors": errors,
                     "failed_paths": failed_paths,
-                    "fallback_used": "minimal_answer"
-                }
+                    "fallback_used": "minimal_answer",
+                },
             )
-            
-            return minimal_answer
             
         except Exception as minimal_error:
             logger.error(f"Even minimal answer generation failed: {minimal_error}")
@@ -529,7 +541,7 @@ class EnhancedClassificationEngine(ClassificationEngine):
                         result.secondary_paradigm = result.primary_paradigm
                         result.primary_paradigm = ml_paradigm
                         result.confidence = (result.confidence + ml_confidence) / 2
-                        result.reasoning[ml_paradigm.value].append(
+                        result.reasoning.setdefault(ml_paradigm, []).append(
                             f"ML model prediction with {ml_confidence:.2f} confidence"
                         )
 
