@@ -1,6 +1,11 @@
 """
 Enhanced Answer Generator V2 with Full Feature Parity
 Maintains all V1 functionality while using V2 context and schemas
+
+Backward‑compatibility shim:
+- Exposes V1‑style types and base class expected by legacy tests/modules:
+  `SynthesisContext`, `Citation`, `AnswerSection`, `GeneratedAnswer`, `BaseAnswerGenerator`.
+These map cleanly onto the V2 implementation and are intentionally minimal.
 """
 
 import asyncio
@@ -12,8 +17,11 @@ from dataclasses import dataclass, field
 from collections import Counter, defaultdict
 
 from models.context_models import (
-    ClassificationResultSchema, ContextEngineeredQuerySchema,
-    UserContextSchema, HostParadigm, SearchResultSchema
+    ClassificationResultSchema,
+    ContextEngineeredQuerySchema,
+    UserContextSchema,
+    HostParadigm,
+    SearchResultSchema,
 )
 from services.llm_client import llm_client
 from services.text_compression import text_compressor
@@ -32,6 +40,107 @@ from utils.injection_hygiene import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ────────────────────────────────────────────────────────────
+# V1 compatibility dataclasses and base class
+# ────────────────────────────────────────────────────────────
+
+@dataclass
+class SynthesisContext:
+    """Legacy context object used by older tests.
+
+    Only the fields actually accessed by the legacy tests are included.
+    """
+    query: str
+    search_results: List[Dict[str, Any]]
+    max_length: int = 2000
+    context_engineering: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    # Optional – some call sites include this
+    paradigm: Optional[str] = None
+
+
+@dataclass
+class Citation:
+    id: str
+    source_title: str
+    source_url: str
+    domain: str
+    snippet: str
+    credibility_score: float
+    fact_type: str = "reference"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: Optional[datetime] = None
+
+
+@dataclass
+class AnswerSection:
+    title: str
+    paradigm: str
+    content: str
+    confidence: float
+    citations: List[str]
+    word_count: int
+    key_insights: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GeneratedAnswer:
+    research_id: str
+    query: str
+    paradigm: str
+    summary: str
+    sections: List[AnswerSection]
+    action_items: List[Dict[str, Any]]
+    citations: Dict[str, Citation]
+    confidence_score: float
+    synthesis_quality: float
+    generation_time: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class BaseAnswerGenerator:
+    """Lightweight base compatible with legacy enhanced generators.
+
+    Provides citation utilities and shared fields used by
+    `EnhancedBernardAnswerGenerator` and `EnhancedMaeveAnswerGenerator`.
+    """
+
+    def __init__(self, paradigm: str):
+        self.paradigm = paradigm
+        self.citation_counter = 0
+        self.citations: Dict[str, Citation] = {}
+
+    def create_citation(self, source: Dict[str, Any], fact_type: str = "reference") -> Citation:
+        self.citation_counter += 1
+        cid = f"cite_{self.citation_counter:03d}"
+        domain = (
+            source.get("domain")
+            or (source.get("metadata") or {}).get("domain", "")
+        )
+        citation = Citation(
+            id=cid,
+            source_title=str(source.get("title", "")),
+            source_url=str(source.get("url", "")),
+            domain=str(domain or ""),
+            snippet=str(source.get("snippet", "")),
+            credibility_score=float(source.get("credibility_score", 0.0) or 0.0),
+            fact_type=fact_type,
+        )
+        self.citations[cid] = citation
+        return citation
+
+    @staticmethod
+    def _count_peer_reviewed(results: List[Dict[str, Any]]) -> int:
+        domains = ("arxiv", "pubmed", "nature", "science", "acm", "ieee")
+        count = 0
+        for r in results or []:
+            d = (r.get("domain") or (r.get("metadata") or {}).get("domain", "") or "").lower()
+            if any(x in d for x in domains):
+                count += 1
+        return count
 
 
 @dataclass
@@ -2323,3 +2432,191 @@ Requirements:
 
 # Create singleton instance
 answer_generator_v2_enhanced = EnhancedAnswerGeneratorV2()
+
+
+# ────────────────────────────────────────────────────────────
+# V1‑named wrappers (aliases) for legacy imports/tests
+# ────────────────────────────────────────────────────────────
+
+class DoloresAnswerGenerator(BaseAnswerGenerator):
+    def __init__(self) -> None:
+        super().__init__("dolores")
+        self._impl = DoloresAnswerGeneratorV2()
+
+    async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
+        # Convert incoming dict results to SearchResultSchema
+        results: List[SearchResultSchema] = []
+        for r in context.search_results or []:
+            try:
+                results.append(
+                    SearchResultSchema(
+                        title=str(r.get("title", "")),
+                        url=str(r.get("url", "")),
+                        snippet=str(r.get("snippet", "")),
+                        source=str(r.get("domain", "")),
+                        credibility_score=float(r.get("credibility_score", 0.0) or 0.0),
+                        relevance_score=float(r.get("relevance_score", 0.0) or 0.0),
+                        metadata={"domain": r.get("domain", "")},
+                    )
+                )
+            except Exception:
+                continue
+
+        start = datetime.now()
+        v2_sections = await self._impl.generate_sections(
+            {
+                "query": context.query,
+                "paradigm": "dolores",
+                "context_engineering": context.context_engineering,
+            },
+            results,
+        )
+
+        # Map V2 sections → legacy dataclass
+        sections: List[AnswerSection] = []
+        for s in v2_sections:
+            sections.append(
+                AnswerSection(
+                    title=s.title,
+                    paradigm="dolores",
+                    content=s.content,
+                    confidence=float(getattr(s, "confidence", 0.75) or 0.75),
+                    citations=list(getattr(s, "citations", []) or []),
+                    word_count=int(getattr(s, "word_count", len(s.content.split()))),
+                    key_insights=list(getattr(s, "key_insights", []) or []),
+                    metadata=dict(getattr(s, "metadata", {}) or {}),
+                )
+            )
+
+        # Map citations
+        citations: Dict[str, Citation] = {}
+        for cid, cv2 in getattr(self._impl, "citations", {}).items():
+            citations[cid] = Citation(
+                id=cv2.id,
+                source_title=cv2.source_title,
+                source_url=cv2.source_url,
+                domain=cv2.domain,
+                snippet=cv2.snippet,
+                credibility_score=cv2.credibility_score,
+                fact_type=cv2.fact_type,
+                metadata=cv2.metadata,
+                timestamp=cv2.timestamp,
+            )
+
+        summary = (
+            sections[0].content[:300] + ("…" if sections and len(sections[0].content) > 300 else "")
+            if sections
+            else ""
+        )
+
+        return GeneratedAnswer(
+            research_id=str((context.metadata or {}).get("research_id", "unknown")),
+            query=context.query,
+            paradigm="dolores",
+            summary=summary,
+            sections=sections,
+            action_items=[],
+            citations=citations,
+            confidence_score=0.8,
+            synthesis_quality=0.85,
+            generation_time=(datetime.now() - start).total_seconds(),
+            metadata={"tone": "investigative"},
+        )
+
+    # Legacy helper used by tests
+    def get_section_structure(self) -> List[Dict[str, Any]]:
+        return self._impl.get_section_structure()
+
+    # Legacy test helper
+    def _get_alignment_keywords(self) -> List[str]:
+        return self._impl._get_alignment_keywords()  # type: ignore[attr-defined]
+
+
+class TeddyAnswerGenerator(BaseAnswerGenerator):
+    def __init__(self) -> None:
+        super().__init__("teddy")
+        self._impl = TeddyAnswerGeneratorV2()
+
+    async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
+        results: List[SearchResultSchema] = []
+        for r in context.search_results or []:
+            try:
+                results.append(
+                    SearchResultSchema(
+                        title=str(r.get("title", "")),
+                        url=str(r.get("url", "")),
+                        snippet=str(r.get("snippet", "")),
+                        source=str(r.get("domain", "")),
+                        credibility_score=float(r.get("credibility_score", 0.0) or 0.0),
+                        relevance_score=float(r.get("relevance_score", 0.0) or 0.0),
+                        metadata={"domain": r.get("domain", "")},
+                    )
+                )
+            except Exception:
+                continue
+
+        start = datetime.now()
+        v2_sections = await self._impl.generate_sections(
+            {
+                "query": context.query,
+                "paradigm": "teddy",
+                "context_engineering": context.context_engineering,
+            },
+            results,
+        )
+
+        sections: List[AnswerSection] = []
+        for s in v2_sections:
+            sections.append(
+                AnswerSection(
+                    title=s.title,
+                    paradigm="teddy",
+                    content=s.content,
+                    confidence=float(getattr(s, "confidence", 0.8) or 0.8),
+                    citations=list(getattr(s, "citations", []) or []),
+                    word_count=int(getattr(s, "word_count", len(s.content.split()))),
+                    key_insights=list(getattr(s, "key_insights", []) or []),
+                    metadata=dict(getattr(s, "metadata", {}) or {}),
+                )
+            )
+
+        citations: Dict[str, Citation] = {}
+        for cid, cv2 in getattr(self._impl, "citations", {}).items():
+            citations[cid] = Citation(
+                id=cv2.id,
+                source_title=cv2.source_title,
+                source_url=cv2.source_url,
+                domain=cv2.domain,
+                snippet=cv2.snippet,
+                credibility_score=cv2.credibility_score,
+                fact_type=cv2.fact_type,
+                metadata=cv2.metadata,
+                timestamp=cv2.timestamp,
+            )
+
+        summary = (
+            sections[0].content[:300] + ("…" if sections and len(sections[0].content) > 300 else "")
+            if sections
+            else ""
+        )
+
+        return GeneratedAnswer(
+            research_id=str((context.metadata or {}).get("research_id", "unknown")),
+            query=context.query,
+            paradigm="teddy",
+            summary=summary,
+            sections=sections,
+            action_items=[],
+            citations=citations,
+            confidence_score=0.82,
+            synthesis_quality=0.86,
+            generation_time=(datetime.now() - start).total_seconds(),
+            metadata={"tone": "supportive"},
+        )
+
+    # Legacy helper used by tests
+    def get_section_structure(self) -> List[Dict[str, Any]]:
+        return self._impl.get_section_structure()
+
+    def _get_alignment_keywords(self) -> List[str]:
+        return self._impl._get_alignment_keywords()  # type: ignore[attr-defined]

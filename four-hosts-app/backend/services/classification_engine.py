@@ -713,6 +713,7 @@ Return as JSON with this structure:
             if not llm_client:
                 logger.warning("LLM client not available")
                 return {}
+            
 
             # Generate completion returns a string
             response_text = await llm_client.generate_completion(

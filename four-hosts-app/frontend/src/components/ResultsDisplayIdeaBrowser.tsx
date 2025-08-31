@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../services/api'
-import type { ResearchResult, AnswerSection } from '../types'
+import type { ResearchResult, AnswerSection, AgentTraceEvent } from '../types'
 import { getParadigmClass, getParadigmDescription } from '../constants/paradigm'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
@@ -728,7 +728,7 @@ export const ResultsDisplayIdeaBrowser: React.FC<ResultsDisplayIdeaBrowserProps>
           </button>
           {traceOpen && (
             <ul className="mt-3 space-y-2 text-sm text-gray-700 dark:text-gray-300">
-              {results.metadata.agent_trace.map((e: any, i: number) => (
+              {results.metadata.agent_trace.map((e: AgentTraceEvent, i: number) => (
                 <li key={i} className="border border-gray-200 dark:border-gray-700 rounded p-3">
                   <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
                     <Clock className="h-4 w-4" />

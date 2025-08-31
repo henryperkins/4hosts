@@ -71,6 +71,26 @@ Implements:
 
 ## Usage Examples
 
+### Rate Limit Backoff Configuration
+The search fetching layer now uses an exponential backoff with jitter for HTTP 429 responses instead of a fixed 60s delay. You can tune behavior via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SEARCH_RATE_LIMIT_BASE_DELAY` | `2` | Initial delay in seconds for first retry. |
+| `SEARCH_RATE_LIMIT_BACKOFF_FACTOR` | `2` | Multiplier applied each retry attempt. |
+| `SEARCH_RATE_LIMIT_MAX_DELAY` | `30` | Maximum backoff delay cap in seconds. |
+| `SEARCH_RATE_LIMIT_JITTER` | `full` | Jitter strategy: `full` (0 to delay) or `none`. |
+
+Example:
+```bash
+export SEARCH_RATE_LIMIT_BASE_DELAY=1
+export SEARCH_RATE_LIMIT_BACKOFF_FACTOR=2.5
+export SEARCH_RATE_LIMIT_MAX_DELAY=20
+export SEARCH_RATE_LIMIT_JITTER=full
+```
+
+Log output will show: `Rate limited (429) for <url>, attempt <n>, backing off <delay>s (server=<hdr>, computed=<raw>)`.
+
 ### Query with Enhanced Variations
 ```python
 optimizer = QueryOptimizer()

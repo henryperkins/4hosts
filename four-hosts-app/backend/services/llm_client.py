@@ -115,13 +115,12 @@ class LLMClient:
         api_version = os.getenv("AZURE_OPENAI_API_VERSION", "preview")
         
         if azure_key and endpoint and deployment:
-            # Ensure endpoint has trailing slash
-            if not endpoint.endswith("/"):
-                endpoint += "/"
+            # Clean up endpoint URL
+            endpoint = endpoint.rstrip("/")
                 
             self.azure_client = AsyncAzureOpenAI(
                 api_key=azure_key,
-                base_url=f"{endpoint}openai/v1/",
+                base_url=f"{endpoint}/openai/v1/",
                 api_version=api_version,
             )
             logger.info("✓ Azure OpenAI client initialised for Responses API")

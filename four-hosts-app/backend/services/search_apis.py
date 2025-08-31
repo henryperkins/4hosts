@@ -19,6 +19,8 @@ from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
 import aiohttp
+import os
+import random
 import fitz  # PyMuPDF
 import nltk
 from bs4 import BeautifulSoup
@@ -294,7 +296,40 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                 logger.debug(f"Access denied (403) for {url}")
                 return ""
             elif response.status == 429:
-                logger.warning(f"Rate limited (429) for {url}")
+                # Exponential backoff with jitter
+                # Read attempt count from header if service provides, else simulate by embedding attempt in retry-after (not standard)
+                retry_after_hdr = response.headers.get('retry-after')
+                # Configuration
+                base_delay = float(os.getenv('SEARCH_RATE_LIMIT_BASE_DELAY', '2'))
+                factor = float(os.getenv('SEARCH_RATE_LIMIT_BACKOFF_FACTOR', '2'))
+                max_delay = float(os.getenv('SEARCH_RATE_LIMIT_MAX_DELAY', '30'))
+                jitter = os.getenv('SEARCH_RATE_LIMIT_JITTER', 'full')  # 'none' | 'full'
+
+                # Track attempts per URL using an attribute on session (lightweight, ephemeral)
+                attempt_key = f'_rate_attempts_{hash(url)}'
+                attempts = getattr(session, attempt_key, 0) + 1
+                setattr(session, attempt_key, attempts)
+
+                # If server provided an explicit retry-after, honor it as upper bound
+                server_retry = None
+                if retry_after_hdr and retry_after_hdr.isdigit():
+                    try:
+                        server_retry = int(retry_after_hdr)
+                    except ValueError:
+                        server_retry = None
+
+                computed = base_delay * (factor ** (attempts - 1))
+                delay = min(computed, max_delay)
+                if jitter == 'full':
+                    delay = random.uniform(0, delay)
+                if server_retry is not None:
+                    delay = min(delay, server_retry)
+
+                # Safety cap (never exceed max_delay even if server asks for more unless explicitly allowed)
+                logger.warning(
+                    f"Rate limited (429) for {url}, attempt {attempts}, backing off {delay:.2f}s (server={server_retry}, computed={computed:.2f})"
+                )
+                await asyncio.sleep(delay)
                 return ""
             elif 500 <= response.status < 600:
                 logger.warning(f"Server error ({response.status}) for {url}")
@@ -336,14 +371,14 @@ class SearchResult:
     last_modified: Optional[datetime] = None
     # Content hash for deduplication
     content_hash: Optional[str] = None
-    
+
     def __post_init__(self):
         if not self.domain and self.url:
             # Extract domain from URL
             from urllib.parse import urlparse
 
             self.domain = urlparse(self.url).netloc.lower()
-        
+
         # Generate content hash for deduplication
         if self.title and self.snippet and isinstance(self.title, str) and isinstance(self.snippet, str):
             content_str = f"{self.title.lower().strip()}{self.snippet.lower().strip()}"
@@ -571,7 +606,7 @@ class QueryOptimizer:
             'finance': ['financial', 'economic', 'investment'],
             'education': ['learning', 'teaching', 'academic']
         }
-        
+
         related = []
         for term in terms:
             term_lower = term.lower()
@@ -588,7 +623,7 @@ class QueryOptimizer:
             'bernard': ['research', 'analysis', 'data', 'evidence'],
             'maeve': ['strategy', 'business', 'optimization', 'market']
         }
-        
+
         if paradigm.lower() in paradigm_terms:
             domain_term = paradigm_terms[paradigm.lower()][0]
             return f"{query} {domain_term}"
@@ -695,7 +730,7 @@ class ContentRelevanceFilter:
         # Ensure published_date is timezone-aware
         if published_date.tzinfo is None:
             published_date = published_date.replace(tzinfo=timezone.utc)
-            
+
         days_old = (datetime.now(timezone.utc) - published_date).days
 
         if days_old <= 7:
@@ -712,17 +747,17 @@ class ContentRelevanceFilter:
     def _calculate_source_type_score(self, result: SearchResult, config: Optional[SearchConfig] = None) -> float:
         """Calculate source type score based on result type and domain with authority scoring"""
         score = 0.5  # Base score
-        
+
         # Check whitelist/blacklist if config provided
         if config:
             if config.authority_blacklist and any(blocked in result.domain for blocked in config.authority_blacklist):
                 return 0.1  # Very low score for blacklisted domains
-            
+
             if config.authority_whitelist and any(allowed in result.domain for allowed in config.authority_whitelist):
                 score = 0.95  # Very high score for whitelisted domains
                 result.is_primary_source = True
                 return score
-        
+
         # Academic sources get higher base score
         if result.result_type == "academic":
             score = 0.9
@@ -786,7 +821,7 @@ class ContentRelevanceFilter:
         # Use config min_relevance if provided
         if config and hasattr(config, 'min_relevance_score'):
             min_relevance = config.min_relevance_score
-            
+
         # Domains known to block scrapers or have heavy paywalls
         blocked_domains = {
             "sciencedirect.com", "springer.com", "wiley.com", "jstor.org",
@@ -826,19 +861,19 @@ class ContentRelevanceFilter:
         """Detect and score cross-source agreement on key claims"""
         # Extract key claims from each result
         claim_groups = defaultdict(list)
-        
+
         for result in results:
             # Extract potential claims (sentences containing key terms)
             text = f"{result.title} {result.snippet}".lower()
             sentences = text.split('.')
-            
+
             for sentence in sentences:
                 if any(term in sentence for term in key_terms):
                     # Normalize claim for grouping
                     normalized_claim = self._normalize_claim(sentence)
                     if normalized_claim:
                         claim_groups[normalized_claim].append(result)
-        
+
         # Mark results that have consensus
         consensus_results = set()
         for claim, supporting_results in claim_groups.items():
@@ -855,10 +890,10 @@ class ContentRelevanceFilter:
                         'claim': claim,
                         'supporting_sources': len(supporting_results)
                     })
-        
+
         # Flag potential contradictions
         self._flag_contradictions(results, claim_groups)
-        
+
         return results
 
     def _normalize_claim(self, sentence: str) -> Optional[str]:
@@ -866,18 +901,18 @@ class ContentRelevanceFilter:
         # Remove extra whitespace and punctuation
         normalized = re.sub(r'[^\w\s]', '', sentence.lower().strip())
         normalized = ' '.join(normalized.split())
-        
+
         # Skip very short claims
         if len(normalized.split()) < 4:
             return None
-            
+
         return normalized
 
     def _flag_contradictions(self, results: List[SearchResult], claim_groups: Dict[str, List[SearchResult]]):
         """Flag potential contradictions in results"""
         # Simple contradiction detection based on negation patterns
         negation_words = ['not', 'no', 'never', 'none', 'neither', 'nor', 'without']
-        
+
         for claim, supporting_results in claim_groups.items():
             # Check for potential negated version of this claim
             for neg_word in negation_words:
@@ -937,23 +972,23 @@ class BaseSearchAPI:
         variations = self.query_optimizer.generate_query_variations(query, paradigm)
         all_results = []
         seen_urls = set()
-        
+
         # Search with each variation
         for variant_type, variant_query in list(variations.items())[:3]:  # Limit to top 3 variations
             try:
                 variant_results = await self.search(variant_query, config)
-                
+
                 # Deduplicate by URL
                 for result in variant_results:
                     if result.url not in seen_urls:
                         seen_urls.add(result.url)
                         result.raw_data['query_variant'] = variant_type
                         all_results.append(result)
-                        
+
             except Exception as e:
                 logger.warning(f"Search failed for {variant_type} variant: {e}")
                 continue
-        
+
         return all_results
 
 
@@ -1036,8 +1071,10 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                     filtered_results = self.relevance_filter.filter_results(results, query, config=config)
                     return filtered_results
                 elif response.status == 429:
-                    logger.warning("Google API rate limit exceeded")
-                    raise aiohttp.ClientError("Rate limit exceeded")
+                    retry_after = response.headers.get('retry-after', '60')
+                    logger.warning(f"Google API rate limit exceeded, waiting {retry_after}s")
+                    await asyncio.sleep(min(int(retry_after), 60))  # Cap wait at 60s
+                    return []  # Return empty to avoid recursion
                 else:
                     # Get response body for detailed error information
                     try:
@@ -1079,18 +1116,18 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         for item in items:
             if not isinstance(item, dict):
                 continue
-                
+
             # Extract enhanced metadata
             pagemap = item.get("pagemap", {})
             metatags = pagemap.get("metatags", [{}])[0] if pagemap.get("metatags") else {}
-            
+
             # Try to extract author
             author = (
-                metatags.get("author") or 
-                metatags.get("article:author") or 
+                metatags.get("author") or
+                metatags.get("article:author") or
                 metatags.get("dc.creator")
             )
-            
+
             # Try to extract publication date
             date_str = (
                 metatags.get("article:published_time") or
@@ -1105,10 +1142,10 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                         published_date = published_date.replace(tzinfo=timezone.utc)
                 except:
                     pass
-                    
+
             # Extract content type
             publication_type = metatags.get("og:type", "web")
-            
+
             result = SearchResult(
                 title=item.get("title", ""),
                 url=item.get("link", ""),
@@ -1213,7 +1250,7 @@ class ArxivAPI(BaseSearchAPI):
                         name_elem = author.find("atom:name", namespace)
                         if name_elem is not None and name_elem.text:
                             authors.append(name_elem.text)
-                    
+
                     author_str = ", ".join(authors[:3]) if authors else None
                     if len(authors) > 3:
                         author_str += f" et al. ({len(authors)} authors)"
@@ -1325,11 +1362,10 @@ class BraveSearchAPI(BaseSearchAPI):
                     retry_after = response.headers.get("retry-after", "60")
                     logger.warning(
                         f"Brave API rate limit exceeded. "
-                        f"Retry after {retry_after} seconds"
+                        f"Waiting {retry_after} seconds before retry"
                     )
-                    raise aiohttp.ClientError(
-                        f"Rate limit exceeded. Retry after {retry_after}s"
-                    )
+                    await asyncio.sleep(min(int(retry_after), 60))  # Cap wait at 60s
+                    return []  # Return empty results for now
                 else:
                     logger.error(f"Brave API error: {response.status}")
                     return []
@@ -1491,7 +1527,7 @@ class PubMedAPI(BaseSearchAPI):
                                 if forename is not None and forename.text:
                                     name = f"{forename.text} {name}"
                                 authors.append(name)
-                    
+
                     author_str = ", ".join(authors[:3]) if authors else None
                     if len(authors) > 3:
                         author_str += f" et al."
@@ -1790,10 +1826,10 @@ class SearchAPIManager:
                 filtered_results = self.relevance_filter.filter_results(
                     api_results, query, min_relevance=0.25, config=config
                 )
-                
+
                 # Collect for cross-API deduplication
                 all_results_for_dedup.extend(filtered_results)
-                
+
                 results[name] = filtered_results
                 logger.info(
                     f"{name}: {len(filtered_results)} results "
@@ -1805,7 +1841,7 @@ class SearchAPIManager:
 
         # Apply cross-API deduplication
         deduplicated_results = self._deduplicate_results(all_results_for_dedup)
-        
+
         # Redistribute deduplicated results back to their sources
         final_results = {name: [] for name in results.keys()}
         for result in deduplicated_results:
@@ -1815,39 +1851,39 @@ class SearchAPIManager:
                 if any(r.url == result.url for r in api_results):
                     final_results[api_name].append(result)
                     break
-        
+
         return final_results
 
     def _deduplicate_results(self, results: List[SearchResult]) -> List[SearchResult]:
         """Deduplicate results using content hashing and similarity detection"""
         if not results:
             return []
-            
+
         deduplicated = []
         seen_hashes = set()
         seen_urls = set()
         similar_content_groups = defaultdict(list)
-        
+
         for result in results:
             # Check exact URL match
             if result.url in seen_urls:
                 continue
-                
+
             # Check exact content hash match
             if result.content_hash and result.content_hash in seen_hashes:
                 continue
-                
+
             # Check for near-duplicates using SimHash (simplified version)
             is_duplicate = False
             result_tokens = set(self._tokenize_for_similarity(result))
-            
+
             for existing in deduplicated:
                 existing_tokens = set(self._tokenize_for_similarity(existing))
-                
+
                 # Calculate Jaccard similarity
                 intersection = len(result_tokens & existing_tokens)
                 union = len(result_tokens | existing_tokens)
-                
+
                 if union > 0:
                     similarity = intersection / union
                     if similarity >= self.dedup_threshold:
@@ -1857,13 +1893,13 @@ class SearchAPIManager:
                             deduplicated.append(result)
                         is_duplicate = True
                         break
-            
+
             if not is_duplicate:
                 deduplicated.append(result)
                 seen_urls.add(result.url)
                 if result.content_hash:
                     seen_hashes.add(result.content_hash)
-        
+
         logger.info(f"Deduplicated {len(results)} results to {len(deduplicated)}")
         return deduplicated
 

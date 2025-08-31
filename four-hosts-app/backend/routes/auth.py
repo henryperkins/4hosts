@@ -41,7 +41,7 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
 @router.post("/register", response_model=Token)
-async def register(user_data: UserCreate):
+async def register(user_data: UserCreate, request: Request, response: Response):
     """Register a new user"""
     # Convert to auth module's UserCreate model
     from services.auth import UserCreate as AuthUserCreate
@@ -63,6 +63,31 @@ async def register(user_data: UserCreate):
 
     refresh_token = await create_refresh_token(
         user_id=str(user.id), device_id=None, ip_address=None, user_agent=None
+    )
+
+    # Align behavior with /auth/login: set tokens as httpOnly cookies
+    # Determine cookie attributes based on actual scheme to avoid Secure over HTTP in dev
+    is_https = request.url.scheme == "https"
+    same_site = "none" if is_https else "lax"
+    secure_flag = is_https
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=secure_flag,
+        samesite=same_site,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=secure_flag,
+        samesite=same_site,
+        max_age=60 * 60 * 24 * 7,  # 7 days
+        path="/",
     )
 
     return Token(

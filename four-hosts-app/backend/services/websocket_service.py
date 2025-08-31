@@ -101,7 +101,8 @@ class ConnectionManager:
         metadata: Optional[Dict[str, Any]] = None,
     ):
         """Accept and register a new WebSocket connection"""
-        await websocket.accept()
+        # Note: WebSocket is already accepted in secure_websocket_endpoint
+        # await websocket.accept()
 
         # Add to active connections
         if user_id not in self.active_connections:

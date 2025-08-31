@@ -70,7 +70,7 @@ export interface ResearchResult {
       isolation_strategy: string
       search_queries_count: number
     }
-    agent_trace?: any[]
+    agent_trace?: AgentTraceEvent[]
   },
   cost_info?: {
     search_api_costs?: number
@@ -187,4 +187,12 @@ export interface SourceResult {
   credibility_score: number
   published_date?: string
   source_type?: string
+}
+
+export interface AgentTraceEvent {
+  step?: string
+  iteration?: number
+  coverage?: number
+  proposed_queries?: string[]
+  [key: string]: unknown
 }
