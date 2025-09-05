@@ -15,37 +15,55 @@ export const ResearchResultPage = () => {
   const [results, setResults] = useState<ResearchResult | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  // IdeaBrowser view removed; always use Enhanced view
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
 
   useEffect(() => {
-    const loadResults = async () => {
-      if (!id) return
+    if (!id) return
 
+    const fetchOnce = async () => {
       try {
         const data = await api.getResearchResults(id)
-        
-        // Terminal staged responses
-        if ((data as any)?.status === 'failed' || (data as any)?.status === 'cancelled') {
-          setError(`Research ${(data as any).status}`)
+
+        // Handle terminal failure / cancellation
+        if ((data as any).status === 'failed' || (data as any).status === 'cancelled') {
+          setError((data as any).message || `Research ${(data as any).status}`)
+          setIsLoading(false)
+          if (pollRef.current) clearInterval(pollRef.current)
           return
         }
-        
-        // Non-final staged responses
-        if ((data as any)?.status && !['completed','failed','cancelled'].includes((data as any).status)) {
-          navigate('/')
+
+        // If not yet completed, keep polling
+        if ((data as any).status && (data as any).status !== 'completed') {
+          setIsLoading(true)
           return
         }
-        
+
+        // Completed result
         setResults(data)
-      } catch {
-        setError('Failed to load research results')
-      } finally {
         setIsLoading(false)
+        if (pollRef.current) clearInterval(pollRef.current)
+      } catch (e) {
+        setError('Failed to load research results')
+        setIsLoading(false)
+        if (pollRef.current) clearInterval(pollRef.current)
       }
     }
 
-    loadResults()
-  }, [id, navigate])
+    // Initial fetch immediately
+    fetchOnce()
+
+    // Poll every 2s until completion
+    pollRef.current = setInterval(fetchOnce, 2000)
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
 
   if (isLoading) {
     return (

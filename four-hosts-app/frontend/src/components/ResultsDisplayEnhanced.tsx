@@ -14,7 +14,8 @@ interface ResultsDisplayEnhancedProps {
 export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ results }) => {
   const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set([0]))
   const [isExporting, setIsExporting] = useState(false)
-  const [exportFormat, setExportFormat] = useState<'json' | 'pdf' | 'csv' | null>(null)
+  // Track currently-exporting format
+  const [exportFormat, setExportFormat] = useState<string | null>(null)
   const [showAllCitations, setShowAllCitations] = useState(false)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -177,7 +178,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     })
   }
 
-  const handleExport = async (format: 'json' | 'pdf' | 'csv') => {
+  const handleExport = async (format: string) => {
     setIsExporting(true)
     setExportFormat(format)
     setDropdownOpen(false)
@@ -289,39 +290,37 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 )}
               </button>
 
-              <div className={`absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 transition-all duration-200 z-10 ${
-                dropdownOpen ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible -translate-y-2'
-              }`}>
-                <button
-                  onClick={() => handleExport('json')}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200 flex items-center gap-2"
-                  disabled={isExporting}
-                >
-                  {exportFormat === 'json' && isExporting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : null}
-                  Export as JSON
-                </button>
-                <button
-                  onClick={() => handleExport('csv')}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200 flex items-center gap-2"
-                  disabled={isExporting}
-                >
-                  {exportFormat === 'csv' && isExporting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : null}
-                  Export as CSV
-                </button>
-                <button
-                  onClick={() => handleExport('pdf')}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200 flex items-center gap-2"
-                  disabled={isExporting}
-                >
-                  {exportFormat === 'pdf' && isExporting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : null}
-                  Export as PDF
-                </button>
+              {/* Build export list dynamically from backend-provided URLs when available */}
+              <div
+                className={`absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 transition-all duration-200 z-10 ${
+                  dropdownOpen ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible -translate-y-2'
+                }`}
+              >
+                {
+                  (() => {
+                    // backend may provide export_formats mapping; fall back to defaults
+                    const allowed = ['json', 'csv', 'pdf', 'markdown', 'excel'] as const
+                    const map: Record<string, string> = (results as any).export_formats || {}
+                    if (Object.keys(map).length === 0) {
+                      allowed.forEach((f) => {
+                        map[f] = `/v1/research/${results.research_id}/export/${f}`
+                      })
+                    }
+                    return allowed.filter((f) => f in map).map((fmt) => (
+                      <button
+                        key={fmt}
+                        onClick={() => handleExport(fmt)}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200 flex items-center gap-2 capitalize"
+                        disabled={isExporting}
+                      >
+                        {exportFormat === fmt && isExporting ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : null}
+                        Export as {fmt.toUpperCase()}
+                      </button>
+                    ))
+                  })()
+                }
               </div>
             </div>
           </div>
