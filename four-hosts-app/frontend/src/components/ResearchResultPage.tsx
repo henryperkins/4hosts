@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useState, useEffect, useRef } from 'react'
+import { useParams, Link } from 'react-router-dom'
 import { AlertCircle } from 'lucide-react'
 import { LoadingSpinner } from './ui/LoadingSpinner'
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from './ui/Card'
@@ -11,7 +11,6 @@ import type { ResearchResult } from '../types'
 
 export const ResearchResultPage = () => {
   const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
   const [results, setResults] = useState<ResearchResult | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

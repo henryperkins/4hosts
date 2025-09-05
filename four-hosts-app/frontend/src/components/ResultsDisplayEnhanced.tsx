@@ -185,7 +185,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     setDropdownOpen(false)
 
     try {
-      const blob = await api.exportResearch(results.research_id, format)
+      const blob = await api.exportResearch(results.research_id, format as 'pdf' | 'json' | 'csv' | 'markdown' | 'excel')
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
