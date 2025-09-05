@@ -17,7 +17,9 @@ services:
   # Primary data store for user accounts, research history, and system data
   postgres:
     image: postgres:15-alpine
-    container_name: fourhosts-postgres
+    # container_name removed to avoid conflicts when running multiple stacks.
+    # Docker Compose will auto-name the container (project_service_index) and
+    # service DNS remains 'postgres' for inter-service communication.
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
@@ -48,7 +50,7 @@ services:
   # High-performance cache for sessions, rate limiting, and temporary data
   redis:
     image: redis:7-alpine
-    container_name: fourhosts-redis
+    # container_name removed to prevent collision with backend-only compose file.
     ports:
       - "6379:6379"  # Expose Redis on standard port for local development
     volumes:
@@ -80,15 +82,15 @@ services:
     environment:
       # Database connection (uses internal Docker network hostname)
       DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/fourhosts
-      
+
       # Environment mode - development enables debug features and relaxed CORS
       ENVIRONMENT: development
-      
+
       # Cache connection (application gracefully handles Redis unavailability)
       REDIS_URL: redis://redis:6379
-      
-      # NOTE: API keys for external services should be set via .env file or secrets
-      # Required keys: AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, BRAVE_API_KEY, etc.
+
+    # NOTE: API keys for external services should be set via .env file or secrets
+    # Required keys: AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, BRAVE_API_KEY, etc.
     depends_on:
       # Wait for healthy services before starting
       postgres:
@@ -143,11 +145,11 @@ services:
 # ==========================================================================
 volumes:
   postgres_data:
-    # Using minimal configuration to maintain compatibility with existing volumes
-    # If you need to start fresh: docker-compose down -v
-  
+  # Using minimal configuration to maintain compatibility with existing volumes
+  # If you need to start fresh: docker-compose down -v
+
   redis_data:
-    # Using minimal configuration to maintain compatibility with existing volumes
+# Using minimal configuration to maintain compatibility with existing volumes
 
 # ==========================================================================
 # NETWORKS - Internal Service Communication

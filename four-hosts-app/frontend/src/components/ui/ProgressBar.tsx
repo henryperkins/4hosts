@@ -1,8 +1,9 @@
 import React from 'react'
 
 interface ProgressBarProps {
-  value: number
+  value?: number
   max?: number
+  ratio?: number  // Optional ratio prop (0-1)
   variant?: 'default' | 'success' | 'warning' | 'danger' | 'info'
   size?: 'sm' | 'md' | 'lg'
   animated?: boolean
@@ -14,8 +15,9 @@ interface ProgressBarProps {
 }
 
 export const ProgressBar: React.FC<ProgressBarProps> = ({
-  value,
+  value = 0,
   max = 100,
+  ratio,
   variant = 'default',
   size = 'md',
   animated = true,
@@ -25,8 +27,10 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   className = '',
   'aria-label': ariaLabel,
 }) => {
-  // Ensure value is between 0 and max
-  const percentage = Math.min(Math.max((value / max) * 100, 0), 100)
+  // Use ratio if provided (0-1), otherwise calculate from value/max
+  const percentage = ratio !== undefined 
+    ? Math.min(Math.max(ratio * 100, 0), 100)
+    : Math.min(Math.max((value / max) * 100, 0), 100)
   
   const sizeClasses = {
     sm: 'h-1',

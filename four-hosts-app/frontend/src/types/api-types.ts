@@ -131,6 +131,10 @@ export interface WebSocketMessage {
     domain?: string
     score?: number
     removed?: number
+    // New fields for determinate progress tracking
+    items_done?: number
+    items_total?: number
+    eta_seconds?: number
   }
   timestamp: string
 }

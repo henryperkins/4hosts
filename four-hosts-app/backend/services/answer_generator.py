@@ -275,16 +275,59 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
     
     async def _generate_section(self, context: SynthesisContext, section_def: Dict[str, Any]) -> AnswerSection:
         """Generate a single section"""
-        # Filter relevant results
+        # Get progress tracker if available
+        research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
+        progress_tracker = None
+        if research_id:
+            try:
+                from services.websocket_service import progress_tracker as _pt
+                progress_tracker = _pt
+            except ImportError:
+                pass
+        
+        # Track section operations
+        section_name = section_def.get('title', 'Section')
+        
+        # Establish how many granular operations this helper performs so we
+        # can provide determinate progress. The four key operations are:
+        # 1. filter sources, 2. create citations, 3. generate content,
+        # 4. extract insights.
+        total_sub_ops = 4
+
+        # Filter relevant results (sub-op 1/3)
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Filtering relevant sources",
+                items_done=0,
+                items_total=total_sub_ops,
+            )
         relevant_results = [r for r in context.search_results[:5]]
         
-        # Create citations
+        # Create citations (sub-op 2/3)
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Creating citations",
+                items_done=1,
+                items_total=total_sub_ops,
+            )
         citation_ids = []
         for result in relevant_results:
             citation = self.create_citation(result, "evidence")
             citation_ids.append(citation.id)
         
-        # Generate content with LLM or fallback
+        # Generate content with LLM or fallback (sub-op 3/4)
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Generating content",
+                items_done=2,
+                items_total=total_sub_ops,
+            )
         try:
             # Isolation-only support: summarize findings
             iso_lines = []
@@ -317,9 +360,19 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             if os.getenv("LLM_STRICT", "0") == "1":
                 raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
-            content = self._generate_fallback_content(section_def, relevant_results)
-        
-        return AnswerSection(
+        content = self._generate_fallback_content(section_def, relevant_results)
+
+        # Extract insights (sub-op 4/4)
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Extracting insights",
+                items_done=3,
+                items_total=total_sub_ops,
+            )
+
+        section = AnswerSection(
             title=section_def['title'],
             paradigm=self.paradigm,
             content=content,
@@ -329,6 +382,18 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             key_insights=self._extract_insights(content),
             metadata={"section_weight": section_def['weight']}
         )
+
+        # Mark section complete (optional UI hook)
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Section complete",
+                items_done=total_sub_ops,
+                items_total=total_sub_ops,
+            )
+
+        return section
     
     def _generate_fallback_content(self, section_def: Dict[str, Any], results: List[Dict[str, Any]]) -> str:
         """Generate fallback content when LLM fails"""
@@ -402,10 +467,32 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
         self.citation_counter = 0
         self.citations = {}
         
+        # Get progress tracker if available
+        research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
+        progress_tracker = None
+        if research_id:
+            try:
+                from services.websocket_service import progress_tracker as _pt
+                progress_tracker = _pt
+            except ImportError:
+                pass
+        
         # Extract statistical insights from search results
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message="Bernard: Extracting statistical patterns"
+            )
         statistical_insights = self._extract_statistical_insights(context.search_results)
         
         # Perform meta-analysis if possible
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message="Bernard: Performing meta-analysis"
+            )
         meta_analysis = self._perform_meta_analysis(context.search_results)
         
         # Generate sections
@@ -517,16 +604,46 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
         meta_analysis: Optional[Dict[str, Any]]
     ) -> AnswerSection:
         """Generate analytical section with statistical context"""
+        # Get progress tracker if available
+        research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
+        progress_tracker = None
+        if research_id:
+            try:
+                from services.websocket_service import progress_tracker as _pt
+                progress_tracker = _pt
+            except ImportError:
+                pass
+        
+        section_name = section_def.get('title', 'Section')
+        
         # Filter relevant results
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Analyzing sources"
+            )
         relevant_results = [r for r in context.search_results[:5]]
         
         # Create citations
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Processing empirical citations"
+            )
         citation_ids = []
         for result in relevant_results:
             citation = self.create_citation(result, "empirical")
             citation_ids.append(citation.id)
         
         # Generate content
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Extracting statistical insights"
+            )
         try:
             insights_summary = self._format_statistical_insights(statistical_insights[:5])
             # Isolation-only support: include extracted findings if present
@@ -581,6 +698,12 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             content = self._generate_analytical_fallback(section_def, relevant_results, statistical_insights)
         
         # Extract quantitative insights
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Extracting quantitative insights"
+            )
         key_insights = self._extract_quantitative_insights(content, statistical_insights)
         
         return AnswerSection(
@@ -782,10 +905,32 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
         self.citation_counter = 0
         self.citations = {}
         
+        # Get progress tracker if available
+        research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
+        progress_tracker = None
+        if research_id:
+            try:
+                from services.websocket_service import progress_tracker as _pt
+                progress_tracker = _pt
+            except ImportError:
+                pass
+        
         # Extract strategic insights
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message="Maeve: Extracting strategic insights"
+            )
         strategic_insights = self._extract_strategic_insights(context.search_results)
         
         # Generate SWOT analysis
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message="Maeve: Generating SWOT analysis"
+            )
         swot_analysis = self._generate_swot_analysis(context.query, context.search_results)
         
         # Generate sections
@@ -797,6 +942,12 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             sections.append(section)
         
         # Generate strategic recommendations
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message="Maeve: Formulating strategic recommendations"
+            )
         recommendations = self._generate_strategic_recommendations(
             context.query, strategic_insights, swot_analysis
         )
@@ -883,10 +1034,34 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
         swot_analysis: Dict[str, List[str]]
     ) -> AnswerSection:
         """Generate strategic section"""
+        # Get progress tracker if available
+        research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
+        progress_tracker = None
+        if research_id:
+            try:
+                from services.websocket_service import progress_tracker as _pt
+                progress_tracker = _pt
+            except ImportError:
+                pass
+        
+        section_name = section_def.get('title', 'Section')
+        
         # Filter relevant results
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Analyzing strategic landscape"
+            )
         relevant_results = [r for r in context.search_results[:5]]
         
         # Create citations
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Building strategic citations"
+            )
         citation_ids = []
         for result in relevant_results:
             citation = self.create_citation(result, "strategic")
@@ -1157,10 +1332,34 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
         section_def: Dict[str, Any]
     ) -> AnswerSection:
         """Generate supportive section"""
+        # Get progress tracker if available
+        research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
+        progress_tracker = None
+        if research_id:
+            try:
+                from services.websocket_service import progress_tracker as _pt
+                progress_tracker = _pt
+            except ImportError:
+                pass
+        
+        section_name = section_def.get('title', 'Section')
+        
         # Filter relevant results
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Finding support resources"
+            )
         relevant_results = [r for r in context.search_results[:5]]
         
         # Create citations
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="synthesis",
+                message=f"{section_name}: Gathering support citations"
+            )
         citation_ids = []
         for result in relevant_results:
             citation = self.create_citation(result, "support")

@@ -3,7 +3,7 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: fourhosts-postgres
+    # container_name removed to avoid conflicts if top-level stack also runs
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
@@ -22,7 +22,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: fourhosts-redis
+    # container_name removed to avoid conflicts if top-level stack also runs
     ports:
       - "6379:6379"
     volumes:

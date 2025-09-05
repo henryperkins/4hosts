@@ -36,6 +36,13 @@ interface WebSocketData {
   before_count?: number
   after_count?: number
   removed?: number
+  // Determinate progress fields
+  items_done?: number
+  items_total?: number
+  eta_seconds?: number
+  phase?: string
+  old_phase?: string
+  new_phase?: string
 }
 
 interface ResearchPhase {
@@ -81,6 +88,9 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [startTime, setStartTime] = useState<number | null>(null)
   const [elapsedSec, setElapsedSec] = useState<number>(0)
   const [wsciReady, setWSCIReady] = useState<boolean>(false)
+  const [determinateProgress, setDeterminateProgress] = useState<{done: number, total: number} | null>(null)
+  const [etaSeconds, setEtaSeconds] = useState<number | null>(null)
+  const [currentPhase, setCurrentPhase] = useState<string>('initialization')
   const updatesContainerRef = useRef<HTMLDivElement>(null)
   // Refs to avoid re-subscribing WebSocket when these change
   const currentStatusRef = useRef<ProgressUpdate['status']>('pending')
@@ -115,16 +125,39 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           statusUpdate = {
             status: data.status,
             progress: data.progress,
-            message: data.message || `Phase: ${data.phase || 'processing'}`
+            message: data.message || `Phase: ${data.phase || 'processing'}`,
+            items_done: data.items_done,
+            items_total: data.items_total,
+            eta_seconds: data.eta_seconds,
+            phase: data.phase
           }
           if (typeof data.message === 'string' && data.message.startsWith('Context:')) {
             setWSCIReady(true)
           }
+          // Update determinate progress if available
+          if (typeof data.items_done === 'number' && typeof data.items_total === 'number') {
+            setDeterminateProgress({ done: data.items_done, total: data.items_total })
+          }
+          // Update ETA if available
+          if (typeof data.eta_seconds === 'number') {
+            setEtaSeconds(data.eta_seconds)
+          }
+          // Update phase if available
+          if (data.phase) {
+            setCurrentPhase(data.phase)
+          }
           break
         case 'research_phase_change':
           statusUpdate = {
-            message: `Phase changed: ${data.old_phase} → ${data.new_phase}`
+            message: `Phase changed: ${data.old_phase} → ${data.new_phase}`,
+            phase: data.new_phase
           }
+          if (data.new_phase) {
+            setCurrentPhase(data.new_phase)
+          }
+          // Reset determinate progress when phase changes
+          setDeterminateProgress(null)
+          setEtaSeconds(null)
           break
         case 'source_found':
           statusUpdate = {
@@ -370,15 +403,35 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
 
       {progress > 0 && (currentStatus === 'processing' || currentStatus === 'in_progress') && (
         <>
-          <ProgressBar
-            value={progress}
-            max={100}
-            variant="default"
-            showLabel
-            label="Progress"
-            shimmer
-            className="mb-4"
-          />
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm text-text-muted">
+                {determinateProgress ? 
+                  `${determinateProgress.done} / ${determinateProgress.total} items` : 
+                  'Progress'
+                }
+              </span>
+              {etaSeconds !== null && etaSeconds > 0 && (
+                <span className="text-xs text-text-muted">
+                  ~{Math.floor(etaSeconds / 60).toString().padStart(2, '0')}:{(etaSeconds % 60).toString().padStart(2, '0')} remaining
+                </span>
+              )}
+            </div>
+            <ProgressBar
+              value={determinateProgress ? (determinateProgress.done / determinateProgress.total) * 100 : progress}
+              max={100}
+              variant="default"
+              showLabel={false}
+              shimmer
+            />
+            {currentPhase && (
+              <div className="mt-2">
+                <Badge variant="info" size="sm" className="capitalize">
+                  {currentPhase.replace(/_/g, ' ')}
+                </Badge>
+              </div>
+            )}
+          </div>
 
           {/* W‑S‑C‑I Badges */}
           <div className="mb-3 flex items-center gap-2">

@@ -881,7 +881,8 @@ class ContextEngineeringPipeline:
         self.processing_history = []
 
     async def process_query(
-        self, classification: ClassificationResult
+        self, classification: ClassificationResult,
+        research_id: Optional[str] = None
     ) -> ContextEngineeredQuery:
         """Process classification through all context layers"""
         start_time = datetime.now()
@@ -890,44 +891,112 @@ class ContextEngineeringPipeline:
             f"Starting context engineering for paradigm: {classification.primary_paradigm.value}"
         )
 
+        # Import progress tracker if available
+        progress_tracker = None
+        if research_id:
+            try:
+                from services.websocket_service import progress_tracker as _pt
+                progress_tracker = _pt
+            except ImportError:
+                pass
+
         # Track outputs from each layer
         outputs = {}
+        total_layers = 6  # W-S-C-I + Rewrite + Optimize
 
         # Process through Write layer
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="context_engineering",
+                message="Processing Write layer - documenting paradigm focus",
+                items_done=0,
+                items_total=total_layers
+            )
         _t0 = datetime.now()
         write_output = await self.write_layer.process(classification)
         write_time = (datetime.now() - _t0).total_seconds()
         outputs["write"] = write_output
 
         # Rewrite query
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="context_engineering",
+                message="Rewriting query for clarity and searchability",
+                items_done=1,
+                items_total=total_layers
+            )
         _tR = datetime.now()
         rewrite_output = await self.rewrite_layer.process(classification, outputs)
         rewrite_time = (datetime.now() - _tR).total_seconds()
         outputs["rewrite"] = rewrite_output
 
         # Process through Select layer
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="context_engineering",
+                message="Selecting search methods and sources",
+                items_done=2,
+                items_total=total_layers
+            )
         _t1 = datetime.now()
         select_output = await self.select_layer.process(classification, outputs)
         select_time = (datetime.now() - _t1).total_seconds()
         outputs["select"] = select_output
 
         # Optimize terms and queries
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="context_engineering",
+                message="Optimizing search terms and query variations",
+                items_done=3,
+                items_total=total_layers
+            )
         _tO = datetime.now()
         optimize_output = await self.optimize_layer.process(classification, outputs)
         optimize_time = (datetime.now() - _tO).total_seconds()
         outputs["optimize"] = optimize_output
 
         # Process through Compress layer
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="context_engineering",
+                message="Compressing information by paradigm priorities",
+                items_done=4,
+                items_total=total_layers
+            )
         _t2 = datetime.now()
         compress_output = await self.compress_layer.process(classification, outputs)
         compress_time = (datetime.now() - _t2).total_seconds()
         outputs["compress"] = compress_output
 
         # Process through Isolate layer
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="context_engineering",
+                message="Isolating key findings extraction patterns",
+                items_done=5,
+                items_total=total_layers
+            )
         _t3 = datetime.now()
         isolate_output = await self.isolate_layer.process(classification, outputs)
         isolate_time = (datetime.now() - _t3).total_seconds()
         outputs["isolate"] = isolate_output
+
+        # Mark complete
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="context_engineering",
+                message="Context engineering complete",
+                items_done=total_layers,
+                items_total=total_layers
+            )
 
         # Calculate total processing time
         processing_time = (datetime.now() - start_time).total_seconds()

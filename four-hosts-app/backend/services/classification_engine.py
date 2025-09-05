@@ -299,8 +299,10 @@ class QueryAnalyzer:
             ]
         return compiled
 
-    def analyze(self, query: str) -> QueryFeatures:
+    def analyze(self, query: str, research_id: Optional[str] = None) -> QueryFeatures:
         """Extract comprehensive features from query"""
+        # Note: This runs in executor so can't use async progress tracking directly
+        # But we can track via the main classify method
         tokens = self._tokenize(query)
         entities = self._extract_entities(query)
         intent_signals = self._detect_intent_signals(query)
@@ -467,11 +469,31 @@ class ParadigmClassifier:
         self.llm_weight = 0.4 if use_llm else 0.0
         self.domain_weight = 0.2
 
-    async def classify(self, query: str) -> ClassificationResult:
+    async def classify(self, query: str, research_id: Optional[str] = None) -> ClassificationResult:
         """Perform complete classification with confidence scoring"""
         import asyncio
         
+        # Get progress tracker if available
+        progress_tracker = None
+        if research_id:
+            try:
+                from services.websocket_service import progress_tracker as _pt
+                progress_tracker = _pt
+            except ImportError:
+                pass
+        
+        # Track classification steps
+        total_steps = 4  # features, rule-based, LLM (optional), combination
+        
         # Run feature extraction in executor to avoid blocking
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="classification",
+                message="Extracting query features",
+                items_done=0,
+                items_total=total_steps
+            )
         loop = asyncio.get_event_loop()
         features_task = loop.run_in_executor(None, self.analyzer.analyze, query)
         
@@ -485,17 +507,41 @@ class ParadigmClassifier:
         features = await features_task
         
         # Run rule-based classification
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="classification",
+                message="Applying rule-based classification",
+                items_done=1,
+                items_total=total_steps
+            )
         rule_scores = self._rule_based_classification(query, features)
         
         # Wait for LLM results if started
         llm_scores = {}
         if llm_task:
+            if progress_tracker and research_id:
+                await progress_tracker.update_progress(
+                    research_id,
+                    phase="classification",
+                    message="Running LLM classification",
+                    items_done=2,
+                    items_total=total_steps
+                )
             try:
                 llm_scores = await llm_task
             except Exception as e:
                 logger.warning(f"LLM classification failed, using rule-based only: {e}")
                 llm_scores = {}
 
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="classification",
+                message="Combining classification scores",
+                items_done=3,
+                items_total=total_steps
+            )
         final_scores = self._combine_scores(rule_scores, llm_scores, features)
         distribution = self._normalize_scores(final_scores)
 
@@ -511,6 +557,16 @@ class ParadigmClassifier:
 
         confidence = self._calculate_confidence(distribution, final_scores)
         reasoning = {p: scores.reasoning for p, scores in final_scores.items()}
+        
+        # Mark classification complete
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="classification",
+                message=f"Classification complete: {primary.value}",
+                items_done=total_steps,
+                items_total=total_steps
+            )
         # Build structured signals for downstream UI
         signals: Dict[HostParadigm, Dict[str, Any]] = {}
         for p, score_obj in final_scores.items():
@@ -827,13 +883,13 @@ class ClassificationEngine:
         self.cache_enabled = cache_enabled
         self.cache: Dict[str, ClassificationResult] = {} if cache_enabled else None
 
-    async def classify_query(self, query: str) -> ClassificationResult:
+    async def classify_query(self, query: str, research_id: Optional[str] = None) -> ClassificationResult:
         """Classify a query with caching and logging"""
         if self.cache_enabled and query in self.cache:
             logger.info(f"Cache hit for classification: {query[:50]}...")
             return self.cache[query]
 
-        result = await self.classifier.classify(query)
+        result = await self.classifier.classify(query, research_id)
 
         if self.cache_enabled:
             self.cache[query] = result
