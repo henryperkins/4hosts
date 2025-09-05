@@ -13,16 +13,35 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
 
 
+def _tokenize(text: str) -> List[str]:
+    return [t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if t]
+
+
+def _token_overlap(a: str, b: str) -> float:
+    """Jaccard token overlap between two strings (0..1)."""
+    sa, sb = set(_tokenize(a)), set(_tokenize(b))
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / float(len(sa | sb))
+
+
 def evaluate_coverage_from_sources(
     original_query: str,
     context_engineered: Any,
     sources: List[Dict[str, Any]],
 ) -> Tuple[float, List[str]]:
     """
-    Heuristic coverage evaluation:
-    - Build a target set from W (key_themes) and I (focus_areas)
-    - Check presence across top sources (title+snippet)
-    - Return (coverage_score 0..1, missing_terms)
+    Heuristic coverage evaluation.
+
+    Strategy:
+    1. Collect *targets* from Write layer `key_themes` and Isolate layer
+       `focus_areas` (lower-cased, deduped).
+    2. For each target term, mark *covered* if **any** source satisfies:
+       a. Exact substring match (case-insensitive)
+       b. Token-overlap ≥ 0.6 (handles reordered / partial phrases)
+       c. All non-stop-words of target appear individually in the text.
+    3. Coverage = |covered| / |targets|.
+    Returns `(coverage, missing_terms)`.
     """
     try:
         themes = set([t.lower() for t in getattr(context_engineered.write_output, "key_themes", []) or []])
@@ -33,7 +52,7 @@ def evaluate_coverage_from_sources(
     except Exception:
         focus = set()
 
-    targets = [t for t in list(themes.union(focus)) if len(t) > 2]
+    targets = [t.strip() for t in list(themes.union(focus)) if len(t.strip()) > 2]
     if not targets:
         return 1.0, []
 
@@ -43,8 +62,20 @@ def evaluate_coverage_from_sources(
     ]
     for term in targets:
         term_norm = _normalize(term)
+        words = [w for w in term_norm.split() if w]
         for text in joined:
-            if term_norm and term_norm in text:
+            if not term_norm:
+                continue
+            # a) exact substring
+            if term_norm in text:
+                covered.add(term)
+                break
+            # b) fuzzy token overlap ≥0.6
+            if _token_overlap(term_norm, text) >= 0.6:
+                covered.add(term)
+                break
+            # c) all content words present individually (for 3+ word phrases)
+            if len(words) >= 3 and all(w in text for w in words):
                 covered.add(term)
                 break
 

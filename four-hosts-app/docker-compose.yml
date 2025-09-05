@@ -97,8 +97,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Allow host port override via BACKEND_PORT env (defaults to 8000)
     ports:
-      - "8000:8000"  # FastAPI on port 8000 (includes /docs for API documentation)
+      # Bind to 8001 by default to avoid conflicts with local dev servers
+      - "${BACKEND_PORT:-8001}:8000"  # host:container
     restart: unless-stopped
     networks:
       - fourhosts-network

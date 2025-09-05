@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Set, Any, Optional, List
 from enum import Enum
+from typing import Any
 import uuid
 
 from fastapi import WebSocket, WebSocketDisconnect, Depends, Query, Header
@@ -860,23 +861,26 @@ class ProgressTracker:
 
 
 class ResearchProgressTracker(ProgressTracker):
-    """Alias for ProgressTracker to maintain compatibility with imports"""
+    """Back-compat wrapper exposing the same flexible signature as ProgressTracker.
 
-    async def update_progress(self, research_id: str, message: str, progress: int):
-        """Simple update method for compatibility with main.py"""
-        await self.connection_manager.broadcast_to_research(
-            research_id,
-            WSMessage(
-                type=WSEventType.RESEARCH_PROGRESS,
-                data={
-                    "research_id": research_id,
-                    "message": message,
-                    "progress": progress,
-                    "status": "in_progress",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-        )
+    Legacy code may still import this alias and call `update_progress` with the
+    original (research_id, message, progress) positional arguments **or** the
+    new keyword-rich form.  We therefore forward *args/**kwargs to the parent
+    implementation so both styles work transparently.
+    """
+
+    async def update_progress(self, research_id: str, *positional: Any, **kwargs):  # type: ignore[override]
+        # Detect the classic 3-positional call and translate it into the new
+        # keyword structure so downstream consumers remain consistent.
+        if positional and len(positional) == 2 and not kwargs:
+            message, progress = positional  # type: ignore[assignment]
+            kwargs = {
+                "message": message,
+                "progress": progress,
+            }
+            positional = ()
+
+        await super().update_progress(research_id, *positional, **kwargs)
     
     async def report_search_started(self, research_id: str, query: str, engine: str, index: int, total: int):
         """Report that a search has started"""

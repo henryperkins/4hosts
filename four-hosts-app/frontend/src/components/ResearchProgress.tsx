@@ -87,8 +87,10 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [showSourcePreviews, setShowSourcePreviews] = useState(true)
   const [startTime, setStartTime] = useState<number | null>(null)
   const [elapsedSec, setElapsedSec] = useState<number>(0)
-  const [wsciReady, setWSCIReady] = useState<boolean>(false)
-  const [determinateProgress, setDeterminateProgress] = useState<{done: number, total: number} | null>(null)
+  // Track granular layer progress within Context-Engineering (Write/Rewrite/Select/Optimize/Compress/Isolate)
+  const CE_LAYERS = ['Write', 'Rewrite', 'Select', 'Optimize', 'Compress', 'Isolate'] as const
+  const [ceLayerProgress, setCeLayerProgress] = useState<{ done: number; total: number }>({ done: 0, total: 6 })
+  const [determinateProgress, setDeterminateProgress] = useState<{ done: number; total: number } | null>(null)
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null)
   const [currentPhase, setCurrentPhase] = useState<string>('initialization')
   const updatesContainerRef = useRef<HTMLDivElement>(null)
@@ -131,12 +133,15 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             eta_seconds: data.eta_seconds,
             phase: data.phase
           }
-          if (typeof data.message === 'string' && data.message.startsWith('Context:')) {
-            setWSCIReady(true)
-          }
-          // Update determinate progress if available
+          // Update determinate progress if backend sends ratios
           if (typeof data.items_done === 'number' && typeof data.items_total === 'number') {
             setDeterminateProgress({ done: data.items_done, total: data.items_total })
+
+            // If we are in Context-Engineering phase, keep an internal copy so we can
+            // color W-R-S-O-C-I badges accurately.
+            if (data.phase === 'context_engineering') {
+              setCeLayerProgress({ done: data.items_done, total: data.items_total })
+            }
           }
           // Update ETA if available
           if (typeof data.eta_seconds === 'number') {
@@ -145,6 +150,10 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           // Update phase if available
           if (data.phase) {
             setCurrentPhase(data.phase)
+            if (data.phase !== 'context_engineering') {
+              // Reset CE layer state when we leave context-engineering
+              setCeLayerProgress({ done: 0, total: CE_LAYERS.length })
+            }
           }
           break
         case 'research_phase_change':
@@ -337,43 +346,27 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   }
 
   // Define research phases
-  const researchPhases: ResearchPhase[] = [
-    {
-      name: 'Classification',
-      icon: <Brain className="h-4 w-4" />,
-      progress: [0, 10],
-      isActive: progress >= 0 && progress < 10,
-      isCompleted: progress >= 10
-    },
-    {
-      name: 'Context Engineering',
-      icon: <Zap className="h-4 w-4" />,
-      progress: [10, 20],
-      isActive: progress >= 10 && progress < 20,
-      isCompleted: progress >= 20
-    },
-    {
-      name: 'Search & Retrieval',
-      icon: <Search className="h-4 w-4" />,
-      progress: [20, 60],
-      isActive: progress >= 20 && progress < 60,
-      isCompleted: progress >= 60
-    },
-    {
-      name: 'Analysis',
-      icon: <Database className="h-4 w-4" />,
-      progress: [60, 80],
-      isActive: progress >= 60 && progress < 80,
-      isCompleted: progress >= 80
-    },
-    {
-      name: 'Synthesis',
-      icon: <Brain className="h-4 w-4" />,
-      progress: [80, 100],
-      isActive: progress >= 80 && progress < 100,
-      isCompleted: progress >= 100
-    }
+  // Map backend phase strings → icon/component label for timeline rendering
+  const PHASE_ORDER: { key: string; label: string; icon: React.ReactNode }[] = [
+    { key: 'classification', label: 'Classification', icon: <Brain className="h-4 w-4" /> },
+    { key: 'context_engineering', label: 'Context Engineering', icon: <Zap className="h-4 w-4" /> },
+    { key: 'search', label: 'Search & Retrieval', icon: <Search className="h-4 w-4" /> },
+    { key: 'analysis', label: 'Analysis', icon: <Database className="h-4 w-4" /> },
+    { key: 'agentic_loop', label: 'Agentic Loop', icon: <Zap className="h-4 w-4" /> },
+    { key: 'synthesis', label: 'Synthesis', icon: <Brain className="h-4 w-4" /> },
+    { key: 'complete', label: 'Complete', icon: <CheckCircle className="h-4 w-4" /> }
   ]
+
+  const researchPhases: ResearchPhase[] = PHASE_ORDER.map((p, idx) => {
+    const currentIdx = PHASE_ORDER.findIndex(ph => ph.key === currentPhase)
+    return {
+      name: p.label,
+      icon: p.icon,
+      progress: [0, 0], // no longer used
+      isActive: idx === currentIdx,
+      isCompleted: idx < currentIdx
+    }
+  })
 
   return (
     <Card className="mt-6 animate-slide-up">
@@ -433,16 +426,26 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             )}
           </div>
 
-          {/* W‑S‑C‑I Badges */}
+          {/* Context-Engineering Layer Badges (Write → Isolate) */}
           <div className="mb-3 flex items-center gap-2">
-            {['Write', 'Select', 'Compress', 'Isolate'].map(label => (
-              <span
-                key={label}
-                className={`text-[11px] px-2 py-1 rounded-full border ${wsciReady ? 'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400'}`}
-              >
-                {label}
-              </span>
-            ))}
+            {CE_LAYERS.map((label, idx) => {
+              const completed = ceLayerProgress.done > idx
+              const isActiveLayer = ceLayerProgress.done === idx
+              const badgeStyle = completed
+                ? 'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300'
+                : isActiveLayer
+                  ? 'bg-yellow-100 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700 text-yellow-700 dark:text-yellow-300'
+                  : 'bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400'
+
+              return (
+                <span
+                  key={label}
+                  className={`text-[11px] px-2 py-1 rounded-full border ${badgeStyle}`}
+                >
+                  {label}
+                </span>
+              )
+            })}
           </div>
           
           {/* Research Phases */}
