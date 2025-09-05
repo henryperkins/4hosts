@@ -24,6 +24,11 @@ class ResearchOptions(BaseModel):
     enable_real_search: bool = True
     # Optional feature flag expected by frontend
     enable_ai_classification: Optional[bool] = False
+    # Optional deep-research tuning parameters (accepted but optional)
+    search_context_size: Optional[str] = Field(
+        default=None, pattern="^(small|medium|large)$"
+    )
+    user_location: Optional[Dict[str, str]] = None
 
 
 class ResearchQuery(BaseModel):

@@ -117,6 +117,7 @@ export interface GeneratedAnswer {
     sections: AnswerSection[]
     action_items: ActionItem[]
     citations: Citation[]
+    metadata?: Record<string, any>
 }
 
 export interface AnswerSection {

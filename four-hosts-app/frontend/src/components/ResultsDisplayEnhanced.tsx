@@ -5,6 +5,7 @@ import api from '../services/api'
 import type { ResearchResult, AnswerSection } from '../types'
 import { getParadigmClass, getParadigmDescription } from '../constants/paradigm'
 import { ContextMetricsPanel } from './ContextMetricsPanel'
+import { EvidencePanel } from './EvidencePanel'
 
 interface ResultsDisplayEnhancedProps {
   results: ResearchResult
@@ -240,6 +241,10 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   const sections = answer.sections || []
   const actionItems = answer.action_items || []
   const summary = answer.summary || 'No summary available'
+  const answerMetadata: Record<string, any> | undefined = (answer as any)?.metadata
+  const evidenceQuotes: any[] = Array.isArray(answerMetadata?.evidence_quotes)
+    ? (answerMetadata!.evidence_quotes as any[])
+    : (Array.isArray((results as any)?.metadata?.evidence_quotes) ? (results as any).metadata.evidence_quotes : [])
   
   const displayedCitations = showAllCitations
     ? citations
@@ -599,7 +604,36 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             {typeof contextLayers.refined_queries_count === 'number' && (
               <p className="mt-2 text-[11px] text-blue-800 dark:text-blue-200">Refined queries: {contextLayers.refined_queries_count}</p>
             )}
+            {contextLayers.isolated_findings && (
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
+                  <p className="text-blue-800 dark:text-blue-200">Isolation Focus Areas</p>
+                  <p className="font-semibold text-blue-900 dark:text-blue-100 truncate">
+                    {(contextLayers.isolated_findings.focus_areas || []).join(', ') || '—'}
+                  </p>
+                </div>
+                <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
+                  <p className="text-blue-800 dark:text-blue-200">Extraction Patterns</p>
+                  <p className="font-semibold text-blue-900 dark:text-blue-100">{Number(contextLayers.isolated_findings.patterns || 0)}</p>
+                </div>
+              </div>
+            )}
           </div>
+        )}
+
+        {/* Analytical Signals (Bernard) */}
+        {results.paradigm_analysis?.primary?.paradigm === 'bernard' && typeof (answerMetadata?.statistical_insights) === 'number' && (
+          <div className="mt-4 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-200 dark:border-indigo-800 transition-colors duration-200">
+            <h4 className="text-sm font-semibold text-indigo-900 dark:text-indigo-100 mb-1">Analytical signals</h4>
+            <p className="text-sm text-indigo-800 dark:text-indigo-200">
+              {answerMetadata.statistical_insights} statistical insights detected across sources.
+            </p>
+          </div>
+        )}
+
+        {/* Evidence Quotes */}
+        {Array.isArray(evidenceQuotes) && evidenceQuotes.length > 0 && (
+          <EvidencePanel quotes={evidenceQuotes} />
         )}
 
         {/* Cost Information */}

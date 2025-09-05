@@ -836,6 +836,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception as e:
                 logger.error(f"Answer synthesis failed: {e}")
 
+        # Assemble high-level response
         response = {
             "results": processed_results["results"],
             "metadata": {
@@ -855,6 +856,19 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "paradigm": classification.primary_paradigm.value if hasattr(classification, "primary_paradigm") else "unknown",
             },
         }
+        # Cost info (search API costs currently tracked; LLM costs not yet integrated)
+        try:
+            search_cost = sum(float(v) for v in (cost_breakdown or {}).values())
+            response["cost_info"] = {
+                "search_api_costs": round(search_cost, 4),
+                "llm_costs": 0.0,
+                "total": round(search_cost, 4),
+                # keep backward compat with callers referencing total_cost
+                "total_cost": round(search_cost, 4),
+                "breakdown": cost_breakdown,
+            }
+        except Exception:
+            response["cost_info"] = {"search_api_costs": 0.0, "llm_costs": 0.0, "total": 0.0, "total_cost": 0.0}
         if synthesized_answer is not None:
             response["answer"] = synthesized_answer
         return response
@@ -977,6 +991,29 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             context_engineering=ce,
             options={"research_id": research_id, **options, "evidence_quotes": evidence_quotes or []},
         )
+
+        # Attach evidence quotes and isolation findings summary to answer metadata
+        # so the frontend can render dedicated panels without re-fetching.
+        try:
+            if hasattr(answer, "metadata") and isinstance(getattr(answer, "metadata"), dict):
+                # Avoid accidental overwrites
+                if "evidence_quotes" not in answer.metadata:
+                    answer.metadata["evidence_quotes"] = evidence_quotes or []
+                # Summarize isolation findings if available in CE dict
+                try:
+                    if isinstance(ce, dict) and isinstance(ce.get("isolated_findings"), dict):
+                        iso = ce.get("isolated_findings", {})
+                        summary = {
+                            "matches_count": len(iso.get("matches", []) or []),
+                            "domains": list((iso.get("by_domain", {}) or {}).keys()),
+                            "focus_areas": list(iso.get("focus_areas", []) or []),
+                        }
+                        answer.metadata.setdefault("signals", {})
+                        answer.metadata["signals"]["isolated_findings"] = summary
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # Emit synthesis completed with simple stats
         try:

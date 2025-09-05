@@ -12,7 +12,8 @@ from models.research import (
     ResearchQuery,
     ResearchOptions,
     ResearchResult,
-    ParadigmOverrideRequest
+    ParadigmOverrideRequest,
+    ResearchDeepQuery,
 )
 from models.base import (
     ResearchDepth,
@@ -191,6 +192,7 @@ async def execute_real_research(
         # Normalize answer to frontend-friendly primitives
         sections_payload = []
         citations_payload = []
+        action_items_payload = []
         summary_text = ""
         if answer_obj:
             try:
@@ -263,13 +265,35 @@ async def execute_real_research(
                             )
                         except Exception:
                             continue
+                # Action items: ensure required FE fields with sensible defaults
+                try:
+                    raw_actions = list(getattr(answer_obj, "action_items", []) or [])
+                    if not isinstance(raw_actions, list):
+                        raw_actions = []
+                    # Reuse primary paradigm for defaulting
+                    primary_paradigm = HOST_TO_MAIN_PARADIGM.get(
+                        getattr(cls, "primary_paradigm", None), Paradigm.BERNARD
+                    ).value
+                    for it in raw_actions:
+                        if not isinstance(it, dict):
+                            continue
+                        item = dict(it)
+                        # Map backend 'timeline' -> FE 'timeframe' if missing
+                        if "timeframe" not in item and item.get("timeline"):
+                            item["timeframe"] = item.get("timeline")
+                        # Default paradigm when unspecified (for UI styling)
+                        if not item.get("paradigm"):
+                            item["paradigm"] = primary_paradigm
+                        action_items_payload.append(item)
+                except Exception:
+                    action_items_payload = []
             except Exception:
                 pass
 
         answer_payload = {
             "summary": summary_text,
             "sections": sections_payload,
-            "action_items": list(getattr(answer_obj, "action_items", []) or []),
+            "action_items": action_items_payload,
             "citations": citations_payload,
             "metadata": getattr(answer_obj, "metadata", {}) or {},
         }
@@ -332,6 +356,11 @@ async def execute_real_research(
             "optimize_primary": (getattr(ce, "optimize_output", {}) or {}).get("primary_query", ""),
             "optimize_variations_count": len(((getattr(ce, "optimize_output", {}) or {}).get("variations") or {})),
             "refined_queries_count": len(getattr(ce, "refined_queries", []) or []),
+            # Isolation layer findings summary (lightweight)
+            "isolated_findings": {
+                "focus_areas": list(getattr(getattr(ce, "isolate_output", object()), "focus_areas", []) or []),
+                "patterns": len(getattr(getattr(ce, "isolate_output", object()), "extraction_patterns", []) or []),
+            },
         }
 
         # Attach agent trace from orchestrator if present
@@ -563,7 +592,7 @@ async def execute_real_research(
             "integrated_synthesis": integrated_synthesis,
             "sources": sources_payload,
             "metadata": metadata,
-            "cost_info": {},
+            "cost_info": orch_resp.get("cost_info", {}),
             "export_formats": {
                 "pdf": f"/v1/research/{research_id}/export/pdf",
                 "markdown": f"/v1/research/{research_id}/export/markdown",
@@ -819,6 +848,259 @@ async def get_research_results(
             }
 
     return research["results"]
+
+
+# ---------------------------------------------------------------------------
+# Deep Research Endpoints (compatibility wrapper for frontend API methods)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/deep")
+async def submit_deep_research(
+    payload: ResearchDeepQuery,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+):
+    """Submit a deep research request (alias for /research/query with depth=deep_research).
+
+    Accepts a slightly different payload shape used by the frontend convenience
+    method and translates it into the canonical ResearchQuery + ResearchOptions
+    used by the main pipeline.
+    """
+    # Enforce subscription requirement (PRO+)
+    if current_user.role not in [UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403,
+            detail="Deep research requires PRO subscription or higher",
+        )
+
+    # Build canonical request
+    options = ResearchOptions(
+        depth=ResearchDepth.DEEP_RESEARCH,
+        paradigm_override=payload.paradigm,
+        enable_real_search=True,
+        search_context_size=payload.search_context_size,
+        user_location=payload.user_location,
+    )
+    research = ResearchQuery(query=payload.query, options=options)
+
+    # Generate a research id and reuse the normal submission flow parts
+    research_id = f"res_{uuid.uuid4().hex[:12]}"
+
+    try:
+        # Classify query
+        classification_result = await classification_engine.classify_query(
+            research.query
+        )
+
+        classification = ParadigmClassification(
+            primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
+            secondary=(
+                HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm)
+                if classification_result.secondary_paradigm
+                else None
+            ),
+            distribution={
+                HOST_TO_MAIN_PARADIGM[p].value: v
+                for p, v in classification_result.distribution.items()
+            },
+            confidence=classification_result.confidence,
+            explanation={
+                HOST_TO_MAIN_PARADIGM[p].value: "; ".join(r)
+                for p, r in classification_result.reasoning.items()
+            },
+        )
+
+        # Store request
+        research_data = {
+            "id": research_id,
+            "user_id": str(current_user.user_id),
+            "query": research.query,
+            "options": research.options.dict(),
+            "status": ResearchStatus.PROCESSING,
+            "paradigm_classification": classification.dict(),
+            "created_at": datetime.utcnow().isoformat(),
+            "results": None,
+        }
+        await research_store.set(research_id, research_data)
+
+        # Execute in background
+        background_tasks.add_task(
+            execute_real_research,
+            research_id,
+            research,
+            str(current_user.user_id),
+            current_user.role,
+        )
+
+        # Start WS tracking
+        if progress_tracker:
+            await progress_tracker.start_research(
+                research_id,
+                str(current_user.user_id),
+                research.query,
+                classification.primary.value,
+                ResearchDepth.DEEP_RESEARCH.value,
+            )
+
+        # Webhook
+        if webhook_manager:
+            await webhook_manager.trigger_event(
+                WebhookEvent.RESEARCH_STARTED,
+                {
+                    "research_id": research_id,
+                    "user_id": str(current_user.user_id),
+                    "query": research.query,
+                    "paradigm": classification.primary.value,
+                },
+            )
+
+        eta_minutes = 12
+        return {
+            "research_id": research_id,
+            "status": ResearchStatus.PROCESSING,
+            "paradigm_classification": classification.dict(),
+            "estimated_completion": (datetime.utcnow() + timedelta(minutes=eta_minutes)).isoformat(),
+            "websocket_url": f"/ws/research/{research_id}",
+        }
+    except Exception as e:
+        logger.error("Deep research submission error: %s", str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Deep research submission failed: {str(e)}"
+        )
+
+
+@router.get("/deep/status")
+async def get_deep_research_status(current_user=Depends(get_current_user)):
+    """Return a lightweight status summary for the user's deep research jobs."""
+    try:
+        records = await research_store.get_user_research(str(current_user.user_id), limit=200)
+        deep_records = [
+            r for r in records
+            if (r.get("options") or {}).get("depth") in (ResearchDepth.DEEP_RESEARCH, ResearchDepth.DEEP)
+        ]
+
+        active = [
+            r for r in deep_records
+            if r.get("status") in (ResearchStatus.PROCESSING, ResearchStatus.IN_PROGRESS)
+        ]
+        recent = sorted(deep_records, key=lambda x: x.get("created_at", ""), reverse=True)[:5]
+        return {
+            "total_deep_jobs": len(deep_records),
+            "active_deep_jobs": len(active),
+            "recent": [
+                {
+                    "research_id": r.get("id"),
+                    "status": r.get("status"),
+                    "query": r.get("query"),
+                    "created_at": r.get("created_at"),
+                }
+                for r in recent
+            ],
+        }
+    except Exception as e:
+        logger.error("Failed to get deep research status: %s", e)
+        return {"total_deep_jobs": 0, "active_deep_jobs": 0, "recent": []}
+
+
+@router.post("/deep/{research_id}/resume")
+async def resume_deep_research(
+    research_id: str,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+):
+    """Resume a deep research job by re-running the pipeline with the stored query/options.
+
+    This uses the original research_id so any open WebSocket client can continue
+    receiving progress events without re-subscribing.
+    """
+    research = await research_store.get(research_id)
+    if not research:
+        raise HTTPException(status_code=404, detail="Research not found")
+
+    # Verify ownership
+    if (
+        research.get("user_id") != str(current_user.user_id)
+        and current_user.role != UserRole.ADMIN
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Completed jobs aren't resumable
+    if research.get("status") == ResearchStatus.COMPLETED:
+        return {
+            "research_id": research_id,
+            "status": ResearchStatus.COMPLETED,
+            "message": "Research is already completed",
+            "can_retry": True,
+        }
+
+    # Reconstruct canonical request
+    try:
+        q = research.get("query") or ""
+        opts_dict = research.get("options") or {}
+        # Force deep_research depth for this endpoint
+        opts_dict["depth"] = ResearchDepth.DEEP_RESEARCH
+        options = ResearchOptions.parse_obj(opts_dict)
+        rq = ResearchQuery(query=q, options=options)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid stored request: {e}")
+
+    # Update state and launch background execution
+    await research_store.update_field(research_id, "status", ResearchStatus.PROCESSING)
+    await research_store.update_field(research_id, "estimated_completion", (datetime.utcnow() + timedelta(minutes=12)).isoformat())
+
+    # Re-classify for transparency and attach to record
+    try:
+        classification_result = await classification_engine.classify_query(rq.query)
+        classification = ParadigmClassification(
+            primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
+            secondary=(
+                HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm)
+                if classification_result.secondary_paradigm
+                else None
+            ),
+            distribution={
+                HOST_TO_MAIN_PARADIGM[p].value: v
+                for p, v in classification_result.distribution.items()
+            },
+            confidence=classification_result.confidence,
+            explanation={
+                HOST_TO_MAIN_PARADIGM[p].value: "; ".join(r)
+                for p, r in classification_result.reasoning.items()
+            },
+        )
+        await research_store.update_field(research_id, "paradigm_classification", classification.dict())
+    except Exception:
+        classification = None
+
+    background_tasks.add_task(
+        execute_real_research,
+        research_id,
+        rq,
+        str(current_user.user_id),
+        current_user.role,
+    )
+
+    # WebSocket event
+    if progress_tracker:
+        try:
+            await progress_tracker.start_research(
+                research_id,
+                str(current_user.user_id),
+                rq.query,
+                (classification.primary.value if classification else research.get("paradigm_classification", {}).get("primary", "unknown")),
+                ResearchDepth.DEEP_RESEARCH.value,
+            )
+        except Exception:
+            pass
+
+    return {
+        "research_id": research_id,
+        "status": ResearchStatus.PROCESSING,
+        "paradigm_classification": (classification.dict() if classification else research.get("paradigm_classification")),
+        "estimated_completion": (datetime.utcnow() + timedelta(minutes=12)).isoformat(),
+        "websocket_url": f"/ws/research/{research_id}",
+    }
 
 
 @router.post("/cancel/{research_id}")
