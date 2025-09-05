@@ -174,6 +174,66 @@ class BaseAnswerGenerator:
         self.citation_counter = 0
         self.citations = {}
     
+    def _top_relevant_results(self, context: SynthesisContext, k: int = 5) -> List[Dict[str, Any]]:
+        """Select top-k results by credibility, ensuring domain diversity."""
+        results = list(context.search_results or [])
+        results.sort(key=lambda r: float(r.get("credibility_score", 0.0) or 0.0), reverse=True)
+        picked: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for r in results:
+            dom = (r.get("domain") or r.get("source") or "").lower()
+            if dom in seen and len(picked) < k // 2:
+                continue
+            picked.append(r)
+            seen.add(dom)
+            if len(picked) >= k:
+                break
+        return picked[:k]
+    
+    def _format_evidence_block(self, context: SynthesisContext, max_quotes: int = 12) -> str:
+        quotes = (getattr(context, "evidence_quotes", None) or [])[:max_quotes]
+        lines: List[str] = []
+        for q in quotes:
+            qid = q.get("id", "")
+            dom = (q.get("domain") or "").lower()
+            qt = q.get("quote", "")
+            lines.append(f"- [{qid}][{dom}] {qt}")
+        return "\n".join(lines) if lines else "(no evidence quotes)"
+
+    def _coverage_table(self, context: SynthesisContext, max_rows: int = 6) -> str:
+        # Use focus areas from isolate layer if present
+        try:
+            focus = []
+            if isinstance(context.context_engineering, dict):
+                focus = list((context.context_engineering.get("isolated_findings", {}) or {}).get("focus_areas", []) or [])
+        except Exception:
+            focus = []
+        if not focus:
+            return "(no coverage targets)"
+        focus = focus[:max_rows]
+        # Pick best URL per theme by token overlap
+        rows: List[str] = ["Theme | Covered? | Best Domain"]
+        def _tok(t: str) -> set:
+            import re
+            return set([w for w in re.findall(r"[A-Za-z0-9]+", (t or "").lower()) if len(w) > 2])
+        for theme in focus:
+            tt = _tok(theme)
+            best = None
+            best_score = 0.0
+            for r in context.search_results[:20]:
+                text = f"{r.get('title','')} {r.get('snippet','')}"
+                st = _tok(text)
+                if not st:
+                    continue
+                j = len(tt & st) / float(len(tt | st)) if (tt or st) else 0.0
+                if j > best_score:
+                    best_score = j
+                    best = r
+            covered = "yes" if best_score >= 0.5 else ("partial" if best_score >= 0.25 else "no")
+            dom = (best.get("domain") if isinstance(best, dict) and best else None) or (best.get("source") if isinstance(best, dict) and best else "")
+            rows.append(f"{theme} | {covered} | {dom}")
+        return "\n".join(rows)
+    
     def create_citation(self, source: Dict[str, Any], fact_type: str = "reference") -> Citation:
         """Create a citation from a source"""
         self.citation_counter += 1
@@ -303,7 +363,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
                 items_done=0,
                 items_total=total_sub_ops,
             )
-        relevant_results = [r for r in context.search_results[:5]]
+        relevant_results = self._top_relevant_results(context, 5)
         
         # Create citations (sub-op 2/3)
         if progress_tracker and research_id:
@@ -340,13 +400,20 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
+            evidence_block = self._format_evidence_block(context, 12)
+            coverage_tbl = self._coverage_table(context)
 
             prompt = f"""
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
             Use passionate, urgent language that exposes injustice and calls for change.
-            Use only these Isolated Findings as evidence:
+            Evidence Quotes (primary evidence; cite by [qid]):
+            {evidence_block}
+            Isolated Findings (secondary evidence):
             {iso_block}
+            Coverage Table (Theme | Covered? | Best Domain):
+            {coverage_tbl}
+            STRICT: Do not invent facts; ground claims in the Evidence Quotes above.
             Length: {int(2000 * section_def['weight'])} words
             """
             
@@ -623,7 +690,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 phase="synthesis",
                 message=f"{section_name}: Analyzing sources"
             )
-        relevant_results = [r for r in context.search_results[:5]]
+        relevant_results = self._top_relevant_results(context, 5)
         
         # Create citations
         if progress_tracker and research_id:
@@ -662,6 +729,8 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
+            evidence_block = self._format_evidence_block(context, 12)
+            coverage_tbl = self._coverage_table(context)
             
             prompt = f"""
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
@@ -670,8 +739,14 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             Statistical insights available:
             {insights_summary}
 
-            Isolated Findings (SSOTA Isolate Layer - use only these as evidence):
+            Evidence Quotes (primary evidence; cite by [qid]):
+            {evidence_block}
+
+            Isolated Findings (SSOTA Isolate Layer - secondary evidence):
             {iso_block}
+
+            Coverage Table (Theme | Covered? | Best Domain):
+            {coverage_tbl}
 
             {f"Meta-analysis results: {meta_analysis}" if meta_analysis else ""}
 
@@ -680,7 +755,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             - Include effect sizes, confidence intervals, and p-values where available
             - Distinguish correlation from causation
             - Acknowledge limitations
-            - STRICT: Do not introduce claims not supported by the Isolated Findings above
+            - STRICT: Do not introduce claims not supported by the Evidence Quotes above
 
             Length: {int(2000 * section_def['weight'])} words
             """
@@ -1053,7 +1128,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 phase="synthesis",
                 message=f"{section_name}: Analyzing strategic landscape"
             )
-        relevant_results = [r for r in context.search_results[:5]]
+        relevant_results = self._top_relevant_results(context, 5)
         
         # Create citations
         if progress_tracker and research_id:
@@ -1082,6 +1157,8 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
+            evidence_block = self._format_evidence_block(context, 12)
+            coverage_tbl = self._coverage_table(context)
 
             prompt = f"""
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
@@ -1090,8 +1167,13 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             SWOT Analysis:
             {swot_summary}
 
-            Use only these Isolated Findings as domain evidence:
+            Evidence Quotes (primary evidence; cite by [qid]):
+            {evidence_block}
+            Isolated Findings (secondary evidence):
             {iso_block}
+
+            Coverage Table (Theme | Covered? | Best Domain):
+            {coverage_tbl}
 
             Requirements:
             - Focus on actionable strategies and concrete recommendations
@@ -1511,6 +1593,7 @@ class AnswerGenerationOrchestrator:
             include_citations=(options or {}).get("include_citations", True),
             tone=(options or {}).get("tone", "professional"),
             metadata=options or {},
+            evidence_quotes=(options or {}).get("evidence_quotes", []) or [],
         )
         
         # Generate answer with progress callbacks if research_id available

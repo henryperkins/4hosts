@@ -683,12 +683,25 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             v2 = self._convert_legacy_to_v2_result(result)
             if synthesize_answer and _ANSWER_GEN_AVAILABLE:
                 try:
+                    # Build evidence quotes from converted results
+                    evidence_quotes: List[Dict[str, Any]] = []
+                    try:
+                        from services.evidence_builder import build_evidence_quotes
+                        evidence_quotes = await build_evidence_quotes(
+                            getattr(context_engineered, "original_query", ""),
+                            v2.get("results", []),
+                            max_docs=min(12, int(getattr(user_context, "source_limit", 10))) if user_context else 10,
+                            quotes_per_doc=3,
+                        )
+                    except Exception:
+                        evidence_quotes = []
                     synthesized_answer = await self._synthesize_answer(
                         classification=classification,
                         context_engineered=context_engineered,
                         results=v2.get("results", []),
                         research_id=research_id or f"research_{int(start_time.timestamp())}",
                         options=answer_options or {},
+                        evidence_quotes=evidence_quotes,
                     )
                     if synthesized_answer is not None:
                         v2["answer"] = synthesized_answer
@@ -792,12 +805,25 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         synthesized_answer = None
         if synthesize_answer and _ANSWER_GEN_AVAILABLE:
             try:
+                # Build evidence quotes from processed results
+                evidence_quotes: List[Dict[str, Any]] = []
+                try:
+                    from services.evidence_builder import build_evidence_quotes
+                    evidence_quotes = await build_evidence_quotes(
+                        getattr(context_engineered, "original_query", ""),
+                        processed_results["results"],
+                        max_docs=min(12, int(getattr(user_context, "source_limit", 10))),
+                        quotes_per_doc=3,
+                    )
+                except Exception:
+                    evidence_quotes = []
                 synthesized_answer = await self._synthesize_answer(
                     classification=classification,
                     context_engineered=context_engineered,
                     results=processed_results["results"],
                     research_id=research_id or f"research_{int(start_time.timestamp())}",
                     options=answer_options or {},
+                    evidence_quotes=evidence_quotes,
                 )
                 # Attach contradiction summary to answer metadata if available
                 try:
@@ -841,6 +867,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         results: List[SearchResult],
         research_id: str,
         options: Dict[str, Any],
+        evidence_quotes: Optional[List[Dict[str, Any]]] = None,
     ) -> Any:
         """Build a SynthesisContext from research outputs and invoke answer generator."""
         if not _ANSWER_GEN_AVAILABLE:
@@ -930,6 +957,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 include_citations=bool(options.get("include_citations", True)),
                 tone=str(options.get("tone", "professional")),
                 metadata={"research_id": research_id},
+                evidence_quotes=evidence_quotes or [],
             )
 
         # Emit synthesis started (mirrored as research_progress by tracker)
@@ -947,7 +975,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             query=getattr(context_engineered, "original_query", ""),
             search_results=sources,
             context_engineering=ce,
-            options={"research_id": research_id, **options},
+            options={"research_id": research_id, **options, "evidence_quotes": evidence_quotes or []},
         )
 
         # Emit synthesis completed with simple stats
@@ -1898,6 +1926,75 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             reverse=True
         )
 
+        # Optional LLM reranker for top-N relevance (env: LLM_RERANK_ENABLED)
+        try:
+            import os, json
+            if str(os.getenv("LLM_RERANK_ENABLED", "0")).lower() in {"1", "true", "yes"} and deduplicated_results:
+                top_n = min(30, len(deduplicated_results))
+                sample = deduplicated_results[:top_n]
+                # Compose compact passages
+                lines = []
+                for i, r in enumerate(sample):
+                    title = getattr(r, "title", "") or ""
+                    snip = getattr(r, "snippet", "") or ""
+                    txt = (title + " " + snip)[:400]
+                    lines.append(f"{i}) {txt}")
+                prompt = (
+                    "You are scoring search results for relevance.\n"
+                    f"Query: {getattr(context_engineered, 'original_query', '')}\n\n"
+                    "For each passage i below, assign a relevance score in [0,5] (float).\n"
+                    "Return only JSON matching the schema.\n\n"
+                    "Passages:\n" + "\n".join(lines)
+                )
+                json_schema = {
+                    "name": "rerankScores",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "scores": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "index": {"type": "integer"},
+                                        "score": {"type": "number"}
+                                    },
+                                    "required": ["index", "score"]
+                                }
+                            }
+                        },
+                        "required": ["scores"]
+                    },
+                    "strict": True
+                }
+                try:
+                    from services.llm_client import llm_client
+                    resp = await llm_client.generate_completion(
+                        prompt,
+                        paradigm="bernard",
+                        max_tokens=800,
+                        temperature=0.0,
+                        json_schema=json_schema,
+                    )
+                    if isinstance(resp, str):
+                        data = json.loads(resp)
+                    else:
+                        # In case client returns dict with content (unlikely here)
+                        try:
+                            data = json.loads(getattr(resp, "content", "{}"))
+                        except Exception:
+                            data = {"scores": []}
+                    scores = {int(it.get("index", -1)): float(it.get("score", 0.0)) for it in (data.get("scores") or []) if isinstance(it, dict)}
+                    # Stable sort by score desc while preserving prior credibility order
+                    indexed = list(enumerate(sample))
+                    indexed.sort(key=lambda t: scores.get(t[0], 0.0), reverse=True)
+                    deduplicated_results = [it[1] for it in indexed] + deduplicated_results[top_n:]
+                    self._search_metrics["llm_rerank_used"] = True
+                except Exception as _e:
+                    logger.debug("LLM reranker skipped: %s", _e)
+        except Exception:
+            pass
+
         limited_results = deduplicated_results[: int(getattr(user_context, "source_limit", 10))]
 
         # Paradigm post‑ranking: reorder results using the active paradigm strategy
@@ -1964,10 +2061,55 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     "metadata": item.get("metadata", {}) or {}
                 }
 
+        # Build weighted budgets: credibility × relevance × recency × evidence_density
+        def _recency_score(md: dict) -> float:
+            try:
+                from datetime import datetime, timezone
+                pd = md.get("published_date") or md.get("publication_date")
+                if isinstance(pd, str):
+                    # Best-effort parse
+                    import re as _re, datetime as _dt
+                    m = _re.match(r"(\d{4})-(\d{2})-(\d{2})", pd)
+                    if m:
+                        dt = _dt.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                    else:
+                        return 0.3
+                elif hasattr(pd, "year"):
+                    dt = pd
+                else:
+                    return 0.3
+                age_days = (datetime.now() - dt).days
+                # ~exponential decay with ~1 year half-life
+                import math
+                return max(0.0, min(1.0, math.exp(-age_days / 365.0)))
+            except Exception:
+                return 0.3
+
+        def _evidence_density(text: str) -> float:
+            if not text:
+                return 0.0
+            nums = sum(ch.isdigit() for ch in text)
+            frac = nums / max(1, len(text))
+            bonus = 0.2 if any(k in text.lower() for k in ["doi", "arxiv", "pmid", "%"]) else 0.0
+            return min(1.0, frac * 5.0 + bonus)  # cap
+
+        weights = {}
+        for item in result_payload:
+            cred = float(item.get("credibility_score", 0.0) or 0.0)
+            rel = float(item.get("relevance_score", 0.5) or 0.5)
+            md = item.get("metadata", {}) or {}
+            rec = _recency_score(md)
+            evd = _evidence_density((item.get("title", "") + " " + item.get("snippet", ""))[:1000])
+            w = max(0.0, 0.5 * cred + 0.25 * rel + 0.15 * rec + 0.10 * evd)
+            u = item.get("url") or ""
+            if u:
+                weights[u] = w
+
         try:
             compressed_results = compress_search_results(
                 result_payload,
-                total_token_budget=3000
+                total_token_budget=3000,
+                weights=weights,
             )
             self._search_metrics["compression_plural_used"] = int(
                 self._search_metrics.get("compression_plural_used", 0)
@@ -2159,20 +2301,62 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         paradigm: str
     ) -> List[SearchResult]:
         """Apply early-stage relevance filtering"""
-        filtered = []
-        removed_count = 0
+        import os, re
+        from services.text_compression import query_compressor
 
+        # Baseline rule-based filter
+        baseline: List[SearchResult] = []
+        removed_rule = 0
         for result in results:
-            if self.early_filter.is_relevant(result, query, paradigm):
-                filtered.append(result)
+            try:
+                ok = self.early_filter.is_relevant(result, query, paradigm)
+            except Exception:
+                ok = True
+            if ok:
+                baseline.append(result)
             else:
-                removed_count += 1
-                logger.debug(f"Filtered out: {result.domain} - {result.title[:50]}...")
+                removed_rule += 1
+                logger.debug("[early] rule-drop: %s - %s", getattr(result, "domain", ""), (getattr(result, "title", "") or "")[:60])
 
-        if removed_count > 0:
-            logger.info(f"Early relevance filter removed {removed_count} irrelevant results")
+        # Quick semantic theme-overlap filter (configurable)
+        try:
+            thr = float(os.getenv("EARLY_THEME_OVERLAP_MIN", "0.12") or 0.12)
+            q_terms = set(query_compressor.extract_keywords(query))
+            if not q_terms:
+                return baseline
 
-        return filtered
+            def toks(text: str) -> set:
+                return set([t for t in re.findall(r"[A-Za-z0-9]+", (text or "").lower()) if len(t) > 2])
+
+            filtered: List[SearchResult] = []
+            removed_sem = 0
+            for r in baseline:
+                try:
+                    title = getattr(r, "title", "") or ""
+                    snippet = getattr(r, "snippet", "") or ""
+                except Exception:
+                    title = snippet = ""
+                rtoks = toks(f"{title} {snippet}")
+                if not rtoks:
+                    filtered.append(r)
+                    continue
+                inter = len(q_terms & rtoks)
+                union = len(q_terms | rtoks)
+                jac = (inter / float(union)) if union else 0.0
+                if jac >= thr:
+                    filtered.append(r)
+                else:
+                    removed_sem += 1
+                    logger.debug("[early] theme-drop (%.3f<thr): %s - %s", jac, getattr(r, "domain", ""), title[:60])
+
+            removed_total = removed_rule + removed_sem
+            if removed_total > 0:
+                logger.info("Early filter removed %d results (rule=%d, theme=%d)", removed_total, removed_rule, removed_sem)
+            return filtered
+        except Exception:
+            if removed_rule > 0:
+                logger.info("Early filter removed %d results (rule)", removed_rule)
+            return baseline
 
     def normalize_result_shape(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Normalize result to ensure consistent shape with required fields"""

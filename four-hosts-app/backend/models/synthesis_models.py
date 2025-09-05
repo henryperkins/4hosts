@@ -20,6 +20,8 @@ class SynthesisContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     deep_research_content: Optional[str] = None
     classification_result: Optional[Any] = None
+    # New: prioritized quotes selected from top sources
+    evidence_quotes: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

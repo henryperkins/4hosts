@@ -4,7 +4,7 @@ Provides text and query compression functionality
 """
 
 import re
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 class TextCompressor:
@@ -139,27 +139,54 @@ class QueryCompressor:
         return unique_keywords
 
 
-def compress_search_results(results: List[dict], total_token_budget: int = 3000) -> List[dict]:
+def compress_search_results(
+    results: List[dict],
+    total_token_budget: int = 3000,
+    weights: Optional[Dict[str, float]] = None,
+) -> List[dict]:
     """
     Compress search result dicts into concise entries within a rough token budget.
+
+    If `weights` is provided, it should map each result's URL to a non‑negative
+    weight; budgets are allocated proportionally (with per‑item caps). Fallbacks
+    to equal allocation when missing.
     """
     compressor = text_compressor
     if not results:
         return []
-    per_item = max(200, int(total_token_budget / max(len(results), 1)))
-    per_item = min(per_item, 800)
+    # Compute per-item budgets
+    budgets: Dict[str, int] = {}
+    if weights:
+        # Normalize weights
+        wsum = sum(v for v in weights.values() if isinstance(v, (int, float)) and v > 0)
+        if wsum <= 0:
+            weights = None
+    if weights:
+        for r in results:
+            u = r.get("url") or ""
+            w = float(weights.get(u, 0.0) or 0.0)
+            share = (w / wsum) if wsum else 0.0  # type: ignore[name-defined]
+            alloc = int(max(150, min(800, total_token_budget * share)))
+            budgets[u] = alloc if alloc > 0 else 150
+    else:
+        per_item = max(200, int(total_token_budget / max(len(results), 1)))
+        per_item = min(per_item, 800)
     out: List[dict] = []
     for r in results:
         title = r.get("title") or ""
         snippet = r.get("snippet") or ""
         content = r.get("content") or ""
-        summary = compressor.compress_search_result(title, snippet, max_length=per_item)
+        u = r.get("url") or ""
+        budget = budgets.get(u) if budgets else None
+        if budget is None:
+            budget = per_item  # type: ignore[name-defined]
+        summary = compressor.compress_search_result(title, snippet, max_length=budget)
         short_title = title if len(title) <= 120 else title[:117] + "..."
         new_r = dict(r)
         new_r["title"] = short_title
         new_r["snippet"] = summary
         if content:
-            new_r["content"] = compressor.compress(content, max_length=per_item * 2)
+            new_r["content"] = compressor.compress(content, max_length=int(budget * 2))
         out.append(new_r)
     return out
 
