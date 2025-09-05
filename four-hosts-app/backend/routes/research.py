@@ -66,11 +66,21 @@ async def execute_real_research(
     - Paradigm-aware synthesis (enhanced answer orchestrator)
     - Persist results to research_store and broadcast completion
     """
+    
+    async def check_cancelled():
+        """Check if research has been cancelled"""
+        research_data = await research_store.get(research_id)
+        return research_data and research_data.get("status") == ResearchStatus.CANCELLED
+    
     try:
         # Mark in-progress
         await research_store.update_field(research_id, "status", ResearchStatus.IN_PROGRESS)
 
         # 1) Classification
+        if await check_cancelled():
+            logger.info(f"Research {research_id} cancelled before classification")
+            return
+            
         if progress_tracker:
             await progress_tracker.update_progress(research_id, "classification", 5)
 
@@ -104,6 +114,10 @@ async def execute_real_research(
             pass
 
         # 2) Context Engineering
+        if await check_cancelled():
+            logger.info(f"Research {research_id} cancelled before context engineering")
+            return
+            
         if progress_tracker:
             await progress_tracker.update_progress(research_id, "context_engineering", 15)
 
@@ -118,6 +132,8 @@ async def execute_real_research(
                 token_budget = getattr(ce.compress_output, "token_budget", None) if hasattr(ce, "compress_output") else None
                 iso_strategy = getattr(ce.isolate_output, "isolation_strategy", "") if hasattr(ce, "isolate_output") else ""
                 searches = len(getattr(ce.select_output, "search_queries", []) or []) if hasattr(ce, "select_output") else 0
+                rewrites = len((getattr(ce, "rewrite_output", {}) or {}).get("alternatives", [])) if hasattr(ce, "rewrite_output") else 0
+                variations = len(((getattr(ce, "optimize_output", {}) or {}).get("variations") or {})) if hasattr(ce, "optimize_output") else 0
                 await progress_tracker.update_progress(
                     research_id,
                     None,
@@ -127,6 +143,8 @@ async def execute_real_research(
                             "Context: "
                             + (f"focus='{doc_focus[:40]}', " if doc_focus else "")
                             + (f"search_queries={searches}, " if searches else "")
+                            + (f"rewrites={rewrites}, " if rewrites else "")
+                            + (f"variations={variations}, " if variations else "")
                             + (f"compression={comp_ratio*100:.0f}%, " if isinstance(comp_ratio, (int, float)) else "")
                             + (f"token_budget={token_budget}, " if token_budget else "")
                             + (f"isolation='{iso_strategy}'" if iso_strategy else "")
@@ -137,6 +155,10 @@ async def execute_real_research(
             pass
 
         # 3) Search, Retrieval, and Synthesis via unified orchestrator
+        if await check_cancelled():
+            logger.info(f"Research {research_id} cancelled before search/retrieval")
+            return
+            
         if progress_tracker:
             await progress_tracker.update_progress(research_id, "search_retrieval", 25)
 
@@ -203,17 +225,39 @@ async def execute_real_research(
                     primary_paradigm = HOST_TO_MAIN_PARADIGM.get(
                         getattr(cls, "primary_paradigm", None), Paradigm.BERNARD
                     ).value
+                    # Build domain lookup from sources for category/explanation enrichment
+                    domain_map = {}
+                    try:
+                        for s in sources_payload:
+                            d = (s.get("domain") or "").lower()
+                            if d and d not in domain_map:
+                                domain_map[d] = {
+                                    "source_category": s.get("source_category"),
+                                    "credibility_explanation": s.get("credibility_explanation"),
+                                    "credibility_score": s.get("credibility_score"),
+                                }
+                    except Exception:
+                        domain_map = {}
                     for c in raw_citations.values():
                         try:
+                            dom = (getattr(c, "domain", "") or "").lower()
+                            cat = None
+                            expl = None
+                            cred_val = float(getattr(c, "credibility_score", 0.5) or 0.5)
+                            if dom and dom in domain_map:
+                                cat = domain_map[dom].get("source_category")
+                                expl = domain_map[dom].get("credibility_explanation")
+                                # Prefer backend credibility score if better populated
+                                cred_val = float(domain_map[dom].get("credibility_score") or cred_val)
                             citations_payload.append(
                                 {
                                     "id": getattr(c, "id", ""),
                                     "source": getattr(c, "domain", ""),
                                     "title": getattr(c, "source_title", ""),
                                     "url": getattr(c, "source_url", ""),
-                                    "credibility_score": float(
-                                        getattr(c, "credibility_score", 0.5) or 0.5
-                                    ),
+                                    "credibility_score": cred_val,
+                                    "source_category": cat,
+                                    "credibility_explanation": expl,
                                     "paradigm_alignment": primary_paradigm,
                                 }
                             )
@@ -244,6 +288,8 @@ async def execute_real_research(
                         "credibility_score": float(item.get("credibility_score", 0.5) or 0.5),
                         "published_date": md.get("published_date"),
                         "source_type": md.get("result_type", "web"),
+                        "source_category": md.get("source_category"),
+                        "credibility_explanation": md.get("credibility_explanation"),
                     }
                 )
             except Exception:
@@ -259,19 +305,90 @@ async def execute_real_research(
             }
         }
 
+        # Optional: include secondary paradigm summary in analysis
+        if getattr(cls, "secondary_paradigm", None):
+            paradigm_analysis["secondary"] = {
+                "paradigm": HOST_TO_MAIN_PARADIGM.get(cls.secondary_paradigm, Paradigm.BERNARD).value,
+                "confidence": float(getattr(cls, "confidence", 0.6) or 0.6) * 0.8,
+                "approach": getattr(ce.write_output, "documentation_focus", "")[:120] if hasattr(ce, "write_output") else "",
+                "focus": ", ".join((getattr(ce.write_output, "key_themes", []) or [])[:2]) if hasattr(ce, "write_output") else "",
+            }
+
         # Aggregate metadata
         exec_meta = orch_resp.get("metadata", {}) or {}
         # Compose SSOTA context_layers summary
+        # Compose context layers with rewrite/optimize details
         context_layers = {
             "write_focus": getattr(ce.write_output, "documentation_focus", "") if hasattr(ce, "write_output") else "",
             "compression_ratio": float(getattr(ce.compress_output, "compression_ratio", 0.0) or 0.0) if hasattr(ce, "compress_output") else 0.0,
             "token_budget": int(getattr(ce.compress_output, "token_budget", 0) or 0) if hasattr(ce, "compress_output") else 0,
             "isolation_strategy": getattr(ce.isolate_output, "isolation_strategy", "") if hasattr(ce, "isolate_output") else "",
             "search_queries_count": len(getattr(ce.select_output, "search_queries", []) or []) if hasattr(ce, "select_output") else 0,
+            "layer_times": getattr(ce, "layer_durations", {}) if hasattr(ce, "layer_durations") else {},
+            "budget_plan": getattr(getattr(ce, "compress_output", object()), "budget_plan", {}) if hasattr(ce, "compress_output") else {},
+            # New rewrite/optimize details
+            "rewrite_primary": (getattr(ce, "rewrite_output", {}) or {}).get("rewritten", ""),
+            "rewrite_alternatives": len(((getattr(ce, "rewrite_output", {}) or {}).get("alternatives") or [])),
+            "optimize_primary": (getattr(ce, "optimize_output", {}) or {}).get("primary_query", ""),
+            "optimize_variations_count": len(((getattr(ce, "optimize_output", {}) or {}).get("variations") or {})),
+            "refined_queries_count": len(getattr(ce, "refined_queries", []) or []),
         }
 
         # Attach agent trace from orchestrator if present
         agent_trace = list(exec_meta.get("agent_trace", []) or []) if isinstance(exec_meta, dict) else []
+
+        # Compute quality metrics: actionable content and bias check
+        try:
+            # Actionable content heuristic
+            ai_count = len(answer_payload.get("action_items", []) or [])
+            sec_key_insights = 0
+            try:
+                for s in (answer_payload.get("sections", []) or []):
+                    sec_key_insights += len(s.get("key_insights", []) or [])
+            except Exception:
+                pass
+            actionable_count = ai_count + sec_key_insights
+            structural_items = len(answer_payload.get("sections", []) or [])
+            total_signals = max(1, actionable_count + structural_items)
+            actionable_ratio = actionable_count / float(total_signals)
+
+            # Bias/diversity heuristic over sources
+            domains = [s.get("domain", "").lower() for s in sources_payload if s.get("domain")]
+            total_sources = len(sources_payload)
+            unique_domains = len(set(domains)) if domains else 0
+            domain_diversity = (unique_domains / total_sources) if total_sources else 0.0
+            # dominant domain share
+            dominant_share = 0.0
+            dominant_domain = None
+            if domains:
+                from collections import Counter
+                ctr = Counter(domains)
+                dominant_domain, dom_count = ctr.most_common(1)[0]
+                dominant_share = dom_count / float(total_sources)
+            # source type diversity
+            types = [s.get("source_type", "web") for s in sources_payload]
+            unique_types = len(set(types)) if types else 0
+            bias_ok = (domain_diversity >= 0.6 and dominant_share <= 0.4 and unique_types >= 2)
+        except Exception:
+            actionable_ratio = 0.0
+            bias_ok = False
+            domain_diversity = 0.0
+            dominant_domain = None
+            dominant_share = 0.0
+            unique_types = 0
+
+        # Compute paradigm fit (confidence and margin)
+        try:
+            dist = getattr(cls, "distribution", {}) or {}
+            # Distribution may map HostParadigm -> float; convert to floats list
+            vals = list(dist.values())
+            if len(vals) >= 2:
+                top = sorted(vals, reverse=True)[:2]
+                margin = float(top[0] - top[1])
+            else:
+                margin = float(getattr(cls, "confidence", 0.0) or 0.0)
+        except Exception:
+            margin = 0.0
 
         metadata = {
             "total_sources_analyzed": len(sources_payload),
@@ -284,6 +401,24 @@ async def execute_real_research(
             "context_layers": context_layers,
             "agent_trace": agent_trace,
             "contradictions": exec_meta.get("contradictions", {"count": 0, "examples": []}),
+            "credibility_summary": exec_meta.get("credibility_summary"),
+            "category_distribution": exec_meta.get("category_distribution"),
+            "bias_distribution": exec_meta.get("bias_distribution"),
+            # Quality checks
+            "actionable_content_ratio": actionable_ratio,
+            "bias_check": {
+                "balanced": bias_ok,
+                "domain_diversity": domain_diversity,
+                "dominant_domain": dominant_domain,
+                "dominant_share": dominant_share,
+                "unique_types": unique_types,
+            },
+            # Paradigm fit metric for UI
+            "paradigm_fit": {
+                "primary": paradigm_analysis["primary"]["paradigm"],
+                "confidence": float(getattr(cls, "confidence", 0.0) or 0.0),
+                "margin": margin,
+            },
         }
 
         # Stream a compact agent trace snapshot for visibility
@@ -311,12 +446,121 @@ async def execute_real_research(
         except Exception:
             pass
 
+        # If suitable, generate an integrated synthesis (e.g., Maeve + Dolores)
+        integrated_synthesis = None
+        try:
+            primary_ui = paradigm_analysis["primary"]["paradigm"]
+            secondary_ui = paradigm_analysis.get("secondary", {}).get("paradigm")
+            if primary_ui == "maeve" and secondary_ui == "dolores":
+                # Extract list of results for answer generation
+                flat_results = orch_resp.get("results", []) or []
+                from services.answer_generator import answer_orchestrator as _ans
+                # Generate combined answers
+                combo = await _ans.generate_multi_paradigm_answer(
+                    primary_paradigm=primary_ui,
+                    secondary_paradigm=secondary_ui,
+                    query=research.query,
+                    search_results=flat_results,
+                    context_engineering=(getattr(ce, "model_dump", None)() if hasattr(ce, "model_dump") else (ce.dict() if hasattr(ce, "dict") else {})),
+                    options={"research_id": research_id, "max_length": 1600},
+                )
+                prim = combo.get("primary_paradigm", {}).get("answer")
+                sec = combo.get("secondary_paradigm", {}).get("answer")
+                # Transform to frontend-friendly minimal shape
+                def _sections(ans):
+                    out = []
+                    for s in getattr(ans, "sections", []) or []:
+                        try:
+                            out.append({
+                                "title": getattr(s, "title", ""),
+                                "paradigm": primary_ui,
+                                "content": getattr(s, "content", ""),
+                                "confidence": float(getattr(s, "confidence", 0.8) or 0.8),
+                                "sources_count": len(getattr(s, "citations", []) or []),
+                                "citations": list(getattr(s, "citations", []) or []),
+                                "key_insights": list(getattr(s, "key_insights", []) or []),
+                            })
+                        except Exception:
+                            continue
+                    return out
+                prim_sections = _sections(prim) if prim else []
+                sec_sections = _sections(sec) if sec else []
+
+                # Build Immediate Opportunities (top 3 actions from primary)
+                top_actions = []
+                for a in (getattr(prim, "action_items", []) or [])[:3]:
+                    try:
+                        top_actions.append({
+                            "priority": a.get("priority", "high"),
+                            "action": a.get("action", ""),
+                            "timeframe": a.get("timeline", ""),
+                            "paradigm": primary_ui,
+                        })
+                    except Exception:
+                        continue
+
+                # Pick a systemic context section from secondary (fallback to its summary)
+                systemic_section = None
+                if sec_sections:
+                    systemic = sec_sections[0]
+                    systemic_section = {
+                        "title": "Systemic Context (Dolores)",
+                        "paradigm": secondary_ui,
+                        "content": systemic.get("content", ""),
+                        "confidence": systemic.get("confidence", 0.8),
+                        "sources_count": systemic.get("sources_count", 0),
+                        "citations": systemic.get("citations", []),
+                        "key_insights": systemic.get("key_insights", []),
+                    }
+                else:
+                    sec_summary = getattr(sec, "summary", "") if sec else ""
+                    systemic_section = {
+                        "title": "Systemic Context (Dolores)",
+                        "paradigm": secondary_ui,
+                        "content": sec_summary,
+                        "confidence": 0.75,
+                        "sources_count": 0,
+                        "citations": [],
+                        "key_insights": [],
+                    }
+
+                integrated_synthesis = {
+                    "primary_answer": {
+                        "summary": getattr(prim, "summary", ""),
+                        "sections": prim_sections,
+                        "action_items": top_actions,
+                        "citations": [],
+                    },
+                    "secondary_perspective": systemic_section,
+                    "conflicts_identified": [],
+                    "synergies": [
+                        "Local advantages align with policy momentum",
+                        "Community trust amplifies strategic differentiation"
+                    ],
+                    "integrated_summary": (
+                        f"Strategic plan with immediate opportunities and systemic context integrated. "
+                        f"Primary: {primary_ui}, Secondary: {secondary_ui}."
+                    ),
+                    "confidence_score": 0.86,
+                }
+
+                # Ensure metadata includes both paradigms
+                try:
+                    if secondary_ui not in metadata["paradigms_used"]:
+                        metadata["paradigms_used"].append(secondary_ui)
+                except Exception:
+                    pass
+        except Exception as e:
+            # Use module-level logger; avoid overshadowing it within function scope
+            logger.warning("Integrated synthesis assembly skipped: %s", e)
+
         final_result = {
             "research_id": research_id,
             "query": research.query,
             "status": ResearchStatus.COMPLETED,
             "paradigm_analysis": paradigm_analysis,
             "answer": answer_payload,
+            "integrated_synthesis": integrated_synthesis,
             "sources": sources_payload,
             "metadata": metadata,
             "cost_info": {},
@@ -436,13 +680,22 @@ async def submit_research(
                 },
             )
 
+        # Estimate duration based on depth
+        depth_name = research.options.depth.value if hasattr(research, 'options') else 'standard'
+        if depth_name in ('quick',):
+            eta_minutes = 1
+        elif depth_name in ('standard',):
+            eta_minutes = 4
+        elif depth_name in ('deep',):
+            eta_minutes = 8
+        else:  # deep_research
+            eta_minutes = 12
+
         return {
             "research_id": research_id,
             "status": ResearchStatus.PROCESSING,
             "paradigm_classification": classification.dict(),
-            "estimated_completion": (
-                datetime.utcnow() + timedelta(minutes=2)
-            ).isoformat(),
+            "estimated_completion": (datetime.utcnow() + timedelta(minutes=eta_minutes)).isoformat(),
             "websocket_url": f"/ws/research/{research_id}",
         }
 

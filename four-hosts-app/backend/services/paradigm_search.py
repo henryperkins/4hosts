@@ -70,6 +70,11 @@ class DoloresSearchStrategy:
             "investigation",
             "whistleblower",
             "leak",
+            "antitrust",
+            "monopoly",
+            "price fixing",
+            "cartel",
+            "regulatory capture",
         ]
 
         # Preferred source domains
@@ -98,6 +103,9 @@ class DoloresSearchStrategy:
             '"documents show"',
             '"expose"',
             '"scandal"',
+            'FTC OR DOJ antitrust',
+            'state attorney general lawsuit',
+            'EU competition commission case',
         ]
 
     async def generate_search_queries(
@@ -230,8 +238,11 @@ class DoloresSearchStrategy:
                 f'"{query}" "hidden truth"',
                 f'{query} exposed documents'
             ])
+        # Always add regulatory/antitrust angle
+        patterns.append(f'{query} antitrust FTC OR DOJ')
+        patterns.append(f'{query} EU antitrust investigation')
         
-        return patterns[:3]
+        return patterns[:5]
 
     async def filter_and_rank_results(
         self, results: List[SearchResult], context: SearchContext
@@ -310,6 +321,9 @@ class TeddySearchStrategy:
             "charity",
             "aid",
             "relief",
+            "grant",
+            "benefits",
+            "program",
         ]
 
         self.preferred_sources = [
@@ -535,6 +549,9 @@ class BernardSearchStrategy:
             "methodology",
             "empirical",
             "systematic review",
+            "meta-analysis",
+            "dataset",
+            "replication",
         ]
 
         self.preferred_sources = [
@@ -810,6 +827,7 @@ class MaeveSearchStrategy:
             '"case study"',
             '"implementation guide"',
             '"strategic framework"',
+            'HBR OR McKinsey OR BCG case study',
         ]
 
     async def generate_search_queries(
@@ -924,8 +942,11 @@ class MaeveSearchStrategy:
         # Industry reports
         current_year = datetime.now().year
         patterns.append(f'{query} "industry report" {current_year}')
+        # Local advantage / niche strategy
+        patterns.append(f'{query} "same-day delivery" local advantage')
+        patterns.append(f'{query} "niche strategy" case study')
         
-        return patterns[:5]
+        return patterns[:7]
 
     async def filter_and_rank_results(
         self, results: List[SearchResult], context: SearchContext

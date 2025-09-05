@@ -1,7 +1,7 @@
 import React, { useReducer, useEffect, useCallback, useMemo } from 'react'
 import { Settings2, Users } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
-import type { ResearchOptions } from '../types'
+import type { ResearchOptions, Paradigm } from '../types'
 import { Button } from './ui/Button'
 import { InputField } from './ui/InputField'
 
@@ -58,6 +58,7 @@ function formReducer(state: ResearchFormState, action: FormAction): ResearchForm
 interface ResearchFormEnhancedProps {
   onSubmit: (query: string, options: ResearchOptions) => void
   isLoading: boolean
+  onQueryChange?: (query: string) => void
 }
 
 // Commented out - not currently used
@@ -89,7 +90,7 @@ interface ResearchFormEnhancedProps {
 //   </button>
 // ))
 
-export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSubmit, isLoading }) => {
+export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSubmit, isLoading, onQueryChange }) => {
   const { user } = useAuth()
   
   const initialState: ResearchFormState = {
@@ -138,8 +139,14 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
       return
     }
 
-    onSubmit(trimmedQuery, state.options)
-  }, [state.query, state.options, onSubmit])
+    // Include paradigm override if a specific paradigm is selected
+    const optionsToSend: ResearchOptions = {
+      ...state.options,
+      paradigm_override: state.paradigm !== 'auto' ? (state.paradigm as Paradigm) : undefined,
+    }
+
+    onSubmit(trimmedQuery, optionsToSend)
+  }, [state.query, state.options, state.paradigm, onSubmit])
 
   const paradigmOptions = useMemo(() => [
     { value: 'auto', label: 'Auto', icon: '🔮', description: 'Let AI choose', colorClass: 'text-purple-600 dark:text-purple-400' },
@@ -158,11 +165,16 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   // ], [])
 
   const handleQueryChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    dispatch({ type: 'SET_QUERY', payload: e.target.value })
-  }, [])
+    const value = e.target.value
+    dispatch({ type: 'SET_QUERY', payload: value })
+    // Notify parent for live classification preview (debounced upstream)
+    if (onQueryChange) onQueryChange(value)
+  }, [onQueryChange])
 
   const handleParadigmSelect = useCallback((value: string) => {
     dispatch({ type: 'SET_PARADIGM', payload: value })
+    const override = value !== 'auto' ? (value as Paradigm) : undefined
+    dispatch({ type: 'UPDATE_OPTIONS', payload: { paradigm_override: override } })
   }, [])
 
   // Currently not used - for future depth selection
@@ -251,35 +263,45 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             Research Depth
           </label>
           <div className="flex gap-3">
-            {[
-              { value: 'quick', label: 'Quick', description: 'Fast overview' },
-              { value: 'standard', label: 'Standard', description: 'Balanced analysis' },
-              { value: 'deep', label: 'Deep', description: 'Comprehensive research' },
-              { value: 'deep_research', label: 'Deep AI', description: 'o3 model analysis', badge: 'PRO' },
-            ].map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => dispatch({ type: 'SET_DEPTH', payload: option.value as 'quick' | 'standard' | 'deep' | 'deep_research' })}
-                disabled={isLoading || (option.value === 'deep_research' && user?.role === 'free')}
-                className={`flex-1 p-3 rounded-lg border transition-colors
+            {(() => {
+              const canUseDeep = ['pro', 'enterprise', 'admin'].includes(user?.role || 'free')
+              type DepthValue = ResearchFormState['depth']
+              interface DepthOption { value: DepthValue; label: string; description: string; badge?: string }
+              const depthOptions: DepthOption[] = [
+                { value: 'quick', label: 'Quick', description: 'Fast overview' },
+                { value: 'standard', label: 'Standard', description: 'Balanced analysis' },
+                { value: 'deep', label: 'Deep', description: 'Comprehensive research', badge: canUseDeep ? undefined : 'PRO' },
+                { value: 'deep_research', label: 'Deep AI', description: 'Advanced analysis', badge: 'PRO' },
+              ]
+              return depthOptions.map((option) => {
+                const isDeepTier = option.value === 'deep' || option.value === 'deep_research'
+                const disabled = isLoading || (isDeepTier && !canUseDeep)
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => dispatch({ type: 'SET_DEPTH', payload: option.value })}
+                    disabled={disabled}
+                    className={`flex-1 p-3 rounded-lg border transition-colors
                   ${state.depth === option.value
                     ? 'border-primary bg-primary/10 shadow-md'
                     : 'border-border hover:border-text-subtle bg-surface'
                   }
-                  ${isLoading || (option.value === 'deep_research' && user?.role === 'free') ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-lg'}`}
-              >
-                <div className="relative">
-                  <div className="font-medium text-text">{option.label}</div>
-                  <div className="text-xs text-text-muted mt-1">{option.description}</div>
-                  {option.badge && (
-                    <span className="absolute -top-2 -right-2 px-1.5 py-0.5 text-xs font-bold bg-gradient-to-r from-orange-500 to-yellow-500 text-white rounded">
-                      {option.badge}
-                    </span>
-                  )}
-                </div>
-              </button>
-            ))}
+                  ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-lg'}`}
+                  >
+                    <div className="relative">
+                      <div className="font-medium text-text">{option.label}</div>
+                      <div className="text-xs text-text-muted mt-1">{option.description}</div>
+                      {option.badge && (
+                        <span className="absolute -top-2 -right-2 px-1.5 py-0.5 text-xs font-bold bg-gradient-to-r from-orange-500 to-yellow-500 text-white rounded">
+                          {option.badge}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                )
+              })
+            })()}
           </div>
         </div>
 

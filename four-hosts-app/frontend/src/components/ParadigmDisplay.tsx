@@ -75,6 +75,45 @@ const ParadigmDisplayComponent = ({ classification }: ParadigmDisplayProps) => {
             </div>
           </div>
         )}
+
+        {/* Keyword signals (if provided) */}
+        {classification.signals && (
+          <div className="mt-4">
+            <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Signals</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {Object.entries(classification.signals).map(([p, detail]) => {
+                const info = paradigmInfo[p as Paradigm]
+                if (!info || !detail) return null
+                const kws = (detail.keywords || []).slice(0, 3)
+                const intents = (detail.intent_signals || []).slice(0, 3)
+                if (kws.length === 0 && intents.length === 0) return null
+                return (
+                  <div key={p} className={`border rounded-md p-2 ${info.borderColor} ${info.bgLight}`}>
+                    <div className={`text-xs font-semibold mb-1 ${info.textColor}`}>{info.name.split(' ')[0]}</div>
+                    {kws.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-1">
+                        {kws.map((kw, idx) => (
+                          <span key={idx} className="px-2 py-0.5 text-[10px] rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100">
+                            {kw}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {intents.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {intents.map((sig, idx) => (
+                          <span key={idx} className="px-2 py-0.5 text-[10px] rounded bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200">
+                            {sig}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

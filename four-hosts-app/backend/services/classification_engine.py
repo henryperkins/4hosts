@@ -67,6 +67,8 @@ class ClassificationResult:
     confidence: float
     features: QueryFeatures
     reasoning: Dict[HostParadigm, List[str]]
+    # Optional: structured signals for UI (e.g., matched keywords per paradigm)
+    signals: Dict[HostParadigm, Dict[str, Any]] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
 
@@ -509,6 +511,18 @@ class ParadigmClassifier:
 
         confidence = self._calculate_confidence(distribution, final_scores)
         reasoning = {p: scores.reasoning for p, scores in final_scores.items()}
+        # Build structured signals for downstream UI
+        signals: Dict[HostParadigm, Dict[str, Any]] = {}
+        for p, score_obj in final_scores.items():
+            try:
+                kw = list(score_obj.keyword_matches or [])
+            except Exception:
+                kw = []
+            signals[p] = {
+                "keywords": kw,
+                # Provide global intent signals for context
+                "intent_signals": list(features.intent_signals or []),
+            }
 
         return ClassificationResult(
             query=query,
@@ -518,6 +532,7 @@ class ParadigmClassifier:
             confidence=confidence,
             features=features,
             reasoning=reasoning,
+            signals=signals,
         )
 
     def _rule_based_classification(

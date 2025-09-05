@@ -481,7 +481,12 @@ class APIService {
     }
 
     const data = await response.json()
-    return data.classification
+    const classification: ParadigmClassification = data.classification
+    // Attach optional signals if present
+    if (data.signals && typeof data.signals === 'object') {
+      (classification as any).signals = data.signals
+    }
+    return classification
   }
 
   async getParadigmExplanation(paradigm: Paradigm): Promise<Record<string, unknown>> {

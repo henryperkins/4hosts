@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # WebSocket rate limiting configuration
 WS_RATE_LIMITS = {
     UserRole.FREE: {
-        "connections_per_user": 1,
+        "connections_per_user": 2,
         "messages_per_minute": 10,
         "subscriptions_per_connection": 5,
     },

@@ -13,6 +13,8 @@ export const ResearchPage = () => {
   const navigate = useNavigate()
   const [isLoading, setIsLoading] = useState(false)
   const [paradigmClassification, setParadigmClassification] = useState<ParadigmClassification | null>(null)
+  const [liveQuery, setLiveQuery] = useState<string>('')
+  const [liveClassification, setLiveClassification] = useState<ParadigmClassification | null>(null)
   const [results, setResults] = useState<ResearchResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [currentResearchId, setCurrentResearchId] = useState<string | null>(null)
@@ -27,6 +29,42 @@ export const ResearchPage = () => {
       }
     }
   }, [])
+
+  // Live classification preview with debounce
+  useEffect(() => {
+    // Reset preview when query cleared or while a research is running
+    if (!liveQuery || isLoading) {
+      setLiveClassification(null)
+      return
+    }
+
+    const trimmed = liveQuery.trim()
+    if (trimmed.length < 10) {
+      setLiveClassification(null)
+      return
+    }
+
+    const handle = setTimeout(async () => {
+      try {
+        const data = await api.classifyQuery(trimmed)
+        // Normalize to ParadigmClassification shape
+        if (data && data.primary) {
+          setLiveClassification({
+            primary: data.primary,
+            secondary: data.secondary ?? null,
+            distribution: data.distribution || {},
+            confidence: typeof data.confidence === 'number' ? data.confidence : 0,
+            explanation: data.explanation || {},
+            signals: (data as any).signals || undefined
+          })
+        }
+      } catch {
+        // Silent fail for preview
+      }
+    }, 400)
+
+    return () => clearTimeout(handle)
+  }, [liveQuery, isLoading])
 
   // Type helpers for staged/terminal statuses from results endpoint
   type StagedStatus = 'queued' | 'processing' | 'in_progress' | 'failed' | 'cancelled'
@@ -53,25 +91,12 @@ export const ResearchPage = () => {
 
     try {
       // Submit research query
-      let data
-      if (options.depth === 'deep_research') {
-        // Use deep research endpoint for o3-deep-research model
-        // TODO: Add UI for search context size and user location configuration
-        data = await api.submitDeepResearch(
-          query, 
-          options.paradigm_override || undefined,
-          'medium', // Default search context size
-          undefined // User location - could detect from browser
-        )
-      } else {
-        // Use standard research endpoint
-        data = await api.submitResearch(query, options)
-      }
+      const data = await api.submitResearch(query, options)
       setCurrentResearchId(data.research_id)
 
-      // Poll for results
+      // Poll for results (extend to avoid premature timeout)
       let retries = 0
-      const maxRetries = 60
+      const maxRetries = 600 // 20 minutes at 2s interval
 
       pollIntervalRef.current = setInterval(async () => {
         try {
@@ -84,10 +109,11 @@ export const ResearchPage = () => {
           const stagedStatuses: StagedStatus[] = ['queued','processing','in_progress']
           const status = getStatus(resultsData)
           if (status && stagedStatuses.includes(status as StagedStatus)) {
+            // Still processing; keep polling (WebSocket shows progress). Do not auto-cancel.
             if (retries >= maxRetries) {
-              setError('Research timeout - please try again')
+              // Convert to a soft timeout: keep progress visible, stop polling, let WS finish.
+              setError('Research is taking longer than usual but is still running. You can keep this page open or come back later in History.')
               setIsLoading(false)
-              setShowProgress(false)
               clearInterval(pollIntervalRef.current!)
             }
             return
@@ -136,9 +162,8 @@ export const ResearchPage = () => {
           clearInterval(pollIntervalRef.current!)
         } catch {
           if (retries >= maxRetries) {
-            setError('Research timeout - please try again')
+            setError('Research is taking longer than usual but is still running. You can keep this page open or come back later in History.')
             setIsLoading(false)
-            setShowProgress(false)
             clearInterval(pollIntervalRef.current!)
           }
         }
@@ -167,12 +192,20 @@ export const ResearchPage = () => {
         </p>
       </div>
 
-      <ResearchFormEnhanced onSubmit={handleSubmit} isLoading={isLoading} />
+      <ResearchFormEnhanced onSubmit={handleSubmit} isLoading={isLoading} onQueryChange={setLiveQuery} />
 
       {error && (
         <Alert variant="error" title="Research Error" className="mt-4">
           {error}
         </Alert>
+      )}
+
+      {/* Live preview before submission */}
+      {!results && !showProgress && liveClassification && (
+        <div className="animate-scale-in">
+          <div className="mb-2 text-xs text-text-muted">Live Paradigm Preview</div>
+          <ParadigmDisplay classification={liveClassification} />
+        </div>
       )}
 
       {paradigmClassification && (

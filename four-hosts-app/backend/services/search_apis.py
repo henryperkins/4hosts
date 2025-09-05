@@ -79,6 +79,18 @@ def _structured_log(level: str, event: str, meta: Dict[str, Any]):
     else:
         logger.info(msg)
 
+# Semantic Scholar retry/backoff tuning (env-configurable)
+# Defaults slightly conservative to reduce 429s.
+SS_RETRY_ATTEMPTS = int(os.getenv("SS_RETRY_ATTEMPTS", "4"))
+SS_RETRY_MIN = float(os.getenv("SS_RETRY_MIN", "4"))
+SS_RETRY_MAX = float(os.getenv("SS_RETRY_MAX", "30"))
+SS_RETRY_MULTIPLIER = float(os.getenv("SS_RETRY_MULTIPLIER", "1.0"))
+
+# Per-provider backoff params for 429s (falls back to generic SEARCH_* if set)
+SS_BASE_DELAY = float(os.getenv("SS_RATE_LIMIT_BASE_DELAY", os.getenv("SEARCH_RATE_LIMIT_BASE_DELAY", "2")))
+SS_BACKOFF_FACTOR = float(os.getenv("SS_RATE_LIMIT_BACKOFF_FACTOR", os.getenv("SEARCH_RATE_LIMIT_BACKOFF_FACTOR", "2")))
+SS_MAX_DELAY = float(os.getenv("SS_RATE_LIMIT_MAX_DELAY", os.getenv("SEARCH_RATE_LIMIT_MAX_DELAY", "30")))
+
 def _log_api_event(event: str, level: str = "info", **kwargs):
     # Truncate potentially large fields
     headers = kwargs.get("headers")
@@ -370,7 +382,9 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
     }
 
     try:
-        timeout = aiohttp.ClientTimeout(total=15)
+        import os as _os
+        _fetch_to = float(_os.getenv('SEARCH_FETCH_TIMEOUT_SEC', '25') or 25)
+        timeout = aiohttp.ClientTimeout(total=_fetch_to)
         async with session.get(
             url, timeout=timeout, headers=headers, allow_redirects=True
         ) as response:
@@ -417,24 +431,26 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                 attempts = getattr(session, attempt_key, 0) + 1
                 setattr(session, attempt_key, attempts)
 
-                # Compute an upper bound for jitter that respects max_delay and server hints
-                computed = base_delay * (factor ** (attempts - 1))
-                upper = min(max_delay, computed)
+                # Compute delay with exponential backoff, capped at max_delay
+                computed = min(max_delay, base_delay * (factor ** (attempts - 1)))
                 server_retry = None
                 if retry_after_hdr and retry_after_hdr.isdigit():
                     try:
                         server_retry = float(retry_after_hdr)
-                        # If server suggests a smaller wait, tighten our upper bound
-                        upper = min(upper, server_retry)
+                        # Use server suggestion if it's larger than our computed delay
+                        computed = max(computed, server_retry)
                     except ValueError:
                         server_retry = None
 
-                delay = upper
+                # Apply jitter to avoid thundering herd
                 if jitter == 'full':
-                    delay = random.uniform(0, upper)
+                    # Use a minimum of 50% of computed to avoid too small delays
+                    delay = random.uniform(computed * 0.5, computed)
+                else:
+                    delay = computed
 
                 logger.warning(
-                    f"Rate limited (429) for {url}, attempt {attempts}, backing off {delay:.2f}s (server={server_retry}, computed={computed:.2f}, max={max_delay})"
+                    f"Rate limited (429) for {url}, attempt {attempts}, backing off {delay:.2f}s (server={server_retry}, computed={computed:.2f}, max={max_delay}, jitter={jitter})"
                 )
                 await asyncio.sleep(delay)
                 # Raise to allow @retry to handle another attempt
@@ -518,6 +534,16 @@ class SearchConfig:
     authority_blacklist: List[str] = field(default_factory=list)  # Blocked domains
     prefer_primary_sources: bool = True
     min_relevance_score: float = 0.25
+    
+    # Brave-specific parameters
+    offset: int = 0  # Pagination offset (max 9 for Brave)
+    result_filter: Optional[List[str]] = None  # Explicit result types: web, news, videos, faq, locations
+    latitude: Optional[float] = None  # User latitude for local results
+    longitude: Optional[float] = None  # User longitude for local results  
+    units: Optional[str] = None  # "metric" or "imperial" for measurements
+    goggles: Optional[str] = None  # URL to custom Goggles for re-ranking
+    extra_snippets: bool = False  # Enable additional snippets (Pro/AI plan)
+    summary: bool = False  # Enable AI summarization (Pro/AI plan)
 
 
 class RateLimiter:
@@ -1529,18 +1555,32 @@ class BraveSearchAPI(BaseSearchAPI):
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
             "X-Subscription-Token": self.api_key,
+            "User-Agent": "FourHosts-Research/1.0",  # Identify our client
         }
+        
+        # Add geolocation headers if available in config
+        if (
+            getattr(config, 'latitude', None) is not None and
+            getattr(config, 'longitude', None) is not None
+        ):
+            headers["X-Loc-Lat"] = str(config.latitude)
+            headers["X-Loc-Long"] = str(config.longitude)
 
         # Core parameters
         params = {
-            "q": optimized_query[:400],  # Max 400 chars per API docs
+            "q": optimized_query[:400],  # Max 400 chars, 50 words per API docs
             "count": min(config.max_results, 20),  # Brave max is 20 per request
-            "search_lang": config.language,
+            "search_lang": config.language or "en",
             "country": config.region.upper() if config.region else "US",
-            "safesearch": config.safe_search,
+            "safesearch": config.safe_search or "moderate",
             "text_decorations": "true",  # Include highlighting (as string)
             "spellcheck": "true",  # Enable spell correction (as string)
+            "offset": int(getattr(config, 'offset', 0) or 0),  # Ensure int; Support pagination (max 9)
         }
+        
+        # Add units preference if specified
+        if getattr(config, 'units', None):
+            params["units"] = str(config.units)
 
         # Add freshness filter if date range is specified
         if config.date_range:
@@ -1548,18 +1588,29 @@ class BraveSearchAPI(BaseSearchAPI):
             if config.date_range in freshness_map:
                 params["freshness"] = freshness_map[config.date_range]
 
-        # Add result filters based on source types
-        if config.source_types:
+        # Add result filters based on source types or explicit filter
+        result_filters = []
+        if hasattr(config, 'result_filter') and config.result_filter:
+            # Use explicit result filter if provided
+            result_filters = config.result_filter if isinstance(config.result_filter, list) else [config.result_filter]
+        elif config.source_types:
             # Map our source types to Brave's result filters
-            result_filters = []
             if "web" in config.source_types:
                 result_filters.append("web")
             if "news" in config.source_types:
                 result_filters.append("news")
             if "academic" in config.source_types:
                 result_filters.extend(["faq", "discussions"])  # Academic-like content
-            if result_filters:
-                params["result_filter"] = ",".join(result_filters)
+            if "video" in config.source_types:
+                result_filters.append("videos")
+            if "local" in config.source_types:
+                result_filters.append("locations")
+        
+        if result_filters:
+            params["result_filter"] = ",".join(result_filters)
+
+        # Remove None-valued params to avoid aiohttp/yarl type errors
+        params = {k: v for k, v in params.items() if v is not None}
 
         try:
             async with self._get_session().get(
@@ -1605,7 +1656,8 @@ class BraveSearchAPI(BaseSearchAPI):
     def _parse_brave_results(self, data: Dict[str, Any]) -> List[SearchResult]:
         """Parse Brave API response according to documented structure."""
         results = []
-        result_types = ["web", "news", "faq", "discussions"]
+        # Parse all available result types from the response
+        result_types = ["web", "news", "faq", "discussions", "videos", "locations"]
 
         for r_type in result_types:
             for item in data.get(r_type, {}).get("results", []):
@@ -1629,16 +1681,62 @@ class BraveSearchAPI(BaseSearchAPI):
                 if not domain and item.get("url"):
                     domain = urlparse(item["url"]).netloc
 
+                # Extract type-specific fields with resilient fallbacks
+                title = item.get("title", "") or ""
+                url = item.get("url", "") or ""
+                snippet = item.get("description")
+                if not isinstance(snippet, str) or not snippet.strip():
+                    # Try alternative fields or fall back to title
+                    snippet = (
+                        (meta_url.get("title") if isinstance(meta_url, dict) else None)
+                        or item.get("text")
+                        or title
+                        or ""
+                    )
+                
+                # Handle FAQ results differently
+                if r_type == "faq":
+                    title = item.get("question", title)
+                    snippet = item.get("answer", snippet)
+                
+                # Extract thumbnail if present
+                thumbnail_url = None
+                if "thumbnail" in item and isinstance(item["thumbnail"], dict):
+                    thumbnail_url = item["thumbnail"].get("src")
+                
+                # Build result with enhanced metadata
                 result = SearchResult(
-                    title=item.get("title", ""),
-                    url=item.get("url", ""),
-                    snippet=item.get("description", ""),
+                    title=title,
+                    url=url,
+                    snippet=snippet,
                     source="brave_search",
                     domain=domain,
                     published_date=published_date,
                     result_type=r_type,
                     raw_data=item,
                 )
+                
+                # Add type-specific metadata to raw_data
+                if r_type == "news":
+                    result.raw_data["news_source"] = item.get("source", "")
+                    result.raw_data["breaking"] = item.get("breaking", False)
+                elif r_type == "videos":
+                    result.raw_data["duration"] = item.get("duration")
+                    result.raw_data["views"] = item.get("views")
+                    result.raw_data["creator"] = item.get("creator")
+                elif r_type == "locations":
+                    result.raw_data["coordinates"] = item.get("coordinates")
+                    result.raw_data["rating"] = item.get("rating")
+                    result.raw_data["address"] = item.get("postal_address")
+                    result.raw_data["phone"] = item.get("phone")
+                    result.raw_data["hours"] = item.get("opening_hours")
+                elif r_type == "faq":
+                    result.raw_data["question"] = item.get("question")
+                    result.raw_data["answer"] = item.get("answer")
+                
+                if thumbnail_url:
+                    result.raw_data["thumbnail_url"] = thumbnail_url
+                    
                 results.append(result)
         return results
 
@@ -1788,12 +1886,45 @@ class SemanticScholarAPI(BaseSearchAPI):
     """Semantic Scholar API for free academic paper search"""
 
     def __init__(self, rate_limiter: Optional[RateLimiter] = None):
-        super().__init__("", rate_limiter)  # No API key needed
+        """Create SemanticScholar API wrapper.
+
+        Supports optional API-key rotation by reading a comma-separated list from
+        the ``SEMANTIC_SCHOLAR_API_KEYS`` environment variable. If no key is
+        provided the public, unauthenticated endpoint is used (rate-limited).
+        """
+
+        # Read API keys from env; empty string entries are ignored
+        keys_env = os.getenv("SEMANTIC_SCHOLAR_API_KEYS", "")
+        self._api_keys: list[str] = [k.strip() for k in keys_env.split(",") if k.strip()]
+        self._key_index: int = 0
+
+        # Call parent with *first* key (or blank)
+        first_key = self._api_keys[0] if self._api_keys else ""
+        super().__init__(first_key, rate_limiter)
+
         self.base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
 
+    # ------------------------------------------------------------------ #
+    # Internals: API-key handling
+    # ------------------------------------------------------------------ #
+
+    def _current_key(self) -> str | None:
+        return self._api_keys[self._key_index] if self._api_keys else None
+
+    def _rotate_key(self):
+        """Switch to the next API key (if configured)."""
+        if not self._api_keys:
+            return  # nothing to rotate
+        self._key_index = (self._key_index + 1) % len(self._api_keys)
+        logger.info(
+            "Semantic Scholar key rotated (index=%s total=%s)",
+            self._key_index + 1,
+            len(self._api_keys),
+        )
+
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(SS_RETRY_ATTEMPTS),
+        wait=wait_exponential(multiplier=SS_RETRY_MULTIPLIER, min=SS_RETRY_MIN, max=SS_RETRY_MAX),
         retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
     )
     async def search(
@@ -1810,9 +1941,13 @@ class SemanticScholarAPI(BaseSearchAPI):
                 "citationCount,influentialCitationCount"
             ),
         }
-
+        headers = {}
+        key_in_use = self._current_key()
+        if key_in_use:
+            headers["x-api-key"] = key_in_use
         session = self._get_session()
-        headers = {"Accept": "application/json"}
+        # Ensure Accept header is set alongside key if present
+        headers.setdefault("Accept", "application/json")
 
         try:
             async with session.get(self.base_url, params=params, headers=headers) as response:
@@ -1828,6 +1963,10 @@ class SemanticScholarAPI(BaseSearchAPI):
                 )
 
                 if status == 200:
+                    # Reset rate limit attempts counter on successful request
+                    attempt_key = f"_ss_rate_attempts_{hash(self.base_url)}"
+                    setattr(session, attempt_key, 0)
+                    
                     # Attempt to parse JSON; handle HTML/non-JSON gracefully
                     try:
                         data = await response.json()
@@ -1866,28 +2005,30 @@ class SemanticScholarAPI(BaseSearchAPI):
                 if status == 429:
                     # Respect server Retry-After and apply exponential backoff with jitter
                     retry_after_hdr = response.headers.get("retry-after") if getattr(response, "headers", None) else None
-                    base_delay = float(os.getenv("SEARCH_RATE_LIMIT_BASE_DELAY", "2"))
-                    factor = float(os.getenv("SEARCH_RATE_LIMIT_BACKOFF_FACTOR", "2"))
-                    max_delay = float(os.getenv("SEARCH_RATE_LIMIT_MAX_DELAY", "30"))
+                    base_delay = SS_BASE_DELAY
+                    factor = SS_BACKOFF_FACTOR
+                    max_delay = SS_MAX_DELAY
                     jitter_mode = os.getenv("SEARCH_RATE_LIMIT_JITTER", "full")  # 'none' | 'full'
 
                     attempt_key = f"_ss_rate_attempts_{hash(self.base_url)}"
                     attempts = getattr(session, attempt_key, 0) + 1
                     setattr(session, attempt_key, attempts)
 
-                    computed = base_delay * (factor ** (attempts - 1))
-                    upper = min(max_delay, computed)
+                    computed = min(max_delay, base_delay * (factor ** (attempts - 1)))
                     server_retry = None
                     if retry_after_hdr and retry_after_hdr.isdigit():
                         try:
                             server_retry = float(retry_after_hdr)
-                            upper = min(upper, server_retry)
+                            computed = max(computed, server_retry)  # Use server suggestion if larger
                         except ValueError:
                             server_retry = None
 
-                    delay = upper
+                    # Apply jitter to avoid thundering herd
                     if jitter_mode == "full":
-                        delay = random.uniform(0, upper)
+                        # Use a minimum of 50% of computed to avoid too small delays
+                        delay = random.uniform(computed * 0.5, computed)
+                    else:
+                        delay = computed
 
                     _log_api_event(
                         "semantic_scholar_rate_limited",
@@ -1898,13 +2039,27 @@ class SemanticScholarAPI(BaseSearchAPI):
                         headers=dict(response.headers),
                         retry_after=server_retry,
                         attempts=attempts,
-                        backoff_delay=round(delay, 3),
-                        computed=round(computed, 3),
+                        actual_delay=round(delay, 3),
+                        computed_delay=round(computed, 3),
                         max_delay=max_delay,
                     )
                     await asyncio.sleep(delay)
-                    # Raise to trigger tenacity retry
-                    raise RateLimitedError("429 Too Many Requests from Semantic Scholar")
+
+                    # Rotate API key (if multiple configured) before retrying
+                    self._rotate_key()
+
+                    # Raise to trigger tenacity retry (if we haven't exceeded max retries)
+                    if attempts <= 10:  # Prevent infinite retries
+                        raise RateLimitedError("429 Too Many Requests from Semantic Scholar")
+                    else:
+                        _log_api_event(
+                            "semantic_scholar_max_retries_exceeded",
+                            level="error",
+                            endpoint=self.base_url,
+                            params=params,
+                            attempts=attempts,
+                        )
+                        return []  # Give up after too many attempts
 
                 if status == 202:
                     # Content not ready; treat as transient non-fatal
@@ -1973,6 +2128,27 @@ class SemanticScholarAPI(BaseSearchAPI):
         papers_list: List[Dict[str, Any]] = []
 
         if isinstance(data, dict):
+            # Handle common empty payload variant: {"total": 0, "offset": 0}
+            try:
+                has_list_field = any(
+                    isinstance(data.get(k), list) for k in ("data", "papers", "results", "items")
+                )
+                total_val = data.get("total")
+                total_is_zero = False
+                if total_val is not None:
+                    try:
+                        total_is_zero = int(total_val) == 0
+                    except Exception:
+                        total_is_zero = False
+                if total_is_zero and not has_list_field:
+                    _log_api_event(
+                        "semantic_scholar_empty_response",
+                        level="debug",
+                        keys=list(data.keys()),
+                    )
+                    return []
+            except Exception:
+                pass
             try:
                 # Tolerant validation; allows extra fields
                 SSPaperSearchResponse.model_validate(data)
@@ -2610,8 +2786,10 @@ def create_search_manager(cache_manager=None) -> SearchAPIManager:
     manager.add_api("pubmed", pubmed_api)
 
     # Add Semantic Scholar (free, excellent for academic papers)
+    # Tune Semantic Scholar to a more conservative per-minute rate to reduce 429s
+    ss_cpm = int(os.getenv("SS_CALLS_PER_MINUTE", "6"))
     semantic_scholar_api = SemanticScholarAPI(
-        rate_limiter=RateLimiter(calls_per_minute=10)  # More conservative rate limit
+        rate_limiter=RateLimiter(calls_per_minute=ss_cpm)
     )
     manager.add_api("semantic_scholar", semantic_scholar_api)
 

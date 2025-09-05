@@ -16,6 +16,8 @@ from abc import ABC, abstractmethod
 # Import from classification engine
 from .classification_engine import HostParadigm, ClassificationResult, QueryFeatures
 from . import paradigm_search
+from services.search_apis import QueryOptimizer  # type: ignore
+from services.llm_client import llm_client  # type: ignore
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +48,10 @@ class SelectLayerOutput:
     exclusion_filters: List[str]
     tool_selections: List[str]
     max_sources: int
+    # New: normalized source types for SearchConfig (e.g., web/news/academic)
+    normalized_source_types: List[str] = field(default_factory=list)
+    # New: domain authority whitelist for paradigm
+    authority_whitelist: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -85,7 +91,14 @@ class ContextEngineeredQuery:
     compress_output: CompressLayerOutput
     isolate_output: IsolateLayerOutput
     processing_time: float
+    # New optional layer outputs
+    rewrite_output: Optional[Dict[str, Any]] = None
+    optimize_output: Optional[Dict[str, Any]] = None
     timestamp: datetime = field(default_factory=datetime.now)
+    # Optional: per-layer durations in seconds
+    layer_durations: Dict[str, float] = field(default_factory=dict)
+    # Refined queries after rewrite/optimization (consumed by orchestrator)
+    refined_queries: List[str] = field(default_factory=list)
 
 
 # --- Base Layer Class ---
@@ -239,40 +252,123 @@ class WriteLayer(ContextLayer):
         return output
 
     def _extract_query_themes(self, classification: ClassificationResult) -> List[str]:
-        """Extract themes from the query itself"""
-        themes = []
+        """Extract themes from the query itself."""
+        themes: List[str] = []
 
-        # Use entities as themes
-        themes.extend(classification.features.entities)
+        # Use extracted entities directly as themes
+        try:
+            themes.extend(classification.features.entities)
+        except Exception:
+            pass
 
-        # Extract key concepts from tokens
-        important_tokens = [
-            t
-            for t in classification.features.tokens
-            if len(t) > 5 and t not in ["should", "would", "could", "about", "through"]
-        ]
-        themes.extend(important_tokens[:5])
+        # Pull out important tokens (exclude filler words)
+        try:
+            important_tokens = [
+                t
+                for t in classification.features.tokens
+                if isinstance(t, str)
+                and len(t) > 5
+                and t.lower() not in {"should", "would", "could", "about", "through"}
+            ]
+            themes.extend(important_tokens[:5])
+        except Exception:
+            pass
 
-        return themes
+        # Deduplicate while preserving order
+        seen: Set[str] = set()
+        return [t for t in themes if not (t in seen or seen.add(t))]
 
     def _generate_search_priorities(
         self, classification: ClassificationResult, base_priorities: List[str]
     ) -> List[str]:
-        """Generate search priorities based on query context"""
-        priorities = base_priorities.copy()
+        """Generate search priorities based on query context."""
+        priorities = list(base_priorities)
 
-        # Add domain-specific priorities
-        if classification.features.domain:
-            domain_priorities = {
-                "business": ["industry reports", "competitor analysis"],
-                "healthcare": ["clinical studies", "patient outcomes"],
-                "education": ["pedagogical research", "learning outcomes"],
-                "technology": ["technical documentation", "benchmarks"],
-                "social_justice": ["advocacy reports", "policy analysis"],
-            }
+        # Add domain-specific priorities when available
+        try:
+            domain = classification.features.domain
+        except Exception:
+            domain = None
 
-            if classification.features.domain in domain_priorities:
-                priorities.extend(domain_priorities[classification.features.domain])
+        domain_priorities = {
+            "business": ["industry reports", "competitor analysis"],
+            "healthcare": ["clinical studies", "patient outcomes"],
+            "education": ["pedagogical research", "learning outcomes"],
+            "technology": ["technical documentation", "benchmarks"],
+            "social_justice": ["advocacy reports", "policy analysis"],
+        }
+
+        if domain and domain in domain_priorities:
+            priorities.extend(domain_priorities[domain])
+
+        # Consider temporal aspect if recency is emphasized
+        try:
+            if getattr(classification.features, "time_sensitive", False):
+                priorities.append("recent developments")
+        except Exception:
+            pass
+
+        # Deduplicate while preserving order
+        seen: Set[str] = set()
+        return [p for p in priorities if not (p in seen or seen.add(p))]
+
+
+class RewriteLayer(ContextLayer):
+    """Rewrites the original query for clarity and searchability"""
+
+    def __init__(self):
+        super().__init__("Rewrite")
+
+    async def process(
+        self,
+        classification: ClassificationResult,
+        previous_outputs: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        start_time = datetime.now()
+        original = classification.query
+        paradigm = classification.primary_paradigm.value
+        rewrites: List[str] = []
+        method = "heuristic"
+        # Prefer LLM rewrite when available
+        try:
+            prompt = (
+                "Rewrite the user query to be concise, specific, and search-friendly. "
+                "Preserve the intent. Quote named entities and key phrases.\n\n"
+                f"Query: {original}"
+            )
+            txt = await llm_client.generate_completion(prompt, paradigm=paradigm, temperature=0.3, max_tokens=160)
+            if isinstance(txt, str) and txt.strip():
+                lines = [l.strip("- ") for l in str(txt).splitlines() if l.strip()]
+                for l in lines:
+                    m = re.match(r"^(?:\d+\.|\(\d+\))\s*(.*)$", l)
+                    rewrites.append(m.group(1) if m else l)
+                rewrites = [r for r in rewrites if len(r) >= 6][:3]
+                if rewrites:
+                    method = "llm"
+        except Exception:
+            pass
+
+        if not rewrites:
+            # Heuristic fallback: quote extracted entities and trim filler
+            entities = classification.features.entities
+            core = original
+            for e in entities:
+                try:
+                    core = re.sub(rf"\b{re.escape(e)}\b", f'"{e}"', core)
+                except re.error:
+                    continue
+            core = re.sub(r"\b(please|kindly|can you|would you|tell me|about)\b", "", core, flags=re.I)
+            core = re.sub(r"\s+", " ", core).strip()
+            rewrites = [core] if core else [original]
+
+        duration = (datetime.now() - start_time).total_seconds()
+        output = {
+            "method": method,
+            "rewritten": rewrites[0],
+            "alternatives": rewrites,
+        }
+        self.log_processing(original, output, duration)
+        return output
 
         # Add urgency-based priorities
         if classification.features.urgency_score > 0.7:
@@ -399,6 +495,34 @@ class SelectLayer(ContextLayer):
         #     )
         #     search_queries.extend(secondary_queries[:3])  # Add top 3
 
+        # Normalize source types for SearchConfig
+        normalized_map = {
+            HostParadigm.MAEVE: ["web", "news"],
+            HostParadigm.BERNARD: ["academic", "web"],
+            HostParadigm.DOLORES: ["news", "web"],
+            HostParadigm.TEDDY: ["web", "news"],
+        }
+
+        # Authority whitelists per paradigm
+        authority_whitelists = {
+            HostParadigm.MAEVE: [
+                "hbr.org", "mckinsey.com", "bcg.com", "bain.com", "strategy-business.com",
+                "ft.com", "wsj.com", "bloomberg.com", "gartner.com", "forrester.com"
+            ],
+            HostParadigm.BERNARD: [
+                "nature.com", "science.org", "arxiv.org", "pubmed.ncbi.nlm.nih.gov",
+                "ieee.org", "acm.org", "springer.com", "sciencedirect.com", "jstor.org",
+                "nih.gov", "nasa.gov"
+            ],
+            HostParadigm.DOLORES: [
+                "propublica.org", "theintercept.com", "icij.org", "theguardian.com",
+                "washingtonpost.com", "nytimes.com"
+            ],
+            HostParadigm.TEDDY: [
+                "npr.org", "who.int", "unicef.org", "redcross.org", "cdc.gov", "usa.gov"
+            ],
+        }
+
         output = SelectLayerOutput(
             paradigm=paradigm,
             search_queries=search_queries,
@@ -406,6 +530,8 @@ class SelectLayer(ContextLayer):
             exclusion_filters=strategy["exclude"],
             tool_selections=strategy["tools"],
             max_sources=strategy["max_sources"],
+            normalized_source_types=normalized_map.get(paradigm, ["web"]),
+            authority_whitelist=authority_whitelists.get(paradigm, []),
         )
 
         # Log processing
@@ -704,6 +830,41 @@ class IsolateLayer(ContextLayer):
         return output
 
 
+class OptimizeLayer(ContextLayer):
+    """Optimizes search terms and builds final query variations"""
+
+    def __init__(self):
+        super().__init__("Optimize")
+        self.optimizer = QueryOptimizer()
+
+    async def process(
+        self,
+        classification: ClassificationResult,
+        previous_outputs: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        start_time = datetime.now()
+        paradigm = classification.primary_paradigm.value
+        original = classification.query
+        rewritten = None
+        if previous_outputs and "rewrite" in previous_outputs:
+            rewritten = previous_outputs["rewrite"].get("rewritten")
+        base_query = rewritten or original
+
+        variations = self.optimizer.generate_query_variations(base_query, paradigm)
+        primary = self.optimizer.optimize_query(base_query, paradigm)
+        terms = self.optimizer.get_key_terms(base_query)
+
+        output = {
+            "primary_query": primary,
+            "optimized_terms": terms[:20],
+            "variations": variations,
+            "variations_count": len(variations),
+        }
+        duration = (datetime.now() - start_time).total_seconds()
+        self.log_processing(base_query, output, duration)
+        return output
+
+
 # --- Context Engineering Pipeline ---
 
 
@@ -712,7 +873,9 @@ class ContextEngineeringPipeline:
 
     def __init__(self):
         self.write_layer = WriteLayer()
+        self.rewrite_layer = RewriteLayer()
         self.select_layer = SelectLayer()
+        self.optimize_layer = OptimizeLayer()
         self.compress_layer = CompressLayer()
         self.isolate_layer = IsolateLayer()
         self.processing_history = []
@@ -731,33 +894,82 @@ class ContextEngineeringPipeline:
         outputs = {}
 
         # Process through Write layer
+        _t0 = datetime.now()
         write_output = await self.write_layer.process(classification)
+        write_time = (datetime.now() - _t0).total_seconds()
         outputs["write"] = write_output
 
+        # Rewrite query
+        _tR = datetime.now()
+        rewrite_output = await self.rewrite_layer.process(classification, outputs)
+        rewrite_time = (datetime.now() - _tR).total_seconds()
+        outputs["rewrite"] = rewrite_output
+
         # Process through Select layer
+        _t1 = datetime.now()
         select_output = await self.select_layer.process(classification, outputs)
+        select_time = (datetime.now() - _t1).total_seconds()
         outputs["select"] = select_output
 
+        # Optimize terms and queries
+        _tO = datetime.now()
+        optimize_output = await self.optimize_layer.process(classification, outputs)
+        optimize_time = (datetime.now() - _tO).total_seconds()
+        outputs["optimize"] = optimize_output
+
         # Process through Compress layer
+        _t2 = datetime.now()
         compress_output = await self.compress_layer.process(classification, outputs)
+        compress_time = (datetime.now() - _t2).total_seconds()
         outputs["compress"] = compress_output
 
         # Process through Isolate layer
+        _t3 = datetime.now()
         isolate_output = await self.isolate_layer.process(classification, outputs)
+        isolate_time = (datetime.now() - _t3).total_seconds()
         outputs["isolate"] = isolate_output
 
         # Calculate total processing time
         processing_time = (datetime.now() - start_time).total_seconds()
+
+        # Compose refined queries for orchestrator (variations + select queries)
+        refined_queries: List[str] = []
+        try:
+            if optimize_output and isinstance(optimize_output.get("variations"), dict):
+                refined_queries.extend(list(optimize_output["variations"].values()))
+        except Exception:
+            pass
+        try:
+            for q in getattr(select_output, "search_queries", []) or []:
+                txt = q.get("query") if isinstance(q, dict) else None
+                if isinstance(txt, str) and txt.strip():
+                    refined_queries.append(txt)
+        except Exception:
+            pass
+        # Deduplicate preserving order
+        seen = set()
+        refined_queries = [q for q in refined_queries if not (q in seen or seen.add(q))]
 
         # Create final engineered query
         engineered_query = ContextEngineeredQuery(
             original_query=classification.query,
             classification=classification,
             write_output=write_output,
+            rewrite_output=rewrite_output,
             select_output=select_output,
+            optimize_output=optimize_output,
             compress_output=compress_output,
             isolate_output=isolate_output,
             processing_time=processing_time,
+            refined_queries=refined_queries,
+            layer_durations={
+                "write": write_time,
+                "rewrite": rewrite_time,
+                "select": select_time,
+                "optimize": optimize_time,
+                "compress": compress_time,
+                "isolate": isolate_time,
+            },
         )
 
         # Store in history
@@ -777,6 +989,8 @@ Context Engineering Summary:
 - Query: {eq.original_query[:50]}...
 - Paradigm: {eq.classification.primary_paradigm.value}
 - Documentation Focus: {eq.write_output.documentation_focus[:50]}...
+- Rewrites: {len((eq.rewrite_output or {}).get('alternatives', []))}
+- Optimized Variations: {len(((eq.optimize_output or {}).get('variations') or {}))}
 - Search Queries: {len(eq.select_output.search_queries)}
 - Compression Ratio: {eq.compress_output.compression_ratio:.0%}
 - Token Budget: {eq.compress_output.token_budget}

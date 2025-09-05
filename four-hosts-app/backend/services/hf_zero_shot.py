@@ -1,6 +1,8 @@
 from functools import lru_cache
 from transformers import pipeline
 import logging
+import os
+from pathlib import Path
 import torch
 
 logger = logging.getLogger(__name__)
@@ -28,14 +30,27 @@ def get_classifier(device: int | str = None):
     if device is None:
         device = get_device()
     
-    logger.info(f"Loading DeBERTa zero-shot classifier on device: {device}")
+    # Ensure we have a writable cache directory to avoid PermissionError inside Docker
+    cache_dir = os.getenv("HF_CACHE_DIR", "/tmp/hf_cache")
+    try:
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.warning(f"Could not create HF cache dir {cache_dir}: {e}")
+
+    # Also propagate to TRANSFORMERS_CACHE so downstream library picks it up automatically
+    os.environ.setdefault("TRANSFORMERS_CACHE", cache_dir)
+
+    logger.info(
+        f"Loading DeBERTa zero-shot classifier on device: {device} (cache_dir={cache_dir})"
+    )
     return pipeline(
         task="zero-shot-classification",
         model="microsoft/deberta-large-mnli",
         device=device,
         # Set max_length to avoid truncation warnings
         max_length=512,
-        truncation=True
+        truncation=True,
+        cache_dir=cache_dir,
     )
 
 def predict_paradigm(text: str) -> tuple[str, float]:

@@ -31,8 +31,14 @@ class BackgroundLLMManager:
         self.azure_client = azure_client
         self.active_tasks: Dict[str, Dict[str, Any]] = {}
         self._polling_tasks: Dict[str, asyncio.Task] = {}
-        self.poll_interval = 2  # seconds
-        self.max_poll_duration = 300  # 5 minutes max
+        try:
+            self.poll_interval = int(os.getenv("LLM_BG_POLL_INTERVAL", "2") or 2)
+        except Exception:
+            self.poll_interval = 2
+        try:
+            self.max_poll_duration = int(os.getenv("LLM_BG_MAX_SECS", "300") or 300)
+        except Exception:
+            self.max_poll_duration = 300
     
     async def submit_background_task(
         self,

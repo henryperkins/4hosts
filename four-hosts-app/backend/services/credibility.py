@@ -17,6 +17,7 @@ import math
 from collections import defaultdict
 
 from .cache import cache_manager
+from .brave_grounding import brave_client
 
 logger = logging.getLogger(__name__)
 
@@ -809,6 +810,81 @@ class SourceReputationDatabase:
                 }]
                 cross_source_agreement = self.agreement_calculator.calculate_agreement_score(all_sources)
 
+            # Optional: augment with Brave AI Grounding citations
+            brave_enabled = os.getenv("ENABLE_BRAVE_GROUNDING", "0").lower() in ("1", "true", "yes")
+            brave_deep = os.getenv("BRAVE_ENABLE_RESEARCH", "0").lower() in ("1", "true", "yes")
+            brave_agreement = None
+            brave_citation_count = 0
+            if brave_enabled and brave_client().is_configured():
+                # Build a verification query
+                if content and len(content) > 10:
+                    verify_query = content[:1500]
+                elif search_terms:
+                    verify_query = " ".join(search_terms)[:1500]
+                else:
+                    verify_query = f"What is the credibility and reputation of {domain}? Provide recent sources."
+
+                try:
+                    citations = await brave_client().fetch_citations(
+                        verify_query, enable_research=brave_deep
+                    )
+                    brave_citation_count = len(citations)
+                    if brave_citation_count:
+                        # Evaluate cited domains for agreement and authority
+                        cited_domains = []
+                        seen = set()
+                        for c in citations:
+                            host = (c.hostname or "").lower()
+                            # normalize bare domains
+                            if host.startswith("www."):
+                                host = host[4:]
+                            if host and host not in seen:
+                                seen.add(host)
+                                cited_domains.append(host)
+
+                        # Limit work to first 10 unique domains
+                        cited_domains = cited_domains[:10]
+
+                        # Gather bias/factual/DA concurrently
+                        bias_tasks = [self.bias_detector.get_bias_score(h) for h in cited_domains]
+                        da_tasks = [self.domain_checker.get_domain_authority(h) for h in cited_domains]
+                        bias_results = await asyncio.gather(*bias_tasks, return_exceptions=True)
+                        da_results = await asyncio.gather(*da_tasks, return_exceptions=True)
+
+                        sources_for_agreement: List[Dict[str, Any]] = []
+                        da_values: List[float] = []
+                        for i, host in enumerate(cited_domains):
+                            bias_tuple = bias_results[i]
+                            if isinstance(bias_tuple, Exception):
+                                bias_rating2, bias_score2, factual2 = "center", 0.5, "medium"
+                            else:
+                                bias_rating2, bias_score2, factual2 = bias_tuple
+                            da_val = da_results[i]
+                            if isinstance(da_val, Exception) or da_val is None:
+                                da = 40.0
+                            else:
+                                da = float(da_val)
+                            da_values.append(da)
+                            sources_for_agreement.append({
+                                "domain": host,
+                                "bias_score": bias_score2,
+                                "factual": factual2,
+                                "category": self._infer_category(host),
+                            })
+
+                        # Use existing agreement calculator + DA quality
+                        agree = self.agreement_calculator.calculate_agreement_score(sources_for_agreement)
+                        avg_da = (sum(da_values) / len(da_values) / 100.0) if da_values else 0.4
+                        brave_agreement = max(0.0, min(1.0, 0.7 * agree + 0.3 * avg_da))
+
+                        # Blend with any precomputed agreement
+                        if cross_source_agreement is None:
+                            cross_source_agreement = brave_agreement
+                        else:
+                            cross_source_agreement = (cross_source_agreement + brave_agreement) / 2.0
+                except Exception as e:
+                    logger.debug(f"Brave grounding verification skipped due to error: {e}")
+
             # Calculate paradigm alignment
             paradigm_alignment = self._calculate_paradigm_alignment(
                 domain, bias_rating, fact_check_rating, paradigm
@@ -838,6 +914,8 @@ class SourceReputationDatabase:
                 reputation_factors.append("High Source Agreement")
             elif cross_source_agreement and cross_source_agreement < 0.3:
                 reputation_factors.append("Low Source Agreement")
+            if brave_citation_count:
+                reputation_factors.append(f"Brave citations: {brave_citation_count}")
 
             # Create credibility score object
             credibility = CredibilityScore(

@@ -67,6 +67,11 @@ npm run dev
 
 The application will be available at `http://localhost:5173`
 
+## Documentation
+
+- Technical flow and implementation map: `docs/agentic-research-technical-flow.md`
+- Concept overview (SSOTA): `docs/ssota-concept.md`
+
 ## API Endpoints
 
 - `POST /research/query` - Submit a research query

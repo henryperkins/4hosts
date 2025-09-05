@@ -46,10 +46,28 @@ class TruncationStrategy(Enum):
 
 # Internal mapping keyed by internal code names
 _PARADIGM_MODEL_MAP: Dict[str, str] = {
-    "dolores": "gpt-4o",
-    "teddy": "gpt-4o-mini",
-    "bernard": "gpt-4o",
-    "maeve": "gpt-4o-mini",
+    # Prefer Azure OpenAI o3 across paradigms for consistent reasoning quality.
+    # The Azure path is selected when model_name is one of {"o3","o1","azure","gpt-5-mini"}
+    # and AZURE_OPENAI_* is configured.
+    "dolores": "o3",
+    "teddy": "o3",
+    "bernard": "o3",
+    "maeve": "o3",
+}
+
+# Default temperature and reasoning-effort per paradigm
+_PARADIGM_TEMPERATURE: Dict[str, float] = {
+    "bernard": 0.2,
+    "maeve": 0.4,
+    "dolores": 0.6,
+    "teddy": 0.5,
+}
+
+_PARADIGM_REASONING: Dict[str, str] = {
+    "bernard": "low",
+    "maeve": "medium",
+    "dolores": "medium",
+    "teddy": "low",
 }
 
 _SYSTEM_PROMPTS: Dict[str, str] = {
@@ -99,7 +117,11 @@ def _select_model(
     if explicit_model:
         return explicit_model
     key = _norm_code(paradigm)
-    return _PARADIGM_MODEL_MAP.get(key, "gpt-4o-mini")
+    # Allow env override to force a specific model
+    override = os.getenv("LLM_MODEL_OVERRIDE")
+    if override:
+        return override
+    return _PARADIGM_MODEL_MAP.get(key, "o3")
 
 
 def _system_role_for(model: str) -> str:
@@ -120,6 +142,9 @@ class LLMClient:
         self.openai_client = None
         self.azure_client = None
         self._initialized = False
+        self._azure_use_responses = (
+            os.getenv("AZURE_OPENAI_USE_RESPONSES", "0").lower() in {"1", "true", "yes"}
+        )
         # Try to initialize, but don't fail at import time
         try:
             self._init_clients()
@@ -136,16 +161,16 @@ class LLMClient:
         api_version = os.getenv("AZURE_OPENAI_API_VERSION", "preview")
         
         if azure_key and endpoint and deployment:
-            # Use AsyncOpenAI with Azure endpoint (per documentation)
+            # Use AsyncOpenAI with Azure endpoint for Responses API
             endpoint = endpoint.rstrip("/")
-            if not endpoint.endswith("/"):
-                endpoint = f"{endpoint}/"
+            # For Azure OpenAI Responses API, the base_url should include /openai/v1/
+            base_url = f"{endpoint}/openai/v1/"
                 
             self.azure_client = AsyncOpenAI(
                 api_key=azure_key,
-                base_url=endpoint,
+                base_url=base_url,
             )
-            logger.info(f"✓ Azure OpenAI client initialised (endpoint: {endpoint})")
+            logger.info(f"✓ Azure OpenAI client initialised (endpoint: {base_url})")
         else:
             missing = []
             if not azure_key:
@@ -211,7 +236,7 @@ class LLMClient:
         model: str | None = None,
         paradigm: Union[str, "HostParadigm"] = "bernard",
         max_tokens: int = 2_000,
-        temperature: float = 0.7,
+        temperature: Optional[float] = None,
         top_p: float = 0.9,
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
@@ -220,6 +245,7 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         stream: bool = False,
+        reasoning_effort: Optional[str] = None,
     ) -> Union[str, AsyncIterator[str]]:
         """
         Chat-style completion with optional SSE stream support.
@@ -228,6 +254,13 @@ class LLMClient:
         self._ensure_initialized()
         model_name = _select_model(paradigm, model)
         paradigm_key = _norm_code(paradigm)
+        # Apply sensible defaults if not provided
+        if temperature is None:
+            temperature = _PARADIGM_TEMPERATURE.get(paradigm_key, 0.5)
+            if response_format or json_schema:
+                temperature = min(temperature, 0.3)
+        if reasoning_effort is None:
+            reasoning_effort = _PARADIGM_REASONING.get(paradigm_key, "medium")
 
         # Build shared message list
         messages = [
@@ -247,6 +280,7 @@ class LLMClient:
             "frequency_penalty": frequency_penalty,
             "presence_penalty": presence_penalty,
             "stream": stream,
+            "reasoning_effort": reasoning_effort,
         }
 
         # Token param - use max_completion_tokens for o3
@@ -270,66 +304,98 @@ class LLMClient:
         else:
             tool_choice = None                        # ensure we don't forward it
 
-        # ─── Azure OpenAI path (for o3/o1 models) ───
-        if model_name in {"o3", "o1", "azure", "gpt-5-mini"} and self.azure_client:
+        # ─── Azure OpenAI path (prefer Responses API when enabled) ───
+        if model_name in {"o3", "o1", "azure", "gpt-5-mini", "gpt-4o", "gpt-4.1", "gpt-5-mini", "gpt-5"} and self.azure_client:
             try:
-                deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3-synthesis")
+                deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
+                # If enabled and not streaming, use Responses API (recommended by Azure docs)
+                if self._azure_use_responses and not stream:
+                    # Build Responses API payload
+                    # The Responses API expects an "input" which can be a string or array of messages.
+                    # We pass system + user as a list for clarity/statefulness.
+                    input_msgs: List[Dict[str, str]] = []
+                    for msg in messages:
+                        role = msg.get("role", "user")
+                        # Convert "system" to "developer" for o* models to preserve instruction semantics
+                        if role == "system" and model_name.startswith("o"):
+                            role = "developer"
+                        input_msgs.append({"role": role, "content": msg.get("content", "")})
+
+                    resp_req: Dict[str, Any] = {
+                        "model": deployment,
+                        "input": input_msgs,
+                    }
+                    # Token & reasoning knobs for Responses API
+                    max_out = kw.get("max_completion_tokens", kw.get("max_tokens", max_tokens))
+                    resp_req["max_output_tokens"] = max_out
+                    # Reasoning config (supported by o*); tolerate if not supported
+                    if model_name.startswith("o"):
+                        reason: Dict[str, Any] = {"effort": reasoning_effort}
+                        rs = os.getenv("AZURE_REASONING_SUMMARY")  # auto | concise | detailed
+                        if rs:
+                            reason["summary"] = rs
+                        resp_req["reasoning"] = reason
+                    # Response formatting
+                    if response_format:
+                        resp_req["response_format"] = response_format
+                    elif json_schema:
+                        resp_req["response_format"] = {"type": "json_schema", "json_schema": json_schema}
+                    # Tools
+                    if tools:
+                        resp_req["tools"] = tools
+                        if tool_choice:
+                            resp_req["tool_choice"] = self._wrap_tool_choice(tool_choice)
+
+                    try:
+                        op_res = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
+                    except TypeError as te:
+                        # Newer Azure SDKs removed 'response_format'; retry without it.
+                        if "response_format" in str(te):
+                            logger.warning(
+                                "Azure SDK changed: retrying responses.create without 'response_format' param"
+                            )
+                            resp_req.pop("response_format", None)
+                            op_res = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
+                        else:
+                            raise
+                    return self._extract_content_safely(op_res)
+
+                # Fallback: Chat Completions path (supports streaming)
                 # Remove Azure-incompatible params
-                azure_kwargs = {k: v for k, v in kw.items() if k not in ["stream", "tool_choice", "model"]}
-                if tools and tool_choice:
-                    azure_kwargs["tool_choice"] = self._wrap_tool_choice(tool_choice)
-                    
-                # Use chat completions API with Azure client
-                # For o1/o3 models, adjust message format if needed
                 azure_messages = []
                 for msg in messages:
                     role = msg.get("role", "user")
-                    # Convert "system" to "developer" for reasoning models
-                    if role == "system" and model_name in {"o3", "o1", "gpt-5-mini"}:
+                    if role == "system" and model_name.startswith("o"):
                         role = "developer"
                     azure_messages.append({"role": role, "content": msg.get("content", "")})
-                
-                # Build request for Azure
-                azure_request = {
+
+                cc_req = {
                     "model": deployment,
                     "messages": azure_messages,
                 }
-                
-                # For reasoning models (o1/o3), use max_completion_tokens and reasoning_effort
-                if model_name in {"o3", "o1", "gpt-5-mini"}:
-                    max_tokens_val = kw.get("max_completion_tokens", kw.get("max_tokens", 2000))
-                    azure_request["max_completion_tokens"] = max_tokens_val
-                    azure_request["reasoning_effort"] = kw.get("reasoning_effort", "medium")
+                if model_name.startswith("o"):
+                    cc_req["max_completion_tokens"] = kw.get("max_completion_tokens", kw.get("max_tokens", 2000))
+                    cc_req["reasoning_effort"] = kw.get("reasoning_effort", "medium")
                 else:
-                    # Standard models use max_tokens and temperature
-                    azure_request["max_tokens"] = kw.get("max_tokens", 2000)
-                    azure_request["temperature"] = temperature
-                    azure_request["top_p"] = top_p
-                    azure_request["frequency_penalty"] = frequency_penalty
-                    azure_request["presence_penalty"] = presence_penalty
-                
-                # Add response format if specified
+                    cc_req["max_tokens"] = kw.get("max_tokens", 2000)
+                    cc_req["temperature"] = temperature
+                    cc_req["top_p"] = top_p
+                    cc_req["frequency_penalty"] = frequency_penalty
+                    cc_req["presence_penalty"] = presence_penalty
                 if response_format:
-                    azure_request["response_format"] = response_format
+                    cc_req["response_format"] = response_format
                 elif json_schema:
-                    azure_request["response_format"] = {"type": "json_schema", "json_schema": json_schema}
-                
-                # Add tools if provided
+                    cc_req["response_format"] = {"type": "json_schema", "json_schema": json_schema}
                 if tools:
-                    azure_request["tools"] = tools
+                    cc_req["tools"] = tools
                     if tool_choice:
-                        azure_request["tool_choice"] = self._wrap_tool_choice(tool_choice)
-                
-                # Add stream if requested
+                        cc_req["tool_choice"] = self._wrap_tool_choice(tool_choice)
                 if stream:
-                    azure_request["stream"] = stream
-                
-                op_res = await self.azure_client.chat.completions.create(**azure_request)
-                
+                    cc_req["stream"] = stream
+
+                op_res = await self.azure_client.chat.completions.create(**cc_req)
                 if stream:
                     return self._iter_openai_stream(cast(AsyncIterator[Any], op_res))
-                
-                # Extract content from response
                 return self._extract_content_safely(op_res)
             except Exception as exc:
                 logger.error(f"Azure OpenAI request failed • {exc}")
@@ -340,6 +406,10 @@ class LLMClient:
             try:
                 # Only include tool_choice if tools were provided
                 op_kwargs = {k: v for k, v in kw.items() if k not in ["stream", "tool_choice"]}
+                # For o-series on OpenAI Chat Completions, strip unsupported params
+                if str(model_name).startswith("o") or model_name in {"gpt-5", "gpt-5-mini", "gpt-5-nano"}:
+                    for p in ["temperature", "top_p", "presence_penalty", "frequency_penalty", "max_tokens"]:
+                        op_kwargs.pop(p, None)
                 if tools and tool_choice:
                     op_kwargs["tool_choice"] = self._wrap_tool_choice(tool_choice)
                     
@@ -395,7 +465,7 @@ class LLMClient:
         """Invoke model with tool-calling enabled and return content + tool_calls."""
         self._ensure_initialized()
         model_name = _select_model(paradigm, model)
-        paradigm_key = normalize_to_internal_code(paradigm)
+        paradigm_key = _norm_code(paradigm)
         result: Dict[str, Any] | None = None
 
         wrapped_choice = self._wrap_tool_choice(tool_choice)
@@ -469,7 +539,7 @@ class LLMClient:
     ) -> str:
         """Multi-turn chat conversation helper (non-streaming)."""
         model_name = _select_model(paradigm, model)
-        paradigm_key = normalize_to_internal_code(paradigm)
+        paradigm_key = _norm_code(paradigm)
         full_msgs = [
             {
                 "role": _system_role_for(model_name),
@@ -581,13 +651,52 @@ class LLMClient:
             if text_content:
                 return text_content.strip()
         
-        # Handle ChatCompletion-like response
-        if hasattr(response, 'choices') and response.choices:
-            choice = response.choices[0]
-            if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
-                content = choice.message.content
-                if content:
-                    return str(content).strip()
+        # Handle ChatCompletion-like response (OpenAI 1.x & Azure)
+        # Try dataclass/dict access patterns robustly.
+        try:
+            # Pydantic models expose model_dump(); fall back to __dict__ if missing
+            payload = response.model_dump() if hasattr(response, 'model_dump') else None
+        except Exception:
+            payload = None
+
+        if payload and isinstance(payload, dict):
+            try:
+                choices = payload.get('choices') or []
+                if choices:
+                    msg = (choices[0].get('message') or {})
+                    content = msg.get('content') or msg.get('refusal') or ''
+                    if isinstance(content, list):
+                        # Some SDKs may return content as array of parts
+                        parts = []
+                        for part in content:
+                            if isinstance(part, dict) and 'text' in part:
+                                parts.append(str(part['text']))
+                        content = ''.join(parts)
+                    if content:
+                        return str(content).strip()
+            except Exception:
+                pass
+
+        # Attribute-style ChatCompletion handling
+        if hasattr(response, 'choices') and getattr(response, 'choices'):
+            try:
+                choice = response.choices[0]
+                # Newer SDKs: choice.message.content may be None when tool_calls are present
+                if hasattr(choice, 'message'):
+                    msg = choice.message
+                    # Prefer content; fall back to text-like fields if any
+                    content = getattr(msg, 'content', None)
+                    if not content and hasattr(msg, 'refusal'):
+                        content = getattr(msg, 'refusal')
+                    if isinstance(content, list):
+                        content = ''.join([str(getattr(p, 'text', p)) for p in content])
+                    if content:
+                        return str(content).strip()
+                # Some responses may have .text at top level per choice (legacy)
+                if hasattr(choice, 'text') and choice.text:
+                    return str(choice.text).strip()
+            except Exception:
+                pass
         
         # Handle direct content attribute
         if hasattr(response, 'content') and response.content:

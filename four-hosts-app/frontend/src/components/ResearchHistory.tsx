@@ -86,7 +86,7 @@ export const ResearchHistory: React.FC = () => {
   }
 
   const canCancel = (status: string) => {
-    return status === 'processing' || status === 'pending'
+    return status === 'processing' || status === 'pending' || status === 'in_progress'
   }
 
   const getStatusType = (status: string): StatusType => {

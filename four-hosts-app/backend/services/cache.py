@@ -159,11 +159,11 @@ class CacheManager:
             results_data = []
             for result in results:
                 result_dict = asdict(result)
-                # Handle datetime serialization
-                if result_dict.get("published_date"):
-                    result_dict["published_date"] = result_dict[
-                        "published_date"
-                    ].isoformat()
+                # Handle datetime serialization – convert only if it's a datetime
+                if result_dict.get("published_date") and hasattr(
+                    result_dict["published_date"], "isoformat"
+                ):
+                    result_dict["published_date"] = result_dict["published_date"].isoformat()
                 results_data.append(result_dict)
 
             async with self.get_client() as client:

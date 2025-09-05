@@ -23,6 +23,11 @@ export interface ParadigmClassification {
   distribution: Record<string, number>
   confidence: number
   explanation: Record<string, string>
+  // Optional structured signals from backend classification (for UI hints)
+  signals?: Partial<Record<Paradigm, {
+    keywords?: string[]
+    intent_signals?: string[]
+  }>>
 }
 
 export interface ResearchResult {
@@ -69,8 +74,36 @@ export interface ResearchResult {
       token_budget: number
       isolation_strategy: string
       search_queries_count: number
+      layer_times?: Record<string, number>
+      budget_plan?: Record<string, number>
+      rewrite_primary?: string
+      rewrite_alternatives?: number
+      optimize_primary?: string
+      optimize_variations_count?: number
+      refined_queries_count?: number
     }
     agent_trace?: AgentTraceEvent[]
+    actionable_content_ratio?: number
+    bias_check?: {
+      balanced: boolean
+      domain_diversity: number
+      dominant_domain?: string | null
+      dominant_share?: number
+      unique_types?: number
+    }
+    credibility_summary?: {
+      average_score?: number
+      high_credibility_count?: number
+      high_credibility_ratio?: number
+      score_distribution?: Record<string, number>
+    }
+    category_distribution?: Record<string, number>
+    bias_distribution?: Record<string, number>
+    paradigm_fit?: {
+      primary: Paradigm
+      confidence: number
+      margin: number
+    }
   },
   cost_info?: {
     search_api_costs?: number
@@ -101,6 +134,9 @@ export interface ActionItem {
   action: string
   timeframe: string
   paradigm: Paradigm
+  // Optional content enhancements for ownership and deadlines
+  owner?: string
+  due_date?: string // ISO date string
 }
 
 export interface Citation {
@@ -187,6 +223,8 @@ export interface SourceResult {
   credibility_score: number
   published_date?: string
   source_type?: string
+  source_category?: string
+  credibility_explanation?: string
 }
 
 export interface AgentTraceEvent {

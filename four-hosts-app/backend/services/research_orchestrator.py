@@ -11,10 +11,12 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 # Contracts
-from contracts import ResearchStatus  # type: ignore
+from contracts import ResearchStatus as ContractResearchStatus  # type: ignore
 import hashlib
 # json import removed (unused)
 import re
+from services.research_store import research_store
+from models.base import ResearchStatus as RuntimeResearchStatus
 
 from models.context_models import (
     SearchResultSchema, ClassificationResultSchema,
@@ -79,7 +81,7 @@ class ResearchExecutionResult:
     execution_metrics: Dict[str, Any]
     cost_breakdown: Dict[str, float]
     # Defaults after non-defaults to satisfy dataclass rules
-    status: ResearchStatus = ResearchStatus.OK
+    status: ContractResearchStatus = ContractResearchStatus.OK
     secondary_results: List[SearchResult] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
     deep_research_content: Optional[str] = None
@@ -156,35 +158,54 @@ class ResultDeduplicator:
         self, results: List[SearchResult]
     ) -> Dict[str, Any]:
         """Remove duplicate results using URL and content similarity"""
+        # Defensive guard – empty input
         if not results:
             return {
                 "unique_results": [],
                 "duplicates_removed": 0,
-                "similarity_threshold": self.similarity_threshold
+                "similarity_threshold": self.similarity_threshold,
             }
 
-        unique_results = []
+        unique_results: List[SearchResult] = []
         duplicates_removed = 0
-        seen_urls = set()
+        seen_urls: set[str] = set()
 
-        # First pass: exact URL deduplication
-        url_deduplicated = []
+        # First pass: exact URL‐based deduplication.  
+        # Skip any items that do not expose a usable ``url`` attribute
+        # to avoid unexpected ``AttributeError`` crashes that would halt
+        # the entire research pipeline mid-progress (observed by UI
+        # getting stuck at the *“Removing duplicate results…”* stage).
+        url_deduplicated: List[SearchResult] = []
         for result in results:
-            if result.url not in seen_urls:
-                seen_urls.add(result.url)
+            url = getattr(result, "url", None)
+
+            # Verify a non-empty URL exists – otherwise drop the record
+            if not url or not isinstance(url, str):
+                logger.debug(
+                    "[dedup] Dropping result without valid URL: %s", repr(result)[:100]
+                )
+                duplicates_removed += 1
+                continue
+
+            if url not in seen_urls:
+                seen_urls.add(url)
                 url_deduplicated.append(result)
             else:
                 duplicates_removed += 1
 
-        # Second pass: content similarity deduplication
+        # Second pass: content-similarity deduplication.  Again, guard
+        # against malformed results to prevent crashes.
         for result in url_deduplicated:
             is_duplicate = False
 
             for existing in unique_results:
-                similarity = self._calculate_content_similarity(
-                    result,
-                    existing,
-                )
+                try:
+                    similarity = self._calculate_content_similarity(result, existing)
+                except Exception as e:
+                    # Log and treat as non-duplicate so the pipeline can
+                    # continue gracefully.
+                    logger.debug("[dedup] Similarity calc failed: %s", e, exc_info=True)
+                    similarity = 0.0
 
                 if similarity > self.similarity_threshold:
                     is_duplicate = True
@@ -195,23 +216,31 @@ class ResultDeduplicator:
                 unique_results.append(result)
 
         logger.info(
-            f"Deduplication: {len(results)} -> {len(unique_results)} "
-            f"({duplicates_removed} duplicates removed)"
+            "Deduplication: %s -> %s (%s duplicates removed)",
+            len(results),
+            len(unique_results),
+            duplicates_removed,
         )
 
         return {
             "unique_results": unique_results,
             "duplicates_removed": duplicates_removed,
-            "similarity_threshold": self.similarity_threshold
+            "similarity_threshold": self.similarity_threshold,
         }
 
     def _calculate_content_similarity(
         self, result1: SearchResult, result2: SearchResult
     ) -> float:
         """Calculate similarity between two search results"""
+        # Defensive extraction helpers – return empty set when value missing
+        def words(text: Optional[str]) -> set[str]:
+            if not text or not isinstance(text, str):
+                return set()
+            return set(text.lower().split())
+
         # Title similarity (Jaccard index)
-        title1_words = set(result1.title.lower().split())
-        title2_words = set(result2.title.lower().split())
+        title1_words = words(getattr(result1, "title", ""))
+        title2_words = words(getattr(result2, "title", ""))
 
         if not title1_words or not title2_words:
             title_similarity = 0.0
@@ -220,12 +249,14 @@ class ResultDeduplicator:
             union = len(title1_words.union(title2_words))
             title_similarity = intersection / union if union > 0 else 0.0
 
-        # Domain similarity
-        domain_similarity = 1.0 if result1.domain == result2.domain else 0.0
+        # Domain similarity – ensure attributes exist
+        domain1 = getattr(result1, "domain", "") or ""
+        domain2 = getattr(result2, "domain", "") or ""
+        domain_similarity = 1.0 if domain1 == domain2 and domain1 else 0.0
 
         # Snippet similarity
-        snippet1_words = set(result1.snippet.lower().split())
-        snippet2_words = set(result2.snippet.lower().split())
+        snippet1_words = words(getattr(result1, "snippet", ""))
+        snippet2_words = words(getattr(result2, "snippet", ""))
 
         if not snippet1_words or not snippet2_words:
             snippet_similarity = 0.0
@@ -461,6 +492,7 @@ class UnifiedResearchOrchestrator:
         self.early_filter = EarlyRelevanceFilter()
         self.brave_enabled = False
         self.credibility_enabled = True
+        self.research_store = research_store  # Add research store for cancellation checks
 
         # Orchestration additions
         self.tool_registry = ToolRegistry()
@@ -483,6 +515,22 @@ class UnifiedResearchOrchestrator:
                 self.agentic_config["enable_llm_critic"] = False
             if os.getenv("AGENTIC_DISABLE", "0") == "1":
                 self.agentic_config["enabled"] = False
+            # Optional tuning knobs
+            if os.getenv("AGENTIC_MAX_ITERATIONS"):
+                try:
+                    self.agentic_config["max_iterations"] = int(os.getenv("AGENTIC_MAX_ITERATIONS", "2") or 2)
+                except Exception:
+                    pass
+            if os.getenv("AGENTIC_COVERAGE_THRESHOLD"):
+                try:
+                    self.agentic_config["coverage_threshold"] = float(os.getenv("AGENTIC_COVERAGE_THRESHOLD", "0.75") or 0.75)
+                except Exception:
+                    pass
+            if os.getenv("AGENTIC_MAX_NEW_QUERIES_PER_ITER"):
+                try:
+                    self.agentic_config["max_new_queries_per_iter"] = int(os.getenv("AGENTIC_MAX_NEW_QUERIES_PER_ITER", "4") or 4)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -516,6 +564,13 @@ class UnifiedResearchOrchestrator:
             "enforce_url_presence": True,
             "enforce_per_result_origin": True
         }
+
+        # Per-search task timeout (seconds) for external API calls
+        try:
+            import os
+            self.search_task_timeout = float(os.getenv("SEARCH_TASK_TIMEOUT_SEC", "20") or 20)
+        except Exception:
+            self.search_task_timeout = 20.0
 
     # ──────────────────────────────────────────────────────────────────────
     # Small error/logging helper (applied in a few hot spots)
@@ -596,17 +651,32 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         answer_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute research with all enhanced features"""
+        
+        async def check_cancelled():
+            """Check if research has been cancelled"""
+            if not research_id:
+                return False
+            research_data = await self.research_store.get(research_id)
+            is_cancelled = research_data and research_data.get("status") == RuntimeResearchStatus.CANCELLED
+            if is_cancelled:
+                logger.info(f"Research {research_id} has been cancelled")
+            return is_cancelled
 
         start_time = datetime.now()
 
         # Use the old execute_paradigm_research for backward compatibility
         if hasattr(context_engineered, 'select_output'):
+            # Check for cancellation before legacy execution
+            if await check_cancelled():
+                return {"status": "cancelled", "message": "Research was cancelled"}
+                
             # Legacy format - convert and use old method
             result = await self._execute_paradigm_research_legacy(
                 context_engineered,
                 max_results=user_context.source_limit,
                 progress_tracker=progress_callback,
-                research_id=research_id
+                research_id=research_id,
+                check_cancelled=check_cancelled  # Pass cancellation check
             )
 
             # Convert to new format and, if requested, synthesize an answer
@@ -661,15 +731,24 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             f"Optimized queries to {len(optimized_queries)} for {classification.primary_paradigm.value}"
         )
 
+        # Check for cancellation before executing searches
+        if await check_cancelled():
+            return {"status": "cancelled", "message": "Research was cancelled"}
+            
         # Execute searches with deterministic ordering
         search_results = await self._execute_searches_deterministic(
             optimized_queries,
             classification.primary_paradigm,
             user_context,
             progress_callback,
-            research_id
+            research_id,
+            check_cancelled  # Pass cancellation check function
         )
 
+        # Check for cancellation before processing results
+        if await check_cancelled():
+            return {"status": "cancelled", "message": "Research was cancelled"}
+            
         # Process and enrich results
         processed_results = await self._process_results(
             search_results,
@@ -678,6 +757,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             user_context
         )
 
+        # Check for cancellation before deep research
+        if await check_cancelled():
+            return {"status": "cancelled", "message": "Research was cancelled"}
+            
         # Execute deep research if enabled
         if enable_deep_research:
             # Temporarily allow unlinked citations for deep research path
@@ -907,7 +990,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         context_engineered_query,
         max_results: int = 100,
         progress_tracker=None,
-        research_id: Optional[str] = None
+        research_id: Optional[str] = None,
+        check_cancelled: Optional[Any] = None
     ) -> ResearchExecutionResult:
         """Execute research using legacy format"""
 
@@ -947,8 +1031,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # Use search queries from Context Engineering Select layer with guards/normalization
         search_queries = self._select_queries_from_select(select_output, context_engineered_query)
-        # Cap to 8
-        search_queries = search_queries[:8]
+        # Cap number of queries (env override RESEARCH_MAX_QUERIES, default 8)
+        try:
+            import os
+            max_q = int(os.getenv("RESEARCH_MAX_QUERIES", "8") or 8)
+        except Exception:
+            max_q = 8
+        search_queries = search_queries[:max(1, max_q)]
 
         logger.info(f"Executing {len(search_queries)} search queries")
 
@@ -957,6 +1046,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         cost_breakdown = {}
 
         for idx, query_data in enumerate(search_queries):
+            # Check for cancellation before each search query
+            if check_cancelled and await check_cancelled():
+                logger.info(f"Research {research_id} cancelled during legacy search execution")
+                break
+                
             query = query_data["query"]
             query_type = query_data["type"]
             weight = query_data["weight"]
@@ -984,23 +1078,29 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     search_progress = 30 + int((idx / len(search_queries)) * 20)
                     await progress_tracker.update_progress(
                         research_id,
-                        f"Searching: {query[:40]}...",
-                        search_progress
+                        phase="search",
+                        message=f"Searching: {query[:40]}...",
+                        progress=search_progress,
+                        items_done=idx + 1,
+                        items_total=len(search_queries),
                     )
 
             # Wire Select layer preferences into SearchConfig
             try:
                 sel = getattr(context_engineered_query, "select_output", None)
-                prefs = list(getattr(sel, "source_preferences", []) or [])
+                # Prefer normalized source types (web/news/academic) when available
+                prefs = list(getattr(sel, "normalized_source_types", []) or getattr(sel, "source_preferences", []) or [])
                 excludes = list(getattr(sel, "exclusion_filters", []) or [])
+                whitelist = list(getattr(sel, "authority_whitelist", []) or [])
             except Exception:
-                prefs, excludes = [], []
+                prefs, excludes, whitelist = [], [], []
             config = SearchConfig(
                 max_results=min(max_results, 50),
                 language="en",
                 region="us",
                 source_types=prefs,
                 exclusion_keywords=excludes,
+                authority_whitelist=whitelist,
             )
 
             try:
@@ -1063,8 +1163,25 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     logger.warning(f"Result missing required attributes in query '{query_key}': {type(result)}")
                     continue
 
-                # Check if content is not empty
+                # Check if content is not empty; try to repair from snippet/title if missing
                 content = getattr(result, 'content', '')
+                if content is None or not str(content).strip():
+                    try:
+                        snippet_val = getattr(result, 'snippet', '') or ''
+                        title_val = getattr(result, 'title', '') or ''
+                        if isinstance(snippet_val, str) and snippet_val.strip():
+                            result.content = f"Summary from search results: {snippet_val.strip()}"
+                            content = result.content
+                            result.raw_data = getattr(result, 'raw_data', {}) or {}
+                            result.raw_data['content_source'] = 'snippet_repair'
+                        elif isinstance(title_val, str) and title_val.strip():
+                            result.content = title_val.strip()
+                            content = result.content
+                            result.raw_data = getattr(result, 'raw_data', {}) or {}
+                            result.raw_data['content_source'] = 'title_repair'
+                    except Exception:
+                        pass
+
                 if content is None or not str(content).strip():
                     logger.warning(f"Result has empty content in query '{query_key}', skipping")
                     continue
@@ -1078,7 +1195,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
-                research_id, "Removing duplicate results...", 52
+                research_id,
+                phase="deduplication",
+                message="Removing duplicate results...",
+                progress=52,
             )
 
         # Deduplicate results with additional validation
@@ -1144,12 +1264,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         if progress_tracker and research_id:
                             await progress_tracker.update_progress(
                                 research_id,
-                                None,
-                                None,
+                                phase="agentic_loop",
                                 custom_data={
                                     "message": f"Critic coverage: {int(coverage*100)}% | flagged: {len(metrics_entry['flagged_sources'])}",
                                     "coverage": coverage,
-                                    "flagged": len(metrics_entry['flagged_sources'])
+                                    "flagged": len(metrics_entry['flagged_sources']),
                                 },
                             )
                     except Exception:
@@ -1168,7 +1287,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     if progress_tracker and research_id:
                         try:
                             await progress_tracker.update_progress(
-                                research_id, f"Agentic iteration {iterations}", 55 + iterations * 5
+                                research_id,
+                                phase="agentic_loop",
+                                message=f"Agentic iteration {iterations}",
+                                progress=55 + iterations * 5,
+                                items_done=iterations,
+                                items_total=max_iter,
                             )
                         except Exception:
                             pass
@@ -1240,7 +1364,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
-                research_id, "Evaluating source credibility...", 55
+                research_id,
+                phase="filtering",
+                message="Filtering & ranking sources...",
+                progress=60,
+                items_done=len(filtered_results),
+                items_total=len(early_filtered_results),
+            )
+
+        if progress_tracker and research_id:
+            await progress_tracker.update_progress(
+                research_id,
+                phase="credibility",
+                message="Evaluating source credibility...",
+                progress=55,
             )
 
         # Calculate credibility scores
@@ -1257,6 +1394,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 await progress_tracker.report_credibility_check(
                     research_id, result.domain, credibility_score
                 )
+
+            # Stream incremental progress every result
+            if progress_tracker and research_id:
+                try:
+                    await progress_tracker.update_progress(
+                        research_id,
+                        phase="credibility",
+                        message="Evaluating source credibility...",
+                        progress=55 + int((idx + 1) / max(1, len(top_results)) * 10),
+                        items_done=idx + 1,
+                        items_total=len(top_results),
+                    )
+                except Exception:
+                    pass
 
         # Limit final results
         final_results = filtered_results[:max_results]
@@ -1396,7 +1547,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
     ) -> ResearchExecutionResult:
         # Determine execution status based on availability of results
         execution_status = (
-            ResearchStatus.FAILED_NO_SOURCES if len(final_results) == 0 else ResearchStatus.OK
+            ContractResearchStatus.FAILED_NO_SOURCES if len(final_results) == 0 else ContractResearchStatus.OK
         )
 
         result = ResearchExecutionResult(
@@ -1465,7 +1616,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         paradigm: HostParadigm,
         user_context: Any,
         progress_callback: Optional[Any],
-        research_id: Optional[str]
+        research_id: Optional[str],
+        check_cancelled: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """Execute searches with per-task timeout, retries, and deterministic ordering"""
         sm = self.search_manager
@@ -1473,6 +1625,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             raise RuntimeError("search_manager is not initialized")
         entries: List[Dict[str, Any]] = []
         for qidx, query in enumerate(queries):
+            # Check for cancellation before each query
+            if check_cancelled and await check_cancelled():
+                logger.info(f"Research {research_id} cancelled during search execution")
+                return entries  # Return partial results
             for api in self._select_apis_for_paradigm(paradigm, user_context):
                 entries.append({"query_index": qidx, "query": query, "api": api})
 
@@ -1482,6 +1638,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         processed_results: List[Dict[str, Any]] = []
         # Execute sequentially per entry to enable precise retry/backoff and deterministic ordering
         for idx, meta in enumerate(entries):
+            # Check for cancellation before each search task
+            if check_cancelled and await check_cancelled():
+                logger.info(f"Research {research_id} cancelled during search task {idx}/{len(entries)}")
+                break  # Exit search loop early
+            
             api = meta["api"]
             query = meta["query"]
             qidx = meta["query_index"]
@@ -1495,6 +1656,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             result_items: List[Any] = []
             delay = self.retry_policy.base_delay_sec
             while attempt < self.retry_policy.max_attempts:
+                # Check for cancellation before each retry
+                if check_cancelled and await check_cancelled():
+                    logger.info(f"Research {research_id} cancelled during search retry")
+                    break
+                    
                 attempt += 1
                 try:
                     config = SearchConfig(max_results=20, language="en", region="us")
@@ -1504,8 +1670,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         # Fallback will ignore api specificity; still tracked for metrics
                         coro = sm.search_with_fallback(query, config)
 
-                    # Per-attempt timeout
-                    task_result = await asyncio.wait_for(coro, timeout=10)
+                    # Per-attempt timeout (configurable via SEARCH_TASK_TIMEOUT_SEC)
+                    task_result = await asyncio.wait_for(coro, timeout=self.search_task_timeout)
                     if isinstance(task_result, list):
                         result_items = task_result
                     else:
@@ -1696,6 +1862,14 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         _domain = _urlparse(merged_url).netloc.lower()
                     except Exception:
                         _domain = ""
+                # Attempt to parse source category from explanation (e.g., 'cat=academic')
+                try:
+                    import re as _re
+                    m = _re.search(r"cat=([^,\s]+)", credibility_explanation or "")
+                    if m:
+                        extra_meta["source_category"] = m.group(1)
+                except Exception:
+                    pass
                 extra_meta.update({
                     "credibility_explanation": credibility_explanation,
                     "origin_query": merged.get('origin_query'),
@@ -1725,6 +1899,41 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         )
 
         limited_results = deduplicated_results[: int(getattr(user_context, "source_limit", 10))]
+
+        # Paradigm post‑ranking: reorder results using the active paradigm strategy
+        try:
+            strategy = get_search_strategy(classification.primary_paradigm.value)
+            sc = SearchContext(
+                original_query=getattr(context_engineered, "original_query", ""),
+                paradigm=classification.primary_paradigm.value,
+                secondary_paradigm=(getattr(classification, "secondary_paradigm", None).value
+                                    if getattr(classification, "secondary_paradigm", None) else None),
+            )
+            # Convert to SearchResult objects for scoring
+            tmp_results: List[SearchResult] = []
+            for r in limited_results:
+                try:
+                    tmp_results.append(
+                        SearchResult(
+                            title=getattr(r, "title", ""),
+                            url=getattr(r, "url", ""),
+                            snippet=getattr(r, "snippet", ""),
+                            source=getattr(r, "source", getattr(r, "domain", "") or "web"),
+                            published_date=getattr(r, "published_date", None),
+                            domain=getattr(r, "domain", ""),
+                            credibility_score=float(getattr(r, "credibility_score", 0.0) or 0.0),
+                            result_type=getattr(r, "metadata", {}).get("result_type", "web") if isinstance(getattr(r, "metadata", {}), dict) else "web",
+                        )
+                    )
+                except Exception:
+                    continue
+            ranked = await strategy.filter_and_rank_results(tmp_results, sc)
+            # Reorder limited_results by ranked URL order
+            order = {res.url: idx for idx, res in enumerate(ranked)}
+            limited_results.sort(key=lambda x: order.get(getattr(x, "url", ""), 1e9))
+            self._search_metrics["paradigm_post_ranking"] = True
+        except Exception as e:
+            logger.debug(f"Paradigm post-ranking skipped: {e}")
 
         dedup_rate = 1.0 - (len(deduplicated_results) / float(max(len(raw_results), 1)))
         self._search_metrics['deduplication_rate'] = dedup_rate
@@ -1806,10 +2015,43 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # Lightweight contradiction detection on compressed snippets
         contradictions = self._detect_contradictions(compressed_results)
 
+        # Category distribution over limited_results
+        try:
+            cat_counts = {}
+            for r in limited_results:
+                md = getattr(r, 'metadata', {}) or {}
+                cat = md.get('source_category') or md.get('result_type') or 'general'
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        except Exception:
+            cat_counts = {}
+
+        # Bias distribution based on credibility_explanation (e.g., 'bias=left, fact=high, cat=academic')
+        try:
+            import re as _re
+            bias_counts = {}
+            for r in limited_results:
+                md = getattr(r, 'metadata', {}) or {}
+                expl = md.get('credibility_explanation') or ''
+                m = _re.search(r"bias=([^,\s]+)", expl)
+                if m:
+                    b = m.group(1).strip().lower()
+                    bias_counts[b] = bias_counts.get(b, 0) + 1
+            # Normalize common variants
+            normalized = {"left": 0, "center": 0, "right": 0, "mixed": 0}
+            for k, v in bias_counts.items():
+                if k in normalized:
+                    normalized[k] += v
+                else:
+                    normalized["mixed"] += v
+        except Exception:
+            normalized = {}
+
         return {
             "results": compressed_results,
             "sources_used": list(self._search_metrics.get('apis_used', set())) if isinstance(self._search_metrics.get('apis_used'), set) else [],
             "credibility_summary": self._calculate_credibility_summary(limited_results),
+            "category_distribution": cat_counts,
+            "bias_distribution": normalized,
             "dedup_stats": {
                 "original_count": len(raw_results),
                 "deduplicated_count": len(deduplicated_results),
@@ -2300,7 +2542,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         "deep_research_enabled": True
                     },
                     cost_breakdown={},
-                    status=ResearchStatus.FAILED_NO_SOURCES
+                    status=ContractResearchStatus.FAILED_NO_SOURCES
                 )
             except Exception as e:
                 logger.error(f"Failed to construct minimal ResearchExecutionResult: {e}")

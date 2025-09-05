@@ -1296,7 +1296,7 @@ class AnswerGenerationOrchestrator:
         options: Optional[Dict[str, Any]] = None
     ) -> GeneratedAnswer:
         """Generate answer using specified paradigm"""
-        
+
         # Validate paradigm
         if paradigm not in self.generators:
             logger.error(f"Unknown paradigm: {paradigm}")
@@ -1314,9 +1314,40 @@ class AnswerGenerationOrchestrator:
             metadata=options or {},
         )
         
-        # Generate answer
+        # Generate answer with progress callbacks if research_id available
         generator = self.generators[paradigm]
-        answer = await generator.generate_answer(context)
+
+        research_id = (options or {}).get("research_id") if options else None
+        total_sections = len(generator.get_section_structure())
+
+        if research_id and total_sections:
+            # Late import to avoid circular
+            try:
+                from services.websocket_service import progress_tracker as _pt
+
+                async def _report(idx: int):
+                    if _pt:
+                        await _pt.report_synthesis_progress(research_id, idx, total_sections)
+
+                # Wrap generator._generate_section
+                orig_generate = generator._generate_section  # type: ignore[attr-defined]
+
+                async def _wrapped(sec_self, ctx, sec_def):  # noqa: ANN001
+                    result = await orig_generate(ctx, sec_def)  # type: ignore[misc]
+                    # section_index inferred by len progress
+                    await _report(len(sec_self.citations) // 1)  # approx sections processed
+                    return result
+
+                # Monkeypatch for duration of call
+                setattr(generator, "_generate_section", _wrapped)  # type: ignore[attr-defined]
+                try:
+                    answer = await generator.generate_answer(context)
+                finally:
+                    setattr(generator, "_generate_section", orig_generate)  # restore
+            except Exception:
+                answer = await generator.generate_answer(context)
+        else:
+            answer = await generator.generate_answer(context)
         
         return answer
     

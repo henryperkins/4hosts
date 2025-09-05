@@ -72,9 +72,25 @@ async def classify_paradigm(
             },
         )
 
+        # Normalize structured signals (keywords, intents) to frontend paradigm codes
+        signals_out: Dict[str, Dict[str, Any]] = {}
+        try:
+            # Map internal HostParadigm (revolutionary/devotion/analytical/strategic) to UI names
+            for p, details in (classification_result.signals or {}).items():
+                ui_key = HOST_TO_MAIN_PARADIGM.get(p).value if hasattr(p, 'name') else str(p)
+                if ui_key:
+                    # keep only compact fields expected by UI
+                    signals_out[ui_key] = {
+                        "keywords": list(details.get("keywords", []) or [])[:5],
+                        "intent_signals": list(details.get("intent_signals", []) or [])[:5],
+                    }
+        except Exception:
+            signals_out = {}
+
         return {
             "query": query,
             "classification": classification.dict(),
+            "signals": signals_out,
             "suggested_approach": get_paradigm_approach_suggestion(
                 classification.primary
             ),

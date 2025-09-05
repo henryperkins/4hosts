@@ -5,11 +5,15 @@ Disabled by default; controlled by orchestrator.agentic_config["enable_llm_criti
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 import json
 import logging
+import os
+import asyncio
+from urllib.parse import urlparse
 
 from .llm_client import llm_client
+from .credibility import get_source_credibility
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +34,15 @@ CRITIC_SCHEMA = {
 }
 
 
-def _build_prompt(query: str, paradigm: str, themes: List[str], focus: List[str], sources: List[Dict[str, Any]]) -> str:
+def _domain_from_url(url: str) -> Optional[str]:
+    try:
+        host = urlparse(url).netloc.lower()
+        return host[4:] if host.startswith("www.") else host
+    except Exception:
+        return None
+
+
+def _build_prompt(query: str, paradigm: str, themes: List[str], focus: List[str], sources: List[Dict[str, Any]], cred_hints: Optional[List[str]] = None) -> str:
     lines = [
         "You are a research critic.",
         "Task:",
@@ -47,6 +59,9 @@ def _build_prompt(query: str, paradigm: str, themes: List[str], focus: List[str]
     ]
     for s in sources[:8]:
         lines.append(f"- {s.get('title','')[:120]} | {s.get('url','')} | {s.get('snippet','')[:200]}")
+    if cred_hints:
+        lines.append("Credibility hints (domain | score | factual | bias | controversy):")
+        lines.extend(cred_hints[:10])
     lines.append("Return JSON with fields: coverage_score, missing_facets, flagged_sources, warnings.")
     return "\n".join(lines)
 
@@ -59,7 +74,42 @@ async def llm_coverage_and_claims(
     sources: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     try:
-        prompt = _build_prompt(query, paradigm, themes or [], focus or [], sources or [])
+        # Optional credibility verification (domain-level), reusing the app's credibility system.
+        # Controlled by env CRITIC_VERIFY_CREDIBILITY ("1" to enable). This may use Brave citations
+        # if ENABLE_BRAVE_GROUNDING=1 and BRAVE_API_KEY is set (handled in credibility service).
+        cred_hints: List[str] = []
+        flagged_low_cred: List[str] = []
+        if os.getenv("CRITIC_VERIFY_CREDIBILITY", "0").lower() in ("1", "true", "yes"):
+            # Prepare up to 8 sources for quick checks
+            subset = sources[:8] if sources else []
+            tasks = []
+            meta: List[Tuple[str, str]] = []  # (url, domain)
+            for s in subset:
+                url = s.get("url") or ""
+                domain = _domain_from_url(url)
+                if not domain:
+                    continue
+                meta.append((url, domain))
+                content = " ".join(filter(None, [s.get("title", ""), s.get("snippet", "")]))
+                tasks.append(get_source_credibility(domain=domain, paradigm=paradigm or "bernard", content=content, search_terms=(query or "").split()[:8]))
+            if tasks:
+                try:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for (url, domain), res in zip(meta, results):
+                        if isinstance(res, Exception) or res is None:
+                            continue
+                        score = getattr(res, "overall_score", 0.5)
+                        factual = getattr(res, "fact_check_rating", None) or "unknown"
+                        bias = getattr(res, "bias_rating", None) or "center"
+                        contr = getattr(res, "controversy_score", 0.0)
+                        contr_lbl = "high" if contr > 0.7 else ("low" if contr < 0.3 else "moderate")
+                        cred_hints.append(f"- {domain} | {score:.2f} | {factual} | {bias} | {contr_lbl}")
+                        if score < 0.3 or (factual == "low") or contr > 0.8:
+                            flagged_low_cred.append(url)
+                except Exception as e:
+                    logger.debug("credibility precheck failed: %s", e)
+
+        prompt = _build_prompt(query, paradigm, themes or [], focus or [], sources or [], cred_hints if cred_hints else None)
         raw = await llm_client.generate_completion(
             prompt,
             paradigm=paradigm or "bernard",
@@ -85,8 +135,13 @@ async def llm_coverage_and_claims(
             v = data.get(k, [])
             if not isinstance(v, list):
                 data[k] = [str(v)]
+        # Merge any low-credibility flags from verification step
+        if flagged_low_cred:
+            fs = data.get("flagged_sources", [])
+            data["flagged_sources"] = list({*fs, *flagged_low_cred})
+            warns = data.get("warnings", [])
+            data["warnings"] = list({*warns, "low_credibility_sources_detected"})
         return data
     except Exception as e:
         logger.warning("LLM critic failed: %s", e)
         return {"coverage_score": 0.5, "missing_facets": [], "flagged_sources": [], "warnings": ["critic_failed"]}
-

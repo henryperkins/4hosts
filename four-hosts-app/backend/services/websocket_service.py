@@ -423,12 +423,23 @@ class ConnectionManager:
 # --- Progress Tracker ---
 
 
+from typing import Any  # at top we already have; ensure not duplicate but ensure imported earlier import list includes Any; top already includes Any. We'll keep.
+
 class ProgressTracker:
     """Tracks and broadcasts research progress"""
 
     def __init__(self, connection_manager: ConnectionManager):
         self.connection_manager = connection_manager
         self.research_progress: Dict[str, Dict[str, Any]] = {}
+
+        # Keep running heart-beat tasks so the frontend never thinks the
+        # connection is stale during very long phases (e.g. large LLM
+        # synthesis).  A task is created for every `start_research` call and
+        # cancelled automatically in `_cleanup`.
+        self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
+
+        # Rolling average duration per phase (milliseconds)
+        self._phase_stats: Dict[str, List[float]] = {}
 
     async def start_research(
         self, research_id: str, user_id: str, query: str, paradigm: str, depth: str
@@ -440,10 +451,12 @@ class ProgressTracker:
             "paradigm": paradigm,
             "depth": depth,
             "started_at": datetime.now(timezone.utc),
+            "last_update": datetime.now(timezone.utc),
             "phase": "initialization",
             "progress": 0,
             "sources_found": 0,
             "sources_analyzed": 0,
+            "phase_start": datetime.now(timezone.utc),
         }
 
         # Broadcast start event
@@ -463,38 +476,112 @@ class ProgressTracker:
             ),
         )
 
+        # Launch background heartbeat so clients receive periodic updates even
+        # when no phase events are emitted.
+        self._heartbeat_tasks[research_id] = asyncio.create_task(
+            self._heartbeat(research_id)
+        )
+
     async def update_progress(
         self,
         research_id: str,
-        phase: Optional[str] = None,
+        *positional: Any,
+        message: Optional[str] = None,
         progress: Optional[int] = None,
+        phase: Optional[str] = None,
         sources_found: Optional[int] = None,
         sources_analyzed: Optional[int] = None,
+        items_done: Optional[int] = None,
+        items_total: Optional[int] = None,
         custom_data: Optional[Dict[str, Any]] = None,
     ):
         """Update research progress"""
         if research_id not in self.research_progress:
             return
 
+        # Back-compat: allow old positional pattern
+        phase_enum_values = {
+            "initialization",
+            "search",
+            "deduplication",
+            "filtering",
+            "credibility",
+            "agentic_loop",
+            "synthesis",
+            "complete",
+        }
+
+        phase_from_pos: Optional[str] = None
+        message_from_pos: Optional[str] = None
+        progress_from_pos: Optional[int] = None
+
+        if positional:
+            # First positional could historically be either a phase name or a
+            # free-form message. Heuristic: if it matches known enum values,
+            # treat as phase, else as message.
+            first = positional[0]
+            if isinstance(first, str):
+                if first in phase_enum_values:
+                    phase_from_pos = first
+                else:
+                    message_from_pos = first
+            # Second positional (if int) is progress percentage
+            if len(positional) > 1 and isinstance(positional[1], (int, float)):
+                progress_from_pos = int(positional[1])
+
+        # Resolve final values with priority: explicit kwarg > positional > None
+        phase = phase if phase is not None else phase_from_pos
+        message = message if message is not None else message_from_pos
+        progress = progress if progress is not None else progress_from_pos
+
         progress_data = self.research_progress[research_id]
 
         # Update fields
         if phase and phase != progress_data["phase"]:
+            old_phase = progress_data["phase"]
             progress_data["phase"] = phase
+            # Collect phase duration metric
+            try:
+                started = progress_data.get("phase_start")
+                if started:
+                    elapsed_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+                    self._phase_stats.setdefault(old_phase, []).append(elapsed_ms)
+            except Exception:
+                pass
+
+            # Reset phase_start for new phase
+            progress_data["phase_start"] = datetime.now(timezone.utc)
             await self.connection_manager.broadcast_to_research(
                 research_id,
                 WSMessage(
                     type=WSEventType.RESEARCH_PHASE_CHANGE,
                     data={
                         "research_id": research_id,
-                        "old_phase": progress_data["phase"],
+                        "old_phase": old_phase,
                         "new_phase": phase,
                     },
                 ),
             )
 
         if progress is not None:
-            progress_data["progress"] = progress
+            progress_data["progress"] = min(max(progress, 0), 100)
+
+        # Update timestamp for ETA calculations and heart-beat idle detection
+        progress_data["last_update"] = datetime.now(timezone.utc)
+
+        # Calculate ETA from historical average if available
+        eta_seconds: Optional[int] = None
+        try:
+            phase_key = progress_data.get("phase")
+            if phase_key and self._phase_stats.get(phase_key):
+                avg_ms = sum(self._phase_stats[phase_key]) / len(self._phase_stats[phase_key])
+                elapsed_ms = (
+                    datetime.now(timezone.utc) - progress_data.get("phase_start", datetime.now(timezone.utc))
+                ).total_seconds() * 1000
+                remaining_ms = max(0.0, avg_ms - elapsed_ms)
+                eta_seconds = int(remaining_ms / 1000)
+        except Exception:
+            eta_seconds = None
 
         if sources_found is not None:
             progress_data["sources_found"] = sources_found
@@ -513,8 +600,19 @@ class ProgressTracker:
             "status": "in_progress",
         }
 
+        if message:
+            update_data["message"] = message
+
+        if items_done is not None:
+            update_data["items_done"] = items_done
+        if items_total is not None:
+            update_data["items_total"] = items_total
+
         if custom_data:
             update_data.update(custom_data)
+
+        if eta_seconds is not None:
+            update_data["eta_seconds"] = eta_seconds
 
         await self.connection_manager.broadcast_to_research(
             research_id, WSMessage(type=WSEventType.RESEARCH_PROGRESS, data=update_data)
@@ -525,6 +623,37 @@ class ProgressTracker:
             await research_status_cache().delete(research_id)
         except Exception as e:
             logger.debug(f"Cache invalidation (status) failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _heartbeat(self, research_id: str, interval: int = 10):
+        """Send a heartbeat every *interval* seconds until research ends."""
+        try:
+            while research_id in self.research_progress:
+                await asyncio.sleep(interval)
+
+                if research_id not in self.research_progress:
+                    break
+
+                last = self.research_progress[research_id].get("last_update")
+                # Only send a ping if nothing was sent for > interval seconds
+                if last and (datetime.now(timezone.utc) - last).total_seconds() < interval:
+                    continue
+
+                await self.update_progress(
+                    research_id,
+                    custom_data={"heartbeat": True},
+                )
+        except asyncio.CancelledError:
+            pass
+
+    async def _cleanup(self, research_id: str):
+        """Cancel heartbeat and remove state (called on complete / fail)."""
+        task = self._heartbeat_tasks.pop(research_id, None)
+        if task and not task.done():
+            task.cancel()
 
     async def report_source_found(self, research_id: str, source: Dict[str, Any]):
         """Report a new source found"""
@@ -573,10 +702,29 @@ class ProgressTracker:
                     "research_id": research_id,
                     "message": "Starting answer synthesis...",
                     "progress": 80,
+                    "phase": "synthesis",
                     "status": "in_progress",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             ),
+        )
+
+    async def report_synthesis_progress(self, research_id: str, completed: int, total: int):
+        """Incremental synthesis progress (sections generated)."""
+        if research_id not in self.research_progress:
+            return
+
+        pct_base = 80  # synthesis starts at 80
+        pct_range = 15  # up to 95 before completion
+        progress_pct = pct_base + int((completed / max(1, total)) * pct_range)
+
+        await self.update_progress(
+            research_id,
+            phase="synthesis",
+            message=f"Synthesis {completed}/{total} sections",
+            progress=progress_pct,
+            items_done=completed,
+            items_total=total,
         )
 
     async def report_synthesis_completed(self, research_id: str, sections: int, citations: int):
@@ -667,6 +815,11 @@ class ProgressTracker:
         if research_id in self.research_progress:
             del self.research_progress[research_id]
 
+        await self._cleanup(research_id)
+
+        # Stop heartbeat
+        await self._cleanup(research_id)
+
     async def fail_research(
         self,
         research_id: str,
@@ -698,6 +851,9 @@ class ProgressTracker:
         # Clean up
         if research_id in self.research_progress:
             del self.research_progress[research_id]
+
+        # Stop heartbeat
+        await self._cleanup(research_id)
 
 
 # --- Research Progress Tracker (alias for compatibility) ---
