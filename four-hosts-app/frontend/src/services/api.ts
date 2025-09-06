@@ -440,6 +440,58 @@ class APIService {
     }
   }
 
+  /* ------------------------------------------------------------------
+   * Paradigm override – post-submission switch of paradigm.
+   * ------------------------------------------------------------------ */
+
+  async overrideParadigm(researchId: string, paradigm: Paradigm): Promise<void> {
+    const response = await this.fetchWithAuth('/paradigms/override', {
+      method: 'POST',
+      body: JSON.stringify({ research_id: researchId, paradigm })
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(
+        typeof error.detail === 'string' ? error.detail : 'Failed to override paradigm'
+      )
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * Webhook management
+   * ------------------------------------------------------------------ */
+
+  async listWebhooks(): Promise<{ id: string; url: string; event: string }[]> {
+    const response = await this.fetchWithAuth('/webhooks')
+    if (!response.ok) {
+      throw new Error('Failed to fetch webhooks')
+    }
+    return response.json()
+  }
+
+  async createWebhook(url: string, event: string): Promise<void> {
+    const response = await this.fetchWithAuth('/webhooks', {
+      method: 'POST',
+      body: JSON.stringify({ url, event })
+    })
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(
+        typeof error.detail === 'string' ? error.detail : 'Failed to create webhook'
+      )
+    }
+  }
+
+  async deleteWebhook(id: string): Promise<void> {
+    const response = await this.fetchWithAuth(`/webhooks/${id}`, {
+      method: 'DELETE'
+    })
+    if (!response.ok) {
+      throw new Error('Failed to delete webhook')
+    }
+  }
+
   async getUserResearchHistory(limit = 10, offset = 0): Promise<{ history: ResearchHistoryItem[]; total: number; limit: number; offset: number }> {
     const response = await this.fetchWithAuth(`/research/history?limit=${limit}&offset=${offset}`)
 

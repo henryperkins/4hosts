@@ -98,6 +98,7 @@ export interface WebSocketMessage {
     // Search/analysis events
     | 'search.started'
     | 'search.completed'
+    | 'search.retry'
     | 'credibility.check'
     | 'deduplication.progress'
   data: {
@@ -198,7 +199,7 @@ export function isWebSocketMessage(data: unknown): data is WebSocketMessage {
     'status', 'progress', 'result', 'error',
     'connected', 'disconnected', 'ping', 'pong', 'system.notification', 'rate_limit.warning',
     'research_progress', 'research_phase_change', 'source_found', 'source_analyzed', 'research_completed', 'research_failed', 'research_started',
-    'search.started', 'search.completed', 'credibility.check', 'deduplication.progress'
+    'search.started', 'search.completed', 'search.retry', 'credibility.check', 'deduplication.progress'
   ]
   return allowed.includes(t as WebSocketMessage['type'])
 }

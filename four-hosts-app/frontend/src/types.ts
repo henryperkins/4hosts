@@ -113,11 +113,15 @@ export interface ResearchResult {
 }
 
 export interface GeneratedAnswer {
-    summary: string
-    sections: AnswerSection[]
-    action_items: ActionItem[]
-    citations: Citation[]
-    metadata?: Record<string, any>
+  summary: string
+  sections: AnswerSection[]
+  action_items: ActionItem[]
+  citations: Citation[]
+  // New optional backend-provided fields (non-breaking)
+  confidence_score?: number
+  synthesis_quality?: number
+  generation_time?: number
+  metadata?: Record<string, any>
 }
 
 export interface AnswerSection {
