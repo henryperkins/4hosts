@@ -78,214 +78,14 @@ class ClassificationResult:
 class QueryAnalyzer:
     """Analyzes queries to extract classification features"""
 
-    PARADIGM_KEYWORDS = {
-        HostParadigm.DOLORES: {
-            "primary": [
-                "justice",
-                "injustice",
-                "unfair",
-                "expose",
-                "reveal",
-                "fight",
-                "oppression",
-                "oppressed",
-                "system",
-                "corrupt",
-                "corruption",
-                "revolution",
-                "rebel",
-                "resistance",
-                "monopoly",
-                "exploitation",
-                "wrong",
-                "rights",
-                "violation",
-                "abuse",
-                "scandal",
-                "truth",
-            ],
-            "secondary": [
-                "challenge",
-                "confront",
-                "battle",
-                "struggle",
-                "victim",
-                "powerful",
-                "elite",
-                "establishment",
-                "inequality",
-                "discriminate",
-                "protest",
-                "activism",
-                "change",
-                "transform",
-                "overthrow",
-            ],
-            "patterns": [
-                r"how to (fight|expose|reveal|stop)",
-                r"why is .* (unfair|unjust|wrong)",
-                r"expose the .* (truth|corruption|scandal)",
-                r"(victims?|suffering) of",
-                r"stand up (to|against)",
-                r"bring down the",
-            ],
-        },
-        HostParadigm.TEDDY: {
-            "primary": [
-                "help",
-                "support",
-                "protect",
-                "care",
-                "assist",
-                "aid",
-                "vulnerable",
-                "community",
-                "together",
-                "safe",
-                "safety",
-                "wellbeing",
-                "welfare",
-                "nurture",
-                "comfort",
-                "heal",
-                "serve",
-                "service",
-                "volunteer",
-                "guide",
-                "defend",
-            ],
-            "secondary": [
-                "kindness",
-                "compassion",
-                "empathy",
-                "understanding",
-                "gentle",
-                "patient",
-                "loyal",
-                "devoted",
-                "dedication",
-                "responsibility",
-                "duty",
-                "honor",
-                "trust",
-                "reliable",
-            ],
-            "patterns": [
-                r"how to (help|support|protect|care for)",
-                r"best way to (assist|aid|serve)",
-                r"support for .* (community|people|group)",
-                r"(caring|helping) (for|with)",
-                r"protect .* from",
-                r"resources for",
-            ],
-        },
-        HostParadigm.BERNARD: {
-            "primary": [
-                "analyze",
-                "analysis",
-                "research",
-                "study",
-                "examine",
-                "investigate",
-                "data",
-                "evidence",
-                "facts",
-                "statistics",
-                "compare",
-                "evaluate",
-                "measure",
-                "test",
-                "experiment",
-                "understand",
-                "explain",
-                "theory",
-                "hypothesis",
-                "prove",
-            ],
-            "secondary": [
-                "objective",
-                "empirical",
-                "scientific",
-                "systematic",
-                "methodology",
-                "correlation",
-                "causation",
-                "pattern",
-                "trend",
-                "model",
-                "framework",
-                "principle",
-                "logic",
-            ],
-            "patterns": [
-                r"(what|how) does .* work",
-                r"research (on|about|into)",
-                r"evidence (for|against|of)",
-                r"studies? (show|prove|indicate)",
-                r"statistical .* (analysis|data)",
-                r"scientific .* (explanation|theory)",
-            ],
-        },
-        HostParadigm.MAEVE: {
-            "primary": [
-                "strategy",
-                "strategic",
-                "compete",
-                "competition",
-                "win",
-                "influence",
-                "control",
-                "optimize",
-                "maximize",
-                "leverage",
-                "advantage",
-                "opportunity",
-                "tactic",
-                "plan",
-                "design",
-                "implement",
-                "execute",
-                "achieve",
-                "succeed",
-                "dominate",
-            ],
-            "secondary": [
-                "efficient",
-                "effective",
-                "powerful",
-                "smart",
-                "clever",
-                "innovative",
-                "disrupt",
-                "transform",
-                "scale",
-                "growth",
-                "roi",
-                "profit",
-                "market",
-                "position",
-                "edge",
-            ],
-            "patterns": [
-                r"(best|optimal) strategy (for|to)",
-                r"how to (compete|win|succeed|influence)",
-                r"competitive advantage",
-                r"(increase|improve|optimize) .* (performance|results)",
-                r"strategic .* (plan|approach|framework)",
-                r"tactics? (for|to)",
-            ],
-        },
-    }
-
-    DOMAIN_PARADIGM_BIAS = {
-        "technology": HostParadigm.BERNARD,
-        "business": HostParadigm.MAEVE,
-        "healthcare": HostParadigm.TEDDY,
-        "education": HostParadigm.BERNARD,
-        "social_justice": HostParadigm.DOLORES,
-        "science": HostParadigm.BERNARD,
-        "nonprofit": HostParadigm.TEDDY,
-    }
+    # Canon is imported from models.paradigms to keep system-wide consistency
+    from models.paradigms import (
+        PARADIGM_KEYWORDS as _CANON_KEYWORDS,
+        PARADIGM_PATTERNS as _CANON_PATTERNS,
+        DOMAIN_PARADIGM_BIAS as _CANON_DOMAIN_BIAS,
+    )
+    PARADIGM_KEYWORDS = _CANON_KEYWORDS
+    DOMAIN_PARADIGM_BIAS = _CANON_DOMAIN_BIAS
 
     def __init__(self):
         self.intent_patterns = self._compile_patterns()
@@ -293,10 +93,9 @@ class QueryAnalyzer:
     def _compile_patterns(self) -> Dict[HostParadigm, List[re.Pattern]]:
         """Compile regex patterns for efficiency"""
         compiled = {}
-        for paradigm, keywords in self.PARADIGM_KEYWORDS.items():
-            compiled[paradigm] = [
-                re.compile(p, re.IGNORECASE) for p in keywords.get("patterns", [])
-            ]
+        # Use canonical pattern list
+        for paradigm, pattern_list in self._CANON_PATTERNS.items():
+            compiled[paradigm] = [re.compile(p, re.IGNORECASE) for p in pattern_list]
         return compiled
 
     def analyze(self, query: str, research_id: Optional[str] = None) -> QueryFeatures:
@@ -477,10 +276,10 @@ class ParadigmClassifier:
         progress_tracker = None
         if research_id:
             try:
-                from services.websocket_service import progress_tracker as _pt
+                from services.progress import progress as _pt
                 progress_tracker = _pt
-            except ImportError:
-                pass
+            except Exception:
+                progress_tracker = None
         
         # Track classification steps
         total_steps = 4  # features, rule-based, LLM (optional), combination
@@ -604,17 +403,24 @@ class ParadigmClassifier:
             matched_keywords = []
             reasoning = []
 
-            primary_kw = self.analyzer.PARADIGM_KEYWORDS[paradigm]["primary"]
-            for kw in primary_kw:
-                if kw in query_lower:
-                    keyword_score += 2.0
-                    matched_keywords.append(kw)
-
-            secondary_kw = self.analyzer.PARADIGM_KEYWORDS[paradigm]["secondary"]
-            for kw in secondary_kw:
-                if kw in query_lower:
-                    keyword_score += 1.0
-                    matched_keywords.append(kw)
+            # Canonical keywords may be a flat list; keep backward compat if a dict is provided
+            canon = self.analyzer.PARADIGM_KEYWORDS.get(paradigm)
+            if isinstance(canon, dict):
+                primary_kw = canon.get("primary", [])
+                for kw in primary_kw:
+                    if kw in query_lower:
+                        keyword_score += 2.0
+                        matched_keywords.append(kw)
+                secondary_kw = canon.get("secondary", [])
+                for kw in secondary_kw:
+                    if kw in query_lower:
+                        keyword_score += 1.0
+                        matched_keywords.append(kw)
+            else:
+                for kw in (canon or []):
+                    if kw in query_lower:
+                        keyword_score += 1.5
+                        matched_keywords.append(kw)
 
             patterns = self.analyzer.intent_patterns.get(paradigm, [])
             for pattern in patterns:
@@ -739,6 +545,61 @@ class ParadigmClassifier:
         self, query: str, features: Optional[QueryFeatures]
     ) -> Dict[HostParadigm, ParadigmScore]:
         """Use LLM to classify the query into paradigms"""
+        def _repair_and_parse_json(text: str) -> Optional[Dict[str, Any]]:
+            """Attempt to repair common LLM JSON issues and parse.
+
+            Handles:
+            - Markdown code fences (```json ... ```)
+            - Leading/trailing text around a JSON object
+            - Trailing commas before } or ]
+            - Smart quotes → standard quotes
+            - Unbalanced braces by appending missing closing braces
+            - Single-quoted keys -> double-quoted keys
+            """
+            if not text or not isinstance(text, str):
+                return None
+
+            s = text.strip()
+            # Strip Markdown code fences
+            if s.startswith("```"):
+                s = s.lstrip("`")
+                # Remove an optional language tag like json, JSON
+                s = s[s.find("\n") + 1 :] if "\n" in s else s
+                if s.endswith("```"):
+                    s = s[: -3]
+                s = s.strip()
+
+            # Extract the largest {...} block to avoid pre/post commentary
+            first = s.find("{")
+            last = s.rfind("}")
+            if first != -1 and last != -1 and last > first:
+                s = s[first : last + 1]
+
+            # Normalise quotes
+            s = (
+                s.replace("\u201c", '"')
+                .replace("\u201d", '"')
+                .replace("\u2018", "'")
+                .replace("\u2019", "'")
+            )
+
+            # Single-quoted keys to double quotes: 'key': → "key":
+            import re as _re
+            s = _re.sub(r"'([A-Za-z0-9_]+)'\s*:", r'"\1":', s)
+
+            # Trailing commas before } or ]
+            s = _re.sub(r",\s*([}\]])", r"\1", s)
+
+            # Balance braces if obviously short by a few closers
+            open_braces = s.count("{")
+            close_braces = s.count("}")
+            if open_braces > close_braces:
+                s = s + ("}" * (open_braces - close_braces))
+
+            try:
+                return json.loads(s)
+            except Exception:
+                return None
         # Create a prompt for the LLM
         features_text = ""
         if features:
@@ -792,22 +653,15 @@ Return as JSON with this structure:
             # Log raw response for debugging
             logger.debug(f"LLM raw response: {response_text[:200]}...")
 
-            # Parse the JSON response with better error handling
+            # Parse the JSON response with robust error handling/repair
+            llm_result: Optional[Dict[str, Any]]
             try:
                 llm_result = json.loads(response_text)
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parsing error: {e}")
                 logger.error(f"Raw response that failed to parse: {response_text}")
-                # Try to clean common issues
-                if (response_text or "").strip().startswith("```json"):
-                    # Remove markdown code block if present
-                    response_text = (response_text or "").strip()
-                    response_text = response_text.replace("```json", "").replace("```", "")
-                    try:
-                        llm_result = json.loads((response_text or "").strip())
-                    except:
-                        return {}
-                else:
+                llm_result = _repair_and_parse_json(response_text)
+                if llm_result is None:
                     return {}
 
             # Validate the structure

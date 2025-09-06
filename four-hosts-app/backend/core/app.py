@@ -28,6 +28,10 @@ try:
 except Exception:
     search_router = None  # type: ignore
 try:
+    from routes.responses import router as responses_router
+except Exception:
+    responses_router = None  # type: ignore
+try:
     from routes.users import router as users_router
 except Exception:
     users_router = None  # type: ignore
@@ -90,8 +94,9 @@ async def lifespan(app: FastAPI):
         # Initialize search manager with cache integration
         from services.cache import cache_manager
         from services.search_apis import create_search_manager
-        search_manager = create_search_manager(cache_manager=cache_manager)
-        await search_manager.initialize()
+        search_manager = create_search_manager()
+        # SearchAPIManager uses context manager protocol, enter it
+        await search_manager.__aenter__()
         app.state.search_manager = search_manager
         logger.info("✓ Search manager initialized with cache")
 
@@ -132,16 +137,24 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Monitoring systems initialized")
 
         # Initialize production services
-        from services.auth import auth_service
+        from services.auth_service import auth_service
         from services.rate_limiter import RateLimiter
         from services.webhook_manager import WebhookManager, create_webhook_router, WebhookEvent
-        from services.export_service import ExportService
+        from services.export_service import ExportService, create_export_router
 
         app.state.auth_service = auth_service
         app.state.rate_limiter = RateLimiter()
         app.state.webhook_manager = WebhookManager()
         app.state.export_service = ExportService()
         logger.info("✓ Production services initialized")
+
+        # Mount export routes under /v1 using the initialized service
+        try:
+            export_router = create_export_router(app.state.export_service)
+            app.include_router(export_router, prefix="/v1")
+            logger.info("✓ Export routes mounted under /v1/export")
+        except Exception as e:
+            logger.warning("Failed to mount export routes: %s", e)
 
         # Register health checks (readiness)
         try:
@@ -223,7 +236,7 @@ async def lifespan(app: FastAPI):
 
         # Cleanup search manager
         if hasattr(app.state, 'search_manager'):
-            await app.state.search_manager.cleanup()
+            await app.state.search_manager.__aexit__(None, None, None)
             logger.info("✓ Search manager cleaned up")
 
         # Cleanup background LLM manager
@@ -321,6 +334,8 @@ def setup_routes(app: FastAPI):
         app.include_router(users_router, prefix="/v1")
     if system_router is not None:
         app.include_router(system_router, prefix="/v1")
+    if responses_router is not None:
+        app.include_router(responses_router, prefix="/v1")
 
     # Mount WebSocket routes (for real-time research progress)
     ws_router = create_websocket_router(connection_manager, progress_tracker)

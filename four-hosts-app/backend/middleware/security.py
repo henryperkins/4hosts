@@ -25,11 +25,18 @@ async def csrf_protection_middleware(request: Request, call_next):
         "/health",
         "/ws",
         "/api/health",
+        # Unversioned (legacy) paths
         "/auth/refresh",
         "/auth/user",
         "/research/history",
         "/research/status",
         "/system/public-stats",
+        # Versioned API paths (current)
+        "/v1/auth/refresh",
+        "/v1/auth/user",
+        "/v1/research/history",
+        "/v1/research/status",
+        "/v1/system/public-stats",
     ]
 
     # Skip CSRF check for safe methods and exempt routes
@@ -100,10 +107,12 @@ def get_csrf_token(request: Request, response: Response) -> dict:
     token = secrets.token_urlsafe(16)
     logger.debug(f"Generating new CSRF token: {token}")
 
-    # Only use secure cookies in production
-    production = is_production()
-    same_site = "none" if production else "lax"
-    secure_flag = True if production else False
+    # Determine cookie attributes from actual scheme to avoid setting
+    # Secure cookies over HTTP during local development or behind proxies.
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_https = forwarded_proto == "https" or request.url.scheme == "https"
+    same_site = "none" if is_https else "lax"
+    secure_flag = True if is_https else False
 
     response.set_cookie(
         key="csrf_token",

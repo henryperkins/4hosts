@@ -188,8 +188,9 @@ async def test_ss_search_retries_on_429_with_backoff(monkeypatch):
     assert attempt_attrs
     assert getattr(session, attempt_attrs[0]) == 2
 
-    # attempts: 1 => computed=1, server=5 -> upper=1 -> delay=1
-    # attempts: 2 => computed=2, server=1 -> upper=1 -> delay=1
+    # With server Retry-After respected:
+    # attempts: 1 => server=5 -> delay=5
+    # attempts: 2 => server=1 -> delay=1
     assert len(delays) >= 2
-    assert delays[0] == 1
+    assert delays[0] == 5
     assert delays[1] == 1

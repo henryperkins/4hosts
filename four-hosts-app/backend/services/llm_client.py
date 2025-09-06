@@ -16,6 +16,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Union, cast
 
 import httpx
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -142,8 +143,9 @@ class LLMClient:
         self.openai_client = None
         self.azure_client = None
         self._initialized = False
+        # Prefer the Azure Responses API by default (align with v1 preview guidance)
         self._azure_use_responses = (
-            os.getenv("AZURE_OPENAI_USE_RESPONSES", "0").lower() in {"1", "true", "yes"}
+            os.getenv("AZURE_OPENAI_USE_RESPONSES", "1").lower() in {"1", "true", "yes"}
         )
         # Try to initialize, but don't fail at import time
         try:
@@ -161,15 +163,12 @@ class LLMClient:
         api_version = os.getenv("AZURE_OPENAI_API_VERSION", "preview")
         
         if azure_key and endpoint and deployment:
-            # Use AsyncOpenAI with Azure endpoint for Responses API
+            # Use AsyncOpenAI with Azure endpoint for Responses API.
+            # For SDK calls we rely on the resource's v1 routing (no query string here).
             endpoint = endpoint.rstrip("/")
-            # For Azure OpenAI Responses API, the base_url should include /openai/v1/
             base_url = f"{endpoint}/openai/v1/"
                 
-            self.azure_client = AsyncOpenAI(
-                api_key=azure_key,
-                base_url=base_url,
-            )
+            self.azure_client = AsyncOpenAI(api_key=azure_key, base_url=base_url)
             logger.info(f"✓ Azure OpenAI client initialised (endpoint: {base_url})")
         else:
             missing = []
@@ -222,6 +221,28 @@ class LLMClient:
     async def aclose(self) -> None:
         """Close underlying httpx client(s) to release sockets."""
         # No longer needed as we create httpx clients on demand
+
+    # ─────────── diagnostics / info ───────────
+    def get_active_backend_info(self) -> Dict[str, Any]:
+        """Return a small diagnostic snapshot of the configured LLM backend.
+
+        Includes whether Azure is enabled, the base URL used by the SDK client,
+        the preferred deployment, and if the Responses API path is active.
+        """
+        info: Dict[str, Any] = {
+            "azure_enabled": bool(self.azure_client is not None),
+            "openai_enabled": bool(self.openai_client is not None),
+            "use_responses_api": bool(self._azure_use_responses),
+            "default_deployment": os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3"),
+            "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "preview"),
+        }
+        try:
+            # AsyncOpenAI stores base_url on ._client.base_url
+            if self.azure_client and hasattr(self.azure_client, "_client"):
+                info["azure_base_url"] = str(self.azure_client._client.base_url)
+        except Exception:
+            pass
+        return info
 
     # ─────────── core API methods ───────────
     @retry(
@@ -308,8 +329,8 @@ class LLMClient:
         if model_name in {"o3", "o1", "azure", "gpt-5-mini", "gpt-4o", "gpt-4.1", "gpt-5-mini", "gpt-5"} and self.azure_client:
             try:
                 deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
-                # If enabled and not streaming, use Responses API (recommended by Azure docs)
-                if self._azure_use_responses and not stream:
+                # Use Responses API when enabled (supports non-stream + stream)
+                if self._azure_use_responses:
                     # Build Responses API payload
                     # The Responses API expects an "input" which can be a string or array of messages.
                     # We pass system + user as a list for clarity/statefulness.
@@ -346,21 +367,35 @@ class LLMClient:
                         if tool_choice:
                             resp_req["tool_choice"] = self._wrap_tool_choice(tool_choice)
 
-                    try:
-                        op_res = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
-                    except TypeError as te:
-                        # Newer Azure SDKs removed 'response_format'; retry without it.
-                        if "response_format" in str(te):
-                            logger.warning(
-                                "Azure SDK changed: retrying responses.create without 'response_format' param"
-                            )
-                            resp_req.pop("response_format", None)
+                    # Streaming path via Responses API
+                    if stream:
+                        resp_req["stream"] = True
+                        try:
+                            stream_iter = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
+                        except TypeError as te:
+                            if "response_format" in str(te):
+                                logger.warning("Azure SDK changed: retrying responses.create without 'response_format'")
+                                resp_req.pop("response_format", None)
+                                stream_iter = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
+                            else:
+                                raise
+                        return self._iter_responses_stream(cast(AsyncIterator[Any], stream_iter))
+                    else:
+                        try:
                             op_res = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
-                        else:
-                            raise
-                    return self._extract_content_safely(op_res)
+                        except TypeError as te:
+                            # Some SDK versions may not accept response_format; retry without it.
+                            if "response_format" in str(te):
+                                logger.warning(
+                                    "Azure SDK changed: retrying responses.create without 'response_format' param"
+                                )
+                                resp_req.pop("response_format", None)
+                                op_res = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
+                            else:
+                                raise
+                        return self._extract_content_safely(op_res)
 
-                # Fallback: Chat Completions path (supports streaming)
+                # Fallback: Chat Completions path (legacy / when Responses disabled)
                 # Remove Azure-incompatible params
                 azure_messages = []
                 for msg in messages:
@@ -758,3 +793,176 @@ async def initialise_llm_client() -> bool:
     except Exception as e:
         logger.error(f"Failed to initialize LLM client: {e}")
         return False
+
+
+# ────────────────────────────────────────────────────────────
+#  Public helpers for Responses API extraction (shared)
+# ────────────────────────────────────────────────────────────
+
+def extract_text_from_any(response: Any) -> str:
+    """Extract best-effort text from any OpenAI/Azure response object.
+
+    Delegates to the singleton client's extractor to keep behavior
+    consistent across modules.
+    """
+    try:
+        return llm_client._extract_content_safely(response)
+    except Exception:
+        return ""
+
+
+def extract_responses_final_text(payload: Dict[str, Any]) -> Optional[str]:
+    """Extract the final output_text from a Responses API JSON payload."""
+    if not isinstance(payload, dict) or "output" not in payload:
+        return None
+    for item in reversed(payload.get("output") or []):
+        if item.get("type") == "message" and item.get("content"):
+            for content in item["content"]:
+                if content.get("type") == "output_text":
+                    return content.get("text")
+    return None
+
+
+def extract_responses_citations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract URL citations from a Responses API JSON payload.
+
+    Returns a list of dicts with keys: url, title, start_index, end_index.
+    """
+    citations: List[Dict[str, Any]] = []
+    if not isinstance(payload, dict) or "output" not in payload:
+        return citations
+    for item in payload.get("output") or []:
+        if item.get("type") == "message" and item.get("content"):
+            for content in item["content"]:
+                if content.get("type") == "output_text" and "annotations" in content:
+                    for ann in content.get("annotations") or []:
+                        if ann.get("type") == "url_citation":
+                            citations.append(
+                                {
+                                    "url": ann.get("url"),
+                                    "title": ann.get("title"),
+                                    "start_index": ann.get("start_index"),
+                                    "end_index": ann.get("end_index"),
+                                }
+                            )
+    return citations
+
+
+def extract_responses_tool_calls(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract tool call records from a Responses API JSON payload."""
+    tool_calls: List[Dict[str, Any]] = []
+    if not isinstance(payload, dict) or "output" not in payload:
+        return tool_calls
+    for item in payload.get("output") or []:
+        if item.get("type") in {"web_search_call", "code_interpreter_call", "mcp_call"}:
+            tool_calls.append(item)
+    return tool_calls
+
+
+def extract_responses_web_search_calls(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract only web_search_call entries from a Responses payload."""
+    return [c for c in extract_responses_tool_calls(payload) if c.get("type") == "web_search_call"]
+
+
+class ResponsesNormalized(BaseModel):
+    """Normalized view of Responses API content we care about."""
+    text: Optional[str] = None
+    citations: List[Dict[str, Any]] = []
+    tool_calls: List[Dict[str, Any]] = []
+    web_search_calls: List[Dict[str, Any]] = []
+
+
+def normalize_responses_payload(payload: Dict[str, Any]) -> ResponsesNormalized:
+    """Produce a normalized structure from a Responses API payload."""
+    return ResponsesNormalized(
+        text=extract_responses_final_text(payload),
+        citations=extract_responses_citations(payload),
+        tool_calls=extract_responses_tool_calls(payload),
+        web_search_calls=extract_responses_web_search_calls(payload),
+    )
+
+
+# ────────────────────────────────────────────────────────────
+#  Convenience façade: Responses API via OpenAI
+#  (Delegates to OpenAIResponsesClient for now)
+# ────────────────────────────────────────────────────────────
+
+async def responses_create(
+    *,
+    model: str,
+    input: Union[str, List[Dict[str, Any]]],
+    tools: Optional[List[Dict[str, Any]]] = None,
+    background: bool = False,
+    stream: bool = False,
+    reasoning: Optional[Dict[str, str]] = None,
+    max_tool_calls: Optional[int] = None,
+    instructions: Optional[str] = None,
+    store: bool = True,
+    previous_response_id: Optional[str] = None,
+) -> Union[Dict[str, Any], AsyncIterator[Dict[str, Any]]]:
+    from services.openai_responses_client import get_responses_client
+    client = get_responses_client()
+    return await client.create_response(
+        model=model,
+        input=input,
+        tools=tools,
+        background=background,
+        stream=stream,
+        reasoning=reasoning,
+        max_tool_calls=max_tool_calls,
+        instructions=instructions,
+        store=store,
+        previous_response_id=previous_response_id,
+    )
+
+
+async def responses_retrieve(response_id: str) -> Dict[str, Any]:
+    from services.openai_responses_client import get_responses_client
+    return await get_responses_client().retrieve_response(response_id)
+
+
+async def responses_stream(response_id: str, starting_after: Optional[int] = None) -> AsyncIterator[Dict[str, Any]]:
+    from services.openai_responses_client import get_responses_client
+    return get_responses_client().stream_response(response_id, starting_after)
+
+
+async def responses_deep_research(
+    query: str,
+    *,
+    use_web_search: bool = True,
+    web_search_config: Optional[Dict[str, Any]] = None,
+    use_code_interpreter: bool = False,
+    mcp_servers: Optional[List[Dict[str, Any]]] = None,
+    system_prompt: Optional[str] = None,
+    max_tool_calls: Optional[int] = None,
+    background: bool = True,
+) -> Dict[str, Any]:
+    from services.openai_responses_client import get_responses_client, WebSearchTool, CodeInterpreterTool, MCPTool
+    tools: List[Any] = []
+    if use_web_search:
+        tools.append(web_search_config or WebSearchTool())
+    if use_code_interpreter:
+        tools.append(CodeInterpreterTool())
+    if mcp_servers:
+        tools.extend(mcp_servers)
+
+    input_messages: List[Dict[str, Any]] = []
+    if system_prompt:
+        input_messages.append({
+            "role": "developer",
+            "content": [{"type": "input_text", "text": system_prompt}],
+        })
+    input_messages.append({
+        "role": "user",
+        "content": [{"type": "input_text", "text": query}],
+    })
+
+    client = get_responses_client()
+    return await client.create_response(
+        model="o3-deep-research",
+        input=input_messages,
+        tools=tools,
+        background=background,
+        reasoning={"summary": "auto"},
+        max_tool_calls=max_tool_calls,
+    )

@@ -943,7 +943,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               <div key={key} className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
                 <p className="text-sm text-gray-600 dark:text-gray-400">{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</p>
                 <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                  {typeof value === 'number' ? (key.includes('cost') ? `$${value.toFixed(4)}` : value.toFixed(2)) : value}
+                  {typeof value === 'number'
+                    ? (key.includes('cost') ? `$${value.toFixed(4)}` : value.toFixed(2))
+                    : (typeof value === 'string'
+                        ? value
+                        : JSON.stringify(value))}
                 </p>
               </div>
             ))}

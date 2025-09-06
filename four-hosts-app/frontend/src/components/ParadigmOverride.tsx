@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Paradigm } from '../types'
+import type { Paradigm } from '../types'
 import api from '../services/api'
 import { Button } from './ui/Button'
 import { Select } from './ui/Select'
@@ -39,16 +39,15 @@ const ParadigmOverride: React.FC<Props> = ({ researchId, currentParadigm, onOver
   return (
     <div className="flex items-center space-x-2">
       <Select
+        options={paradigms.map(p => ({
+          value: p,
+          label: p.charAt(0).toUpperCase() + p.slice(1)
+        }))}
         value={selected}
-        onChange={e => setSelected(e.target.value as Paradigm)}
+        onChange={(value) => setSelected(value as Paradigm)}
         disabled={saving}
-      >
-        {paradigms.map(p => (
-          <option key={p} value={p}>
-            {p.charAt(0).toUpperCase() + p.slice(1)}
-          </option>
-        ))}
-      </Select>
+        label="Paradigm"
+      />
       <Button onClick={handleSave} disabled={saving || selected === currentParadigm}>
         Override
       </Button>
@@ -57,4 +56,3 @@ const ParadigmOverride: React.FC<Props> = ({ researchId, currentParadigm, onOver
 }
 
 export default ParadigmOverride
-

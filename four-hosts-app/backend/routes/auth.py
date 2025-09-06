@@ -18,7 +18,7 @@ from models.auth import (
     LogoutRequest,
     PreferencesPayload
 )
-from services.auth import (
+from services.auth_service import (
     auth_service as real_auth_service,
     create_access_token,
     create_refresh_token,
@@ -44,7 +44,7 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 async def register(user_data: UserCreate, request: Request, response: Response):
     """Register a new user"""
     # Convert to auth module's UserCreate model
-    from services.auth import UserCreate as AuthUserCreate
+    from services.auth_service import UserCreate as AuthUserCreate
 
     auth_user_data = AuthUserCreate(
         email=user_data.email,
@@ -102,7 +102,7 @@ async def register(user_data: UserCreate, request: Request, response: Response):
 async def login(login_data: UserLogin, response: Response, request: Request):
     """Login with email and password"""
     # Convert to auth module's UserLogin model
-    from services.auth import UserLogin as AuthUserLogin
+    from services.auth_service import UserLogin as AuthUserLogin
 
     auth_login_data = AuthUserLogin(
         email=login_data.email, password=login_data.password
@@ -336,9 +336,14 @@ async def logout(
 
 @router.put("/preferences")
 async def update_user_preferences(
-    payload: PreferencesPayload, current_user=Depends(get_current_user)
+    payload: PreferencesPayload,
+    response: Response,
+    current_user=Depends(get_current_user),
 ):
     """Update the current user's preferences"""
+    # Deprecation: prefer /v1/users/preferences
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = "</v1/users/preferences>; rel=successor-version"
     success = await user_profile_service.update_user_preferences(
         uuid.UUID(str(current_user.user_id)), payload.preferences
     )
@@ -353,8 +358,11 @@ async def update_user_preferences(
 
 
 @router.get("/preferences")
-async def get_user_preferences(current_user=Depends(get_current_user)):
+async def get_user_preferences(response: Response, current_user=Depends(get_current_user)):
     """Retrieve the current user's preferences"""
+    # Deprecation: prefer /v1/users/preferences
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = "</v1/users/preferences>; rel=successor-version"
     profile = await user_profile_service.get_user_profile(
         uuid.UUID(str(current_user.user_id))
     )

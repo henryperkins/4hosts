@@ -107,7 +107,7 @@ const WebhooksPage: React.FC = () => {
               <td className="border px-2 py-1 break-all">{w.url}</td>
               <td className="border px-2 py-1">{w.event}</td>
               <td className="border px-2 py-1">
-                <Button size="sm" variant="destructive" onClick={() => handleDelete(w.id)}>
+                <Button size="sm" variant="danger" onClick={() => handleDelete(w.id)}>
                   Delete
                 </Button>
               </td>
@@ -120,4 +120,3 @@ const WebhooksPage: React.FC = () => {
 }
 
 export default WebhooksPage
-

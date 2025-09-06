@@ -4,6 +4,11 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# This test targets the removed legacy path (execute_paradigm_research) and
+# legacy schemas. The orchestrator now runs a pure V2 flow. Skip to avoid
+# failing on removed APIs while keeping historical test context.
+pytestmark = pytest.mark.skip(reason="Legacy orchestrator path removed; test obsolete under V2 flow")
+
 from services.research_orchestrator import ResearchOrchestrator
 from schemas.research import SearchResult, HostParadigm
 

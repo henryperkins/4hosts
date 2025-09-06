@@ -8,6 +8,7 @@ from routes.paradigms import router as paradigms_router
 from routes.search import router as search_router
 from routes.users import router as users_router
 from routes.system import router as system_router
+from routes.responses import router as responses_router
 
 __all__ = [
     "auth_router",
@@ -16,4 +17,5 @@ __all__ = [
     "search_router",
     "users_router",
     "system_router",
+    "responses_router",
 ]

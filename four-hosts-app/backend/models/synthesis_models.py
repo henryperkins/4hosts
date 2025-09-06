@@ -5,6 +5,11 @@ Models for answer synthesis and generation
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+try:
+    # Typed reference to canonical EvidenceBundle
+    from .context_models import EvidenceBundle  # type: ignore
+except Exception:  # Fallback type alias for runtime resilience
+    EvidenceBundle = Any  # type: ignore
 
 
 @dataclass
@@ -22,6 +27,8 @@ class SynthesisContext:
     classification_result: Optional[Any] = None
     # New: prioritized quotes selected from top sources
     evidence_quotes: List[Dict[str, Any]] = field(default_factory=list)
+    # Canonical: unified evidence payload
+    evidence_bundle: Optional[EvidenceBundle] = None
 
 
 @dataclass

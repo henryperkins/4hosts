@@ -25,7 +25,7 @@ from database.models import (
     ParadigmType,
 )
 from database.connection import get_db_context
-from services.auth import hash_password, verify_password, create_access_token
+from services.auth_service import hash_password, verify_password, create_access_token
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

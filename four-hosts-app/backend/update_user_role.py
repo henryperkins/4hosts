@@ -23,7 +23,7 @@ except ImportError:
     use_context = False
 
 from database.models import User
-from services.auth import UserRole
+from services.auth_service import UserRole
 
 
 async def update_user_role_to_pro(email: str):

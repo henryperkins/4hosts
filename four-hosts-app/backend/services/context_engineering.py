@@ -895,10 +895,10 @@ class ContextEngineeringPipeline:
         progress_tracker = None
         if research_id:
             try:
-                from services.websocket_service import progress_tracker as _pt
+                from services.progress import progress as _pt
                 progress_tracker = _pt
-            except ImportError:
-                pass
+            except Exception:
+                progress_tracker = None
 
         # Track outputs from each layer
         outputs = {}

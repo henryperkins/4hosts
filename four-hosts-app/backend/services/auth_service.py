@@ -4,11 +4,7 @@ Phase 5: Production-Ready Features
 """
 
 import os
-import jwt
 import bcrypt
-
-# Async helper for running blocking calls in a thread pool
-from utils.async_utils import run_in_thread
 import secrets
 import json
 from datetime import datetime, timedelta, timezone
@@ -21,7 +17,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 import logging
 from enum import Enum
-import re
+
+# Re-export canonical helpers from submodules to avoid duplication
+from .auth.password import (
+    hash_password,
+    verify_password,
+    validate_password_strength,
+)
+from .auth.tokens import (
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+)
+from core.config import (
+    ALGORITHM as _CFG_ALGORITHM,
+    ACCESS_TOKEN_EXPIRE_MINUTES as _CFG_ACCESS_TOKEN_EXPIRE_MINUTES,
+)
 
 # Import database models and connection
 from database.models import (
@@ -41,17 +52,9 @@ UserRole = _DBUserRole
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration
-SECRET_KEY_ENV = os.getenv("JWT_SECRET_KEY")
-if SECRET_KEY_ENV is None or SECRET_KEY_ENV.strip() == "":
-    raise ValueError(
-        "JWT_SECRET_KEY environment variable must be set. Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
-    )
-SECRET_KEY: Final[str] = SECRET_KEY_ENV
-
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_DAYS = 7
+# Configuration (compat re-exports)
+ALGORITHM = _CFG_ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = _CFG_ACCESS_TOKEN_EXPIRE_MINUTES
 API_KEY_LENGTH = 32
 
 # Security
@@ -140,84 +143,9 @@ class TokenData(BaseModel):
 
 
 # --- Rate Limit Configurations ---
+from core.limits import API_RATE_LIMITS as RATE_LIMITS
 
-RATE_LIMITS = {
-    UserRole.FREE: {
-        "requests_per_minute": 10,
-        "requests_per_hour": 100,
-        "requests_per_day": 500,
-        "concurrent_requests": 1,
-        "max_query_length": 200,
-        "max_sources": 50,
-    },
-    UserRole.BASIC: {
-        "requests_per_minute": 30,
-        "requests_per_hour": 500,
-        "requests_per_day": 5000,
-        "concurrent_requests": 3,
-        "max_query_length": 500,
-        "max_sources": 100,
-    },
-    UserRole.PRO: {
-        "requests_per_minute": 60,
-        "requests_per_hour": 1000,
-        "requests_per_day": 20000,
-        "concurrent_requests": 10,
-        "max_query_length": 1000,
-        "max_sources": 200,
-    },
-    UserRole.ENTERPRISE: {
-        "requests_per_minute": 200,
-        "requests_per_hour": 10000,
-        "requests_per_day": 100000,
-        "concurrent_requests": 50,
-        "max_query_length": 2000,
-        "max_sources": 500,
-    },
-    UserRole.ADMIN: {
-        "requests_per_minute": 1000,
-        "requests_per_hour": 100000,
-        "requests_per_day": 1000000,
-        "concurrent_requests": 100,
-        "max_query_length": 5000,
-        "max_sources": 1000,
-    },
-}
-
-# --- Authentication Functions ---
-
-
-async def hash_password(password: str) -> str:
-    """Hash *password* using bcrypt in a worker thread."""
-    return await run_in_thread(
-        lambda: bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode(
-            "utf-8"
-        )
-    )
-
-
-async def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify *plain_password* against *hashed_password* without blocking the loop."""
-    return await run_in_thread(
-        lambda: bcrypt.checkpw(
-            plain_password.encode("utf-8"), hashed_password.encode("utf-8")
-        )
-    )
-
-
-def validate_password_strength(password: str) -> bool:
-    """Validate password meets security requirements"""
-    if len(password) < 8:
-        return False
-    if not re.search(r"[A-Z]", password):
-        return False
-    if not re.search(r"[a-z]", password):
-        return False
-    if not re.search(r"[0-9]", password):
-        return False
-    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
-        return False
-    return True
+# --- Authentication Functions (canonical helpers re-exported from submodules) ---
 
 
 def generate_api_key() -> str:
@@ -230,83 +158,7 @@ def hash_api_key(api_key: str) -> str:
     return bcrypt.hashpw(api_key.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-def create_access_token(
-    data: Dict[str, Any], expires_delta: Optional[timedelta] = None
-) -> str:
-    """Create a JWT access token"""
-    to_encode = data.copy()
-    now = datetime.now(timezone.utc)
-
-    if expires_delta:
-        expire = now + expires_delta
-    else:
-        expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-
-    # Encode temporal claims as integer epoch seconds for robust decoding
-    to_encode.update(
-        {
-            "exp": int(expire.timestamp()),
-            "iat": int(now.timestamp()),
-            "jti": secrets.token_urlsafe(16),  # JWT ID for revocation
-        }
-    )
-
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-
-async def create_refresh_token(
-    user_id: str,
-    device_id: Optional[str] = None,
-    ip_address: Optional[str] = None,
-    user_agent: Optional[str] = None,
-) -> str:
-    """Create a refresh token using TokenManager"""
-    from services.token_manager import token_manager
-
-    result = await token_manager.create_refresh_token(
-        user_id=user_id,
-        device_id=device_id,
-        ip_address=ip_address,
-        user_agent=user_agent,
-    )
-
-    return result["token"]
-
-
-async def decode_token(token: str) -> Dict[str, Any]:
-    """Decode and validate a JWT token"""
-    try:
-        payload = await run_in_thread(jwt.decode, token, SECRET_KEY, algorithms=[ALGORITHM])
-
-        # Check if JTI is revoked
-        jti = payload.get("jti")
-        if jti:
-            from services.token_manager import token_manager
-
-            if await token_manager.is_jti_revoked(jti):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token has been revoked",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-
-        return payload
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    except jwt.PyJWTError as e:
-        import logging
-
-        logging.getLogger(__name__).warning(f"JWT validation error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+# Token helpers are imported from services.auth.tokens
 
 
 # --- Authorization Functions ---
@@ -685,4 +537,3 @@ class AuthService:
 
 # Create global auth service instance
 auth_service = AuthService()
-

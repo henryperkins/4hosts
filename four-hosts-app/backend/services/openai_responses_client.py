@@ -122,12 +122,33 @@ class OpenAIResponsesClient:
     """Client for OpenAI Responses API with deep research support"""
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
-            raise ValueError("OpenAI API key is required")
-        
-        self.client = AsyncOpenAI(api_key=self.api_key, timeout=3600)
-        self.base_url = "https://api.openai.com/v1"
+        """Initialise for OpenAI Cloud or Azure OpenAI.
+
+        Preference order:
+        1) Azure OpenAI when AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT are set
+        2) OpenAI Cloud when OPENAI_API_KEY is set
+        """
+
+        azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "preview")
+
+        self.is_azure = bool(azure_key and azure_endpoint)
+        if self.is_azure:
+            self.api_key = azure_key  # type: ignore[assignment]
+            endpoint = azure_endpoint.rstrip("/")  # type: ignore[union-attr]
+            # Azure Responses API base path mirrors OpenAI's /openai/v1
+            self.base_url = f"{endpoint}/openai/v1"
+            # Append api-version via query when making requests (default: preview)
+            self.azure_api_version = azure_api_version
+            # SDK client configured to hit Azure base_url as well (not strictly required here)
+            self.client = AsyncOpenAI(api_key=self.api_key, base_url=f"{self.base_url}/", timeout=3600)
+        else:
+            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+            if not self.api_key:
+                raise ValueError("OpenAI API key is required (or set AZURE_OPENAI_API_KEY/ENDPOINT)")
+            self.client = AsyncOpenAI(api_key=self.api_key, timeout=3600)
+            self.base_url = "https://api.openai.com/v1"
         
     # ─────────── Core API Methods ───────────
     @retry(
@@ -147,6 +168,7 @@ class OpenAIResponsesClient:
         max_tool_calls: Optional[int] = None,
         instructions: Optional[str] = None,
         store: bool = True,
+        previous_response_id: Optional[str] = None,
     ) -> Union[Dict[str, Any], AsyncIterator[Dict[str, Any]]]:
         """
         Create a response using the Responses API.
@@ -189,8 +211,10 @@ class OpenAIResponsesClient:
                     tool_dicts.append(tool)
         
         # Build request
+        # Azure expects the deployment name in the "model" field. Allow env override.
+        azure_model = os.getenv("AZURE_OPENAI_DEPLOYMENT") if self.is_azure else None
         request_data = {
-            "model": model,
+            "model": (azure_model or model),
             "input": input,
             "store": store,
         }
@@ -207,56 +231,56 @@ class OpenAIResponsesClient:
             request_data["max_tool_calls"] = max_tool_calls
         if instructions:
             request_data["instructions"] = instructions
+        if previous_response_id:
+            request_data["previous_response_id"] = previous_response_id
         
         # Make request
         async with httpx.AsyncClient(timeout=3600) as client:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-            
+            if self.is_azure:
+                headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+                base = f"{self.base_url}/responses"
+                sep = "?" if "?" not in base else "&"
+                url = f"{base}{sep}api-version={self.azure_api_version}"
+            else:
+                headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+                url = f"{self.base_url}/responses"
+
             if stream:
-                response = await client.post(
-                    f"{self.base_url}/responses",
-                    headers=headers,
-                    json=request_data,
-                    timeout=3600,
-                )
+                response = await client.post(url, headers=headers, json=request_data, timeout=3600)
                 response.raise_for_status()
                 return self._stream_response(response)
             else:
-                response = await client.post(
-                    f"{self.base_url}/responses",
-                    headers=headers,
-                    json=request_data,
-                    timeout=3600,
-                )
+                response = await client.post(url, headers=headers, json=request_data, timeout=3600)
                 response.raise_for_status()
                 return response.json()
     
     async def retrieve_response(self, response_id: str) -> Dict[str, Any]:
         """Retrieve a response by ID (for background mode)"""
         async with httpx.AsyncClient() as client:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-            }
-            response = await client.get(
-                f"{self.base_url}/responses/{response_id}",
-                headers=headers,
-            )
+            if self.is_azure:
+                headers = {"api-key": self.api_key}
+                base = f"{self.base_url}/responses/{response_id}"
+                sep = "?" if "?" not in base else "&"
+                url = f"{base}{sep}api-version={self.azure_api_version}"
+            else:
+                headers = {"Authorization": f"Bearer {self.api_key}"}
+                url = f"{self.base_url}/responses/{response_id}"
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.json()
     
     async def cancel_response(self, response_id: str) -> Dict[str, Any]:
         """Cancel a background response"""
         async with httpx.AsyncClient() as client:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-            }
-            response = await client.post(
-                f"{self.base_url}/responses/{response_id}/cancel",
-                headers=headers,
-            )
+            if self.is_azure:
+                headers = {"api-key": self.api_key}
+                base = f"{self.base_url}/responses/{response_id}/cancel"
+                sep = "?" if "?" not in base else "&"
+                url = f"{base}{sep}api-version={self.azure_api_version}"
+            else:
+                headers = {"Authorization": f"Bearer {self.api_key}"}
+                url = f"{self.base_url}/responses/{response_id}/cancel"
+            response = await client.post(url, headers=headers)
             response.raise_for_status()
             return response.json()
     
@@ -264,14 +288,20 @@ class OpenAIResponsesClient:
         self, response_id: str, starting_after: Optional[int] = None
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream events from a background response"""
-        url = f"{self.base_url}/responses/{response_id}?stream=true"
-        if starting_after is not None:
-            url += f"&starting_after={starting_after}"
-        
+        if self.is_azure:
+            base = f"{self.base_url}/responses/{response_id}"
+            sep = "?" if "?" not in base else "&"
+            url = f"{base}{sep}stream=true&api-version={self.azure_api_version}"
+            if starting_after is not None:
+                url += f"&starting_after={starting_after}"
+            headers = {"api-key": self.api_key}
+        else:
+            url = f"{self.base_url}/responses/{response_id}?stream=true"
+            if starting_after is not None:
+                url += f"&starting_after={starting_after}"
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+
         async with httpx.AsyncClient() as client:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-            }
             async with client.stream("GET", url, headers=headers) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
@@ -376,77 +406,31 @@ class OpenAIResponsesClient:
     
     # ─────────── Helper Methods ───────────
     def extract_final_text(self, response: Dict[str, Any]) -> Optional[str]:
-        """Extract the final text output from a response"""
-        if "output" not in response:
-            return None
-        
-        for item in reversed(response["output"]):
-            if item["type"] == "message" and item.get("content"):
-                for content in item["content"]:
-                    if content["type"] == "output_text":
-                        return content["text"]
-        
-        return None
+        """Delegates to shared extractor in llm_client for consistency."""
+        from services.llm_client import extract_responses_final_text
+        return extract_responses_final_text(response)
     
     def extract_citations(self, response: Dict[str, Any]) -> List[Citation]:
-        """Extract citations from a response"""
-        citations = []
-        
-        if "output" not in response:
-            return citations
-        
-        for item in response["output"]:
-            if item["type"] == "message" and item.get("content"):
-                for content in item["content"]:
-                    if content["type"] == "output_text" and "annotations" in content:
-                        for annotation in content["annotations"]:
-                            if annotation.get("type") == "url_citation":
-                                citations.append(Citation(
-                                    url=annotation["url"],
-                                    title=annotation["title"],
-                                    start_index=annotation["start_index"],
-                                    end_index=annotation["end_index"],
-                                ))
-        
-        return citations
+        """Extract citations using llm_client shared logic; return typed list."""
+        from services.llm_client import extract_responses_citations
+        items = extract_responses_citations(response)
+        return [
+            Citation(
+                url=i.get("url"),
+                title=i.get("title"),
+                start_index=i.get("start_index"),
+                end_index=i.get("end_index"),
+            )
+            for i in items
+        ]
     
     def extract_web_search_calls(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract web search tool calls from a response"""
-        web_searches = []
-        
-        if "output" not in response:
-            return web_searches
-        
-        for item in response["output"]:
-            if item["type"] == "web_search_call":
-                web_search = {
-                    "id": item.get("id"),
-                    "status": item.get("status"),
-                }
-                
-                # Extract action details if available
-                if "action" in item:
-                    action = item["action"]
-                    web_search["action_type"] = action.get("type")
-                    web_search["query"] = action.get("query")
-                    web_search["domains"] = action.get("domains", [])
-                
-                web_searches.append(web_search)
-        
-        return web_searches
+        from services.llm_client import extract_responses_web_search_calls
+        return extract_responses_web_search_calls(response)
     
     def extract_tool_calls(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract tool calls from a response"""
-        tool_calls = []
-        
-        if "output" not in response:
-            return tool_calls
-        
-        for item in response["output"]:
-            if item["type"] in ["web_search_call", "code_interpreter_call", "mcp_call"]:
-                tool_calls.append(item)
-        
-        return tool_calls
+        from services.llm_client import extract_responses_tool_calls
+        return extract_responses_tool_calls(response)
     
     async def _stream_response(self, response: httpx.Response) -> AsyncIterator[Dict[str, Any]]:
         """Stream response events"""

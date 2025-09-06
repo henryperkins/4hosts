@@ -13,45 +13,20 @@ from fastapi import WebSocket, WebSocketDisconnect, Header, Query, HTTPException
 from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 
-from services.auth import decode_token, TokenData, UserRole, RATE_LIMITS
+from services.auth_service import decode_token, TokenData, UserRole
+from core.limits import WS_RATE_LIMITS
 from core.config import is_production
 from services.token_manager import token_manager
 
 logger = logging.getLogger(__name__)
 
-# WebSocket rate limiting configuration
-WS_RATE_LIMITS = {
-    UserRole.FREE: {
-        "connections_per_user": 2,
-        "messages_per_minute": 10,
-        "subscriptions_per_connection": 5,
-    },
-    UserRole.BASIC: {
-        "connections_per_user": 3,
-        "messages_per_minute": 30,
-        "subscriptions_per_connection": 10,
-    },
-    UserRole.PRO: {
-        "connections_per_user": 5,
-        "messages_per_minute": 60,
-        "subscriptions_per_connection": 20,
-    },
-    UserRole.ENTERPRISE: {
-        "connections_per_user": 10,
-        "messages_per_minute": 200,
-        "subscriptions_per_connection": 50,
-    },
-    UserRole.ADMIN: {
-        "connections_per_user": 100,
-        "messages_per_minute": 1000,
-        "subscriptions_per_connection": 100,
-    },
-}
+# WebSocket rate limiting configuration comes from core.limits
 
 # Allowed origins for WebSocket connections
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://localhost:5174",
     "https://fourhosts.com",
     "https://www.fourhosts.com",
     "https://app.fourhosts.com",

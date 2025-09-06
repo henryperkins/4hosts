@@ -49,18 +49,33 @@ class BackgroundLLMManager:
     ) -> str:
         """Submit a task to run in background mode"""
         try:
+            # Normalize roles for o-series (use 'developer' instead of 'system')
+            model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
+            norm_messages = []
+            if isinstance(messages, list) and model.startswith("o"):
+                for m in messages:
+                    if isinstance(m, dict) and m.get("role") == "system":
+                        nm = dict(m)
+                        nm["role"] = "developer"
+                        norm_messages.append(nm)
+                    else:
+                        norm_messages.append(m)
+            else:
+                norm_messages = messages
+
             # Prepare request with background mode
             response_kwargs = {
-                "model": os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3"),
-                "input": messages,
-                "mode": "background",
+                "model": model,
+                "input": norm_messages,
+                "background": True,  # Responses API background mode
+                "store": True,       # Required by Azure for background tasks
                 "max_output_tokens": kwargs.get("max_output_tokens", 4000),
             }
             
             if tools:
                 response_kwargs["tools"] = tools
             
-            # Submit to Azure OpenAI
+            # Submit to Azure OpenAI (Responses API)
             response = await self.azure_client.responses.create(**response_kwargs)
             
             # Extract task ID from response
@@ -123,6 +138,12 @@ class BackgroundLLMManager:
         
         # Update status
         self.active_tasks[task_id]["status"] = BackgroundTaskStatus.CANCELLED
+        
+        # Attempt to cancel server-side job as well
+        try:
+            await self.azure_client.responses.cancel(task_id)
+        except Exception as e:
+            logger.debug(f"Azure cancel failed or not supported for {task_id}: {e}")
         
         # Cancel polling task
         if task_id in self._polling_tasks:
@@ -197,31 +218,23 @@ class BackgroundLLMManager:
                 del self._polling_tasks[task_id]
     
     def _extract_result(self, response) -> Any:
-        """Extract result from completed response"""
-        # Handle different response formats
-        if hasattr(response, 'output_text') and response.output_text:
-            return response.output_text
-        
-        if hasattr(response, 'output') and response.output:
-            # Extract from output array
-            text_content = ""
-            tool_calls = []
-            
-            for output in response.output:
-                if hasattr(output, 'content'):
-                    for item in output.content:
-                        if hasattr(item, 'text'):
-                            text_content += item.text
-                
-                if hasattr(output, 'tool_calls') and output.tool_calls:
-                    tool_calls.extend(output.tool_calls)
-            
-            if tool_calls:
-                return {"text": text_content, "tool_calls": tool_calls}
-            return text_content
-        
-        # Return raw response if format unknown
-        return response
+        """Extract result from completed response using shared helper."""
+        from services.llm_client import extract_text_from_any
+        text = extract_text_from_any(response)
+
+        # Try to gather tool_calls if present on the response object
+        tool_calls = []
+        try:
+            if hasattr(response, 'output') and response.output:
+                for output in response.output:
+                    if hasattr(output, 'tool_calls') and output.tool_calls:
+                        tool_calls.extend(output.tool_calls)
+        except Exception:
+            pass
+
+        if tool_calls:
+            return {"text": text, "tool_calls": tool_calls}
+        return text or response
     
     async def wait_for_task(self, task_id: str, timeout: int = 60) -> Any:
         """Wait for a task to complete and return result"""

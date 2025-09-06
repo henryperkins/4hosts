@@ -59,9 +59,16 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
     def __init__(self):
         super().__init__()
 
-        # Replace basic generators with enhanced versions
-        self.generators[HostParadigm.BERNARD] = BernardAnswerGenerator()
-        self.generators[HostParadigm.MAEVE] = MaeveAnswerGenerator()
+        # Initialize generators dictionary using parent's method for consistency
+        self.generators: Dict[HostParadigm, Any] = {}
+        
+        # Populate generators using parent's _make_generator method to avoid duplication
+        for paradigm in HostParadigm:
+            # Use the parent's method to create generators, ensuring consistency
+            paradigm_str = paradigm.value
+            self.generators[paradigm] = self._make_generator(paradigm_str)
+            # Also store with string key for backward compatibility
+            self.generators[paradigm_str] = self.generators[paradigm]
 
         # Enable self-healing and ML features
         self.self_healing_enabled = True

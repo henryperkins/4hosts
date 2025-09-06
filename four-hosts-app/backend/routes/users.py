@@ -5,7 +5,7 @@ SSOTA User routes: preferences and history
 from typing import Any, Dict
 import logging
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response
 import uuid
 
 from core.dependencies import get_current_user
@@ -34,8 +34,16 @@ async def set_preferences(payload: Dict[str, Any], current_user=Depends(get_curr
 
 
 @router.get("/history")
-async def user_history(limit: int = 10, offset: int = 0, current_user=Depends(get_current_user)):
+async def user_history(
+    response: Response,
+    limit: int = 10,
+    offset: int = 0,
+    current_user=Depends(get_current_user)
+):
     try:
+        # Deprecation: prefer /v1/research/history
+        response.headers["Deprecation"] = "true"
+        response.headers["Link"] = "</v1/research/history>; rel=successor-version"
         items = await research_store.get_user_research(str(current_user.user_id), limit + offset)
         items.sort(key=lambda r: r.get("created_at", ""), reverse=True)
         page = items[offset: offset + limit]

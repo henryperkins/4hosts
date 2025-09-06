@@ -2,6 +2,7 @@
 
 ## Executive Summary
 - Objective: <fill from intake.objective>
+- Top‑line Recommendation: <from metadata.topline_recommendation>
 - Key Findings: <brief bullet list>
 - Confidence/Uncertainty: <summary>
 - Recommendations: <actions>
@@ -28,6 +29,11 @@
   - Evaluator isolation and challenge sets
 
 ## Results
+- Claim→Source Map (Top Claims with Citations):
+  - <for each item in metadata.claim_source_map>
+    - Claim: <claim>
+      - Sources: <domain1>, <domain2>, ...
+
 - Thematic Findings with Per-sentence Citations:
   1. Claim A. [CIT:source_id:chunk_id]
   2. Claim B. [CIT:source_id:chunk_id]

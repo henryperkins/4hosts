@@ -20,17 +20,14 @@ from models.context_models import (
     SearchResultSchema,
 )
 from models.synthesis_models import SynthesisContext
+from models.paradigms import PARADIGM_KEYWORDS as CANON_PARADIGM_KEYWORDS
 from models.paradigms import normalize_to_enum
 from services.llm_client import llm_client
-from services.text_compression import text_compressor
-from services.cache import cache_manager
 from utils.token_budget import (
-    estimate_tokens,
     select_items_within_budget,
 )
 from utils.injection_hygiene import (
     sanitize_snippet,
-    quarantine_note,
     guardrail_instruction,
 )
 
@@ -41,46 +38,28 @@ logger = logging.getLogger(__name__)
 # SHARED PATTERNS AND CONSTANTS
 # ============================================================================
 
-STATISTICAL_PATTERNS = {
-    "correlation": r"correlat\w+\s+(?:of\s+)?([+-]?\d*\.?\d+)",
+STATISTICAL_PATTERNS_OPERATORS = {
+    "correlation": r"(?:\br\s*[=:]\s*|correlat\w+\s+(?:of\s+)?)([+-]?\d*\.?\d+)",
     "percentage": r"(\d+(?:\.\d+)?)\s*%",
-    "p_value": r"p\s*[<=]\s*(\d*\.?\d+)",
+    "p_value": r"\bp\s*[=<>]\s*([+-]?\d*\.?\d+)",
     "sample_size": r"n\s*=\s*(\d+)",
     "confidence": r"(\d+(?:\.\d+)?)\s*%\s*(?:CI|confidence)",
     "effect_size": r"(?:Cohen's\s*d|effect\s*size)\s*=\s*([+-]?\d*\.?\d+)",
 }
 
-STRATEGIC_PATTERNS = {
+STRATEGIC_PATTERN_OPERATIONS = {
     "market_size": r"\$(\d+(?:\.\d+)?)\s*(?:billion|million|B|M)",
     "growth_rate": r"(\d+(?:\.\d+)?)\s*%\s*(?:growth|CAGR|increase)",
     "market_share": r"(\d+(?:\.\d+)?)\s*%\s*(?:market\s*share|of\s*the\s*market)",
     "roi": r"(?:ROI|return)\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*%",
-    "cost_savings": r"(?:save|reduce\s*costs?)\s*(?:by\s*)?\$?(\d+(?:\.\d+)?)\s*(?:million|thousand|K|M)?",
+    "cost_savings": r"(?:save|reduce\s*costs?)\s*(?:by\s*)?\$?(\d+(?:\.\d+)?)\s*(?:million|thousand|K|m)?",
     "timeline": r"(\d+)\s*(?:months?|years?|quarters?|weeks?)",
 }
+# Back-compat aliases for existing code paths
+STATISTICAL_PATTERNS = STATISTICAL_PATTERNS_OPERATORS
+STRATEGIC_PATTERNS = STRATEGIC_PATTERN_OPERATIONS
 
-PARADIGM_KEYWORDS: Dict[HostParadigm, List[str]] = {
-    HostParadigm.DOLORES: [
-        "injustice", "oppression", "revolution", "resistance", "corruption",
-        "exploitation", "systemic", "power", "expose", "inequality",
-        "liberation", "uprising", "defiance", "overthrow", "rebel"
-    ],
-    HostParadigm.BERNARD: [
-        "empirical", "statistical", "data", "analysis", "research",
-        "evidence", "methodology", "correlation", "significance", "hypothesis",
-        "variable", "quantitative", "systematic", "peer-reviewed", "meta-analysis"
-    ],
-    HostParadigm.MAEVE: [
-        "strategy", "leverage", "opportunity", "competitive", "optimize",
-        "roi", "market", "growth", "scale", "efficiency",
-        "innovation", "disruption", "advantage", "execution", "performance"
-    ],
-    HostParadigm.TEDDY: [
-        "support", "help", "care", "empathy", "community",
-        "healing", "together", "hope", "compassion", "kindness",
-        "assistance", "resources", "wellbeing", "comfort", "solidarity"
-    ]
-}
+PARADIGM_KEYWORDS: Dict[HostParadigm, List[str]] = CANON_PARADIGM_KEYWORDS
 
 
 # ============================================================================
@@ -101,6 +80,20 @@ class Citation:
     fact_type: str = "reference"
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: Optional[datetime] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "id": self.id,
+            "source_title": self.source_title,
+            "source_url": self.source_url,
+            "domain": self.domain,
+            "snippet": self.snippet,
+            "credibility_score": self.credibility_score,
+            "fact_type": self.fact_type,
+            "metadata": self.metadata,
+            "timestamp": self.timestamp.isoformat() if isinstance(self.timestamp, datetime) else None,
+        }
+        return d
 
 
 @dataclass
@@ -132,9 +125,8 @@ class GeneratedAnswer:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 # CORE DATACLASSES
-# ============================================================================
 
 @dataclass
 class StatisticalInsight:
@@ -162,18 +154,29 @@ class StrategicRecommendation:
     roi_potential: Optional[float] = None
 
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 # BASE GENERATOR CLASS
-# ============================================================================
 
 class BaseAnswerGenerator:
     """Base class for all paradigm-specific generators"""
-    
+
     def __init__(self, paradigm: str):
         self.paradigm = paradigm
         self.citation_counter = 0
         self.citations = {}
-    
+
+    # Centralized progress-tracker resolver (works with either backend)
+    def _get_progress_tracker(self):
+        try:
+            from services.progress import progress as _pt  # type: ignore
+            return _pt
+        except Exception:
+            try:
+                from services.websocket_service import progress_tracker as _pt  # type: ignore
+                return _pt
+            except Exception:
+                return None
+
     def _top_relevant_results(self, context: SynthesisContext, k: int = 5) -> List[Dict[str, Any]]:
         """Select top-k results by credibility, ensuring domain diversity."""
         results = list(context.search_results or [])
@@ -189,9 +192,17 @@ class BaseAnswerGenerator:
             if len(picked) >= k:
                 break
         return picked[:k]
-    
+
     def _format_evidence_block(self, context: SynthesisContext, max_quotes: int = 12) -> str:
-        quotes = (getattr(context, "evidence_quotes", None) or [])[:max_quotes]
+        quotes = []
+        try:
+            eb = getattr(context, "evidence_bundle", None)
+            if eb is not None and getattr(eb, "quotes", None):
+                quotes = list(getattr(eb, "quotes", []) or [])[:max_quotes]
+            else:
+                quotes = (getattr(context, "evidence_quotes", None) or [])[:max_quotes]
+        except Exception:
+            quotes = (getattr(context, "evidence_quotes", None) or [])[:max_quotes]
         lines: List[str] = []
         for q in quotes:
             qid = q.get("id", "")
@@ -200,11 +211,48 @@ class BaseAnswerGenerator:
             lines.append(f"- [{qid}][{dom}] {qt}")
         return "\n".join(lines) if lines else "(no evidence quotes)"
 
-    def _coverage_table(self, context: SynthesisContext, max_rows: int = 6) -> str:
-        # Use focus areas from isolate layer if present
+    def _safe_evidence_block(self, context: SynthesisContext, max_quotes: int = 12, budget_tokens: int = 800) -> str:
+        """Injection-safe, token-budgeted evidence list for prompts."""
+        # Gather quotes
         try:
-            focus = []
-            if isinstance(context.context_engineering, dict):
+            eb = getattr(context, "evidence_bundle", None)
+            if eb is not None and getattr(eb, "quotes", None):
+                quotes = list(getattr(eb, "quotes", []) or [])
+            else:
+                quotes = list(getattr(context, "evidence_quotes", None) or [])
+        except Exception:
+            quotes = list(getattr(context, "evidence_quotes", None) or [])
+        if not quotes:
+            return "(no evidence quotes)"
+        # Build items compatible with select_items_within_budget (uses estimate_tokens_for_result)
+        items_for_budget: List[Dict[str, Any]] = []
+        for q in quotes:
+            items_for_budget.append({
+                "id": q.get("id", ""),
+                "domain": q.get("domain", ""),
+                "title": "",           # no title for quotes
+                "snippet": "",         # no snippet for quotes
+                "content": q.get("quote", "") or "",
+            })
+        selected, _used, _dropped = select_items_within_budget(items_for_budget, max_tokens=budget_tokens)
+        selected = selected[:max_quotes]
+        # Sanitize and format
+        lines: List[str] = []
+        for q in selected:
+            qid = q.get("id", "")
+            dom = (q.get("domain") or "").lower()
+            qt = sanitize_snippet(q.get("content", "") or "")
+            lines.append(f"- [{qid}][{dom}] {qt}")
+        return "\n".join(lines) if lines else "(no evidence quotes)"
+
+    def _coverage_table(self, context: SynthesisContext, max_rows: int = 6) -> str:
+        # Prefer focus areas from EvidenceBundle if present
+        focus: List[str] = []
+        try:
+            eb = getattr(context, "evidence_bundle", None)
+            if eb is not None and getattr(eb, "focus_areas", None):
+                focus = list(getattr(eb, "focus_areas", []) or [])
+            elif isinstance(context.context_engineering, dict):
                 focus = list((context.context_engineering.get("isolated_findings", {}) or {}).get("focus_areas", []) or [])
         except Exception:
             focus = []
@@ -216,11 +264,12 @@ class BaseAnswerGenerator:
         def _tok(t: str) -> set:
             import re
             return set([w for w in re.findall(r"[A-Za-z0-9]+", (t or "").lower()) if len(w) > 2])
+        results_for_scan = list(context.search_results or [])
         for theme in focus:
             tt = _tok(theme)
             best = None
             best_score = 0.0
-            for r in context.search_results[:20]:
+            for r in results_for_scan[:20]:
                 text = f"{r.get('title','')} {r.get('snippet','')}"
                 st = _tok(text)
                 if not st:
@@ -230,15 +279,49 @@ class BaseAnswerGenerator:
                     best_score = j
                     best = r
             covered = "yes" if best_score >= 0.5 else ("partial" if best_score >= 0.25 else "no")
-            dom = (best.get("domain") if isinstance(best, dict) and best else None) or (best.get("source") if isinstance(best, dict) and best else "")
+            dom = ""
+            if isinstance(best, dict) and best:
+                dom = (best.get("domain") or best.get("source") or "")  # type: ignore[assignment]
             rows.append(f"{theme} | {covered} | {dom}")
         return "\n".join(rows)
-    
+
+    def _get_isolated_findings(self, context: SynthesisContext) -> Dict[str, Any]:
+        """Return isolation findings from canonical EvidenceBundle when available."""
+        try:
+            if getattr(context, "evidence_bundle", None):
+                eb = context.evidence_bundle
+                return {
+                    "matches": list(getattr(eb, "matches", []) or []),
+                    "by_domain": dict(getattr(eb, "by_domain", {}) or {}),
+                    "focus_areas": list(getattr(eb, "focus_areas", []) or []),
+                }
+        except Exception:
+            pass
+        try:
+            if isinstance(context.context_engineering, dict):
+                return dict(context.context_engineering.get("isolated_findings", {}) or {})
+        except Exception:
+            pass
+        return {"matches": [], "by_domain": {}, "focus_areas": []}
+
     def create_citation(self, source: Dict[str, Any], fact_type: str = "reference") -> Citation:
         """Create a citation from a source"""
         self.citation_counter += 1
         citation_id = f"cite_{self.citation_counter:03d}"
-        
+
+        # Normalize timestamp and preserve raw if needed
+        meta = dict(source.get("metadata", {}) or {})
+        ts_val = source.get("published_date")
+        ts_norm: Optional[datetime] = None
+        if isinstance(ts_val, datetime):
+            ts_norm = ts_val
+        elif isinstance(ts_val, str):
+            try:
+                # Try simple ISO formats
+                ts_norm = datetime.fromisoformat(ts_val)
+            except Exception:
+                meta["published_date_raw"] = ts_val
+
         citation = Citation(
             id=citation_id,
             source_title=source.get("title", ""),
@@ -247,21 +330,21 @@ class BaseAnswerGenerator:
             snippet=source.get("snippet", ""),
             credibility_score=float(source.get("credibility_score", 0.5)),
             fact_type=fact_type,
-            metadata=source.get("metadata", {}),
-            timestamp=source.get("published_date")
+            metadata=meta,
+            timestamp=ts_norm
         )
-        
+
         self.citations[citation_id] = citation
         return citation
-    
+
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate answer - must be implemented by subclasses"""
         raise NotImplementedError("Subclasses must implement generate_answer")
-    
+
     def get_section_structure(self) -> List[Dict[str, Any]]:
         """Get section structure - must be implemented by subclasses"""
         raise NotImplementedError("Subclasses must implement get_section_structure")
-    
+
     def _get_alignment_keywords(self) -> List[str]:
         """Get paradigm alignment keywords"""
         paradigm_enum = normalize_to_enum(self.paradigm)
@@ -271,17 +354,99 @@ class BaseAnswerGenerator:
         keywords = PARADIGM_KEYWORDS.get(paradigm_enum)
         return keywords if keywords is not None else []
 
+    # ───────────────────────────────────────────────────────────────────
+    #  Claim↔Source Mapping and Top‑line Recommendation helpers
+    # ───────────────────────────────────────────────────────────────────
+    def _build_claim_source_map(
+        self,
+        sections: List["AnswerSection"],
+        citations: Dict[str, "Citation"],
+        max_claims: int = 12,
+    ) -> List[Dict[str, Any]]:
+        """Create a simple mapping of each section's key insights to its citations.
+
+        The UI can render this as a compact table. Claims are de‑duplicated and
+        truncated for readability.
+        """
+        seen: set[str] = set()
+        rows: List[Dict[str, Any]] = []
+        for sec in sections:
+            insight_list = list(getattr(sec, "key_insights", []) or [])
+            cite_ids = list(getattr(sec, "citations", []) or [])
+            mapped_cites: List[Dict[str, Any]] = []
+            for cid in cite_ids:
+                c = citations.get(cid)
+                if not c:
+                    continue
+                mapped_cites.append({
+                    "id": c.id,
+                    "title": c.source_title,
+                    "url": c.source_url,
+                    "domain": c.domain,
+                })
+            for claim in insight_list:
+                key = claim.strip().lower()[:300]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "claim": claim.strip()[:500],
+                    "citations": mapped_cites,
+                    "section": getattr(sec, "title", "")
+                })
+                if len(rows) >= max_claims:
+                    return rows
+        return rows
+
+    def _compose_topline_recommendation(self, context: SynthesisContext) -> str:
+        """Produce a concise (2–3 sentences) recommendation block without extra LLM calls."""
+        results = list(context.search_results or [])
+        domains = { (r.get("domain") or r.get("source") or "").lower() for r in results }
+        n = len(results)
+        d = len([x for x in domains if x])
+        if n >= 12 and d >= 6:
+            evidence = "moderately strong and diverse"
+        elif n >= 6 and d >= 3:
+            evidence = "adequate but mixed"
+        else:
+            evidence = "limited"
+
+        recs = []
+        # Baseline recommendation informed by paradigm
+        if self.paradigm == "bernard":
+            recs.append(
+                f"Evidence coverage appears {evidence}. Prioritize broader query variants and lower relevance thresholds when recall is low; add synonyms and related concepts to increase yield."
+            )
+            recs.append(
+                "Use citation-backed claims only; link each key statement to at least one source and resolve conflicts via cross-domain agreement."
+            )
+        elif self.paradigm == "maeve":
+            recs.append(
+                f"Evidence coverage appears {evidence}. Focus on high-ROI tactics first and timebox deeper investigation to de-risk decisions."
+            )
+            recs.append("Track success with 2–3 measurable KPIs and revisit quarterly.")
+        elif self.paradigm == "dolores":
+            recs.append(
+                f"Evidence coverage appears {evidence}. Center verified primary sources and corroborate patterns across independent domains."
+            )
+            recs.append("Document systemic patterns with clear, sourced examples to drive accountability.")
+        else:  # teddy
+            recs.append(
+                f"Evidence coverage appears {evidence}. Curate practical resources from trusted domains and prioritize accessibility."
+            )
+            recs.append("Offer next-step guidance and local options where available.")
+        return " " .join(recs)
+
 
 # ============================================================================
 # PARADIGM-SPECIFIC GENERATORS
-# ============================================================================
 
 class DoloresAnswerGenerator(BaseAnswerGenerator):
     """Revolutionary paradigm answer generator"""
-    
+
     def __init__(self):
         super().__init__("dolores")
-    
+
     def get_section_structure(self) -> List[Dict[str, Any]]:
         return [
             {
@@ -305,20 +470,23 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
                 "weight": 0.2,
             },
         ]
-    
+
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate revolutionary paradigm answer"""
         start_time = datetime.now()
         self.citation_counter = 0
         self.citations = {}
-        
+
         sections = []
         for section_def in self.get_section_structure():
             section = await self._generate_section(context, section_def)
             sections.append(section)
-        
-        summary = sections[0].content[:300] + "..." if sections else ""
-        
+
+        # Top‑line recommendation (2–3 sentences) then short summary
+        topline = self._compose_topline_recommendation(context)
+        base_summary = sections[0].content[:300] + "..." if sections else ""
+        summary = (topline + "\n\n" + base_summary).strip()
+
         return GeneratedAnswer(
             research_id=context.metadata.get("research_id", "unknown"),
             query=context.query,
@@ -330,31 +498,30 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             confidence_score=0.8,
             synthesis_quality=0.85,
             generation_time=(datetime.now() - start_time).total_seconds(),
-            metadata={"tone": "investigative", "focus": "exposing injustice"}
+            metadata={
+                "tone": "investigative",
+                "focus": "exposing injustice",
+                "topline_recommendation": topline,
+                "claim_source_map": self._build_claim_source_map(sections, self.citations),
+            }
         )
-    
+
     async def _generate_section(self, context: SynthesisContext, section_def: Dict[str, Any]) -> AnswerSection:
         """Generate a single section"""
         # Get progress tracker if available
         research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
-        progress_tracker = None
-        if research_id:
-            try:
-                from services.websocket_service import progress_tracker as _pt
-                progress_tracker = _pt
-            except ImportError:
-                pass
-        
+        progress_tracker = self._get_progress_tracker()
+
         # Track section operations
         section_name = section_def.get('title', 'Section')
-        
+
         # Establish how many granular operations this helper performs so we
         # can provide determinate progress. The four key operations are:
         # 1. filter sources, 2. create citations, 3. generate content,
         # 4. extract insights.
         total_sub_ops = 4
 
-        # Filter relevant results (sub-op 1/3)
+        # Filter relevant results (sub-op 1/4)
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
                 research_id,
@@ -364,8 +531,8 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
                 items_total=total_sub_ops,
             )
         relevant_results = self._top_relevant_results(context, 5)
-        
-        # Create citations (sub-op 2/3)
+
+        # Create citations (sub-op 2/4)
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
                 research_id,
@@ -378,7 +545,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
         for result in relevant_results:
             citation = self.create_citation(result, "evidence")
             citation_ids.append(citation.id)
-        
+
         # Generate content with LLM or fallback (sub-op 3/4)
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -392,18 +559,19 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             # Isolation-only support: summarize findings
             iso_lines = []
             try:
-                if isinstance(context.context_engineering, dict):
-                    for m in (context.context_engineering.get("isolated_findings", {}).get("matches", []) or [])[:5]:
-                        dom = m.get("domain", "")
-                        for frag in (m.get("fragments", []) or [])[:1]:
-                            iso_lines.append(f"- [{dom}] {frag}")
+                iso = self._get_isolated_findings(context)
+                for m in (iso.get("matches", []) or [])[:5]:
+                    dom = m.get("domain", "")
+                    for frag in (m.get("fragments", []) or [])[:1]:
+                        iso_lines.append(f"- [{dom}] {sanitize_snippet(frag or '')}")
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._format_evidence_block(context, 12)
+            evidence_block = self._safe_evidence_block(context, 12)
             coverage_tbl = self._coverage_table(context)
 
-            prompt = f"""
+            guard = guardrail_instruction
+            prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
             Use passionate, urgent language that exposes injustice and calls for change.
@@ -416,7 +584,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             STRICT: Do not invent facts; ground claims in the Evidence Quotes above.
             Length: {int(2000 * section_def['weight'])} words
             """
-            
+
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="dolores",
@@ -427,7 +595,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             if os.getenv("LLM_STRICT", "0") == "1":
                 raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
-        content = self._generate_fallback_content(section_def, relevant_results)
+            content = self._generate_fallback_content(section_def, relevant_results)
 
         # Extract insights (sub-op 4/4)
         if progress_tracker and research_id:
@@ -461,24 +629,24 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             )
 
         return section
-    
+
     def _generate_fallback_content(self, section_def: Dict[str, Any], results: List[Dict[str, Any]]) -> str:
         """Generate fallback content when LLM fails"""
         content = f"# {section_def['title']}\n\n"
         content += f"This section focuses on: {section_def['focus']}\n\n"
-        
+
         for result in results[:3]:
             content += f"According to {result.get('domain', 'sources')}, "
             content += f"{result.get('snippet', 'No snippet available')}\n\n"
-        
+
         return content
-    
+
     def _extract_insights(self, content: str) -> List[str]:
         """Extract key insights from content"""
         sentences = re.split(r'[.!?]+', content)
         insights = [s.strip() for s in sentences if len(s.strip()) > 50][:3]
         return insights
-    
+
     def _generate_action_items(self, context: SynthesisContext) -> List[Dict[str, Any]]:
         """Generate paradigm-specific action items"""
         return [
@@ -490,10 +658,10 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
 
 class BernardAnswerGenerator(BaseAnswerGenerator):
     """Analytical paradigm answer generator with enhanced statistical analysis"""
-    
+
     def __init__(self):
         super().__init__("bernard")
-    
+
     def get_section_structure(self) -> List[Dict[str, Any]]:
         return [
             {
@@ -527,23 +695,17 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 "weight": 0.10,
             },
         ]
-    
+
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate analytical answer with statistical insights"""
         start_time = datetime.now()
         self.citation_counter = 0
         self.citations = {}
-        
+
         # Get progress tracker if available
         research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
-        progress_tracker = None
-        if research_id:
-            try:
-                from services.websocket_service import progress_tracker as _pt
-                progress_tracker = _pt
-            except ImportError:
-                pass
-        
+        progress_tracker = self._get_progress_tracker()
+
         # Extract statistical insights from search results
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -552,7 +714,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 message="Bernard: Extracting statistical patterns"
             )
         statistical_insights = self._extract_statistical_insights(context.search_results)
-        
+
         # Perform meta-analysis if possible
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -561,7 +723,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 message="Bernard: Performing meta-analysis"
             )
         meta_analysis = self._perform_meta_analysis(context.search_results)
-        
+
         # Generate sections
         sections = []
         for section_def in self.get_section_structure():
@@ -569,9 +731,11 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 context, section_def, statistical_insights, meta_analysis
             )
             sections.append(section)
-        
-        summary = self._generate_analytical_summary(sections, statistical_insights)
-        
+
+        topline = self._compose_topline_recommendation(context)
+        summary_core = self._generate_analytical_summary(sections, statistical_insights)
+        summary = (topline + "\n\n" + summary_core).strip()
+
         return GeneratedAnswer(
             research_id=context.metadata.get("research_id", "unknown"),
             query=context.query,
@@ -586,73 +750,77 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             metadata={
                 "statistical_insights": len(statistical_insights),
                 "meta_analysis_performed": meta_analysis is not None,
-                "peer_reviewed_sources": self._count_peer_reviewed(context.search_results)
+                "peer_reviewed_sources": self._count_peer_reviewed(context.search_results),
+                "topline_recommendation": topline,
+                "claim_source_map": self._build_claim_source_map(sections, self.citations),
+                # Surface active backend info for verification
+                "llm_backend": self._get_llm_backend_info(),
             }
         )
-    
+
     def _extract_statistical_insights(self, search_results: List[Dict[str, Any]]) -> List[StatisticalInsight]:
         """Extract statistical insights from search results"""
         insights = []
-        
+
         for result in search_results:
             text = f"{result.get('title', '')} {result.get('snippet', '')}"
-            
+
             # Extract correlations
-            for match in re.finditer(STATISTICAL_PATTERNS["correlation"], text):
+            for match in re.finditer(STATISTICAL_PATTERNS_OPERATORS["correlation"], text):
                 insights.append(StatisticalInsight(
                     metric="correlation",
                     value=float(match.group(1)),
                     unit="r",
                     context=text[max(0, match.start()-50):match.end()+50]
                 ))
-            
+
             # Extract p-values
-            for match in re.finditer(STATISTICAL_PATTERNS["p_value"], text):
+            for match in re.finditer(STATISTICAL_PATTERNS_OPERATORS["p_value"], text):
                 insights.append(StatisticalInsight(
                     metric="p_value",
                     value=float(match.group(1)),
                     unit="",
                     context=text[max(0, match.start()-50):match.end()+50]
                 ))
-            
+
             # Extract sample sizes
-            for match in re.finditer(STATISTICAL_PATTERNS["sample_size"], text):
+            for match in re.finditer(STATISTICAL_PATTERNS_OPERATORS["sample_size"], text):
                 insights.append(StatisticalInsight(
                     metric="sample_size",
                     value=float(match.group(1)),
                     unit="n",
                     context=text[max(0, match.start()-50):match.end()+50]
                 ))
-            
+
             # Extract effect sizes
-            for match in re.finditer(STATISTICAL_PATTERNS["effect_size"], text):
+            for match in re.finditer(STATISTICAL_PATTERNS_OPERATORS["effect_size"], text):
                 insights.append(StatisticalInsight(
                     metric="effect_size",
                     value=float(match.group(1)),
                     unit="d",
                     context=text[max(0, match.start()-50):match.end()+50]
                 ))
-        
+
         return insights
-    
+
     def _perform_meta_analysis(self, search_results: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Perform basic meta-analysis if multiple studies found"""
         effect_sizes = []
         sample_sizes = []
-        
+
         for result in search_results:
             text = f"{result.get('title', '')} {result.get('snippet', '')}"
-            
+
             # Extract effect sizes
-            effect_matches = re.findall(STATISTICAL_PATTERNS["effect_size"], text)
+            effect_matches = re.findall(STATISTICAL_PATTERNS_OPERATORS["effect_size"], text)
             if effect_matches:
                 effect_sizes.extend([float(m) for m in effect_matches])
-            
+
             # Extract sample sizes
-            sample_matches = re.findall(STATISTICAL_PATTERNS["sample_size"], text)
+            sample_matches = re.findall(STATISTICAL_PATTERNS_OPERATORS["sample_size"], text)
             if sample_matches:
                 sample_sizes.extend([int(m) for m in sample_matches])
-        
+
         if len(effect_sizes) >= 3:
             return {
                 "pooled_effect_size": sum(effect_sizes) / len(effect_sizes),
@@ -660,12 +828,12 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 "total_sample_size": sum(sample_sizes) if sample_sizes else None,
                 "studies_analyzed": len(effect_sizes)
             }
-        
+
         return None
-    
+
     async def _generate_analytical_section(
-        self, 
-        context: SynthesisContext, 
+        self,
+        context: SynthesisContext,
         section_def: Dict[str, Any],
         statistical_insights: List[StatisticalInsight],
         meta_analysis: Optional[Dict[str, Any]]
@@ -673,16 +841,10 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
         """Generate analytical section with statistical context"""
         # Get progress tracker if available
         research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
-        progress_tracker = None
-        if research_id:
-            try:
-                from services.websocket_service import progress_tracker as _pt
-                progress_tracker = _pt
-            except ImportError:
-                pass
-        
+        progress_tracker = self._get_progress_tracker()
+
         section_name = section_def.get('title', 'Section')
-        
+
         # Filter relevant results
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -691,7 +853,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 message=f"{section_name}: Analyzing sources"
             )
         relevant_results = self._top_relevant_results(context, 5)
-        
+
         # Create citations
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -703,7 +865,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
         for result in relevant_results:
             citation = self.create_citation(result, "empirical")
             citation_ids.append(citation.id)
-        
+
         # Generate content
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -714,25 +876,21 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
         try:
             insights_summary = self._format_statistical_insights(statistical_insights[:5])
             # Isolation-only support: include extracted findings if present
-            isolated = {}
-            try:
-                if isinstance(context.context_engineering, dict):
-                    isolated = context.context_engineering.get("isolated_findings", {}) or {}
-            except Exception:
-                isolated = {}
+            isolated = self._get_isolated_findings(context)
             iso_lines = []
             try:
                 for m in (isolated.get("matches", []) or [])[:5]:
                     dom = m.get("domain", "")
                     for frag in (m.get("fragments", []) or [])[:1]:
-                        iso_lines.append(f"- [{dom}] {frag}")
+                        iso_lines.append(f"- [{dom}] {sanitize_snippet(frag or '')}")
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._format_evidence_block(context, 12)
+            evidence_block = self._safe_evidence_block(context, 12)
             coverage_tbl = self._coverage_table(context)
-            
-            prompt = f"""
+
+            guard = guardrail_instruction
+            prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
 
@@ -759,7 +917,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
 
             Length: {int(2000 * section_def['weight'])} words
             """
-            
+
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="bernard",
@@ -771,7 +929,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
             content = self._generate_analytical_fallback(section_def, relevant_results, statistical_insights)
-        
+
         # Extract quantitative insights
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -780,7 +938,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 message=f"{section_name}: Extracting quantitative insights"
             )
         key_insights = self._extract_quantitative_insights(content, statistical_insights)
-        
+
         return AnswerSection(
             title=section_def['title'],
             paradigm=self.paradigm,
@@ -794,7 +952,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 "statistical_evidence": len([i for i in statistical_insights if i.metric in content])
             }
         )
-    
+
     def _format_statistical_insights(self, insights: List[StatisticalInsight]) -> str:
         """Format statistical insights for prompt"""
         formatted = []
@@ -804,82 +962,82 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             else:
                 formatted.append(f"- {insight.metric}: {insight.value}{insight.unit}")
         return "\n".join(formatted)
-    
+
     def _generate_analytical_fallback(
-        self, 
-        section_def: Dict[str, Any], 
+        self,
+        section_def: Dict[str, Any],
         results: List[Dict[str, Any]],
         insights: List[StatisticalInsight]
     ) -> str:
         """Generate fallback analytical content"""
         content = f"# {section_def['title']}\n\n"
         content += f"This section provides {section_def['focus']}.\n\n"
-        
+
         if insights:
             content += "## Key Statistical Findings\n\n"
             for insight in insights[:5]:
                 content += f"- {insight.metric}: {insight.value}{insight.unit}\n"
             content += "\n"
-        
+
         content += "## Evidence Summary\n\n"
         for result in results[:3]:
             content += f"According to research from {result.get('domain', 'sources')}, "
             content += f"{result.get('snippet', 'No data available')}\n\n"
-        
+
         return content
-    
+
     def _extract_quantitative_insights(
-        self, 
-        content: str, 
+        self,
+        content: str,
         statistical_insights: List[StatisticalInsight]
     ) -> List[str]:
         """Extract quantitative insights from generated content"""
         insights = []
-        
+
         # Extract sentences with statistical terms
         sentences = re.split(r'[.!?]+', content)
         for sentence in sentences:
             if any(pattern in sentence.lower() for pattern in ["correlation", "p=", "n=", "effect size", "%"]):
                 if len(sentence.strip()) > 30:
                     insights.append(sentence.strip())
-        
+
         # Add top statistical insights if not already in content
         for stat_insight in statistical_insights[:3]:
             insight_text = f"{stat_insight.metric.replace('_', ' ').title()}: {stat_insight.value}{stat_insight.unit}"
             if insight_text not in content:
                 insights.append(insight_text)
-        
+
         return insights[:5]
-    
+
     def _generate_analytical_summary(
-        self, 
-        sections: List[AnswerSection], 
+        self,
+        sections: List[AnswerSection],
         statistical_insights: List[StatisticalInsight]
     ) -> str:
         """Generate analytical summary"""
         if not sections:
             return "No analysis available."
-        
+
         summary = sections[0].content[:200] if sections[0].content else ""
-        
+
         if statistical_insights:
             summary += f" Analysis identified {len(statistical_insights)} statistical findings"
-            
+
             # Add key statistics
             effect_sizes = [i for i in statistical_insights if i.metric == "effect_size"]
             if effect_sizes:
                 avg_effect = sum(i.value for i in effect_sizes) / len(effect_sizes)
                 summary += f" with average effect size d={avg_effect:.2f}"
-        
+
         return summary
-    
+
     def _generate_research_action_items(
-        self, 
+        self,
         statistical_insights: List[StatisticalInsight]
     ) -> List[Dict[str, Any]]:
         """Generate research-oriented action items"""
         items = []
-        
+
         # Check for significant findings
         significant_findings = [i for i in statistical_insights if i.p_value and i.p_value < 0.05]
         if significant_findings:
@@ -887,7 +1045,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 "action": f"Investigate {len(significant_findings)} statistically significant findings",
                 "priority": "high"
             })
-        
+
         # Check for large effect sizes
         large_effects = [i for i in statistical_insights if i.metric == "effect_size" and abs(i.value) > 0.8]
         if large_effects:
@@ -895,39 +1053,39 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 "action": f"Examine {len(large_effects)} large effect sizes for practical significance",
                 "priority": "high"
             })
-        
+
         # Always add meta-analysis recommendation
         items.append({
             "action": "Conduct systematic review and meta-analysis",
             "priority": "medium"
         })
-        
+
         return items
-    
+
     def _calculate_analytical_confidence(
-        self, 
+        self,
         statistical_insights: List[StatisticalInsight]
     ) -> float:
         """Calculate confidence based on statistical evidence"""
         base_confidence = 0.5
-        
+
         # Boost for significant findings
         significant_findings = [i for i in statistical_insights if i.p_value and i.p_value < 0.05]
         base_confidence += min(0.2, len(significant_findings) * 0.05)
-        
+
         # Boost for large sample sizes
         large_samples = [i for i in statistical_insights if i.metric == "sample_size" and i.value > 1000]
         base_confidence += min(0.15, len(large_samples) * 0.05)
-        
+
         # Boost for consistent effect sizes
         effect_sizes = [i.value for i in statistical_insights if i.metric == "effect_size"]
         if len(effect_sizes) > 2:
             variance = sum((e - sum(effect_sizes)/len(effect_sizes))**2 for e in effect_sizes) / len(effect_sizes)
             if variance < 0.1:  # Low variance indicates consistency
                 base_confidence += 0.1
-        
+
         return min(0.95, base_confidence)
-    
+
     def _count_peer_reviewed(self, search_results: List[Dict[str, Any]]) -> int:
         """Count peer-reviewed sources"""
         peer_reviewed_domains = ["pubmed", "arxiv", "nature", "science", "elsevier", "springer"]
@@ -941,10 +1099,10 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
 
 class MaeveAnswerGenerator(BaseAnswerGenerator):
     """Strategic paradigm answer generator with business analysis"""
-    
+
     def __init__(self):
         super().__init__("maeve")
-    
+
     def get_section_structure(self) -> List[Dict[str, Any]]:
         return [
             {
@@ -973,23 +1131,17 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 "weight": 0.20,
             },
         ]
-    
+
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate strategic answer with business insights"""
         start_time = datetime.now()
         self.citation_counter = 0
         self.citations = {}
-        
+
         # Get progress tracker if available
         research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
-        progress_tracker = None
-        if research_id:
-            try:
-                from services.websocket_service import progress_tracker as _pt
-                progress_tracker = _pt
-            except ImportError:
-                pass
-        
+        progress_tracker = self._get_progress_tracker()
+
         # Extract strategic insights
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -998,7 +1150,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 message="Maeve: Extracting strategic insights"
             )
         strategic_insights = self._extract_strategic_insights(context.search_results)
-        
+
         # Generate SWOT analysis
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -1007,7 +1159,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 message="Maeve: Generating SWOT analysis"
             )
         swot_analysis = self._generate_swot_analysis(context.query, context.search_results)
-        
+
         # Generate sections
         sections = []
         for section_def in self.get_section_structure():
@@ -1015,7 +1167,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 context, section_def, strategic_insights, swot_analysis
             )
             sections.append(section)
-        
+
         # Generate strategic recommendations
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -1026,9 +1178,11 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
         recommendations = self._generate_strategic_recommendations(
             context.query, strategic_insights, swot_analysis
         )
-        
-        summary = self._generate_strategic_summary(sections, strategic_insights)
-        
+
+        topline = self._compose_topline_recommendation(context)
+        summary_core = self._generate_strategic_summary(sections, strategic_insights)
+        summary = (topline + "\n\n" + summary_core).strip()
+
         return GeneratedAnswer(
             research_id=context.metadata.get("research_id", "unknown"),
             query=context.query,
@@ -1043,17 +1197,19 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             metadata={
                 "strategic_insights": len(strategic_insights),
                 "swot_completed": swot_analysis is not None,
-                "recommendations": len(recommendations)
+                "recommendations": len(recommendations),
+                "topline_recommendation": topline,
+                "claim_source_map": self._build_claim_source_map(sections, self.citations),
             }
         )
-    
+
     def _extract_strategic_insights(self, search_results: List[Dict[str, Any]]) -> List[StrategicRecommendation]:
         """Extract strategic insights from search results"""
         insights = []
-        
+
         for result in search_results[:5]:
             text = f"{result.get('title', '')} {result.get('snippet', '')}"
-            
+
             # Look for strategic patterns
             if "strategy" in text.lower() or "competitive" in text.lower():
                 insights.append(StrategicRecommendation(
@@ -1066,12 +1222,12 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                     success_metrics=["market share", "revenue growth"],
                     risks=["competitor response", "execution challenges"]
                 ))
-        
+
         return insights
-    
+
     def _generate_swot_analysis(
-        self, 
-        query: str, 
+        self,
+        query: str,
         search_results: List[Dict[str, Any]]
     ) -> Dict[str, List[str]]:
         """Generate SWOT analysis from search results"""
@@ -1081,10 +1237,10 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             "opportunities": [],
             "threats": []
         }
-        
+
         for result in search_results[:10]:
             text = f"{result.get('title', '')} {result.get('snippet', '')}".lower()
-            
+
             if "opportunity" in text or "growth" in text:
                 swot["opportunities"].append(result.get('snippet', '')[:100])
             elif "threat" in text or "risk" in text:
@@ -1093,14 +1249,14 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 swot["strengths"].append(result.get('snippet', '')[:100])
             elif "weakness" in text or "challenge" in text:
                 swot["weaknesses"].append(result.get('snippet', '')[:100])
-        
+
         # Ensure each category has at least one item
         for category in swot:
             if not swot[category]:
                 swot[category].append(f"Further analysis needed for {category}")
-        
+
         return swot
-    
+
     async def _generate_strategic_section(
         self,
         context: SynthesisContext,
@@ -1111,16 +1267,10 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
         """Generate strategic section"""
         # Get progress tracker if available
         research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
-        progress_tracker = None
-        if research_id:
-            try:
-                from services.websocket_service import progress_tracker as _pt
-                progress_tracker = _pt
-            except ImportError:
-                pass
-        
+        progress_tracker = self._get_progress_tracker()
+
         section_name = section_def.get('title', 'Section')
-        
+
         # Filter relevant results
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -1129,7 +1279,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 message=f"{section_name}: Analyzing strategic landscape"
             )
         relevant_results = self._top_relevant_results(context, 5)
-        
+
         # Create citations
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -1141,26 +1291,27 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
         for result in relevant_results:
             citation = self.create_citation(result, "strategic")
             citation_ids.append(citation.id)
-        
+
         # Generate content
         try:
             swot_summary = self._format_swot_for_prompt(swot_analysis)
-            
+
             # Isolation-only support
             iso_lines = []
             try:
-                if isinstance(context.context_engineering, dict):
-                    for m in (context.context_engineering.get("isolated_findings", {}).get("matches", []) or [])[:5]:
-                        dom = m.get("domain", "")
-                        for frag in (m.get("fragments", []) or [])[:1]:
-                            iso_lines.append(f"- [{dom}] {frag}")
+                iso = self._get_isolated_findings(context)
+                for m in (iso.get("matches", []) or [])[:5]:
+                    dom = m.get("domain", "")
+                    for frag in (m.get("fragments", []) or [])[:1]:
+                        iso_lines.append(f"- [{dom}] {sanitize_snippet(frag or '')}")
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._format_evidence_block(context, 12)
+            evidence_block = self._safe_evidence_block(context, 12)
             coverage_tbl = self._coverage_table(context)
 
-            prompt = f"""
+            guard = guardrail_instruction
+            prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
 
@@ -1179,11 +1330,10 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             - Focus on actionable strategies and concrete recommendations
             - Include ROI considerations and resource implications
             - Emphasize competitive advantages and market opportunities
-            - Use decisive, action-oriented language
-            
+
             Length: {int(2000 * section_def['weight'])} words
             """
-            
+
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="maeve",
@@ -1195,10 +1345,10 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
             content = self._generate_strategic_fallback(section_def, relevant_results, swot_analysis)
-        
+
         # Extract strategic insights
         key_insights = self._extract_strategic_insights_from_content(content)
-        
+
         return AnswerSection(
             title=section_def['title'],
             paradigm=self.paradigm,
@@ -1212,7 +1362,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 "strategic_focus": section_def['focus']
             }
         )
-    
+
     def _format_swot_for_prompt(self, swot: Dict[str, List[str]]) -> str:
         """Format SWOT analysis for prompt"""
         formatted = []
@@ -1221,7 +1371,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             for item in items[:3]:
                 formatted.append(f"  - {item}")
         return "\n".join(formatted)
-    
+
     def _generate_strategic_fallback(
         self,
         section_def: Dict[str, Any],
@@ -1231,7 +1381,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
         """Generate fallback strategic content"""
         content = f"# {section_def['title']}\n\n"
         content += f"This section addresses: {section_def['focus']}\n\n"
-        
+
         # Add SWOT summary
         content += "## Strategic Analysis\n\n"
         for category, items in swot.items():
@@ -1240,30 +1390,30 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 for item in items[:2]:
                     content += f"- {item}\n"
                 content += "\n"
-        
+
         # Add source insights
         content += "## Market Intelligence\n\n"
         for result in results[:3]:
             content += f"According to {result.get('domain', 'market analysis')}, "
             content += f"{result.get('snippet', 'No data available')}\n\n"
-        
+
         return content
-    
+
     def _extract_strategic_insights_from_content(self, content: str) -> List[str]:
         """Extract strategic insights from generated content"""
         insights = []
-        
+
         # Look for sentences with strategic keywords
         sentences = re.split(r'[.!?]+', content)
         strategic_keywords = ["roi", "market", "competitive", "strategy", "growth", "opportunity"]
-        
+
         for sentence in sentences:
             if any(keyword in sentence.lower() for keyword in strategic_keywords):
                 if len(sentence.strip()) > 40:
                     insights.append(sentence.strip())
-        
+
         return insights[:5]
-    
+
     def _generate_strategic_recommendations(
         self,
         query: str,
@@ -1272,7 +1422,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
     ) -> List[StrategicRecommendation]:
         """Generate strategic recommendations"""
         recommendations = []
-        
+
         # Quick win based on opportunities
         if swot["opportunities"]:
             recommendations.append(StrategicRecommendation(
@@ -1286,7 +1436,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 risks=["limited scope"],
                 roi_potential=2.5
             ))
-        
+
         # Strategic initiative based on strengths
         if swot["strengths"]:
             recommendations.append(StrategicRecommendation(
@@ -1300,7 +1450,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 risks=["resource intensity"],
                 roi_potential=4.0
             ))
-        
+
         # Risk mitigation based on threats
         if swot["threats"]:
             recommendations.append(StrategicRecommendation(
@@ -1314,9 +1464,9 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 risks=["opportunity cost"],
                 roi_potential=1.5
             ))
-        
+
         return recommendations
-    
+
     def _generate_strategic_summary(
         self,
         sections: List[AnswerSection],
@@ -1325,15 +1475,15 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
         """Generate strategic summary"""
         if not sections:
             return "Strategic analysis pending."
-        
+
         summary = sections[0].content[:200] if sections[0].content else ""
-        
+
         if strategic_insights:
             high_impact = [i for i in strategic_insights if i.impact == "high"]
             summary += f" Identified {len(high_impact)} high-impact strategic opportunities."
-        
+
         return summary
-    
+
     def _format_recommendations_as_actions(
         self,
         recommendations: List[StrategicRecommendation]
@@ -1353,10 +1503,10 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
 
 class TeddyAnswerGenerator(BaseAnswerGenerator):
     """Supportive paradigm answer generator"""
-    
+
     def __init__(self):
         super().__init__("teddy")
-    
+
     def get_section_structure(self) -> List[Dict[str, Any]]:
         return [
             {
@@ -1380,20 +1530,22 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
                 "weight": 0.2,
             },
         ]
-    
+
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate supportive answer"""
         start_time = datetime.now()
         self.citation_counter = 0
         self.citations = {}
-        
+
         sections = []
         for section_def in self.get_section_structure():
             section = await self._generate_supportive_section(context, section_def)
             sections.append(section)
-        
-        summary = self._generate_supportive_summary(sections)
-        
+
+        topline = self._compose_topline_recommendation(context)
+        summary_core = self._generate_supportive_summary(sections)
+        summary = (topline + "\n\n" + summary_core).strip()
+
         return GeneratedAnswer(
             research_id=context.metadata.get("research_id", "unknown"),
             query=context.query,
@@ -1405,9 +1557,14 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             confidence_score=0.82,
             synthesis_quality=0.86,
             generation_time=(datetime.now() - start_time).total_seconds(),
-            metadata={"tone": "supportive", "focus": "community care"}
+            metadata={
+                "tone": "supportive",
+                "focus": "community care",
+                "topline_recommendation": topline,
+                "claim_source_map": self._build_claim_source_map(sections, self.citations),
+            }
         )
-    
+
     async def _generate_supportive_section(
         self,
         context: SynthesisContext,
@@ -1416,16 +1573,10 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
         """Generate supportive section"""
         # Get progress tracker if available
         research_id = context.metadata.get("research_id") if hasattr(context, "metadata") else None
-        progress_tracker = None
-        if research_id:
-            try:
-                from services.websocket_service import progress_tracker as _pt
-                progress_tracker = _pt
-            except ImportError:
-                pass
-        
+        progress_tracker = self._get_progress_tracker()
+
         section_name = section_def.get('title', 'Section')
-        
+
         # Filter relevant results
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -1434,7 +1585,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
                 message=f"{section_name}: Finding support resources"
             )
         relevant_results = [r for r in context.search_results[:5]]
-        
+
         # Create citations
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -1446,7 +1597,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
         for result in relevant_results:
             citation = self.create_citation(result, "support")
             citation_ids.append(citation.id)
-        
+
         # Generate content
         try:
             # Isolation-only support
@@ -1456,15 +1607,15 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
                     for m in (context.context_engineering.get("isolated_findings", {}).get("matches", []) or [])[:5]:
                         dom = m.get("domain", "")
                         for frag in (m.get("fragments", []) or [])[:1]:
-                            iso_lines.append(f"- [{dom}] {frag}")
+                            iso_lines.append(f"- [{dom}] {sanitize_snippet(frag or '')}")
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
 
-            prompt = f"""
+            prompt = f"""{guardrail_instruction}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
-            
+
             Requirements:
             - Use warm, supportive language that builds hope and connection
             - Focus on human dignity and the power of community care
@@ -1473,10 +1624,10 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             - STRICT: Ground all examples in the Isolated Findings below
             Isolated Findings:
             {iso_block}
-            
+
             Length: {int(2000 * section_def['weight'])} words
             """
-            
+
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="teddy",
@@ -1488,7 +1639,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
                 raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
             content = self._generate_supportive_fallback(section_def, relevant_results)
-        
+
         return AnswerSection(
             title=section_def['title'],
             paradigm=self.paradigm,
@@ -1499,7 +1650,14 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             key_insights=self._extract_supportive_insights(content),
             metadata={"section_weight": section_def['weight']}
         )
-    
+
+    def _get_llm_backend_info(self) -> Dict[str, Any]:
+        try:
+            from services.llm_client import llm_client
+            return llm_client.get_active_backend_info()
+        except Exception:
+            return {}
+
     def _generate_supportive_fallback(
         self,
         section_def: Dict[str, Any],
@@ -1508,40 +1666,40 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
         """Generate fallback supportive content"""
         content = f"# {section_def['title']}\n\n"
         content += f"This section provides: {section_def['focus']}\n\n"
-        
+
         content += "## Available Resources\n\n"
         for result in results[:3]:
             content += f"Support is available through {result.get('domain', 'various organizations')}. "
             content += f"{result.get('snippet', 'Help and resources are available.')}\n\n"
-        
+
         content += "\nRemember: You are not alone. Help is available, and together we can make a difference.\n"
-        
+
         return content
-    
+
     def _extract_supportive_insights(self, content: str) -> List[str]:
         """Extract supportive insights"""
         insights = []
         sentences = re.split(r'[.!?]+', content)
-        
+
         supportive_keywords = ["help", "support", "care", "resource", "available", "together"]
-        
+
         for sentence in sentences:
             if any(keyword in sentence.lower() for keyword in supportive_keywords):
                 if len(sentence.strip()) > 40:
                     insights.append(sentence.strip())
-        
+
         return insights[:3]
-    
+
     def _generate_supportive_summary(self, sections: List[AnswerSection]) -> str:
         """Generate supportive summary"""
         if not sections:
             return "Support and resources are available."
-        
+
         summary = sections[0].content[:200] if sections[0].content else ""
         summary += " Help is available, and no one has to face this alone."
-        
+
         return summary
-    
+
     def _generate_supportive_actions(self, context: SynthesisContext) -> List[Dict[str, Any]]:
         """Generate supportive action items"""
         return [
@@ -1554,20 +1712,24 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
 
 # ============================================================================
 # ORCHESTRATOR
-# ============================================================================
 
 class AnswerGenerationOrchestrator:
     """Main orchestrator for answer generation"""
-    
+
     def __init__(self):
-        self.generators = {
-            "dolores": DoloresAnswerGenerator(),
-            "bernard": BernardAnswerGenerator(),
-            "maeve": MaeveAnswerGenerator(),
-            "teddy": TeddyAnswerGenerator()
-        }
         logger.info("Answer Generation Orchestrator initialized")
-    
+
+    def _make_generator(self, paradigm: str) -> BaseAnswerGenerator:
+        if paradigm == "dolores":
+            return DoloresAnswerGenerator()
+        if paradigm == "bernard":
+            return BernardAnswerGenerator()
+        if paradigm == "maeve":
+            return MaeveAnswerGenerator()
+        if paradigm == "teddy":
+            return TeddyAnswerGenerator()
+        return BernardAnswerGenerator()
+
     async def generate_answer(
         self,
         paradigm: str,
@@ -1579,10 +1741,10 @@ class AnswerGenerationOrchestrator:
         """Generate answer using specified paradigm"""
 
         # Validate paradigm
-        if paradigm not in self.generators:
+        if paradigm not in {"dolores", "bernard", "maeve", "teddy"}:
             logger.error(f"Unknown paradigm: {paradigm}")
             paradigm = "bernard"  # Default to analytical
-        
+
         # Create synthesis context
         context = SynthesisContext(
             query=query,
@@ -1594,45 +1756,14 @@ class AnswerGenerationOrchestrator:
             tone=(options or {}).get("tone", "professional"),
             metadata=options or {},
             evidence_quotes=(options or {}).get("evidence_quotes", []) or [],
+            evidence_bundle=(options or {}).get("evidence_bundle"),
         )
-        
-        # Generate answer with progress callbacks if research_id available
-        generator = self.generators[paradigm]
 
-        research_id = (options or {}).get("research_id") if options else None
-        total_sections = len(generator.get_section_structure())
-
-        if research_id and total_sections:
-            # Late import to avoid circular
-            try:
-                from services.websocket_service import progress_tracker as _pt
-
-                async def _report(idx: int):
-                    if _pt:
-                        await _pt.report_synthesis_progress(research_id, idx, total_sections)
-
-                # Wrap generator._generate_section
-                orig_generate = generator._generate_section  # type: ignore[attr-defined]
-
-                async def _wrapped(sec_self, ctx, sec_def):  # noqa: ANN001
-                    result = await orig_generate(ctx, sec_def)  # type: ignore[misc]
-                    # section_index inferred by len progress
-                    await _report(len(sec_self.citations) // 1)  # approx sections processed
-                    return result
-
-                # Monkeypatch for duration of call
-                setattr(generator, "_generate_section", _wrapped)  # type: ignore[attr-defined]
-                try:
-                    answer = await generator.generate_answer(context)
-                finally:
-                    setattr(generator, "_generate_section", orig_generate)  # restore
-            except Exception:
-                answer = await generator.generate_answer(context)
-        else:
-            answer = await generator.generate_answer(context)
-        
+        # Instantiate a fresh generator per request to avoid shared state issues
+        generator = self._make_generator(paradigm)
+        answer = await generator.generate_answer(context)
         return answer
-    
+
     async def generate_multi_paradigm_answer(
         self,
         primary_paradigm: str,
@@ -1643,23 +1774,23 @@ class AnswerGenerationOrchestrator:
         options: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Generate answer using multiple paradigms"""
-        
+
         # Generate primary answer
         primary_answer = await self.generate_answer(
             primary_paradigm, query, search_results, context_engineering, options
         )
-        
+
         # Generate secondary answer
         secondary_answer = await self.generate_answer(
             secondary_paradigm, query, search_results, context_engineering, options
         )
-        
+
         # Combine insights
         combined_synthesis_quality = (
             primary_answer.synthesis_quality * 0.7 +
             secondary_answer.synthesis_quality * 0.3
         )
-        
+
         return {
             "primary_paradigm": {
                 "paradigm": primary_paradigm,
@@ -1672,6 +1803,117 @@ class AnswerGenerationOrchestrator:
             "synthesis_quality": combined_synthesis_quality,
             "generation_time": primary_answer.generation_time + secondary_answer.generation_time
         }
+
+
+# ============================================================================
+# LIGHTWEIGHT MARKDOWN RENDERER FOR RESEARCH REPORT
+# SYNTAX FOR USE WITH SHORT CLUI BLOCK: no need, paragraphs and sentences are placed over a single line DO NOT use extra spaces to break, use: 1,2,1,3,4,1,2,3,1,2,3
+# ============================================================================
+
+# Lightweight renderer for Research Report markdown
+def _fmt_sources_for_claim(claim_row: Dict[str, Any]) -> str:
+    cites = claim_row.get("citations") or []
+    if not cites:
+        return "(no citations)"
+    domains = [c.get("domain") or c.get("url") or "" for c in cites]
+    seen = set()
+    uniq: List[str] = []
+    for d in domains:
+        if d and d not in seen:
+            seen.add(d)
+            uniq.append(d)
+    return ", ".join(uniq) if uniq else "(no citations)"
+
+def _auto_bibliography(citations: Dict[str, Citation]) -> List[str]:
+    from datetime import datetime as _dt
+    def _sort_key(kv: Tuple[str, Citation]) -> int:
+        cid = kv[0]
+        try:
+            return int(str(cid).split("_")[-1])
+        except Exception:
+            return 999999
+    lines: List[str] = []
+    for cid, c in sorted(citations.items(), key=_sort_key):
+        acc = c.timestamp.isoformat() if isinstance(c.timestamp, _dt) else ""
+        title = c.source_title or c.domain or c.source_url
+        entry = f"[{cid}] {title}. {c.domain}. {c.source_url} {('Accessed ' + acc) if acc else ''}"
+        lines.append(entry)
+    return lines
+
+def render_research_report_md(answer: GeneratedAnswer, intake: Dict[str, str]) -> str:
+    meta = answer.metadata or {}
+    claim_map = meta.get("claim_source_map") or []
+    topline = meta.get("topline_recommendation") or (answer.summary.split("\n", 1)[0] if answer.summary else "")
+    objective = intake.get("objective", "")
+    scope = intake.get("scope", "")
+    constraints = intake.get("constraints", "")
+    key_findings: List[str] = []
+    for sec in answer.sections:
+        for ki in (sec.key_insights or []):
+            key_findings.append(f"- {ki}")
+            if len(key_findings) >= 5:
+                break
+        if len(key_findings) >= 5:
+            break
+    key_findings_md = "\n".join(key_findings) if key_findings else "- See sections below."
+
+    claim_lines: List[str] = []
+    for row in claim_map:
+        claim = row.get("claim", "")
+        sources_str = _fmt_sources_for_claim(row)
+        claim_lines.append(f"- Claim: {claim}\n  - Sources: {sources_str}")
+    claim_map_md = "\n".join(claim_lines) if claim_lines else "- (no mapped claims)"
+
+    refs = _auto_bibliography(answer.citations or {})
+    refs_md = "\n".join(f"- {r}" for r in refs) if refs else "- (none)"
+
+    parts: List[str] = []
+    parts.append("# Research Report")
+    parts.append("")
+    parts.append("## Executive Summary")
+    parts.append(f"- Objective: {objective or '<fill from intake.objective>'}")
+    parts.append(f"- Top‑line Recommendation: {topline}")
+    parts.append(f"- Key Findings:\n{key_findings_md}")
+    parts.append("- Confidence/Uncertainty: pending synthesis notes")
+    parts.append(f"- Recommendations: {', '.join([a.get('action','') for a in (answer.action_items or [])][:3]) or '(see Recommendations section)'}")
+    parts.append("")
+    parts.append("## Methods")
+    parts.append(f"- Scope and Constraints: {scope or '<from intake.scope>'} {constraints or ''}".strip())
+    parts.append("- Data Sources and Discovery:\n  - Search engines/APIs used\n  - Query strategies and time windows\n  - Inclusion/exclusion criteria")
+    parts.append("- Retrieval and Processing:\n  - Parsers, chunking strategy, embeddings model\n  - Deduplication approach (MD5/SimHash)\n  - Metadata collected")
+    parts.append("- Credibility Assessment:\n  - Features: domain reputation, recency, citations, cross-source agreement\n  - Scoring function and thresholds")
+    parts.append("- Orchestration:\n  - Budget caps: tokens/cost/time\n  - Tools and rate limits\n  - Failure handling/backoff")
+    parts.append("- Evaluation:\n  - Rubric criteria and weighting\n  - Evaluator isolation and challenge sets")
+    parts.append("")
+    parts.append("## Results")
+    parts.append("- Claim→Source Map (Top Claims with Citations):")
+    parts.append(claim_map_md)
+    parts.append("")
+    parts.append("- Thematic Findings with Per-sentence Citations:")
+    for i, sec in enumerate(answer.sections, 1):
+        snippet = (sec.content or "").split("\n", 1)[0]
+        parts.append(f"  {i}. {snippet[:200]}...")
+    parts.append("- Evidence Summaries:")
+    for cid, c in (answer.citations or {}).items():
+        cred = getattr(c, "credibility_score", None)
+        parts.append(f"  - {c.domain or c.source_url} (credibility: {cred if cred is not None else 'n/a'}): {(c.snippet or '')[:140]} [CIT:{cid}]")
+    parts.append("- Conflict Analysis:\n  - (pending)")
+    parts.append("- Figures and Tables\n  - (none)")
+    parts.append("")
+    parts.append("## Discussion\n- Interpretation of findings\n- Limitations and potential biases\n- Uncertainty quantification per claim\n- Implications and alternatives")
+    parts.append("")
+    parts.append("## Recommendations")
+    if answer.action_items:
+        for a in answer.action_items:
+            parts.append(f"- {a.get('action','')} (priority: {a.get('priority','')})")
+    else:
+        parts.append("- (none)")
+    parts.append("")
+    parts.append("## References")
+    parts.append(refs_md)
+    parts.append("")
+    parts.append("## Appendix\n- Intake Scope Card snapshot\n- Tool usage and costs\n- Reproduction guide (env, seeds, versions)\n- Full lineage and artifact IDs")
+    return "\n".join(parts)
 
 
 # ============================================================================
@@ -1694,24 +1936,25 @@ __all__ = [
     'AnswerSection',
     'GeneratedAnswer',
     'BaseAnswerGenerator',
-    
+
     # Generators
     'DoloresAnswerGenerator',
     'BernardAnswerGenerator',
     'MaeveAnswerGenerator',
     'TeddyAnswerGenerator',
-    
+
     # Enhanced Generators (aliases for compatibility)
     'EnhancedBernardAnswerGenerator',
     'EnhancedMaeveAnswerGenerator',
-    
+
     # Orchestrator
     'AnswerGenerationOrchestrator',
     'answer_orchestrator',
-    
+
     # Functions
     'initialize_answer_generation',
-    
+    'render_research_report_md',
+
     # Core types
     'StatisticalInsight',
     'StrategicRecommendation',

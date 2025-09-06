@@ -9,6 +9,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Final
 
 from utils.async_utils import run_in_thread
+from core.config import (
+    ALGORITHM as _CFG_ALGORITHM,
+    ACCESS_TOKEN_EXPIRE_MINUTES as _CFG_ACCESS_TOKEN_EXPIRE_MINUTES,
+)
 
 # Configuration
 SECRET_KEY_ENV = os.getenv("JWT_SECRET_KEY")
@@ -19,8 +23,8 @@ if SECRET_KEY_ENV is None or SECRET_KEY_ENV.strip() == "":
     )
 SECRET_KEY: Final[str] = SECRET_KEY_ENV
 
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ALGORITHM = _CFG_ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = _CFG_ACCESS_TOKEN_EXPIRE_MINUTES
 
 
 def create_access_token(

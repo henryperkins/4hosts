@@ -17,7 +17,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 from pydantic import BaseModel, Field
 
-from services.auth import decode_token, TokenData, UserRole
+from services.auth_service import decode_token, TokenData, UserRole
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -394,13 +394,17 @@ class ConnectionManager:
             WSEventType.PONG: "pong",
             WSEventType.RATE_LIMIT_WARNING: "rate_limit.warning",
             WSEventType.SYSTEM_NOTIFICATION: "system.notification",
-            # Search/analysis events (frontend accepts dotted variants)
+            # Search/analysis events
+            # Frontend accepts search.started and search.completed, but not search.retry
+            # Map retry → started to satisfy schema while conveying intent
             WSEventType.SEARCH_STARTED: "search.started",
             WSEventType.SEARCH_COMPLETED: "search.completed",
-            WSEventType.SEARCH_RETRY: "search.retry",
-            WSEventType.SYNTHESIS_STARTED: "synthesis.started",
-            WSEventType.SYNTHESIS_PROGRESS: "synthesis.progress",
-            WSEventType.SYNTHESIS_COMPLETED: "synthesis.completed",
+            WSEventType.SEARCH_RETRY: "search.started",
+            # Frontend schema does not include synthesis.* events; map them to allowed types
+            # so they render as progress/completion without schema errors.
+            WSEventType.SYNTHESIS_STARTED: "research_progress",
+            WSEventType.SYNTHESIS_PROGRESS: "research_progress",
+            WSEventType.SYNTHESIS_COMPLETED: "research_completed",
             WSEventType.CREDIBILITY_CHECK: "credibility.check",
             WSEventType.DEDUPLICATION: "deduplication.progress",
         }

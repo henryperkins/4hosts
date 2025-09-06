@@ -22,7 +22,11 @@ from .openai_responses_client import (
     Citation,
     ResponseStatus,
     SearchContextSize,
-    get_responses_client,
+)
+from .llm_client import (
+    responses_deep_research,
+    responses_retrieve,
+    normalize_responses_payload,
 )
 from .classification_engine import HostParadigm, ClassificationResult
 from .context_engineering import ContextEngineeredQuery
@@ -175,14 +179,20 @@ class DeepResearchService:
     """Service for executing deep research using o3-deep-research model"""
     
     def __init__(self):
-        self.client: Optional[OpenAIResponsesClient] = None
+        self.client: Optional[OpenAIResponsesClient] = None  # retained for backward compatibility
         self._initialized = False
         
     async def initialize(self):
         """Initialize the service"""
         if not self._initialized:
             try:
-                self.client = get_responses_client()
+                # Obtain client via OpenAIResponsesClient factory to avoid import cycles
+                # Keep client available for compatibility, but primary path uses llm_client façade
+                try:
+                    from .openai_responses_client import get_responses_client
+                    self.client = get_responses_client()
+                except Exception:
+                    self.client = None
                 logger.info("✓ Deep Research Service initialized")
             except Exception as e:
                 # Make initialization non-fatal when API key is missing in local/dev
@@ -261,38 +271,98 @@ class DeepResearchService:
                     user_location=config.user_location
                 )
             
-            # Execute deep research
-            if not self.client:
-                raise RuntimeError("Deep research requires OPENAI_API_KEY; feature is disabled")
-            response = await self.client.deep_research(
-                query=research_prompt,
-                system_prompt=system_prompt,
-                use_web_search=config.enable_web_search,
-                web_search_config=web_search_config,
-                use_code_interpreter=config.enable_code_interpreter,
-                mcp_servers=config.mcp_servers,
+            # Stage 1: Evidence gathering (web_search, optional code interpreter)
+            # Always run stage 1 with store=True so we can chain reliably.
+            try:
+                from .openai_responses_client import get_responses_client
+                client = get_responses_client()
+            except Exception as e:
+                raise RuntimeError(f"Responses client not available: {e}")
+
+            stage1 = await client.create_response(
+                model="o3-deep-research",
+                input=[
+                    {"role": "developer", "content": [{"type": "input_text", "text": system_prompt}]},
+                    {"role": "user", "content": [{"type": "input_text", "text": research_prompt}]},
+                ],
+                tools=([web_search_config] if web_search_config else [])
+                      + ([CodeInterpreterTool()] if config.enable_code_interpreter else []),
+                reasoning={"summary": "auto"},
                 max_tool_calls=config.max_tool_calls,
                 background=config.background,
+                store=True,
             )
-            
-            # Handle background mode
+
+            # If running in background, poll for completion
             if config.background:
-                response_id = response["id"]
-                
-                # Update progress
+                stage1_id = stage1["id"]
+
                 if progress_tracker and research_id:
                     await progress_tracker.update_progress(
-                        research_id, 
-                        f"Deep research running in background (ID: {response_id})", 
-                        25
+                        research_id,
+                        f"Deep research (evidence gathering) queued: {stage1_id}",
+                        25,
                     )
-                
-                # Wait for completion with progress updates
-                response = await self._wait_with_progress(
-                    response_id, config.timeout, progress_tracker, research_id
+
+                stage1 = await self._wait_with_progress(
+                    stage1_id, config.timeout, progress_tracker, research_id
                 )
-            
-            # Extract results
+
+            # Stage 2: Synthesis chained to Stage 1 context
+            if progress_tracker and research_id:
+                try:
+                    await progress_tracker.report_synthesis_started(research_id)
+                except Exception:
+                    await progress_tracker.update_progress(
+                        research_id, "Starting answer synthesis...", 80
+                    )
+
+            synthesis_instructions = (
+                "Synthesize a concise, well-structured answer with inline citations. "
+                "Prioritize high-credibility sources, highlight key findings, and include a short bibliography."
+            )
+
+            stage1_id_final = stage1.get("id") if isinstance(stage1, dict) else None
+
+            stage2 = await client.create_response(
+                model="o3-deep-research",
+                input=[
+                    {"role": "user", "content": [{"type": "input_text", "text": synthesis_instructions}]}
+                ],
+                previous_response_id=stage1_id_final,
+                background=False,  # synthesize now for deterministic completion
+                store=True,
+            )
+
+            # Merge content/citations: prefer stage2 text; union citations from both
+            try:
+                from .llm_client import normalize_responses_payload
+                n1 = normalize_responses_payload(stage1)
+                n2 = normalize_responses_payload(stage2)
+                merged = dict(stage2)
+                # Merge citations if stage2 has none or is sparse
+                c2 = n2.citations or []
+                seen = { (c.get("url"), c.get("title"), c.get("start_index"), c.get("end_index")) for c in c2 }
+                for c in n1.citations or []:
+                    key = (c.get("url"), c.get("title"), c.get("start_index"), c.get("end_index"))
+                    if key not in seen:
+                        c2.append(c)
+                        seen.add(key)
+                # Recompose a response-like dict for downstream processing
+                if isinstance(merged, dict):
+                    merged.setdefault("output", [])
+                    # Best effort: ensure output_text exists for extractor
+                    if n2.text:
+                        merged["output_text"] = n2.text
+                    # Attach merged citations via expected annotations container if missing
+                    if c2:
+                        merged["citations"] = c2
+                response = merged
+            except Exception:
+                # Fallback: use stage2 directly
+                response = stage2
+
+            # Build final result
             result = self._process_response(response, research_id, classification)
             
             # Calculate execution time
@@ -301,6 +371,9 @@ class DeepResearchService:
             
             # Update final progress
             if progress_tracker and research_id:
+                await progress_tracker.report_synthesis_completed(
+                    research_id, sections=1, citations=len(result.citations or [])
+                )
                 await progress_tracker.update_progress(
                     research_id, "Deep research completed", 95
                 )
@@ -484,12 +557,35 @@ General requirements:
     ) -> DeepResearchResult:
         """Process the raw response into a structured result"""
         # Extract content
-        content = self.client.extract_final_text(response)
-        citations = self.client.extract_citations(response)
-        tool_calls = self.client.extract_tool_calls(response)
-        
-        # Extract web search information
-        web_search_calls = self.client.extract_web_search_calls(response)
+        # Normalize via llm_client normalized model
+        normalized = normalize_responses_payload(response)
+        content = normalized.text
+        citations = [
+            Citation(
+                url=c.get("url"),
+                title=c.get("title"),
+                start_index=c.get("start_index"),
+                end_index=c.get("end_index"),
+            )
+            for c in normalized.citations
+        ]
+        # Fallback: if normalized extraction yields no citations but a top-level
+        # list is present (from chained merge), use it.
+        if not citations and isinstance(response, dict) and isinstance(response.get("citations"), list):
+            for c in response.get("citations", []):
+                try:
+                    citations.append(
+                        Citation(
+                            url=c.get("url"),
+                            title=c.get("title"),
+                            start_index=c.get("start_index"),
+                            end_index=c.get("end_index"),
+                        )
+                    )
+                except Exception:
+                    continue
+        tool_calls = normalized.tool_calls
+        web_search_calls = normalized.web_search_calls
         
         # Build paradigm analysis if classification available
         paradigm_analysis = None
@@ -508,7 +604,7 @@ General requirements:
         return DeepResearchResult(
             research_id=research_id or response.get("id", "unknown"),
             status=ResponseStatus(response.get("status", "completed")),
-            content=content,
+            content=content or None,
             citations=citations or [],
             tool_calls=tool_calls or [],
             web_search_calls=web_search_calls or [],
@@ -566,7 +662,7 @@ General requirements:
                 )
             
             # Check current status
-            response = await self.client.retrieve_response(response_id)
+            response = await responses_retrieve(response_id)
             status = ResponseStatus(response["status"])
             
             if status in [ResponseStatus.QUEUED, ResponseStatus.IN_PROGRESS]:
@@ -618,7 +714,7 @@ General requirements:
         
         while elapsed < timeout:
             try:
-                response = await self.client.retrieve_response(response_id)
+                response = await responses_retrieve(response_id)
                 status = ResponseStatus(response["status"])
                 
                 if status not in [ResponseStatus.QUEUED, ResponseStatus.IN_PROGRESS]:

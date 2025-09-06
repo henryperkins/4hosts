@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from fastapi import Request, HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from services.auth import get_current_user as auth_get_current_user
+from services.auth_service import get_current_user as auth_get_current_user
 from models.base import UserRole
 
 

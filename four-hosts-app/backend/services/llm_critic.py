@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from .llm_client import llm_client
 from .credibility import get_source_credibility
+from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,31 @@ CRITIC_SCHEMA = {
         "additionalProperties": True
     }
 }
+
+
+class CoverageCritiqueModel(BaseModel):
+    """Pydantic model to validate and coerce critic output."""
+    coverage_score: float = 0.5
+    missing_facets: List[str] = []
+    flagged_sources: List[str] = []
+    warnings: List[str] = []
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """Attempt to extract a JSON object from a possibly noisy LLM string."""
+    try:
+        # Fast path: exact JSON string
+        return json.loads(text)
+    except Exception:
+        pass
+    try:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start : end + 1])
+    except Exception:
+        return None
+    return None
 
 
 def _domain_from_url(url: str) -> Optional[str]:
@@ -117,11 +143,22 @@ async def llm_coverage_and_claims(
             max_tokens=800,
             temperature=0.2,
         )
+        # Robust parsing and validation
+        default_payload = {"coverage_score": 0.5, "missing_facets": [], "flagged_sources": [], "warnings": ["critic_parse_failed"]}
         if isinstance(raw, str):
             try:
-                data = json.loads(raw)
+                model = CoverageCritiqueModel.model_validate_json(raw)
+                data = model.model_dump()
             except Exception:
-                data = {"coverage_score": 0.5, "missing_facets": [], "flagged_sources": [], "warnings": ["critic_parse_failed"]}
+                try:
+                    obj = _extract_json_object(raw) or {}
+                    model = CoverageCritiqueModel.model_validate(obj)
+                    data = model.model_dump()
+                except ValidationError as ve:
+                    logger.debug("critic validation failed: %s", ve)
+                    data = default_payload
+                except Exception:
+                    data = default_payload
         else:
             data = {"coverage_score": 0.5, "missing_facets": [], "flagged_sources": [], "warnings": ["critic_non_string_output"]}
         # Clamp coverage

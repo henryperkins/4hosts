@@ -828,7 +828,7 @@ class ExportService:
 # --- FastAPI Integration ---
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from services.auth import get_current_user, TokenData
+from services.auth_service import get_current_user, TokenData
 
 
 def create_export_router(export_service: ExportService) -> APIRouter:
@@ -841,37 +841,42 @@ def create_export_router(export_service: ExportService) -> APIRouter:
         options: ExportOptions,
         current_user: TokenData = Depends(get_current_user),
     ):
-        """Export research results in specified format"""
-        # TODO: Fetch research data from database
-        research_data = {
+        """Export research results in specified format (authoritative path)."""
+        # Fetch research from the store and validate ownership
+        from services.research_store import research_store
+        from models.base import ResearchStatus
+        from services.auth_service import UserRole
+
+        research = await research_store.get(research_id)
+        if not research:
+            raise HTTPException(status_code=404, detail="Research not found")
+
+        if (
+            research.get("user_id") != str(current_user.user_id)
+            and current_user.role != UserRole.ADMIN
+        ):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        if research.get("status") != ResearchStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Research not completed")
+
+        final = research.get("results") or {}
+        export_payload = {
             "id": research_id,
-            "query": "Sample research query",
-            "paradigm": "maeve",
-            "depth": "standard",
-            "confidence_score": 0.85,
-            "sources_count": 127,
-            "summary": "This is a sample research summary...",
-            "answer": {
-                "sections": [
-                    {
-                        "title": "Strategic Overview",
-                        "content": "Sample strategic analysis content...",
-                    }
-                ],
-                "key_insights": ["Key insight 1", "Key insight 2"],
-            },
-            "sources": [
-                {
-                    "title": "Sample Source",
-                    "url": "https://example.com",
-                    "relevance_score": 0.9,
-                    "summary": "Source summary...",
-                }
-            ],
+            "query": research.get("query"),
+            "paradigm": ((final.get("paradigm_analysis") or {}).get("primary") or {}).get("paradigm", "unknown"),
+            "depth": (research.get("options") or {}).get("depth", "standard"),
+            "confidence_score": float(((final.get("paradigm_analysis") or {}).get("primary") or {}).get("confidence", 0.0) or 0.0),
+            "sources_count": len(final.get("sources") or []),
+            "summary": ((final.get("answer") or {}).get("summary") or ""),
+            "answer": final.get("answer") or {},
+            "sources": final.get("sources") or [],
+            "citations": (final.get("answer") or {}).get("citations") or [],
+            "metadata": final.get("metadata") or {},
         }
 
         try:
-            result = await export_service.export_research(research_data, options)
+            result = await export_service.export_research(export_payload, options)
 
             return Response(
                 content=result.data,

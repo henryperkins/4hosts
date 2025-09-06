@@ -1340,14 +1340,18 @@ async def export_research_result(
         result = await export_service.export_research(export_payload, options)
         from fastapi import Response
 
+        # Mark this legacy endpoint as deprecated; point to unified export router
+        headers = {
+            "Content-Disposition": f'attachment; filename="{result.filename}"',
+            "X-Export-Format": result.format,
+            "X-Export-Size": str(result.size_bytes),
+            "Deprecation": "true",
+            "Link": f"</v1/export/research/{research_id}>; rel=successor-version",
+        }
         return Response(
             content=result.data,
             media_type=result.content_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="{result.filename}"',
-                "X-Export-Format": result.format,
-                "X-Export-Size": str(result.size_bytes),
-            },
+            headers=headers,
         )
     except Exception as e:
         logger.error("Export failed: %s", e)

@@ -15,7 +15,7 @@ import logging
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from services.auth import UserRole, RATE_LIMITS, get_api_key_info, decode_token
+from services.auth_service import UserRole, RATE_LIMITS, get_api_key_info, decode_token
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -386,7 +386,7 @@ class RateLimitMiddleware:
         if auth_header and auth_header.startswith("Bearer "):
             try:
                 token = auth_header.split(" ")[1]
-                from services.auth import decode_token
+                from services.auth_service import decode_token
 
                 payload = await decode_token(token)
                 # Store token data in request state for role extraction

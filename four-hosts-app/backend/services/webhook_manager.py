@@ -435,7 +435,7 @@ class WebhookTester:
 # --- FastAPI Integration ---
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from services.auth import get_current_user, TokenData, require_role, UserRole
+from services.auth_service import get_current_user, TokenData, require_role, UserRole
 
 
 def create_webhook_router(webhook_manager: WebhookManager) -> APIRouter:
