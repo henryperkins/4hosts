@@ -1,5 +1,5 @@
 import React, { useReducer, useEffect, useCallback, useMemo } from 'react'
-import { Settings2, Users } from 'lucide-react'
+import { FiSettings, FiUsers } from 'react-icons/fi'
 import { useAuth } from '../hooks/useAuth'
 import type { ResearchOptions, Paradigm } from '../types'
 import { Button } from './ui/Button'
@@ -312,7 +312,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             onClick={toggleAdvanced}
             className="flex items-center gap-2 text-sm text-primary hover:text-primary/80 transition-colors"
           >
-            <Settings2 className={`h-4 w-4 transition-transform ${state.showAdvanced ? 'rotate-90' : ''}`} />
+            <FiSettings className={`h-4 w-4 transition-transform ${state.showAdvanced ? 'rotate-90' : ''}`} />
             {state.showAdvanced ? 'Hide' : 'Show'} Advanced Options
           </button>
         </div>
@@ -359,7 +359,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             disabled={!state.query.trim()}
             loading={isLoading}
             fullWidth
-            icon={Users}
+            icon={FiUsers}
             className="btn-primary"
           >
             {isLoading ? 'Researching...' : 'Ask the Four Hosts'}

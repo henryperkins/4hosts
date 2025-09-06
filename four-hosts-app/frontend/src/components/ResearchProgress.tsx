@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useLayoutEffect } from 'react'
-import { Clock, X, Search, Database, Brain, CheckCircle, Zap } from 'lucide-react'
+import { FiClock, FiX, FiSearch, FiDatabase, FiCpu, FiCheckCircle, FiZap } from 'react-icons/fi'
 import { format } from 'date-fns'
 import { Button } from './ui/Button'
 import { Card } from './ui/Card'
@@ -348,13 +348,13 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   // Define research phases
   // Map backend phase strings → icon/component label for timeline rendering
   const PHASE_ORDER: { key: string; label: string; icon: React.ReactNode }[] = [
-    { key: 'classification', label: 'Classification', icon: <Brain className="h-4 w-4" /> },
-    { key: 'context_engineering', label: 'Context Engineering', icon: <Zap className="h-4 w-4" /> },
-    { key: 'search', label: 'Search & Retrieval', icon: <Search className="h-4 w-4" /> },
-    { key: 'analysis', label: 'Analysis', icon: <Database className="h-4 w-4" /> },
-    { key: 'agentic_loop', label: 'Agentic Loop', icon: <Zap className="h-4 w-4" /> },
-    { key: 'synthesis', label: 'Synthesis', icon: <Brain className="h-4 w-4" /> },
-    { key: 'complete', label: 'Complete', icon: <CheckCircle className="h-4 w-4" /> }
+    { key: 'classification', label: 'Classification', icon: <FiCpu className="h-4 w-4" /> },
+    { key: 'context_engineering', label: 'Context Engineering', icon: <FiZap className="h-4 w-4" /> },
+    { key: 'search', label: 'Search & Retrieval', icon: <FiSearch className="h-4 w-4" /> },
+    { key: 'analysis', label: 'Analysis', icon: <FiDatabase className="h-4 w-4" /> },
+    { key: 'agentic_loop', label: 'Agentic Loop', icon: <FiZap className="h-4 w-4" /> },
+    { key: 'synthesis', label: 'Synthesis', icon: <FiCpu className="h-4 w-4" /> },
+    { key: 'complete', label: 'Complete', icon: <FiCheckCircle className="h-4 w-4" /> }
   ]
 
   const researchPhases: ResearchPhase[] = PHASE_ORDER.map((p, idx) => {
@@ -377,7 +377,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             <Button
               variant="danger"
               size="sm"
-              icon={X}
+              icon={FiX}
               loading={isCancelling}
               onClick={handleCancel}
               className="text-xs"
@@ -460,7 +460,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
                         phase.isActive ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 animate-pulse' : 
                         'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600'}
                     `}>
-                      {phase.isCompleted ? <CheckCircle className="h-4 w-4" /> : phase.icon}
+                      {phase.isCompleted ? <FiCheckCircle className="h-4 w-4" /> : phase.icon}
                     </div>
                     <span className={`text-xs font-medium ${phase.isActive ? 'text-text' : 'text-text-muted'}`}>
                       {phase.name}
@@ -545,13 +545,13 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               </div>
               {/* Icon indicators for different message types */}
               {update.message?.includes('Searching') && (
-                <Search className="h-4 w-4 text-blue-500 animate-pulse" />
+                <FiSearch className="h-4 w-4 text-blue-500 animate-pulse" />
               )}
               {update.message?.includes('credibility') && (
-                <CheckCircle className="h-4 w-4 text-green-500" />
+                <FiCheckCircle className="h-4 w-4 text-green-500" />
               )}
               {update.message?.includes('duplicate') && (
-                <Database className="h-4 w-4 text-yellow-500" />
+                <FiDatabase className="h-4 w-4 text-yellow-500" />
               )}
             </div>
           )
@@ -560,7 +560,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
 
       {updates.length === 0 && !isConnecting && (
         <div className="text-center py-8 animate-fade-in">
-          <Clock className="h-12 w-12 text-text-muted opacity-30 mx-auto mb-3" />
+          <FiClock className="h-12 w-12 text-text-muted opacity-30 mx-auto mb-3" />
           <p className="text-text-muted">
             Waiting for updates...
           </p>

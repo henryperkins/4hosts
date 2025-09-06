@@ -1,13 +1,13 @@
 import React from 'react'
 import { 
-  CheckCircle, 
-  XCircle, 
-  Clock, 
-  Loader, 
-  AlertCircle,
-  CircleDashed,
-  CircleX
-} from 'lucide-react'
+  FiCheckCircle, 
+  FiXCircle, 
+  FiClock, 
+  FiLoader, 
+  FiAlertCircle,
+  FiCircle,
+  FiX
+} from 'react-icons/fi'
 
 export type StatusType = 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'warning' | 'info'
 
@@ -38,49 +38,49 @@ export const StatusIcon: React.FC<StatusIconProps> = ({
 
   const statusConfig = {
     pending: {
-      icon: Clock,
+      icon: FiClock,
       color: 'text-gray-500',
       label: label || 'Pending',
       animation: ''
     },
     processing: {
-      icon: Loader,
+      icon: FiLoader,
       color: 'text-blue-500',
       label: label || 'Processing',
       animation: animated ? 'animate-spin' : ''
     },
     in_progress: {
-      icon: Loader,
+      icon: FiLoader,
       color: 'text-blue-500',
       label: label || 'In Progress',
       animation: animated ? 'animate-spin' : ''
     },
     completed: {
-      icon: CheckCircle,
+      icon: FiCheckCircle,
       color: 'text-green-500',
       label: label || 'Completed',
       animation: animated ? 'animate-scale-in' : ''
     },
     failed: {
-      icon: XCircle,
+      icon: FiXCircle,
       color: 'text-red-500',
       label: label || 'Failed',
       animation: animated ? 'animate-shake' : ''
     },
     cancelled: {
-      icon: CircleX,
+      icon: FiX,
       color: 'text-orange-500',
       label: label || 'Cancelled',
       animation: animated ? 'animate-scale-in' : ''
     },
     warning: {
-      icon: AlertCircle,
+      icon: FiAlertCircle,
       color: 'text-yellow-500',
       label: label || 'Warning',
       animation: animated ? 'animate-pulse' : ''
     },
     info: {
-      icon: CircleDashed,
+      icon: FiCircle,
       color: 'text-blue-400',
       label: label || 'Info',
       animation: ''

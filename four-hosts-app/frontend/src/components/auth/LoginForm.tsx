@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
-import { LogIn, Mail, Lock, Eye, EyeOff, Check, AlertCircle } from 'lucide-react'
+import { FiLogIn, FiMail, FiLock, FiEye, FiEyeOff, FiCheck, FiAlertCircle } from 'react-icons/fi'
 import { Button } from '../ui/Button'
 import { InputField } from '../ui/InputField'
 
@@ -104,7 +104,7 @@ export const LoginForm: React.FC = () => {
           {error && (
             <div className="rounded-md bg-error/10 p-4 animate-slide-up border border-error/20">
               <div className="flex items-center">
-                <AlertCircle className="h-5 w-5 text-error mr-2 shrink-0" />
+                <FiAlertCircle className="h-5 w-5 text-error mr-2 shrink-0" />
                 <p className="text-sm text-error">{error}</p>
               </div>
             </div>
@@ -112,7 +112,7 @@ export const LoginForm: React.FC = () => {
           {loginSuccess && (
             <div className="rounded-md bg-success/10 p-4 animate-slide-up border border-success/20">
               <div className="flex items-center">
-                <Check className="h-5 w-5 text-success mr-2 animate-fade-in" />
+                <FiCheck className="h-5 w-5 text-success mr-2 animate-fade-in" />
                 <p className="text-sm text-success">
                   Login successful! Redirecting...
                 </p>
@@ -126,7 +126,7 @@ export const LoginForm: React.FC = () => {
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none pl-3">
-                  <Mail className={`h-5 w-5 transition-colors ${
+                  <FiMail className={`h-5 w-5 transition-colors ${
                     usernameStatus === 'error' ? 'text-error' :
                     usernameStatus === 'success' ? 'text-success' :
                     'text-text-muted'
@@ -148,13 +148,13 @@ export const LoginForm: React.FC = () => {
               </div>
               {formTouched.username && username && !validateInput(username) && (
                 <p className="mt-1 text-sm text-error animate-slide-up flex items-center">
-                  <AlertCircle className="h-4 w-4 mr-1" />
+                  <FiAlertCircle className="h-4 w-4 mr-1" />
                   Please enter a valid email address
                 </p>
               )}
               {formTouched.username && username && validateInput(username) && (
                 <p className="mt-1 text-sm text-success animate-slide-up flex items-center">
-                  <Check className="h-4 w-4 mr-1" />
+                  <FiCheck className="h-4 w-4 mr-1" />
                   Valid email
                 </p>
               )}
@@ -165,7 +165,7 @@ export const LoginForm: React.FC = () => {
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none pl-3">
-                  <Lock className={`h-5 w-5 transition-colors ${
+                  <FiLock className={`h-5 w-5 transition-colors ${
                     passwordStatus === 'error' ? 'text-error' :
                     pwdIconOk ? 'text-success' :
                     'text-text-muted'
@@ -191,9 +191,9 @@ export const LoginForm: React.FC = () => {
                   aria-label={showPassword ? "Hide password" : "Show password"}
                 >
                   {showPassword ? (
-                    <EyeOff className="h-5 w-5 text-text-muted hover:text-text transition-colors duration-200" />
+                    <FiEyeOff className="h-5 w-5 text-text-muted hover:text-text transition-colors duration-200" />
                   ) : (
-                    <Eye className="h-5 w-5 text-text-muted hover:text-text transition-colors duration-200" />
+                    <FiEye className="h-5 w-5 text-text-muted hover:text-text transition-colors duration-200" />
                   )}
                 </button>
               </div>
@@ -201,19 +201,19 @@ export const LoginForm: React.FC = () => {
                 <div className="mt-1 space-y-1">
                   {password.length < 6 && (
                     <p className="text-sm text-error animate-slide-up flex items-center">
-                      <AlertCircle className="h-4 w-4 mr-1" />
+                      <FiAlertCircle className="h-4 w-4 mr-1" />
                       Password must be at least 6 characters
                     </p>
                   )}
                   {password.length >= 6 && password.length < 8 && (
                     <p className="text-sm text-text-subtle animate-slide-up flex items-center">
-                      <AlertCircle className="h-4 w-4 mr-1" />
+                      <FiAlertCircle className="h-4 w-4 mr-1" />
                       Consider using at least 8 characters
                     </p>
                   )}
                   {pwdRaw === 'strong' && (
                     <p className="text-sm text-success animate-slide-up flex items-center">
-                      <Check className="h-4 w-4 mr-1" />
+                      <FiCheck className="h-4 w-4 mr-1" />
                       Strong password
                     </p>
                   )}
@@ -229,7 +229,7 @@ export const LoginForm: React.FC = () => {
               disabled={!username || !password}
               loading={isLoading}
               fullWidth
-              icon={LogIn}
+              icon={FiLogIn}
             >
               {isLoading ? 'Signing in' : 'Sign in'}
             </Button>

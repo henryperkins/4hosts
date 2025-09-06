@@ -1,5 +1,5 @@
 import React from 'react'
-import { ExternalLink, Shield, AlertTriangle } from 'lucide-react'
+import { FiExternalLink, FiShield, FiAlertTriangle } from 'react-icons/fi'
 
 interface EvidenceQuote {
   id?: string
@@ -24,9 +24,9 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
 
   const credibilityIcon = (score?: number) => {
     if (typeof score !== 'number') return null
-    if (score >= 0.8) return <Shield className="h-3.5 w-3.5 text-green-600" />
-    if (score >= 0.6) return <AlertTriangle className="h-3.5 w-3.5 text-yellow-600" />
-    return <AlertTriangle className="h-3.5 w-3.5 text-orange-600" />
+    if (score >= 0.8) return <FiShield className="h-3.5 w-3.5 text-green-600" />
+    if (score >= 0.6) return <FiAlertTriangle className="h-3.5 w-3.5 text-yellow-600" />
+    return <FiAlertTriangle className="h-3.5 w-3.5 text-orange-600" />
   }
 
   return (
@@ -49,7 +49,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
               </div>
               {q.url && (
                 <a href={q.url} target="_blank" rel="noreferrer" className="inline-flex items-center text-xs text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap">
-                  Source <ExternalLink className="h-3.5 w-3.5 ml-1" />
+                  Source <FiExternalLink className="h-3.5 w-3.5 ml-1" />
                 </a>
               )}
             </div>

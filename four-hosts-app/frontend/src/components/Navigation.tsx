@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { Home, History, User, BarChart3, Menu, X } from 'lucide-react'
+import { FiHome, FiClock, FiUser, FiBarChart2, FiMenu, FiX } from 'react-icons/fi'
 import { ToggleSwitch } from './ui/ToggleSwitch'
 import { Button } from './ui/Button'
 import { useAuth } from '../hooks/useAuth'
@@ -26,9 +26,9 @@ export const Navigation = () => {
 
   // Paradigm-themed navigation items
   const navItems = [
-    { path: '/', icon: Home, label: 'Research', paradigm: 'dolores' },
-    { path: '/history', icon: History, label: 'History', paradigm: 'bernard' },
-    { path: '/metrics', icon: BarChart3, label: 'Metrics', paradigm: 'teddy' },
+    { path: '/', icon: FiHome, label: 'Research', paradigm: 'dolores' },
+    { path: '/history', icon: FiClock, label: 'History', paradigm: 'bernard' },
+    { path: '/metrics', icon: FiBarChart2, label: 'Metrics', paradigm: 'teddy' },
   ]
 
   const getParadigmHoverClass = (paradigm?: string) => {
@@ -104,7 +104,7 @@ export const Navigation = () => {
               }`}
               aria-current={isActive('/profile') ? 'page' : undefined}
             >
-              <User className="h-4 w-4 transition-transform duration-200 hover:scale-110" />
+              <FiUser className="h-4 w-4 transition-transform duration-200 hover:scale-110" />
               <span>Profile</span>
             </Link>
 
@@ -112,7 +112,7 @@ export const Navigation = () => {
             <Button
               variant="ghost"
               size="sm"
-              icon={mobileMenuOpen ? X : Menu}
+              icon={mobileMenuOpen ? FiX : FiMenu}
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               className="md:hidden"
               aria-label="Toggle menu"

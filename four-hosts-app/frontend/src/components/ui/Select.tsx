@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, forwardRef, useId } from 'react'
-import { ChevronDown, Check } from 'lucide-react'
+import { FiChevronDown, FiCheck } from 'react-icons/fi'
 
 export interface SelectOption {
   value: string
@@ -141,7 +141,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
             <span className={selectedOption ? 'text-text' : 'text-text-muted'}>
               {selectedOption ? selectedOption.label : placeholder}
             </span>
-            <ChevronDown 
+            <FiChevronDown 
               className={`
                 h-4 w-4 text-text-muted transition-transform duration-200
                 ${isOpen ? 'rotate-180' : ''}
@@ -197,7 +197,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
               >
                 <span>{option.label}</span>
                 {option.value === value && (
-                  <Check className="h-4 w-4" aria-hidden="true" />
+                  <FiCheck className="h-4 w-4" aria-hidden="true" />
                 )}
               </li>
             ))}

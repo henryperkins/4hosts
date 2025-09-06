@@ -1,11 +1,11 @@
 import { forwardRef } from 'react'
 import type { ButtonHTMLAttributes } from 'react'
-import type { LucideIcon } from 'lucide-react'
+import type { IconType } from 'react-icons'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'success' | 'danger' | 'ghost'
   size?: 'sm' | 'md' | 'lg'
-  icon?: LucideIcon
+  icon?: IconType
   iconPosition?: 'left' | 'right'
   loading?: boolean
   fullWidth?: boolean

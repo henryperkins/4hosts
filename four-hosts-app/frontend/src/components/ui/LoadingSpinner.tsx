@@ -1,5 +1,5 @@
 import React from 'react'
-import { Loader2 } from 'lucide-react'
+import { FiLoader } from 'react-icons/fi'
 
 interface LoadingSpinnerProps {
   size?: 'sm' | 'md' | 'lg' | 'xl'
@@ -49,7 +49,7 @@ export const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
         return <RingSpinner size={size} />
       default:
         return (
-          <Loader2 
+          <FiLoader 
             className={`${sizeClasses[size]} animate-spin`}
             aria-hidden="true"
           />

@@ -1,18 +1,18 @@
 import React, { useState } from 'react'
 import { 
-  AlertCircle, 
-  CheckCircle, 
-  Info, 
-  XCircle, 
-  X,
-  type LucideIcon 
-} from 'lucide-react'
+  FiAlertCircle, 
+  FiCheckCircle, 
+  FiInfo, 
+  FiXCircle, 
+  FiX 
+} from 'react-icons/fi'
+import type { IconType } from 'react-icons'
 
 interface AlertProps {
   variant: 'info' | 'success' | 'warning' | 'error'
   title?: string
   children: React.ReactNode
-  icon?: LucideIcon | false
+  icon?: IconType | false
   dismissible?: boolean
   onDismiss?: () => void
   className?: string
@@ -37,28 +37,28 @@ export const Alert: React.FC<AlertProps> = ({
       icon: 'text-blue-600 dark:text-blue-400',
       title: 'text-blue-800 dark:text-blue-200',
       content: 'text-blue-700 dark:text-blue-300',
-      defaultIcon: Info
+      defaultIcon: FiInfo
     },
     success: {
       container: 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800',
       icon: 'text-green-600 dark:text-green-400',
       title: 'text-green-800 dark:text-green-200',
       content: 'text-green-700 dark:text-green-300',
-      defaultIcon: CheckCircle
+      defaultIcon: FiCheckCircle
     },
     warning: {
       container: 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800',
       icon: 'text-yellow-600 dark:text-yellow-400',
       title: 'text-yellow-800 dark:text-yellow-200',
       content: 'text-yellow-700 dark:text-yellow-300',
-      defaultIcon: AlertCircle
+      defaultIcon: FiAlertCircle
     },
     error: {
       container: 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800',
       icon: 'text-red-600 dark:text-red-400',
       title: 'text-red-800 dark:text-red-200',
       content: 'text-red-700 dark:text-red-300',
-      defaultIcon: XCircle
+      defaultIcon: FiXCircle
     }
   }
 
@@ -111,7 +111,7 @@ export const Alert: React.FC<AlertProps> = ({
               `}
               aria-label="Dismiss alert"
             >
-              <X className="h-4 w-4" />
+              <FiX className="h-4 w-4" />
             </button>
           </div>
         )}
@@ -172,7 +172,7 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
       >
         <div className="flex items-start gap-4">
           <div className={`p-2 rounded-full bg-surface-muted ${variantStyles[variant]}`}>
-            <AlertCircle className="h-6 w-6" />
+            <FiAlertCircle className="h-6 w-6" />
           </div>
           
           <div className="flex-1">

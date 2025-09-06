@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { X } from 'lucide-react'
+import { FiX } from 'react-icons/fi'
 import { Button } from './Button'
 
 interface DialogProps {
@@ -170,7 +170,7 @@ export const Dialog: React.FC<DialogProps> = ({
                 className="ml-auto -mr-2 -mt-2 p-2 text-text-muted hover:text-text rounded-lg hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 touch-target active:scale-95"
                 aria-label="Close dialog"
               >
-                <X className="h-5 w-5" />
+                <FiX className="h-5 w-5" />
               </button>
             )}
           </div>

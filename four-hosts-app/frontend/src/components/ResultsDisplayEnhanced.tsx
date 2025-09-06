@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Download, ExternalLink, Shield, AlertTriangle, ChevronDown, ChevronUp, Zap, GitMerge, Loader2, CheckCircle, AlertCircle, Clock, Filter } from 'lucide-react'
+import { FiDownload, FiExternalLink, FiShield, FiAlertTriangle, FiChevronDown, FiChevronUp, FiZap, FiGitMerge, FiLoader, FiCheckCircle, FiAlertCircle, FiClock, FiFilter } from 'react-icons/fi'
 import toast from 'react-hot-toast'
 import api from '../services/api'
 import type { ResearchResult, AnswerSection } from '../types'
@@ -145,7 +145,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     return (
       <div className="mt-8 animate-fade-in">
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center transition-colors duration-200">
-          <AlertCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
+          <FiAlertCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
           <h3 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
             Research Incomplete
           </h3>
@@ -195,14 +195,14 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
       toast.success(
         <div className="flex items-center gap-2">
-          <CheckCircle className="h-4 w-4" />
+          <FiCheckCircle className="h-4 w-4" />
           <span>Exported as {format.toUpperCase()}</span>
         </div>
       )
     } catch {
       toast.error(
         <div className="flex items-center gap-2">
-          <AlertCircle className="h-4 w-4" />
+          <FiAlertCircle className="h-4 w-4" />
           <span>Export failed</span>
         </div>
       )
@@ -220,19 +220,19 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   }
 
   const getCredibilityIcon = (score: number) => {
-    if (score >= 0.8) return <Shield className="h-4 w-4" aria-label="High credibility" />
-    if (score >= 0.4) return <AlertTriangle className="h-4 w-4" aria-label="Medium credibility" />
-    return <AlertTriangle className="h-4 w-4" aria-label="Low credibility" />
+    if (score >= 0.8) return <FiShield className="h-4 w-4" aria-label="High credibility" />
+    if (score >= 0.4) return <FiAlertTriangle className="h-4 w-4" aria-label="Medium credibility" />
+    return <FiAlertTriangle className="h-4 w-4" aria-label="Low credibility" />
   }
 
   const getPriorityIcon = (priority: string) => {
     switch (priority) {
       case 'high':
-        return <AlertCircle className="h-4 w-4 text-red-500 dark:text-red-400" aria-label="High priority" />
+        return <FiAlertCircle className="h-4 w-4 text-red-500 dark:text-red-400" aria-label="High priority" />
       case 'medium':
-        return <Clock className="h-4 w-4 text-yellow-500 dark:text-yellow-400" aria-label="Medium priority" />
+        return <FiClock className="h-4 w-4 text-yellow-500 dark:text-yellow-400" aria-label="Medium priority" />
       default:
-        return <CheckCircle className="h-4 w-4 text-green-500 dark:text-green-400" aria-label="Low priority" />
+        return <FiCheckCircle className="h-4 w-4 text-green-500 dark:text-green-400" aria-label="Low priority" />
     }
   }
 
@@ -289,9 +289,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 aria-haspopup="true"
               >
                 {isExporting ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <FiLoader className="h-5 w-5 animate-spin" />
                 ) : (
-                  <Download className="h-5 w-5" />
+                  <FiDownload className="h-5 w-5" />
                 )}
               </button>
 
@@ -319,7 +319,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                         disabled={isExporting}
                       >
                         {exportFormat === fmt && isExporting ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <FiLoader className="h-4 w-4 animate-spin" />
                         ) : null}
                         Export as {fmt.toUpperCase()}
                       </button>
@@ -471,7 +471,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         {['deep', 'deep_research'].includes(String(results.metadata?.research_depth || '')) && (
           <div className="mt-4 p-4 bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 rounded-lg border border-purple-200 dark:border-purple-800 transition-colors duration-200">
             <div className="flex items-center gap-2">
-              <Zap className="h-5 w-5 text-purple-600 dark:text-purple-400" />
+              <FiZap className="h-5 w-5 text-purple-600 dark:text-purple-400" />
               <h4 className="text-sm font-semibold text-purple-900 dark:text-purple-100">Advanced Research Depth</h4>
               <span className="ml-auto text-xs font-bold bg-purple-600 text-white px-2 py-1 rounded">
                 {String(results.metadata.research_depth)}
@@ -673,14 +673,14 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             aria-expanded={traceOpen}
           >
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Agentic research trace</h3>
-            {traceOpen ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+            {traceOpen ? <FiChevronUp className="h-5 w-5" /> : <FiChevronDown className="h-5 w-5" />}
           </button>
           {traceOpen && (
             <div className="mt-3 space-y-2 text-sm text-gray-700 dark:text-gray-300">
               {results.metadata.agent_trace.map((entry: any, idx: number) => (
                 <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded p-3">
                   <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
-                    <Clock className="h-4 w-4" />
+                    <FiClock className="h-4 w-4" />
                     <span className="uppercase tracking-wide text-xs font-semibold">{String(entry.step || 'revise')}</span>
                     {typeof entry.iteration === 'number' && (
                       <span className="text-xs">iter {entry.iteration}</span>
@@ -725,7 +725,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Mesh network analysis</h3>
             {integrated_synthesis.synergies.length > 0 && (
                 <div className="mb-4">
-                    <h4 className="font-semibold text-gray-800 dark:text-gray-200 flex items-center"><GitMerge className="h-5 w-5 mr-2 text-green-500 dark:text-green-400" />Synergies</h4>
+                    <h4 className="font-semibold text-gray-800 dark:text-gray-200 flex items-center"><FiGitMerge className="h-5 w-5 mr-2 text-green-500 dark:text-green-400" />Synergies</h4>
                     <ul className="list-disc list-inside mt-2 text-gray-700 dark:text-gray-300">
                         {integrated_synthesis.synergies.map((synergy, i) => <li key={i}>{synergy}</li>)}
                     </ul>
@@ -733,7 +733,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             )}
             {integrated_synthesis.conflicts_identified.length > 0 && (
                 <div>
-                    <h4 className="font-semibold text-gray-800 dark:text-gray-200 flex items-center"><Zap className="h-5 w-5 mr-2 text-red-500 dark:text-red-400" />Conflicts</h4>
+                    <h4 className="font-semibold text-gray-800 dark:text-gray-200 flex items-center"><FiZap className="h-5 w-5 mr-2 text-red-500 dark:text-red-400" />Conflicts</h4>
                     <ul className="list-disc list-inside mt-2 text-gray-700 dark:text-gray-300">
                         {integrated_synthesis.conflicts_identified.map((conflict, i) => <li key={i}>{conflict.description}</li>)}
                     </ul>
@@ -762,9 +762,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 </span>
               </div>
               {expandedSections.has(index) ? (
-                <ChevronUp className="h-5 w-5 text-gray-400 transition-transform duration-200" />
+                <FiChevronUp className="h-5 w-5 text-gray-400 transition-transform duration-200" />
               ) : (
-                <ChevronDown className="h-5 w-5 text-gray-400 transition-transform duration-200" />
+                <FiChevronDown className="h-5 w-5 text-gray-400 transition-transform duration-200" />
               )}
             </button>
 
@@ -815,7 +815,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Research sources</h3>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
-                <Filter className="h-4 w-4 text-gray-500 dark:text-gray-400" />
+                <FiFilter className="h-4 w-4 text-gray-500 dark:text-gray-400" />
                 <div className="flex flex-wrap gap-2">
                   {['all', ...Object.keys((results as any)?.metadata?.category_distribution || {})].map((cat) => (
                     <button
@@ -911,7 +911,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                             className="ml-auto inline-flex items-center gap-1 px-2 py-1 text-blue-700 dark:text-blue-300 hover:underline"
                             aria-label="Open source"
                           >
-                            <ExternalLink className="h-3.5 w-3.5" /> Open source
+                            <FiExternalLink className="h-3.5 w-3.5" /> Open source
                           </a>
                         </div>
                       </div>
@@ -1012,7 +1012,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   className="ml-4 p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
                   aria-label="Open citation in new tab"
                 >
-                  <ExternalLink className="h-4 w-4" />
+                  <FiExternalLink className="h-4 w-4" />
                 </a>
               </div>
             </div>

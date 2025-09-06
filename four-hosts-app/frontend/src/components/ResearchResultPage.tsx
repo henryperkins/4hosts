@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { AlertCircle } from 'lucide-react'
+import { FiAlertCircle } from 'react-icons/fi'
 import { LoadingSpinner } from './ui/LoadingSpinner'
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from './ui/Card'
 import { Button } from './ui/Button'
@@ -80,7 +80,7 @@ export const ResearchResultPage = () => {
         <Card className="text-center">
           <CardHeader>
             <div className="flex justify-center mb-4">
-              <AlertCircle className="h-16 w-16 text-red-500" />
+              <FiAlertCircle className="h-16 w-16 text-red-500" />
             </div>
             <CardTitle>Research Unavailable</CardTitle>
           </CardHeader>

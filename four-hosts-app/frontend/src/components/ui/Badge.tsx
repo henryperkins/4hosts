@@ -1,12 +1,12 @@
 import React from 'react'
-import type { LucideIcon } from 'lucide-react'
+import type { IconType } from 'react-icons'
 
 interface BadgeProps {
   children: React.ReactNode
   variant?: 'default' | 'success' | 'warning' | 'error' | 'info' | 'paradigm'
   paradigm?: 'dolores' | 'teddy' | 'bernard' | 'maeve'
   size?: 'sm' | 'md' | 'lg'
-  icon?: LucideIcon
+  icon?: IconType
   onRemove?: () => void
   className?: string
 }

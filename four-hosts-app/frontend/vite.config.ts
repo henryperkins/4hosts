@@ -1,11 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
+    tailwindcss(),
   ],
 
   // Resolve configuration
@@ -101,7 +103,7 @@ export default defineConfig({
         manualChunks: {
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
           'chart-vendor': ['recharts'],
-          'ui-vendor': ['lucide-react', 'react-hot-toast', 'date-fns'],
+          'ui-vendor': ['react-icons', 'react-hot-toast', 'date-fns'],
         },
       },
     },
@@ -114,6 +116,6 @@ export default defineConfig({
 
   // Optimize dependencies
   optimizeDeps: {
-    include: ['react', 'react-dom', 'react-router-dom', 'recharts', 'lucide-react'],
+    include: ['react', 'react-dom', 'react-router-dom', 'recharts', 'react-icons'],
   },
 })

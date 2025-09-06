@@ -1,6 +1,6 @@
 import { forwardRef } from 'react'
 import type { HTMLAttributes } from 'react'
-import type { LucideIcon } from 'lucide-react'
+import type { IconType } from 'react-icons'
 
 interface CardProps extends HTMLAttributes<HTMLDivElement> {
   variant?: 'default' | 'interactive' | 'paradigm'
@@ -44,7 +44,7 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(
 Card.displayName = 'Card'
 
 interface CardHeaderProps extends HTMLAttributes<HTMLDivElement> {
-  icon?: LucideIcon
+  icon?: IconType
 }
 
 export const CardHeader = forwardRef<HTMLDivElement, CardHeaderProps>(
@@ -121,7 +121,7 @@ CardFooter.displayName = 'CardFooter'
 interface StatCardProps extends HTMLAttributes<HTMLDivElement> {
   label: string
   value: string | number
-  icon?: LucideIcon
+  icon?: IconType
   trend?: {
     value: number
     label: string

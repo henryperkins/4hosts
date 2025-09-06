@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts'
-import { Activity, TrendingUp, Users, Clock, Database, AlertCircle, Eye, MousePointer, Target, Zap } from 'lucide-react'
+import { FiActivity, FiTrendingUp, FiUsers, FiClock, FiDatabase, FiAlertCircle, FiEye, FiMousePointer, FiTarget, FiZap } from 'react-icons/fi'
 import api from '../services/api'
 import type { MetricsData } from '../types/api-types'
 import { getParadigmHexColor } from '../constants/paradigm'
@@ -45,7 +45,7 @@ const MetricCard = React.memo<{
     </div>
     {trend !== undefined && (
       <div className="mt-4 flex items-center">
-        <TrendingUp className={`h-4 w-4 ${trend > 0 ? 'text-green-500' : 'text-red-500'}`} />
+        <FiTrendingUp className={`h-4 w-4 ${trend > 0 ? 'text-green-500' : 'text-red-500'}`} />
         <span className={`text-sm ml-1 ${trend > 0 ? 'text-green-500' : 'text-red-500'}`}>
           {Math.abs(trend)}%
         </span>
@@ -152,7 +152,7 @@ export const MetricsDashboard: React.FC = () => {
     return (
       <div className="bg-white rounded-lg shadow-md p-8">
         <div className="text-center">
-          <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+          <FiAlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
           <p className="text-red-600">{error || 'No data available'}</p>
         </div>
       </div>
@@ -163,21 +163,21 @@ export const MetricsDashboard: React.FC = () => {
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
-          icon={Activity}
+          icon={FiActivity}
           title="Total Queries"
           value={stats?.total_queries || 0}
           subtitle="All time"
           trend={12}
         />
         <MetricCard
-          icon={Users}
+          icon={FiUsers}
           title="Active Research"
           value={stats?.active_research || 0}
           subtitle="Currently processing"
           color="text-green-600"
         />
         <MetricCard
-          icon={Clock}
+          icon={FiClock}
           title="Avg Processing Time"
           value={`${(stats?.average_processing_time || 0).toFixed(1)}s`}
           subtitle="Per query"
@@ -185,7 +185,7 @@ export const MetricsDashboard: React.FC = () => {
           color="text-purple-600"
         />
         <MetricCard
-          icon={Database}
+          icon={FiDatabase}
           title="Cache Hit Rate"
           value={`${((stats?.cache_hit_rate || 0) * 100).toFixed(1)}%`}
           subtitle="Performance boost"
@@ -206,7 +206,7 @@ export const MetricsDashboard: React.FC = () => {
                 cx="50%"
                 cy="50%"
                 labelLine={false}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
                 outerRadius={80}
                 fill="#8884d8"
                 dataKey="value"
@@ -241,15 +241,15 @@ export const MetricsDashboard: React.FC = () => {
               <h4 className="text-sm font-medium text-gray-700 mb-2">System Insights</h4>
               <ul className="space-y-2 text-sm text-gray-600">
                 <li className="flex items-center gap-2">
-                  <TrendingUp className="h-4 w-4 text-green-500" />
+                  <FiTrendingUp className="h-4 w-4 text-green-500" />
                   {stats.total_queries > 1000 ? 'High usage detected' : 'Normal usage patterns'}
                 </li>
                 <li className="flex items-center gap-2">
-                  <Activity className="h-4 w-4 text-blue-500" />
+                  <FiActivity className="h-4 w-4 text-blue-500" />
                   {stats.active_research > 10 ? 'System under load' : 'System running smoothly'}
                 </li>
                 <li className="flex items-center gap-2">
-                  <Clock className="h-4 w-4 text-purple-500" />
+                  <FiClock className="h-4 w-4 text-purple-500" />
                   {stats.average_processing_time < 30 ? 'Fast response times' : 'Consider optimization'}
                 </li>
               </ul>
@@ -320,7 +320,7 @@ export const MetricsDashboard: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Zap className="h-4 w-4 text-green-500" />
+                  <FiZap className="h-4 w-4 text-green-500" />
                   <span className="text-sm text-green-600">
                     {((1 - abTestMetrics.ideaBrowserView.avgTimeToInsight / abTestMetrics.standardView.avgTimeToInsight) * 100).toFixed(0)}% faster
                   </span>
@@ -349,7 +349,7 @@ export const MetricsDashboard: React.FC = () => {
 
               <div className="pt-4 border-t">
                 <div className="flex items-center gap-2 mb-2">
-                  <Target className="h-4 w-4 text-green-500" />
+                  <FiTarget className="h-4 w-4 text-green-500" />
                   <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Overall Improvement</span>
                 </div>
                 <p className="text-2xl font-bold text-green-600">
@@ -390,7 +390,7 @@ export const MetricsDashboard: React.FC = () => {
 
             <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
               <div className="flex items-start gap-2">
-                <Eye className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                <FiEye className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium text-blue-900 dark:text-blue-100">Migration Readiness</p>
                   <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">
@@ -407,7 +407,7 @@ export const MetricsDashboard: React.FC = () => {
         <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <MousePointer className="h-5 w-5 text-gray-600" />
+              <FiMousePointer className="h-5 w-5 text-gray-600" />
               <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Test Status</span>
             </div>
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">

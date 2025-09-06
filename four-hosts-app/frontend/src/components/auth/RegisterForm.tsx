@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
-import { UserPlus } from 'lucide-react'
+import { FiUserPlus } from 'react-icons/fi'
 import { Button } from '../ui/Button'
 import { InputField } from '../ui/InputField'
 
@@ -172,7 +172,7 @@ export const RegisterForm: React.FC = () => {
               type="submit"
               loading={isLoading}
               fullWidth
-              icon={UserPlus}
+              icon={FiUserPlus}
             >
               {isLoading ? 'Creating account...' : 'Create account'}
             </Button>

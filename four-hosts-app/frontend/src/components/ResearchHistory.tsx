@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Clock, Search, TrendingUp, Eye, Calendar, ChevronRight, X } from 'lucide-react'
+import { FiClock, FiSearch, FiTrendingUp, FiEye, FiCalendar, FiChevronRight, FiX } from 'react-icons/fi'
 import { format, formatDistanceToNow } from 'date-fns'
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
@@ -120,7 +120,7 @@ export const ResearchHistory: React.FC = () => {
   if (history.length === 0) {
     return (
       <Card className="p-12 text-center animate-fade-in">
-        <Search className="h-16 w-16 text-text-muted mx-auto mb-4 animate-pulse" />
+        <FiSearch className="h-16 w-16 text-text-muted mx-auto mb-4 animate-pulse" />
         <h3 className="text-xl font-semibold text-text mb-2">No research history yet</h3>
         <p className="text-text-muted mb-6">Start exploring and your research queries will appear here</p>
         <Button
@@ -137,7 +137,7 @@ export const ResearchHistory: React.FC = () => {
     <Card className="p-6 animate-fade-in">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-text flex items-center gap-2">
-          <Clock className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+          <FiClock className="h-6 w-6 text-blue-600 dark:text-blue-400" />
           Research History
         </h2>
         <span className="text-sm text-text-muted">
@@ -176,12 +176,12 @@ export const ResearchHistory: React.FC = () => {
 
                   <div className="flex items-center gap-4 text-sm text-text-muted">
                     <span className="flex items-center gap-1">
-                      <Calendar className="h-3 w-3" />
+                      <FiCalendar className="h-3 w-3" />
                       {format(new Date(item.created_at), 'MMM d, yyyy')}
                     </span>
 
                     <span className="flex items-center gap-1">
-                      <Clock className="h-3 w-3" />
+                      <FiClock className="h-3 w-3" />
                       {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
                     </span>
 
@@ -194,7 +194,7 @@ export const ResearchHistory: React.FC = () => {
 
                     {item.processing_time && (
                       <span className="flex items-center gap-1">
-                        <TrendingUp className="h-3 w-3" />
+                        <FiTrendingUp className="h-3 w-3" />
                         {item.processing_time}s
                       </span>
                     )}
@@ -229,7 +229,7 @@ export const ResearchHistory: React.FC = () => {
                     <Button
                       variant="danger"
                       size="sm"
-                      icon={X}
+                      icon={FiX}
                       loading={cancellingItems.has(item.research_id)}
                       onClick={(e) => handleCancelResearch(item.research_id, e)}
                       className="text-xs mr-2"
@@ -238,8 +238,8 @@ export const ResearchHistory: React.FC = () => {
                       {cancellingItems.has(item.research_id) ? 'Cancelling...' : 'Cancel'}
                     </Button>
                   )}
-                  <Eye className="h-5 w-5 text-text-muted" />
-                  <ChevronRight className="h-5 w-5 text-text-muted" />
+                  <FiEye className="h-5 w-5 text-text-muted" />
+                  <FiChevronRight className="h-5 w-5 text-text-muted" />
                 </div>
               </div>
 
@@ -268,7 +268,7 @@ export const ResearchHistory: React.FC = () => {
             loading={isLoading}
             disabled={isLoading}
             variant="primary"
-            icon={Clock}
+            icon={FiClock}
             className="mx-auto"
           >
             {isLoading ? 'Loading...' : 'Load More History'}

@@ -88,6 +88,8 @@ services:
 
       # Cache connection (application gracefully handles Redis unavailability)
       REDIS_URL: redis://redis:6379
+      # JWT signing key (development default; override via .env in real use)
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-dev-token-change-me}
 
     # NOTE: API keys for external services should be set via .env file or secrets
     # Required keys: AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, BRAVE_API_KEY, etc.

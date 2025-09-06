@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { User, Settings, Save, LogOut, Moon, Sun, Database, Brain } from 'lucide-react'
+import { FiUser, FiSettings, FiSave, FiLogOut, FiMoon, FiSun, FiDatabase, FiCpu } from 'react-icons/fi'
 import { useAuth } from '../hooks/useAuth'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
@@ -47,7 +47,7 @@ export const UserProfile: React.FC = () => {
           onClick={handleLogout}
           className="flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
         >
-          <LogOut className="h-4 w-4" />
+          <FiLogOut className="h-4 w-4" />
           Logout
         </button>
       </div>
@@ -56,7 +56,7 @@ export const UserProfile: React.FC = () => {
       <div className="mb-8 p-4 bg-gray-50 rounded-lg">
         <div className="flex items-center gap-4">
           <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-            <User className="h-8 w-8 text-blue-600" />
+            <FiUser className="h-8 w-8 text-blue-600" />
           </div>
           <div>
             <h3 className="font-semibold text-lg text-gray-900">{user.username}</h3>
@@ -98,7 +98,7 @@ export const UserProfile: React.FC = () => {
               onClick={() => setIsEditing(true)}
               className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
             >
-              <Settings className="h-4 w-4" />
+              <FiSettings className="h-4 w-4" />
               Edit
             </button>
           ) : (
@@ -114,7 +114,7 @@ export const UserProfile: React.FC = () => {
                 disabled={isSaving}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
               >
-                <Save className="h-4 w-4" />
+                <FiSave className="h-4 w-4" />
                 {isSaving ? 'Saving...' : 'Save'}
               </button>
             </div>
@@ -185,7 +185,7 @@ export const UserProfile: React.FC = () => {
         <div className="space-y-3">
           <label className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
             <div className="flex items-center gap-3">
-              <Database className="h-5 w-5 text-gray-600" />
+              <FiDatabase className="h-5 w-5 text-gray-600" />
               <div>
                 <p className="font-medium text-gray-900">Enable Real Search</p>
                 <p className="text-sm text-gray-600">Use live search APIs for current data</p>
@@ -202,7 +202,7 @@ export const UserProfile: React.FC = () => {
 
           <label className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
             <div className="flex items-center gap-3">
-              <Brain className="h-5 w-5 text-gray-600" />
+              <FiCpu className="h-5 w-5 text-gray-600" />
               <div>
                 <p className="font-medium text-gray-900">Enable AI Classification</p>
                 <p className="text-sm text-gray-600">Use advanced AI for paradigm detection</p>
@@ -220,9 +220,9 @@ export const UserProfile: React.FC = () => {
           <label className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
             <div className="flex items-center gap-3">
               {preferences.theme === 'dark' ? (
-                <Moon className="h-5 w-5 text-gray-600" />
+                <FiMoon className="h-5 w-5 text-gray-600" />
               ) : (
-                <Sun className="h-5 w-5 text-gray-600" />
+                <FiSun className="h-5 w-5 text-gray-600" />
               )}
               <div>
                 <p className="font-medium text-gray-900">Theme</p>

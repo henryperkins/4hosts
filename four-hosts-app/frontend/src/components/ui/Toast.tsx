@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { CheckCircle, XCircle, AlertCircle, X } from 'lucide-react'
+import { FiCheckCircle, FiXCircle, FiAlertCircle, FiX } from 'react-icons/fi'
 import type { Toast } from '../../types/toast'
 
 interface ToastNotificationProps {
@@ -33,9 +33,9 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onC
   }, [toast.duration, handleClose])
 
   const icons = {
-    success: <CheckCircle className="h-5 w-5 text-green-400" />,
-    error: <XCircle className="h-5 w-5 text-red-400" />,
-    info: <AlertCircle className="h-5 w-5 text-blue-400" />
+    success: <FiCheckCircle className="h-5 w-5 text-green-400" />,
+    error: <FiXCircle className="h-5 w-5 text-red-400" />,
+    info: <FiAlertCircle className="h-5 w-5 text-blue-400" />
   }
 
   const styles = {
@@ -69,7 +69,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onC
         onClick={handleClose}
         className="ml-4 shrink-0 inline-flex text-gray-400 hover:text-gray-600 focus:outline-none transition-colors duration-200"
       >
-        <X className="h-4 w-4" />
+        <FiX className="h-4 w-4" />
       </button>
     </div>
   )
