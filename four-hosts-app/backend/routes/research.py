@@ -11,8 +11,6 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from models.research import (
     ResearchQuery,
     ResearchOptions,
-    ResearchResult,
-    ParadigmOverrideRequest,
     ResearchDeepQuery,
 )
 from models.base import (
@@ -25,7 +23,6 @@ from models.base import (
 from core.dependencies import get_current_user
 from services.research_store import research_store
 from services.websocket_service import (
-    ResearchProgressTracker,
     progress_tracker as _ws_progress_tracker,
     WSEventType,
     WSMessage,
@@ -39,11 +36,9 @@ from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT
 from services.result_adapter import ResultAdapter
 import html as _html
 import re as _re
-from models.base import HOST_TO_MAIN_PARADIGM, Paradigm
-from dataclasses import asdict
-from services.webhook_manager import WebhookManager, WebhookEvent
+from models.base import Paradigm
+from services.webhook_manager import WebhookEvent
 from services.export_service import ExportOptions, ExportFormat, ExportService
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -180,15 +175,15 @@ async def execute_real_research(
         max_sources = int(getattr(research, "options", ResearchOptions()).max_sources)
         user_ctx = _UserCtxShim(user_role_name, max_sources)
 
-            orch_resp = await research_orchestrator.execute_research(
-                classification=cls,
-                context_engineered=ce,  # legacy shape is supported by the orchestrator
-                user_context=user_ctx,
-                progress_callback=progress_tracker,
-                research_id=research_id,
-                enable_deep_research=(research.options.depth == ResearchDepth.DEEP_RESEARCH),
-                deep_research_mode=None,
-                synthesize_answer=True,
+        orch_resp = await research_orchestrator.execute_research(
+            classification=cls,
+            context_engineered=ce,  # legacy shape is supported by the orchestrator
+            user_context=user_ctx,
+            progress_callback=progress_tracker,
+            research_id=research_id,
+            enable_deep_research=(research.options.depth == ResearchDepth.DEEP_RESEARCH),
+            deep_research_mode=None,
+            synthesize_answer=True,
             answer_options={"research_id": research_id, "max_length": SYNTHESIS_MAX_LENGTH_DEFAULT},
         )
 
@@ -459,6 +454,16 @@ async def execute_real_research(
                 "margin": margin,
             },
         }
+
+        # Add detailed classification breakdown for UI/analytics
+        try:
+            classification_details = {
+                "distribution": {HOST_TO_MAIN_PARADIGM[p].value: float(v or 0.0) for p, v in (getattr(cls, "distribution", {}) or {}).items()},
+                "reasoning": {HOST_TO_MAIN_PARADIGM[p].value: list((r or [])[:4]) for p, r in (getattr(cls, "reasoning", {}) or {}).items()},
+            }
+            metadata["classification_details"] = classification_details
+        except Exception:
+            pass
 
         # Stream a compact agent trace snapshot for visibility
         try:

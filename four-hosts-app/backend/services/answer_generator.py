@@ -184,6 +184,13 @@ class BaseAnswerGenerator:
             except Exception:
                 return None
 
+    def _get_llm_backend_info(self) -> Dict[str, Any]:
+        """Return active LLM backend information, if available."""
+        try:
+            return llm_client.get_active_backend_info()
+        except Exception:
+            return {}
+
     def _top_relevant_results(self, context: SynthesisContext, k: int = 5) -> List[Dict[str, Any]]:
         """Select top-k results by credibility, ensuring domain diversity."""
         results = list(context.search_results or [])
@@ -488,6 +495,44 @@ class BaseAnswerGenerator:
             recs.append("Offer next-step guidance and local options where available.")
         return " " .join(recs)
 
+    async def _maybe_dynamic_actions(
+        self,
+        context: SynthesisContext,
+        fallback_items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Optionally generate dynamic, LLM-powered action items (behind ENABLE_DYNAMIC_ACTIONS).
+        Returns fallback_items when disabled or on failure."""
+        try:
+            from services.action_items import (  # type: ignore
+                enabled as _actions_enabled,
+                generate_action_items as _gen_actions,
+            )
+        except Exception:
+            return fallback_items
+
+        try:
+            if not _actions_enabled():
+                return fallback_items
+
+            # Grounding: prefer evidence bundle quotes, fall back to context.evidence_quotes
+            search_results = list(getattr(context, "search_results", []) or [])
+            try:
+                eb = getattr(context, "evidence_bundle", None)
+                evidence_quotes = list(getattr(eb, "quotes", []) or []) if eb is not None else []
+            except Exception:
+                evidence_quotes = list(getattr(context, "evidence_quotes", []) or [])
+
+            items = await _gen_actions(
+                query=getattr(context, "query", ""),
+                paradigm=self.paradigm,
+                search_results=search_results,
+                evidence_quotes=evidence_quotes,
+            )
+            return items or fallback_items
+        except Exception as e:
+            logger.debug(f"Dynamic action items skipped: {e}")
+            return fallback_items
+
 
 # ============================================================================
 # PARADIGM-SPECIFIC GENERATORS
@@ -544,7 +589,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             paradigm=self.paradigm,
             summary=summary,
             sections=sections,
-            action_items=self._generate_action_items(context),
+            action_items=await self._maybe_dynamic_actions(context, self._generate_action_items(context)),
             citations=self.citations,
             confidence_score=0.8,
             synthesis_quality=0.85,
@@ -796,7 +841,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             paradigm=self.paradigm,
             summary=summary,
             sections=sections,
-            action_items=self._generate_research_action_items(statistical_insights),
+            action_items=await self._maybe_dynamic_actions(context, self._generate_research_action_items(statistical_insights)),
             citations=self.citations,
             confidence_score=self._calculate_analytical_confidence(statistical_insights),
             synthesis_quality=0.9,
@@ -1245,7 +1290,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             paradigm=self.paradigm,
             summary=summary,
             sections=sections,
-            action_items=self._format_recommendations_as_actions(recommendations),
+            action_items=await self._maybe_dynamic_actions(context, self._format_recommendations_as_actions(recommendations)),
             citations=self.citations,
             confidence_score=0.85,
             synthesis_quality=0.88,
@@ -1611,7 +1656,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             paradigm=self.paradigm,
             summary=summary,
             sections=sections,
-            action_items=self._generate_supportive_actions(context),
+            action_items=await self._maybe_dynamic_actions(context, self._generate_supportive_actions(context)),
             citations=self.citations,
             confidence_score=0.82,
             synthesis_quality=0.86,
@@ -1710,12 +1755,6 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             metadata={"section_weight": section_def['weight']}
         )
 
-    def _get_llm_backend_info(self) -> Dict[str, Any]:
-        try:
-            from services.llm_client import llm_client
-            return llm_client.get_active_backend_info()
-        except Exception:
-            return {}
 
     def _generate_supportive_fallback(
         self,

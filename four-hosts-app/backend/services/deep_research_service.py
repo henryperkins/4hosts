@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+import os
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
@@ -279,8 +280,22 @@ class DeepResearchService:
             except Exception as e:
                 raise RuntimeError(f"Responses client not available: {e}")
 
+            # Resolve model: allow env override; default to o3 for Azure (no deep-research deployment),
+            # otherwise prefer o3-deep-research when available
+            try:
+                deep_model_env = os.getenv("DEEP_RESEARCH_MODEL")
+            except Exception:
+                deep_model_env = None
+            try:
+                from .openai_responses_client import get_responses_client
+                _rc = get_responses_client()
+                is_azure = getattr(_rc, "is_azure", False)
+            except Exception:
+                is_azure = True
+            deep_model = deep_model_env or ("o3" if is_azure else "o3-deep-research")
+
             stage1 = await client.create_response(
-                model="o3-deep-research",
+                model=deep_model,
                 input=[
                     {"role": "developer", "content": [{"type": "input_text", "text": system_prompt}]},
                     {"role": "user", "content": [{"type": "input_text", "text": research_prompt}]},
@@ -325,7 +340,7 @@ class DeepResearchService:
             stage1_id_final = stage1.get("id") if isinstance(stage1, dict) else None
 
             stage2 = await client.create_response(
-                model="o3-deep-research",
+                model=deep_model,
                 input=[
                     {"role": "user", "content": [{"type": "input_text", "text": synthesis_instructions}]}
                 ],

@@ -1,3 +1,4 @@
+# flake8: noqa
 """
 Integration module for enhanced answer generators, self-healing system, and ML pipeline
 Connects new components to the existing Four Hosts application
@@ -7,13 +8,13 @@ import logging
 from typing import Dict, Optional, Any, List, Union, cast
 from datetime import datetime
 
-from .answer_generator import AnswerGenerationOrchestrator, BernardAnswerGenerator, MaeveAnswerGenerator
+from .answer_generator import AnswerGenerationOrchestrator
 from .self_healing_system import self_healing_system
 from .ml_pipeline import ml_pipeline
-from .classification_engine import ClassificationEngine, HostParadigm
-from models.paradigms import normalize_to_enum
+from .classification_engine import ClassificationEngine, HostParadigm, ClassificationResult
+from models.paradigms import normalize_to_enum, normalize_to_internal_code
 from models.synthesis_models import SynthesisContext
-from .result_adapter import ResultAdapter, ResultListAdapter, adapt_results
+from .result_adapter import ResultListAdapter, adapt_results
 from contracts import (
     GeneratedAnswer as ContractAnswer,
     ResearchStatus as ContractStatus,
@@ -60,15 +61,18 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
         super().__init__()
 
         # Initialize generators dictionary using parent's method for consistency
-        self.generators: Dict[HostParadigm, Any] = {}
-        
+        # Accept both enum and string keys for backward compatibility with legacy callers
+        self.generators: Dict[Union[HostParadigm, str], Any] = {}
+
         # Populate generators using parent's _make_generator method to avoid duplication
         for paradigm in HostParadigm:
-            # Use the parent's method to create generators, ensuring consistency
-            paradigm_str = paradigm.value
-            self.generators[paradigm] = self._make_generator(paradigm_str)
-            # Also store with string key for backward compatibility
-            self.generators[paradigm_str] = self.generators[paradigm]
+            # Create generators using INTERNAL code names (dolores/bernard/maeve/teddy)
+            code = normalize_to_internal_code(paradigm)
+            gen = self._make_generator(code)
+            # Store under multiple keys for compatibility (enum, internal code, enum.value)
+            self.generators[paradigm] = gen
+            self.generators[code] = gen
+            self.generators[paradigm.value] = gen
 
         # Enable self-healing and ML features
         self.self_healing_enabled = True
@@ -231,16 +235,16 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
 
         # Delegate to the core generator; it handles exceptions and structured failures
         return await self._generate_from_context(context, primary_paradigm, secondary_paradigm)
-    
+
     def _adapt_search_results(self, search_results: Any) -> List[Dict[str, Any]]:
         """Safely adapt search results to consistent format"""
         if not search_results:
             return []
-            
+
         try:
             # Use ResultAdapter to handle both dict and object formats
             adapter = adapt_results(search_results)
-            
+
             if isinstance(adapter, ResultListAdapter):
                 # Get valid results and convert to dict format
                 valid_results = adapter.get_valid_results()
@@ -409,7 +413,7 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                     "failed_paths": failed_paths,
                 },
             )
-    
+
     async def _create_minimal_answer_with_fallback(
         self,
         context: SynthesisContext,
@@ -419,7 +423,7 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
         failed_paths: List[str]
     ) -> Any:
         """Create minimal answer when primary generation fails"""
-        
+
         # Try fallback paradigm if available
         fallback_answer = None
         fallback_paradigm_used: Optional[HostParadigm] = None
@@ -437,7 +441,7 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                     logger.error(f"Fallback also failed: {fallback_error}")
                     errors.append(f"fallback_{fallback_paradigm.value}: {str(fallback_error)}")
                     failed_paths.append(f"fallback_generation_{fallback_paradigm.value}")
-        
+
         # If fallback succeeded, return it with enhanced metadata
         if fallback_answer:
             if hasattr(fallback_answer, "metadata") and isinstance(getattr(fallback_answer, "metadata"), dict):
@@ -456,12 +460,12 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
                 "failed_paths": failed_paths
             })
             return fallback_answer
-        
+
         # Last resort: create minimal answer with raw search results
         try:
             # Use ResultAdapter to safely extract information
             adapter = adapt_results(context.search_results)
-            
+
             if isinstance(adapter, ResultListAdapter):
                 valid_results = adapter.get_valid_results()[:5]  # Limit to top 5
                 links = [result.url for result in valid_results]
@@ -469,14 +473,14 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
             else:
                 links = [adapter.url] if adapter.has_required_fields() else []
                 snippets = [adapter.snippet] if adapter.snippet else []
-            
+
             minimal_content = f"""I encountered issues generating a complete answer for this query. Here's what I found:
 
 {chr(10).join(f"• {snippet[:200]}..." for snippet in snippets[:3])}
 
 For more information, please check these sources:
 {chr(10).join(f"- {link}" for link in links[:3])}"""
-            
+
             # Build minimal citations as contract Sources (best-effort)
             citations = []
             for link in links[:3]:
@@ -496,12 +500,12 @@ For more information, please check these sources:
                     "fallback_used": "minimal_answer",
                 },
             )
-            
+
         except Exception as minimal_error:
             logger.error(f"Even minimal answer generation failed: {minimal_error}")
             errors.append(f"minimal_answer: {str(minimal_error)}")
             failed_paths.append("minimal_answer_generation")
-            
+
             # Absolute last resort: raise with comprehensive error info
             raise RuntimeError(f"Complete answer generation failure. Errors: {'; '.join(errors)}. Failed paths: {', '.join(failed_paths)}")
 
@@ -524,10 +528,10 @@ class EnhancedClassificationEngine(ClassificationEngine):
         self.ml_enhanced = True
         logger.info("Enhanced Classification Engine initialized with ML support")
 
-    async def classify_query(self, query: str, use_llm: bool = True) -> Any:
-        """Enhanced classification with ML model"""
-        # First get base classification
-        result = await super().classify_query(query)
+    async def classify_query(self, query: str, research_id: Optional[str] = None) -> ClassificationResult:
+        """Enhanced classification with ML model; preserves base signature."""
+        # First get base classification (pass through research_id for progress)
+        result = await super().classify_query(query, research_id)
 
         # If ML is available, also get ML prediction
         if self.ml_enhanced:

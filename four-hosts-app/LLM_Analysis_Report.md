@@ -20,37 +20,32 @@ This comprehensive analysis reveals that while the application demonstrates stat
 
 These documentation files provide the foundational understanding of the LLM's initial role in the application.
 
-*   **LLM Role:** Primarily for **query classification**. The LLM acts as an intelligent router, directing user queries to appropriate processing pipelines based on their complexity and nature.
+*   **LLM Role:** Participates in a hybrid, paradigm‑centric classification system. Rule‑based scoring is primary; an optional LLM step refines per‑paradigm probabilities and provides reasoning.
 *   **Details:**
-    *   **Model Used:** Azure OpenAI's GPT-4 is the designated model for this task, indicating a preference for a highly capable and reliable LLM.
-    *   **Classification Categories:** User research queries are categorized into "Simple," "Complex," or "Ambiguous." This categorization is critical for determining the subsequent depth and approach of the research.
-    *   **Prompt Engineering:** The success of this classification relies heavily on "well-engineered prompts." These prompts are meticulously crafted to include:
-        *   Clear instructions for the classification task.
-        *   Precise definitions of each category ("Simple," "Complex," "Ambiguous").
-        *   Illustrative examples for each category to guide the LLM's understanding.
-        *   A strict requirement for the output to be in a JSON format, ensuring machine readability and ease of parsing.
-    *   **Deterministic Output:** A `temperature` setting of `0` is used, which minimizes randomness and encourages the LLM to produce consistent and deterministic outputs, crucial for a reliable classification system.
-    *   **Robustness:** The integration is designed with robust error handling mechanisms to manage potential issues such as API connection errors, rate limits, or malformed responses from the LLM, ensuring graceful degradation and system stability.
+    *   **Model Used:** Azure OpenAI o3 family is preferred (e.g., o3-mini, o3) for classification-related calls.
+    *   **Paradigm Distribution (not Simple/Complex/Ambiguous):** The classifier outputs per-paradigm probabilities for Dolores, Teddy, Bernard, and Maeve, along with features such as numeric complexity; legacy Simple/Complex/Ambiguous labels are not used.
+    *   **Hybrid Scoring:** A rule-/heuristic-based scorer is always run; an optional LLM step refines scores and provides reasoning when available.
+    *   **Prompting & JSON Handling:** The optional LLM step requests a structured JSON object for per‑paradigm ratings and reasoning. JSON repair/parsing is applied only to this refinement step, not to any Simple/Complex/Ambiguous object.
+    *   **Temperature:** `temperature=0.3` is used for the LLM refinement step to balance determinism with nuance.
+    *   **LLM Availability Guard:** When Azure OpenAI is not configured, the system gracefully falls back to rule‑only mode.
+    *   **Robustness:** Error handling covers API errors, malformed JSON from the refinement step, and timeouts.
 
 ### 2. `backend/test_llm_classification.py`
 
-This test file provides concrete examples and validation of the LLM's classification capabilities.
+This test file reflects a legacy Simple/Complex/Ambiguous classifier and associated JSON parsing behavior. The production classifier is now paradigm-centric (probability distribution over Dolores/Teddy/Bernard/Maeve) with hybrid rule + optional LLM refinement.
 
-*   **LLM Role:** Validates **query classification accuracy and robustness**. It ensures that the LLM behaves as expected under various conditions, including ideal and error scenarios.
-*   **Details:**
-    *   **Mocking LLM Responses:** The tests employ mocking for the LLM's API calls (`mock_openai_chat_completion_create`). This allows for predictable and repeatable testing without incurring actual API costs or being dependent on external service availability.
-    *   **Behavioral Testing:**
-        *   Tests confirm that "simple" queries are correctly classified as "Simple."
-        *   "Complex" queries are accurately identified as "Complex."
-        *   "Ambiguous" queries are correctly flagged as "Ambiguous."
-    *   **Error Handling Validation:** A crucial aspect tested is the system's ability to handle invalid JSON responses from the LLM. The tests verify that even with malformed output, the system does not crash but instead defaults to an "Ambiguous" classification, demonstrating resilience. Similarly, API errors are handled gracefully, often resulting in an "Ambiguous" classification.
-    *   **Implicit Prompt Confirmation:** By testing the expected outputs for various inputs, the tests implicitly confirm that the underlying prompt construction (which guides the LLM's classification) is effective and aligns with the application's requirements.
+*   **Role:** Legacy regression coverage for early classification behavior.
+*   **Current Focus:**
+    *   Mocks and error-path handling (malformed JSON, API errors).
+    *   Ensures safe degradation, but does not assert the current hybrid scoring interface.
+*   **Modern Tests:** See [backend/tests/test_classification_engine.py](four-hosts-app/backend/tests/test_classification_engine.py) and [backend/test_integration_classification.py](four-hosts-app/backend/test_integration_classification.py) for coverage of the paradigm distribution engine.
+*   **Recommendation:** Archive as legacy or update to assert per-paradigm probabilities and reasoning arrays rather than S/C/A labels.
 
 ### 3. `backend/routes/research.py`
 
 This file demonstrates how the LLM's classification is integrated into the application's API endpoints and overall research flow.
 
-*   **LLM Role:** **Triggers and integrates LLM classification** as a foundational step in the research workflow. It acts as the initial gatekeeper for all incoming research requests.
+*   **LLM Role:** Triggers the hybrid classification engine as a foundational step. The engine is rule-first and may optionally invoke an LLM to refine scores and supply reasoning.
 *   **Details:**
     *   **Primary Entry Points:** The `submit_research` and `submit_deep_research` FastAPI endpoints are the main entry points for users to initiate research.
     *   **Immediate Classification:** Within these endpoints, the line `classification_result = await classification_engine.classify_query(research.query)` is executed immediately upon receiving a query. This ensures that every research request is first classified by the LLM.
@@ -288,23 +283,23 @@ This module is the **central hub for query-to-paradigm classification**, combini
 
 ---
 
-### 18. **Tool-Calling & Structured-Output Capabilities – *Currently Unused***
+### 18. Tool-Calling & Structured-Output Capabilities – Limited Adoption
 
-While `services/llm_client.py` exposes advanced helpers (`generate_with_tools`, `generate_structured_output`) that enable:
-1. **Tool Orchestration** (via Azure OpenAI “function calling” / MCP integration)
-2. **Schema-Guaranteed JSON Output** for deterministic downstream parsing
+The deep research pathway already exercises tool use through the Responses API client in [backend/services/openai_responses_client.py](four-hosts-app/backend/services/openai_responses_client.py) with `WebSearchTool`, `CodeInterpreterTool`, and optional MCP tools. However, the general helpers in [backend/services/llm_client.py](four-hosts-app/backend/services/llm_client.py)—`generate_with_tools` and `generate_structured_output`—are not widely used outside this path.
 
-a targeted code search shows **no production modules** calling these helpers—only docs/examples/tests reference them.
+Implications:
+- Tool orchestration is concentrated in deep research; broader pipelines (e.g., answer synthesis or credibility loops) do not yet leverage generic tool helpers.
+- Schema-guaranteed JSON is used selectively (e.g., critic). Wider adoption would improve determinism where strict parsing is required.
 
-**Implications & Gaps:**
-* Opportunity cost: autonomous research agents cannot yet invoke external MCP/Brave tools or guarantee structured JSON beyond ad-hoc critic usage.
-* Lacking validation: real-world error handling, cost management, and security scopes for tool calls remain untested.
-* Next step: integrate `generate_with_tools` into `deep_research_service.py` to let the LLM decide when to call `WebSearchTool`, `CodeInterpreterTool`, or custom MCP tools; add integration tests; enforce JSON schema generation where deterministic parsing is critical.
+Recommended next steps:
+- Add integration tests for `generate_structured_output` (using the critic schema as a template) to lock JSON reliability.
+- Evaluate integrating `generate_with_tools` into non–deep research flows or enable contextual tool calls during synthesis.
+- Establish cost and security policies for generic tool calling to avoid regressions.
 
 ## Current Implementation Status
 
 ### Working Features
-- **Query Classification**: Functional with paradigm detection using Azure OpenAI GPT-4
+- **Query Classification**: Hybrid paradigm distribution engine (rule-first + optional LLM refinement via Azure o3; temperature 0.3)
 - **Context Engineering**: W-S-C-I pipeline operational for query refinement
 - **Multi-API Search**: Integration with Google, Brave, ArXiv, PubMed, Semantic Scholar
 - **Answer Generation**: Paradigm-aligned synthesis with proper tone and structure
@@ -319,7 +314,14 @@ a targeted code search shows **no production modules** calling these helpers—o
 - **API Rate Limits**:
   - Google Custom Search: 100 queries/day (free tier)
   - Brave Search: 2000 queries/month (free tier)
-  - No automatic fallback when limits reached
+  - No automatic provider fallback when limits are reached; adaptive rate limiting and self-healing exist
+
+### Resilience and Observability (Present)
+- Cost/token budgeting hooks in [backend/services/deep_research_service.py](four-hosts-app/backend/services/deep_research_service.py) and [backend/services/research_orchestrator.py](four-hosts-app/backend/services/research_orchestrator.py)
+- Adaptive rate limiting and backoff in [backend/services/rate_limiter.py](four-hosts-app/backend/services/rate_limiter.py)
+- Self-healing error pattern checks in [backend/services/self_healing_system.py](four-hosts-app/backend/services/self_healing_system.py)
+- Progress event broadcasting in [backend/services/progress.py](four-hosts-app/backend/services/progress.py)
+- Background task caching and polling in [backend/services/background_llm.py](four-hosts-app/backend/services/background_llm.py)
 
 ### Known Issues
 1. **Background LLM Processing**: `NotImplementedError` at `llm_client.py:658` - requires Azure Responses API
@@ -386,9 +388,9 @@ a targeted code search shows **no production modules** calling these helpers—o
    - Impact: More actionable insights for users
 
 3. **Explainable Classifications**
-   - Add reasoning chains to classification results
-   - Show confidence breakdowns by paradigm
-   - Impact: Increased user trust and transparency
+   - Surface existing per‑paradigm reasoning arrays and confidence breakdowns via API/WS payloads and UI
+   - Add a lightweight feedback loop to capture user corrections and rationale
+   - Impact: Increased transparency and trust without changing the underlying engine
 
 ### Phase 2: Core Enhancements (2-4 weeks)
 4. **Interactive Research Dialogue**

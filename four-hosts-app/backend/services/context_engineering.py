@@ -854,6 +854,22 @@ class OptimizeLayer(ContextLayer):
         primary = self.optimizer.optimize_query(base_query, paradigm)
         terms = self.optimizer.get_key_terms(base_query)
 
+        # Optional: LLM-powered semantic expansions
+        try:
+            import os
+            if os.getenv("ENABLE_QUERY_LLM", "0").lower() in {"1", "true", "yes"}:
+                try:
+                    from services.llm_query_optimizer import propose_semantic_variations
+                    llm_vars = await propose_semantic_variations(base_query, paradigm, max_variants=4, key_terms=terms[:8])
+                    for i, v in enumerate(llm_vars):
+                        key = f"llm_{i+1}"
+                        if key not in variations:
+                            variations[key] = v
+                except Exception as e:
+                    logger.debug(f"LLM query optimizer skipped: {e}")
+        except Exception:
+            pass
+
         output = {
             "primary_query": primary,
             "optimized_terms": terms[:20],

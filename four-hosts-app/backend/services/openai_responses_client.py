@@ -211,10 +211,12 @@ class OpenAIResponsesClient:
                     tool_dicts.append(tool)
         
         # Build request
-        # Azure expects the deployment name in the "model" field. Allow env override.
-        azure_model = os.getenv("AZURE_OPENAI_DEPLOYMENT") if self.is_azure else None
+        # Azure expects the deployment name in the "model" field.
+        # Your deployments are named the same as models (o3, gpt-4.1, gpt-4.1-mini),
+        # so we should pass through the requested model directly.
+        # Fall back to AZURE_OPENAI_DEPLOYMENT only when model is not provided.
         request_data = {
-            "model": (azure_model or model),
+            "model": (model or os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")),
             "input": input,
             "store": store,
         }

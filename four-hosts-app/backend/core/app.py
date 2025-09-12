@@ -3,10 +3,8 @@ FastAPI application factory and configuration
 """
 
 import logging
-import os
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +37,10 @@ try:
     from routes.system import router as system_router
 except Exception:
     system_router = None  # type: ignore
+try:
+    from routes.feedback import router as feedback_router
+except Exception:
+    feedback_router = None  # type: ignore
 from services.websocket_service import (
     create_websocket_router,
     connection_manager,
@@ -92,7 +94,6 @@ async def lifespan(app: FastAPI):
         logger.info("✓ LLM client initialized")
 
         # Initialize search manager with cache integration
-        from services.cache import cache_manager
         from services.search_apis import create_search_manager
         search_manager = create_search_manager()
         # SearchAPIManager uses context manager protocol, enter it
@@ -125,7 +126,9 @@ async def lifespan(app: FastAPI):
         metrics_registry = CollectorRegistry()
         prometheus = PrometheusMetrics(metrics_registry)
         insights = ApplicationInsights(prometheus)
-        monitoring_middleware = create_monitoring_middleware(prometheus, insights)
+        monitoring_middleware = create_monitoring_middleware(
+            prometheus, insights
+        )
         health_service = HealthCheckService()
 
         app.state.monitoring = {
@@ -139,7 +142,11 @@ async def lifespan(app: FastAPI):
         # Initialize production services
         from services.auth_service import auth_service
         from services.rate_limiter import RateLimiter
-        from services.webhook_manager import WebhookManager, create_webhook_router, WebhookEvent
+        from services.webhook_manager import (
+            WebhookManager,
+            create_webhook_router,
+            WebhookEvent,
+        )
         from services.export_service import ExportService, create_export_router
 
         app.state.auth_service = auth_service
@@ -194,7 +201,10 @@ async def lifespan(app: FastAPI):
 
         # Register self-healing switch notifications to emit webhooks
         try:
-            from services.self_healing_system import self_healing_system, register_switch_listener
+            from services.self_healing_system import (
+                self_healing_system,
+                register_switch_listener,
+            )
 
             async def _on_paradigm_switch(decision, record):
                 try:
@@ -207,14 +217,20 @@ async def lifespan(app: FastAPI):
                         "expected_improvement": decision.expected_improvement,
                         "risk_score": decision.risk_score,
                     }
-                    await app.state.webhook_manager.trigger_event(WebhookEvent.PARADIGM_SWITCHED, payload)
+                    await app.state.webhook_manager.trigger_event(
+                        WebhookEvent.PARADIGM_SWITCHED, payload
+                    )
                 except Exception as exc:
-                    logger.warning("Failed to emit paradigm.switch webhook: %s", exc)
+                    logger.warning(
+                        "Failed to emit paradigm.switch webhook: %s", exc
+                    )
 
             register_switch_listener(_on_paradigm_switch)
             logger.info("✓ Registered paradigm switch webhook listener")
         except Exception as e:
-            logger.warning("Could not register paradigm switch listener: %s", e)
+            logger.warning(
+                "Could not register paradigm switch listener: %s", e
+            )
 
         system_initialized = True
         logger.info("🚀 Four Hosts Research System ready with all features!")
@@ -261,8 +277,11 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Four Hosts Research API",
         version="3.0.0",
-        description="Full-featured paradigm-aware research with integrated Context Engineering Pipeline",
-        lifespan=lifespan
+        description=(
+            "Full-featured paradigm-aware research with integrated "
+            "Context Engineering Pipeline"
+        ),
+        lifespan=lifespan,
     )
 
     # Add middleware
@@ -336,6 +355,8 @@ def setup_routes(app: FastAPI):
         app.include_router(system_router, prefix="/v1")
     if responses_router is not None:
         app.include_router(responses_router, prefix="/v1")
+    if feedback_router is not None:
+        app.include_router(feedback_router, prefix="/v1")
 
     # Mount WebSocket routes (for real-time research progress)
     ws_router = create_websocket_router(connection_manager, progress_tracker)

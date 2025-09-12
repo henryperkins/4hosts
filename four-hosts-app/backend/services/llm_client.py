@@ -332,9 +332,8 @@ class LLMClient:
             tool_choice = None                        # ensure we don't forward it
 
         # ─── Azure OpenAI path (prefer Responses API when enabled) ───
-        if model_name in {"o3", "o1", "azure", "gpt-5-mini", "gpt-4o", "gpt-4.1", "gpt-5-mini", "gpt-5"} and self.azure_client:
+        if model_name in {"o3", "o1", "azure", "gpt-5-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-5-mini", "gpt-5"} and self.azure_client:
             try:
-                deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
                 # Use Responses API when enabled (supports non-stream + stream)
                 if self._azure_use_responses:
                     # Build Responses API payload
@@ -349,7 +348,8 @@ class LLMClient:
                         input_msgs.append({"role": role, "content": msg.get("content", "")})
 
                     resp_req: Dict[str, Any] = {
-                        "model": deployment,
+                        # For Azure, the deployment name equals the model name in your setup
+                        "model": model_name,
                         "input": input_msgs,
                     }
                     # Token & reasoning knobs for Responses API
@@ -512,8 +512,7 @@ class LLMClient:
         wrapped_choice = self._wrap_tool_choice(tool_choice)
         
         # Use Azure for o3/o1 models
-        if model_name in {"o3", "o1", "azure", "gpt-5-mini"} and self.azure_client:
-            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
+        if model_name in {"o3", "o1", "azure", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o"} and self.azure_client:
             azure_msgs = [
                 {
                     "role": _system_role_for(model_name),
@@ -523,7 +522,8 @@ class LLMClient:
             ]
             
             azure_req = {
-                "model": deployment,
+                # Use the requested model/deployment directly on Azure
+                "model": model_name,
                 "messages": cast(Any, azure_msgs),
                 "tools": cast(Any, tools),
                 "tool_choice": cast(Any, wrapped_choice),
@@ -593,9 +593,9 @@ class LLMClient:
         # Prefer Azure when available. For o1/o3 family use max_completion_tokens,
         # for gpt-4o style deployments use standard chat params.
         if self.azure_client:
-            deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
             azure_req = {
-                "model": deployment,
+                # Use requested model/deployment directly (o3, gpt-4.1, gpt-4.1-mini)
+                "model": model_name,
                 "messages": cast(Any, full_msgs),
             }
             
