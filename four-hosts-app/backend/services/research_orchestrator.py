@@ -756,15 +756,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         if synthesize_answer:
             try:
                 # Build evidence quotes from processed results
-        evidence_quotes: List[Dict[str, Any]] = []
-        try:
-            from services.evidence_builder import build_evidence_quotes
-            evidence_quotes = await build_evidence_quotes(
-                getattr(context_engineered, "original_query", ""),
-                processed_results["results"],
-                max_docs=min(EVIDENCE_MAX_DOCS_DEFAULT, int(getattr(user_context, "source_limit", default_source_limit()))),
-                quotes_per_doc=3,
-            )
+                evidence_quotes: List[Dict[str, Any]] = []
+                try:
+                    from services.evidence_builder import build_evidence_quotes
+                    evidence_quotes = await build_evidence_quotes(
+                        getattr(context_engineered, "original_query", ""),
+                        processed_results["results"],
+                        max_docs=min(EVIDENCE_MAX_DOCS_DEFAULT, int(getattr(user_context, "source_limit", default_source_limit()))),
+                        quotes_per_doc=3,
+                    )
                 except Exception:
                     evidence_quotes = []
                 synthesized_answer = await self._synthesize_answer(

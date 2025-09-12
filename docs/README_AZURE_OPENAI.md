@@ -52,7 +52,7 @@ To verify that Azure OpenAI is properly configured:
 1. Start the backend server:
    ```bash
    cd four-hosts-app/backend
-   python main_updated.py
+   python main_new.py
    ```
 
 2. Submit a research query through the API:
@@ -63,8 +63,20 @@ To verify that Azure OpenAI is properly configured:
    ```
 
 3. Check the logs for Azure OpenAI usage:
+    ```
+    INFO:     ✓ Generated completion using Azure OpenAI (gpt-4o-mini)
+    ```
+
+4. Verify LLM health-check endpoint:
+   ```bash
+   curl http://localhost:8000/v1/system/llm-ping
    ```
-   INFO:     ✓ Generated completion using Azure OpenAI (gpt-4o-mini)
+   Expected output:
+   ```json
+   {
+     "status": "ok",
+     "llm_response": "ping"
+   }
    ```
 
 ## Troubleshooting
@@ -89,3 +101,17 @@ Azure OpenAI usage is billed based on token consumption. The system uses differe
 - GPT-4 for complex analytical tasks (higher cost, better quality)
 
 Monitor your Azure portal for usage and costs.
+
+## Redis & Multi-Worker Support
+
+When `REDIS_URL` is configured the backend will automatically launch **4 Uvicorn workers**
+for improved concurrency. Override this with `WORKERS` env var if you need a different count.
+
+```env
+# Example .env
+REDIS_URL=redis://localhost:6379
+WORKERS=8          # optional – overrides automatic worker scaling
+```
+
+Ensure Redis is running locally (or via Docker) before starting the backend to avoid fallback
+to single-worker mode.

@@ -165,6 +165,68 @@ export interface MetricsData {
   system_health: 'healthy' | 'degraded' | 'unhealthy'
 }
 
+// Extended metrics snapshot (from /system/extended-stats)
+export interface ExtendedStatsLatencyDistribution {
+  count: number
+  avg: number
+  p50: number
+  p95: number
+  p99: number
+}
+
+export interface ExtendedStatsLatency {
+  [stage: string]: ExtendedStatsLatencyDistribution
+}
+
+export interface ExtendedStatsFallbackRates {
+  [stage: string]: number
+}
+
+export interface ExtendedStatsLLMUsageModel {
+  calls: number
+  tokens_in: number
+  tokens_out: number
+}
+
+export interface ExtendedStatsLLMUsage {
+  [model: string]: ExtendedStatsLLMUsageModel
+}
+
+export interface ExtendedStatsQuality {
+  critic_avg_score: number
+  hallucination_rate: number
+  evidence_coverage_ratio: number
+}
+
+export interface ExtendedStatsCountersBucket {
+  [labelCombo: string]: number
+}
+
+export interface ExtendedStatsCounters {
+  [counterName: string]: ExtendedStatsCountersBucket
+}
+
+export interface ExtendedStatsSnapshot {
+  latency: ExtendedStatsLatency
+  fallback_rates: ExtendedStatsFallbackRates
+  llm_usage: ExtendedStatsLLMUsage
+  paradigm_distribution: Record<string, number>
+  quality: ExtendedStatsQuality
+  counters: ExtendedStatsCounters
+  timestamp: string
+}
+
+export function isExtendedStatsSnapshot(data: unknown): data is ExtendedStatsSnapshot {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'latency' in data &&
+    'fallback_rates' in data &&
+    'llm_usage' in data &&
+    'timestamp' in data
+  )
+}
+
 // Type guards for runtime validation
 export function isErrorResponse(data: unknown): data is ErrorResponse {
   return (

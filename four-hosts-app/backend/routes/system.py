@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from services.context_engineering import context_pipeline
 from services.cache import cache_manager
 from services.research_store import research_store
+from services.llm_client import llm_client
 from models.base import ResearchStatus
 import json
 from fastapi import Request
@@ -38,6 +39,25 @@ async def get_limits() -> Dict[str, Any]:
             "enterprise": {"requests_per_hour": None, "concurrent": None, "max_sources": None},
         }
     }
+
+
+@router.get("/llm-ping")
+async def llm_ping() -> Dict[str, str]:
+    """
+    Health-check endpoint: verifies LLM connectivity by issuing a minimal
+    completion request (“ping”) and returning its trimmed response.
+    """
+    try:
+        resp = await llm_client.generate_completion(
+            prompt="ping",
+            paradigm="bernard",
+            max_tokens=1,
+            temperature=0.0,
+        )
+        return {"status": "ok", "llm_response": resp.strip()}
+    except Exception as e:
+        logger.warning("LLM ping failed: %s", e)
+        return {"status": "error", "detail": str(e)}
 
 
 async def _collect_research_records(limit: int | None = None) -> List[Dict[str, Any]]:
@@ -152,3 +172,26 @@ async def get_system_stats(request: Request) -> Dict[str, Any]:
 async def get_public_system_stats(request: Request) -> Dict[str, Any]:
     # Public view uses the same core data but exposes only aggregate metrics
     return await get_system_stats(request)
+
+
+@router.get("/extended-stats")
+async def get_extended_stats() -> Dict[str, Any]:
+    """Return richer metrics snapshot from in-process metrics facade.
+
+    This is feature-gated by presence of the metrics facade; if unavailable
+    returns an empty structure. Intended for internal dashboards.
+    """
+    try:
+        from services.metrics import metrics
+        snap = metrics.extended_stats_snapshot()
+        return snap
+    except Exception as e:
+        logger.warning("Extended stats unavailable: %s", e)
+        return {
+            "latency": {},
+            "fallback_rates": {},
+            "llm_usage": {},
+            "paradigm_distribution": {},
+            "quality": {},
+            "counters": {},
+        }

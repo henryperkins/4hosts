@@ -294,14 +294,32 @@ class DeepResearchService:
                 is_azure = True
             deep_model = deep_model_env or ("o3" if is_azure else "o3-deep-research")
 
+            from time import perf_counter
+            stage1_start = perf_counter()
             stage1 = await client.create_response(
                 model=deep_model,
                 input=[
-                    {"role": "developer", "content": [{"type": "input_text", "text": system_prompt}]},
-                    {"role": "user", "content": [{"type": "input_text", "text": research_prompt}]},
+                    {
+                        "role": "developer",
+                        "content": [
+                            {"type": "input_text", "text": system_prompt}
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": research_prompt}
+                        ],
+                    },
                 ],
-                tools=([web_search_config] if web_search_config else [])
-                      + ([CodeInterpreterTool()] if config.enable_code_interpreter else []),
+                tools=(
+                    ([web_search_config] if web_search_config else [])
+                    + (
+                        [CodeInterpreterTool()]
+                        if config.enable_code_interpreter
+                        else []
+                    )
+                ),
                 reasoning={"summary": "auto"},
                 max_tool_calls=config.max_tool_calls,
                 background=config.background,
@@ -323,10 +341,29 @@ class DeepResearchService:
                     stage1_id, config.timeout, progress_tracker, research_id
                 )
 
+            # Record stage1 metrics
+            try:
+                from .metrics import metrics
+                metrics.record_stage(
+                    stage="deep_research_stage1",
+                    duration_ms=(perf_counter() - stage1_start) * 1000.0,
+                    paradigm=(
+                        classification.primary_paradigm.value
+                        if classification and classification.primary_paradigm
+                        else None
+                    ),
+                    success=True,
+                    model=deep_model,
+                )
+            except Exception:
+                pass
+
             # Stage 2: Synthesis chained to Stage 1 context
             if progress_tracker and research_id:
                 try:
-                    await progress_tracker.report_synthesis_started(research_id)
+                    await progress_tracker.report_synthesis_started(
+                        research_id
+                    )
                 except Exception:
                     await progress_tracker.update_progress(
                         research_id, "Starting answer synthesis...", 80
@@ -337,17 +374,45 @@ class DeepResearchService:
                 "Prioritize high-credibility sources, highlight key findings, and include a short bibliography."
             )
 
-            stage1_id_final = stage1.get("id") if isinstance(stage1, dict) else None
+            stage1_id_final = (
+                stage1.get("id") if isinstance(stage1, dict) else None
+            )
 
+            stage2_start = perf_counter()
             stage2 = await client.create_response(
                 model=deep_model,
                 input=[
-                    {"role": "user", "content": [{"type": "input_text", "text": synthesis_instructions}]}
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": synthesis_instructions,
+                            }
+                        ],
+                    }
                 ],
                 previous_response_id=stage1_id_final,
-                background=False,  # synthesize now for deterministic completion
+                background=False,
                 store=True,
             )
+
+            # Record stage2 metrics
+            try:
+                from .metrics import metrics
+                metrics.record_stage(
+                    stage="deep_research_stage2",
+                    duration_ms=(perf_counter() - stage2_start) * 1000.0,
+                    paradigm=(
+                        classification.primary_paradigm.value
+                        if classification and classification.primary_paradigm
+                        else None
+                    ),
+                    success=True,
+                    model=deep_model,
+                )
+            except Exception:
+                pass
 
             # Merge content/citations: prefer stage2 text; union citations from both
             try:

@@ -6,6 +6,8 @@ import type {
   MetricsData,
   WebSocketMessage
 } from '../types/api-types'
+import type { ExtendedStatsSnapshot } from '../types/api-types'
+import { isExtendedStatsSnapshot } from '../types/api-types'
 import {
   isErrorResponse
 } from '../types/api-types'
@@ -619,6 +621,46 @@ class APIService {
         // Fall through
       }
       throw e;
+    }
+  }
+
+  // Extended Stats (richer latency, fallbacks, usage)
+  async getExtendedStats(): Promise<ExtendedStatsSnapshot> {
+    const response = await this.fetchWithAuth('/system/extended-stats')
+    if (!response.ok) {
+      const error = await response.json().catch(() => null)
+      if (error && typeof error === 'object' && 'error' in error) {
+        const msg = (error as { error?: string }).error
+        throw new Error(msg || 'Failed to get extended stats')
+      }
+      throw new Error('Failed to get extended stats')
+    }
+    const data = await response.json()
+    if (isExtendedStatsSnapshot(data)) {
+      return data
+    }
+    // Basic structural fallback
+    return {
+      latency: {},
+      fallback_rates: {},
+      llm_usage: {},
+      paradigm_distribution: {},
+      quality: {
+        critic_avg_score: 0,
+        hallucination_rate: 0,
+        evidence_coverage_ratio: 0
+      },
+      counters: {},
+      timestamp: new Date().toISOString()
+    }
+  }
+
+  async getExtendedStatsSafe(): Promise<ExtendedStatsSnapshot | null> {
+    try {
+      return await this.getExtendedStats()
+    } catch (e) {
+      console.warn('Extended stats unavailable', e)
+      return null
     }
   }
 

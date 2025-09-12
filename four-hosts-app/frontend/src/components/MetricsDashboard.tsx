@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts'
 import { FiActivity, FiTrendingUp, FiUsers, FiClock, FiDatabase, FiAlertCircle, FiEye, FiMousePointer, FiTarget, FiZap } from 'react-icons/fi'
 import api from '../services/api'
-import type { MetricsData } from '../types/api-types'
+import type { MetricsData, ExtendedStatsSnapshot } from '../types/api-types'
 import { getParadigmHexColor } from '../constants/paradigm'
 
 interface ABTestMetrics {
@@ -56,6 +56,7 @@ const MetricCard = React.memo<{
 
 export const MetricsDashboard: React.FC = () => {
   const [stats, setStats] = useState<MetricsData | null>(null)
+  const [extended, setExtended] = useState<ExtendedStatsSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   
@@ -88,6 +89,8 @@ export const MetricsDashboard: React.FC = () => {
         system_health: data.system_health ?? 'healthy'
       }
       setStats(normalized)
+      // Fetch extended stats in parallel (non-blocking for core metrics)
+      api.getExtendedStatsSafe().then(setExtended).catch(() => {})
       setError(null)
     } catch {
       setError('Failed to load system metrics')
@@ -193,6 +196,40 @@ export const MetricsDashboard: React.FC = () => {
           color="text-orange-600"
         />
       </div>
+
+      {/* Extended latency and fallback cards */}
+      {extended && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard
+            icon={FiClock}
+            title="Classification p95"
+            value={extended.latency?.classification ? `${extended.latency.classification.p95.toFixed(0)}ms` : '—'}
+            subtitle="Latency"
+            color="text-indigo-600"
+          />
+          <MetricCard
+            icon={FiClock}
+            title="Answer Synth p95"
+            value={extended.latency?.answer_synthesis ? `${extended.latency.answer_synthesis.p95.toFixed(0)}ms` : '—'}
+            subtitle="Latency"
+            color="text-teal-600"
+          />
+          <MetricCard
+            icon={FiAlertCircle}
+            title="Classification Fallback"
+            value={extended.fallback_rates?.classification !== undefined ? `${(extended.fallback_rates.classification * 100).toFixed(1)}%` : '—'}
+            subtitle="Rule→LLM usage"
+            color="text-red-600"
+          />
+            <MetricCard
+              icon={FiAlertCircle}
+              title="Answer Fallback"
+              value={extended.fallback_rates?.answer_synthesis !== undefined ? `${(extended.fallback_rates.answer_synthesis * 100).toFixed(1)}%` : '—'}
+              subtitle="Heuristic→LLM"
+              color="text-pink-600"
+            />
+        </div>
+      )}
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

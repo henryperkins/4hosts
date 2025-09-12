@@ -739,15 +739,33 @@ class ClassificationEngine:
 
     async def classify_query(self, query: str, research_id: Optional[str] = None) -> ClassificationResult:
         """Classify a query with caching and logging"""
+        from time import perf_counter
+        start = perf_counter()
+        cache_hit = False
         if self.cache_enabled and query in self.cache:
             logger.info(f"Cache hit for classification: {query[:50]}...")
-            return self.cache[query]
-
-        result = await self.classifier.classify(query, research_id)
-
-        if self.cache_enabled:
-            self.cache[query] = result
-
+            cache_hit = True
+            result = self.cache[query]
+        else:
+            result = await self.classifier.classify(query, research_id)
+            if self.cache_enabled:
+                self.cache[query] = result
+        duration_ms = (perf_counter() - start) * 1000.0
+        # Metrics recording (best-effort, ignore failures)
+        try:
+            from .metrics import metrics
+            metrics.record_stage(
+                stage="classification",
+                duration_ms=duration_ms,
+                paradigm=result.primary_paradigm.value if result else None,
+                success=True,
+                fallback=not self.classifier.use_llm,
+                model="llm" if self.classifier.use_llm else None,
+            )
+            if cache_hit:
+                metrics.increment("classification_cache_hit")
+        except Exception:
+            pass
         return result
 
 

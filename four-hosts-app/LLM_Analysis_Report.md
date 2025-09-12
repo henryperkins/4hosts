@@ -16,7 +16,7 @@ This comprehensive analysis reveals that while the application demonstrates stat
 
 ## Detailed Analysis by File
 
-### 1. `backend/docs/azure_openai_implementation_summary.md` & `backend/docs/azure_openai_integration.md`
+### 1. [`backend/docs/azure_openai_implementation_summary.md`](four-hosts-app/backend/docs/azure_openai_implementation_summary.md) & [`backend/docs/azure_openai_integration.md`](four-hosts-app/backend/docs/azure_openai_integration.md)
 
 These documentation files provide the foundational understanding of the LLM's initial role in the application.
 
@@ -30,7 +30,7 @@ These documentation files provide the foundational understanding of the LLM's in
     *   **LLM Availability Guard:** When Azure OpenAI is not configured, the system gracefully falls back to rule‑only mode.
     *   **Robustness:** Error handling covers API errors, malformed JSON from the refinement step, and timeouts.
 
-### 2. `backend/test_llm_classification.py`
+### 2. [`backend/test_llm_classification.py`](four-hosts-app/backend/test_llm_classification.py)
 
 This test file reflects a legacy Simple/Complex/Ambiguous classifier and associated JSON parsing behavior. The production classifier is now paradigm-centric (probability distribution over Dolores/Teddy/Bernard/Maeve) with hybrid rule + optional LLM refinement.
 
@@ -41,7 +41,7 @@ This test file reflects a legacy Simple/Complex/Ambiguous classifier and associa
 *   **Modern Tests:** See [backend/tests/test_classification_engine.py](four-hosts-app/backend/tests/test_classification_engine.py) and [backend/test_integration_classification.py](four-hosts-app/backend/test_integration_classification.py) for coverage of the paradigm distribution engine.
 *   **Recommendation:** Archive as legacy or update to assert per-paradigm probabilities and reasoning arrays rather than S/C/A labels.
 
-### 3. `backend/routes/research.py`
+### 3. [`backend/routes/research.py`](four-hosts-app/backend/routes/research.py)
 
 This file demonstrates how the LLM's classification is integrated into the application's API endpoints and overall research flow.
 
@@ -54,7 +54,7 @@ This file demonstrates how the LLM's classification is integrated into the appli
         *   It is passed to the `execute_real_research` background task, ensuring that the entire research pipeline is aware of and adapts to the query's classification.
     *   **Background Task Integration:** The `execute_real_research` function, which runs as a background task, also re-confirms the classification as its very first step. This ensures consistency and allows for real-time progress updates to the user based on the classification.
 
-### 4. `backend/services/enhanced_integration.py`
+### 4. [`backend/services/enhanced_integration.py`](four-hosts-app/backend/services/enhanced_integration.py)
 
 This module showcases a more advanced use of LLMs, where their output is part of a larger, intelligent system.
 
@@ -66,7 +66,7 @@ This module showcases a more advanced use of LLMs, where their output is part of
     *   **Intelligent Blending:** The system intelligently compares the ML model's confidence with the base LLM's confidence. If the ML model is more confident and its prediction differs, it adjusts the `primary_paradigm` and `secondary_paradigm` of the `ClassificationResult`. This means the LLM's initial output is not necessarily final but can be refined by an ML model, leading to a more adaptive and continuously improving classification system.
     *   **Reasoning Capture:** If the ML model influences the classification, a reasoning entry is added, providing transparency into the decision-making process.
 
-### 5. `backend/services/deep_research_service.py`
+### 5. [`backend/services/deep_research_service.py`](four-hosts-app/backend/services/deep_research_service.py)
 
 This file is central to the application's "deep research" capabilities, where the LLM takes on a highly autonomous and complex role.
 
@@ -84,7 +84,7 @@ This file is central to the application's "deep research" capabilities, where th
     *   **Autonomous Tool Utilization:** The LLM decides when and how to use the provided tools (web search, code interpreter) during the evidence gathering phase, demonstrating a high degree of autonomy.
     *   **Background Execution:** The ability to run Stage 1 in the background is vital for user experience, as deep research can be time-consuming.
 
-### 6. `backend/services/context_engineering.py`
+### 6. [`backend/services/context_engineering.py`](four-hosts-app/backend/services/context_engineering.py)
 
 This file defines the "W-S-C-I" (Write-Select-Compress-Isolate) pipeline, which refines the user's query and prepares it for research execution.
 
@@ -96,7 +96,7 @@ This file defines the "W-S-C-I" (Write-Select-Compress-Isolate) pipeline, which 
         *   **Fallback:** A heuristic-based rewrite is used as a fallback if the LLM generation fails, ensuring robustness.
     *   **LLM-Influenced Layers:** While other layers (`WriteLayer`, `SelectLayer`, `CompressLayer`, `IsolateLayer`, `OptimizeLayer`) do not directly call LLMs, their logic is profoundly influenced by the initial LLM classification and the overall paradigm-driven approach. They define the rules, strategies, and constraints that guide how LLMs (especially in deep research and answer generation) will process and generate content. For example, the `WriteLayer` defines paradigm-specific documentation strategies that are then used by the LLM in `deep_research_service.py`.
 
-### 7. `backend/services/paradigm_search.py`
+### 7. [`backend/services/paradigm_search.py`](four-hosts-app/backend/services/paradigm_search.py)
 
 This file defines how search queries are generated and results are filtered/ranked based on the four paradigms.
 
@@ -106,7 +106,7 @@ This file defines how search queries are generated and results are filtered/rank
     *   **Consumption of LLM Output:** Although no direct LLM calls are made here, this module consumes the output of the LLM's initial classification (the `SearchContext` includes the `original_query` and `paradigm`). This means the LLM indirectly influences the search strategy by setting the paradigm.
     *   **Preparation for LLM-Driven Search:** The queries generated here are then used by search APIs, which might be invoked by LLMs (e.g., the `o3-deep-research` model in `deep_research_service.py`). The paradigm-specific search behavior defined here aligns with the LLM's persona in deep research.
 
-### 8. `backend/services/search_apis.py`
+### 8. [`backend/services/search_apis.py`](four-hosts-app/backend/services/search_apis.py)
 
 This file integrates with various external search APIs and manages the overall search process.
 
@@ -119,7 +119,7 @@ This file integrates with various external search APIs and manages the overall s
     *   **Indirect LLM Influence:** The queries processed by `QueryOptimizer` are often the result of the LLM's initial classification and the `RewriteLayer` in context engineering. Thus, the LLM indirectly influences the search queries by providing the initial, refined input.
     *   **Opportunity for Enhancement:** This module represents a clear opportunity for future LLM integration to perform more advanced, nuanced, and contextually aware query understanding, expansion, and variation generation.
 
-### 9. `backend/services/answer_generator.py`
+### 9. [`backend/services/answer_generator.py`](four-hosts-app/backend/services/answer_generator.py)
 
 This file is where the LLM takes on the crucial role of synthesizing the final research answers.
 
@@ -143,7 +143,7 @@ This file is where the LLM takes on the crucial role of synthesizing the final r
     *   **Output Processing:** After LLM generation, methods like `_extract_insights` (which use rule-based techniques like regex and keyword matching) extract key insights from the LLM-generated content.
     *   **Action Item Generation:** While some action items are hardcoded, there's potential for LLMs to generate more dynamic and context-aware action items in the future.
 
-### 10. `backend/services/llm_client.py`
+### 10. [`backend/services/llm_client.py`](four-hosts-app/backend/services/llm_client.py)
 
 This file is the central hub for all LLM interactions, abstracting away provider-specific details.
 
@@ -165,7 +165,7 @@ This file is the central hub for all LLM interactions, abstracting away provider
     *   **Robustness:** Includes `tenacity` for automatic retries on network errors and robust error logging.
     *   **Response Handling:** `_extract_content_safely` provides a robust way to extract text content from various LLM response formats.
 
-### 11. `backend/services/llm_critic.py`
+### 11. [`backend/services/llm_critic.py`](four-hosts-app/backend/services/llm_critic.py)
 
 This module introduces a crucial feedback loop, where an LLM evaluates the quality of the research output.
 
@@ -184,7 +184,7 @@ This module introduces a crucial feedback loop, where an LLM evaluates the quali
     *   **Configuration:** Uses `temperature=0.2` to encourage a deterministic and objective evaluation.
     *   **Robust Parsing:** Includes robust parsing and validation of the LLM's JSON output using Pydantic and custom logic to handle potential noise or malformed responses.
 
-### 12. `backend/services/background_llm.py`
+### 12. [`backend/services/background_llm.py`](four-hosts-app/backend/services/background_llm.py)
 
 This module unlocks **true asynchronous LLM research** by offloading long-running tasks to the Azure OpenAI “Responses” API.
 
@@ -212,7 +212,7 @@ This module enables the application to handle long-running LLM tasks efficiently
     *   **Result Retrieval:** Once a task is completed, the result is extracted (`_extract_result` uses `services.llm_client.extract_text_from_any`) and cached.
     *   **Callbacks:** Supports optional callbacks to be executed upon task completion.
 
-### 13. `backend/services/credibility.py`
+### 13. [`backend/services/credibility.py`](four-hosts-app/backend/services/credibility.py)
 
 This module assesses the credibility of sources.
 
@@ -226,7 +226,7 @@ This module assesses the credibility of sources.
         *   **Cross-Source Agreement:** A `CrossSourceAgreementCalculator` assesses agreement between multiple sources based on bias and factual ratings.
     *   **Optional LLM-Related Integration:** There is an optional feature (`ENABLE_BRAVE_GROUNDING`) that, if enabled, uses `brave_client().fetch_citations`. While `brave_client` might internally use LLMs for its grounding capabilities, this module itself does not make direct LLM calls for its primary function of calculating credibility scores.
 
-### 14. `backend/services/agentic_process.py`
+### 14. [`backend/services/agentic_process.py`](four-hosts-app/backend/services/agentic_process.py)
 
 This module provides utilities for the agentic research process, focusing on planning and identifying research gaps.
 
@@ -236,7 +236,7 @@ This module provides utilities for the agentic research process, focusing on pla
     *   **Rule-Based Query Proposal:** `propose_queries_from_missing` and `propose_queries_enriched` generate new search queries based on the identified `missing_terms` and predefined paradigm-specific modifiers. These are deterministic, rule-based functions and do not involve LLM calls for query generation.
     *   **Input for LLM Critic:** The `missing_terms` identified by this module are crucial inputs for the LLM-based critic (`llm_critic.py`), which then uses an LLM to propose more intelligent queries. This module is part of the agentic loop that informs LLM behavior.
 
-### 15. `backend/services/mcp_integration.py`
+### 15. [`backend/services/mcp_integration.py`](four-hosts-app/backend/services/mcp_integration.py)
 
 This module enables the application to extend its capabilities by connecting to external Model Context Protocol (MCP) servers.
 
@@ -248,7 +248,7 @@ This module enables the application to extend its capabilities by connecting to 
     *   **Tool Execution:** The `execute_tool_call` method handles the actual execution of a tool on a remote MCP server.
     *   **LLM as Orchestrator:** While this module doesn't directly call an LLM, it provides the framework for an LLM (via `llm_client.generate_with_tools` or similar) to act as an orchestrator, deciding *when* to call an MCP tool and *what parameters* to pass to it based on its understanding of the task.
 
-### 16. `backend/services/openai_responses_client.py`
+### 16. [`backend/services/openai_responses_client.py`](four-hosts-app/backend/services/openai_responses_client.py)
 
 This file provides the low-level interface to OpenAI's specialized Responses API.
 
@@ -262,7 +262,7 @@ This file provides the low-level interface to OpenAI's specialized Responses API
     *   **Error Handling:** Includes retry logic for network errors and handles `httpx.TimeoutException`.
     *   **Data Extraction Delegation:** Delegates the extraction of final text, citations, and tool calls from raw Responses API payloads to helper functions in `services.llm_client.py`, ensuring consistent data processing.
 
-### 17. `backend/services/classification_engine.py`
+### 17. [`backend/services/classification_engine.py`](four-hosts-app/backend/services/classification_engine.py)
 
 This module is the **central hub for query-to-paradigm classification**, combining deterministic heuristics with optional LLM reasoning.
 
@@ -470,3 +470,33 @@ The LLM in the Four Hosts Research Application is far more than a simple text ge
 *   **Adaptability:** The application's paradigm-driven approach allows the LLM to adjust its behavior, tone, and focus dynamically, enabling it to perform nuanced and specialized research tailored to specific perspectives.
 
 The application's design demonstrates a highly sophisticated approach to integrating LLMs, treating them as intelligent agents capable of complex reasoning, planning, and interaction with external systems. While the current implementation has some gaps and configuration dependencies, the architecture provides a solid foundation for continuous enhancement. The system is largely functional but requires proper Azure OpenAI configuration and Redis for full production readiness. The identified enhancement opportunities would transform it from a sophisticated research tool into a truly intelligent, adaptive research partner.
+
+## Recent Progress (September&nbsp;2025)
+
+### Completed Milestones  
+
+- **Azure Responses Alignment** – `openai_responses_client.py`, `llm_client.py`, and `background_llm.py` now pass the requested model through unchanged (`o3`, `gpt-4.1`, `gpt-4.1-mini`).  
+- **Deep-Research Fallback** – Added `DEEP_RESEARCH_MODEL` env var; defaults to `o3` on Azure.  
+- **LLM Query Optimizer** – New [`services/llm_query_optimizer.py`](backend/services/llm_query_optimizer.py) with feature flag `ENABLE_QUERY_LLM`; integrated into `context_engineering` for semantic expansions.  
+- **Dynamic Action Items** – Introduced [`services/action_items.py`](backend/services/action_items.py) producing schema-validated, context-aware tasks when `ENABLE_DYNAMIC_ACTIONS=1`.  
+- **Feedback Loop** – Implemented [[`backend/routes/feedback.py`](four-hosts-app/backend/routes/feedback.py)](backend/routes/feedback.py)  
+  - `POST /v1/feedback/classification` & `POST /v1/feedback/answer`  
+  - Persists to `feedback_events` via `research_store`; hooks for self-healing & ML tuning.  
+- **Documentation Updates** – `docs/responses_azure_api.md` reflects new deployment mapping and env variables.
+
+### Next Steps (Phase 1 Focus)  
+
+1. **Frontend Feedback UI**  
+   - Inline “Was this correct?” chip & answer thumbs-up dialog.  
+   - Connect to new endpoints; target ≥ 95 % capture rate.  
+2. **Expose Dynamic Action Items**  
+   - Render in `ResultsDisplayEnhanced`; ensure JSON schema validity ≥ 99 %.  
+3. **LLM Query Optimizer Evaluation**  
+   - Offline replay to confirm ≥ 20 % lift in unique high-quality sources.  
+4. **Metrics & Observability Hooks**  
+   - Capture feedback events, cache hit ratio, optimizer hit rate.  
+   - Prepare weekly PromptOps report skeleton.  
+5. **End-to-End Tests**  
+   - Add coverage for feedback routes and query-optimizer path in CI.  
+6. **Redis Decision**  
+   - Confirm whether to introduce RQ or keep cache-only for Phase 0; adjust tasks accordingly.

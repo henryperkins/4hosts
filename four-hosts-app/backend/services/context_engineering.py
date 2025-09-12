@@ -860,7 +860,20 @@ class OptimizeLayer(ContextLayer):
             if os.getenv("ENABLE_QUERY_LLM", "0").lower() in {"1", "true", "yes"}:
                 try:
                     from services.llm_query_optimizer import propose_semantic_variations
-                    llm_vars = await propose_semantic_variations(base_query, paradigm, max_variants=4, key_terms=terms[:8])
+                    llm_vars = await propose_semantic_variations(
+                        base_query,
+                        paradigm,
+                        max_variants=4,
+                        key_terms=terms[:8],
+                    )
+                    if llm_vars:
+                        try:
+                            from services.metrics import metrics
+                            metrics.increment(
+                                "query_optimizer_llm_invocations"
+                            )
+                        except Exception:
+                            pass
                     for i, v in enumerate(llm_vars):
                         key = f"llm_{i+1}"
                         if key not in variations:

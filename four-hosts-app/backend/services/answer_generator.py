@@ -1859,8 +1859,23 @@ class AnswerGenerationOrchestrator:
         )
 
         # Instantiate a fresh generator per request to avoid shared state issues
+        from time import perf_counter
+        start = perf_counter()
         generator = self._make_generator(paradigm)
         answer = await generator.generate_answer(context)
+        duration_ms = (perf_counter() - start) * 1000.0
+        try:
+            from .metrics import metrics
+            metrics.record_stage(
+                stage="answer_synthesis",
+                duration_ms=duration_ms,
+                paradigm=paradigm,
+                success=True,
+                fallback=False,
+                model="llm"
+            )
+        except Exception:
+            pass
         return answer
 
     async def generate_multi_paradigm_answer(

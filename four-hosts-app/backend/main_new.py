@@ -7,11 +7,10 @@ import os
 import logging
 import uvicorn
 from dotenv import load_dotenv
+from core.app import create_app
 
 # Load environment variables from .env file
 load_dotenv()
-
-from core.app import create_app
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,13 +22,25 @@ def main():
     # Configure based on environment
     environment = os.getenv("ENVIRONMENT", "production")
 
+    # ───────────────────────────────────────────────────────────
+    #  Determine worker count
+    #  • Default to 4 workers when Redis is configured (enables
+    #    shared state across workers for cache & rate-limiter)
+    #  • Allow override via WORKERS env var
+    #  • Fallback to single-worker when Redis is unavailable
+    # ───────────────────────────────────────────────────────────
+    workers_cfg = int(os.getenv("WORKERS", "0") or 0)
+    if workers_cfg > 0:
+        workers = workers_cfg
+    else:
+        workers = 4 if os.getenv("REDIS_URL") else 1
+
     if environment == "production":
-        # Production configuration - SINGLE WORKER until Redis is implemented
         uvicorn.run(
             "main_new:app",
             host="0.0.0.0",
             port=8000,
-            workers=1,  # Changed from 4 to 1
+            workers=workers,
             log_level="info",
             access_log=True,
             reload=False,
