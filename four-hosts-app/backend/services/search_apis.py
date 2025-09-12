@@ -23,6 +23,7 @@ from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union, cast
+import html as _html
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
@@ -184,6 +185,41 @@ def ensure_snippet_content(result: "SearchResult"):
         result.content = f"Summary from search results: {result.snippet}"
         result.raw_data.setdefault("content_source", "search_api_snippet")
         result.raw_data.setdefault("content_type", "snippet_only")
+
+
+def _strip_tags(text: str) -> str:
+    """Lightweight HTML tag and entity cleanup used for titles/snippets.
+
+    - Unescape HTML entities (so &lt; becomes <)
+    - Remove all remaining <...> tags including publisher-specific like <jats:p>
+    - Collapse whitespace
+    """
+    if not text:
+        return ""
+    try:
+        import re as _re
+        t = _html.unescape(str(text))
+        t = _re.sub(r"<[^>]+>", " ", t)
+        t = _re.sub(r"\s+", " ", t).strip()
+        return t
+    except Exception:
+        return str(text)
+
+
+def normalize_result_text_fields(result: "SearchResult") -> None:
+    """Normalize user-visible fields for safe display/logging.
+
+    Called after result construction/fetch to ensure provider markup does not
+    leak into progress logs or the UI (e.g. <jats:p>, Word <span data-...>).
+    """
+    try:
+        result.title = _strip_tags(result.title)[:300]
+    except Exception:
+        pass
+    try:
+        result.snippet = _strip_tags(result.snippet)[:800]
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -578,7 +614,8 @@ class QueryOptimizer:
 
         # SEMANTIC (OR between protected phrases) --------------------------
         if len(ents) > 1:
-            variations["semantic"] = f"({' OR '.join(f'\"{e}\"' for e in ents)}) AND {' '.join(keywords)}"
+            quoted_ents = [f'"{e}"' for e in ents]
+            variations["semantic"] = f"({' OR '.join(quoted_ents)}) AND {' '.join(keywords)}"
         else:
             variations["semantic"] = primary.replace(" AND ", " ")
 
@@ -1298,6 +1335,7 @@ class SearchAPIManager:
         await asyncio.gather(*(_fetch(r) for r in all_res))
         for r in all_res:
             ensure_snippet_content(r)
+            normalize_result_text_fields(r)
 
         # Deduplicate (Jaccard on 3-grams) with zero-division guard
         deduped: List[SearchResult] = []

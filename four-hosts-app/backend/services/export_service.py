@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 import logging
 from io import BytesIO
 import base64
+from utils.text_sanitize import sanitize_text
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -183,7 +184,7 @@ class PDFExporter(BaseExporter):
             self.options.custom_title
             or f"Research Report: {research_data.get('query', 'Unknown Query')}"
         )
-        story.append(Paragraph(title, self.styles["CustomTitle"]))
+        story.append(Paragraph(sanitize_text(title, max_len=200), self.styles["CustomTitle"]))
         story.append(Spacer(1, 12))
 
         # Add metadata section
@@ -283,7 +284,7 @@ class PDFExporter(BaseExporter):
         elements = []
 
         elements.append(Paragraph("Executive Summary", self.styles["SectionHeading"]))
-        elements.append(Paragraph(summary, self.styles["BodyText"]))
+        elements.append(Paragraph(sanitize_text(summary, max_len=2000), self.styles["BodyText"]))
         elements.append(Spacer(1, 20))
 
         return elements
@@ -303,10 +304,10 @@ class PDFExporter(BaseExporter):
         if "sections" in answer:
             for section in answer["sections"]:
                 elements.append(
-                    Paragraph(section.get("title", ""), self.styles["Heading3"])
+                    Paragraph(sanitize_text(section.get("title", ""), max_len=200), self.styles["Heading3"])
                 )
                 elements.append(
-                    Paragraph(section.get("content", ""), self.styles["BodyText"])
+                    Paragraph(sanitize_text(section.get("content", ""), max_len=3000), self.styles["BodyText"])
                 )
 
                 # Add bullet points if present
@@ -314,7 +315,7 @@ class PDFExporter(BaseExporter):
                     bullet_items = []
                     for point in section["points"]:
                         bullet_items.append(
-                            ListItem(Paragraph(point, self.styles["Normal"]))
+                            ListItem(Paragraph(sanitize_text(point, max_len=300), self.styles["Normal"]))
                         )
                     elements.append(ListFlowable(bullet_items, bulletType="bullet"))
 
@@ -341,8 +342,8 @@ class PDFExporter(BaseExporter):
         elements.append(Paragraph("Sources", self.styles["SectionHeading"]))
 
         for i, source in enumerate(sources[:20], 1):  # Limit to 20 sources
-            source_text = f"<b>[{i}]</b> {source.get('title', 'Untitled')} - "
-            source_text += f"<i>{source.get('url', 'No URL')}</i>"
+            source_text = f"<b>[{i}]</b> {sanitize_text(source.get('title', 'Untitled'), max_len=200)} - "
+            source_text += f"<i>{sanitize_text(source.get('url', 'No URL'), max_len=300)}</i>"
 
             if source.get("relevance_score"):
                 source_text += f" (Relevance: {source['relevance_score']:.2f})"
@@ -351,7 +352,7 @@ class PDFExporter(BaseExporter):
 
             if source.get("summary"):
                 elements.append(
-                    Paragraph(source["summary"][:200] + "...", self.styles["Citation"])
+                    Paragraph(sanitize_text(source["summary"], max_len=220), self.styles["Citation"])
                 )
 
             elements.append(Spacer(1, 6))
@@ -365,7 +366,7 @@ class PDFExporter(BaseExporter):
         elements.append(Paragraph("Citations", self.styles["SectionHeading"]))
 
         for citation in citations:
-            citation_text = f"{citation.get('text', '')} "
+            citation_text = f"{sanitize_text(citation.get('text', ''), max_len=400)} "
             citation_text += f"<super>[{citation.get('source_index', '?')}]</super>"
             elements.append(Paragraph(citation_text, self.styles["Citation"]))
             elements.append(Spacer(1, 4))
@@ -428,10 +429,19 @@ class JSONExporter(BaseExporter):
 
         # Add optional sections
         if self.options.include_summary:
-            export_data["summary"] = research_data.get("summary")
+            export_data["summary"] = sanitize_text(research_data.get("summary", ""))
 
         if self.options.include_sources:
-            export_data["sources"] = research_data.get("sources", [])
+            # sanitize titles/snippets minimally for JSON as well
+            clean_sources = []
+            for s in research_data.get("sources", []):
+                s = dict(s)
+                if "title" in s:
+                    s["title"] = sanitize_text(s.get("title", ""))
+                if "summary" in s:
+                    s["summary"] = sanitize_text(s.get("summary", ""))
+                clean_sources.append(s)
+            export_data["sources"] = clean_sources
 
         if self.options.include_citations:
             export_data["citations"] = research_data.get("citations", [])
@@ -491,13 +501,11 @@ class CSVExporter(BaseExporter):
                 writer.writerow(
                     {
                         "index": i,
-                        "title": source.get("title", ""),
-                        "url": source.get("url", ""),
+                        "title": sanitize_text(source.get("title", ""), max_len=200),
+                        "url": sanitize_text(source.get("url", ""), max_len=300),
                         "relevance_score": source.get("relevance_score", 0),
                         "credibility_score": source.get("credibility_score", 0),
-                        "summary": source.get("summary", "")[
-                            :500
-                        ],  # Truncate long summaries
+                        "summary": sanitize_text(source.get("summary", ""), max_len=500),
                     }
                 )
 
@@ -585,11 +593,11 @@ class ExcelExporter(BaseExporter):
                     sources_data.append(
                         {
                             "Index": i,
-                            "Title": source.get("title", ""),
-                            "URL": source.get("url", ""),
+                            "Title": sanitize_text(source.get("title", ""), max_len=200),
+                            "URL": sanitize_text(source.get("url", ""), max_len=300),
                             "Relevance Score": source.get("relevance_score", 0),
                             "Credibility Score": source.get("credibility_score", 0),
-                            "Summary": source.get("summary", "")[:500],
+                            "Summary": sanitize_text(source.get("summary", ""), max_len=500),
                         }
                     )
 
@@ -613,8 +621,8 @@ class ExcelExporter(BaseExporter):
                 for section in research_data["answer"]["sections"]:
                     sections_data.append(
                         {
-                            "Section": section.get("title", ""),
-                            "Content": section.get("content", ""),
+                            "Section": sanitize_text(section.get("title", ""), max_len=200),
+                            "Content": sanitize_text(section.get("content", ""), max_len=4000),
                         }
                     )
 
@@ -688,7 +696,7 @@ class MarkdownExporter(BaseExporter):
         if self.options.include_summary and "summary" in research_data:
             lines.append("## Executive Summary")
             lines.append("")
-            lines.append(research_data["summary"])
+            lines.append(sanitize_text(research_data["summary"]))
             lines.append("")
 
         # Answer sections
@@ -699,14 +707,14 @@ class MarkdownExporter(BaseExporter):
 
             if "sections" in research_data["answer"]:
                 for section in research_data["answer"]["sections"]:
-                    lines.append(f"### {section.get('title', 'Section')}")
+                    lines.append(f"### {sanitize_text(section.get('title', 'Section'))}")
                     lines.append("")
-                    lines.append(section.get("content", ""))
+                    lines.append(sanitize_text(section.get("content", "")))
                     lines.append("")
 
                     if "points" in section:
                         for point in section["points"]:
-                            lines.append(f"- {point}")
+                            lines.append(f"- {sanitize_text(point)}")
                         lines.append("")
 
             if "key_insights" in research_data["answer"]:
@@ -721,12 +729,12 @@ class MarkdownExporter(BaseExporter):
             lines.append("## Sources")
             lines.append("")
             for i, source in enumerate(research_data["sources"][:20], 1):
-                lines.append(f"{i}. **{source.get('title', 'Untitled')}**")
-                lines.append(f"   - URL: {source.get('url', 'No URL')}")
+                lines.append(f"{i}. **{sanitize_text(source.get('title', 'Untitled'))}**")
+                lines.append(f"   - URL: {sanitize_text(source.get('url', 'No URL'))}")
                 if source.get("relevance_score"):
                     lines.append(f"   - Relevance: {source['relevance_score']:.2f}")
                 if source.get("summary"):
-                    lines.append(f"   - Summary: {source['summary'][:200]}...")
+                    lines.append(f"   - Summary: {sanitize_text(source['summary'], max_len=220)}")
                 lines.append("")
 
         # Citations
@@ -735,7 +743,7 @@ class MarkdownExporter(BaseExporter):
             lines.append("")
             for citation in research_data["citations"]:
                 lines.append(
-                    f"> {citation.get('text', '')} [{citation.get('source_index', '?')}]"
+                    f"> {sanitize_text(citation.get('text', ''), max_len=400)} [{citation.get('source_index', '?')}]"
                 )
                 lines.append("")
 

@@ -23,6 +23,13 @@ from models.synthesis_models import SynthesisContext
 from models.paradigms import PARADIGM_KEYWORDS as CANON_PARADIGM_KEYWORDS
 from models.paradigms import normalize_to_enum
 from services.llm_client import llm_client
+from core.config import (
+    SYNTHESIS_BASE_WORDS,
+    SYNTHESIS_BASE_TOKENS,
+    EVIDENCE_MAX_QUOTES_DEFAULT,
+    EVIDENCE_BUDGET_TOKENS_DEFAULT,
+    EVIDENCE_INCLUDE_SUMMARIES,
+)
 from utils.token_budget import (
     select_items_within_budget,
 )
@@ -193,7 +200,7 @@ class BaseAnswerGenerator:
                 break
         return picked[:k]
 
-    def _format_evidence_block(self, context: SynthesisContext, max_quotes: int = 12) -> str:
+    def _format_evidence_block(self, context: SynthesisContext, max_quotes: int = EVIDENCE_MAX_QUOTES_DEFAULT) -> str:
         quotes = []
         try:
             eb = getattr(context, "evidence_bundle", None)
@@ -211,7 +218,7 @@ class BaseAnswerGenerator:
             lines.append(f"- [{qid}][{dom}] {qt}")
         return "\n".join(lines) if lines else "(no evidence quotes)"
 
-    def _safe_evidence_block(self, context: SynthesisContext, max_quotes: int = 12, budget_tokens: int = 800) -> str:
+    def _safe_evidence_block(self, context: SynthesisContext, max_quotes: int = EVIDENCE_MAX_QUOTES_DEFAULT, budget_tokens: int = EVIDENCE_BUDGET_TOKENS_DEFAULT) -> str:
         """Injection-safe, token-budgeted evidence list for prompts."""
         # Gather quotes
         try:
@@ -244,6 +251,50 @@ class BaseAnswerGenerator:
             qt = sanitize_snippet(q.get("content", "") or "")
             lines.append(f"- [{qid}][{dom}] {qt}")
         return "\n".join(lines) if lines else "(no evidence quotes)"
+
+    def _source_summaries_block(self, context: SynthesisContext, max_items: int = 12, budget_tokens: int = 600) -> str:
+        """Optional block of per‑source summaries (deduped by URL/domain).
+
+        Summaries can be attached by the evidence builder on each quote as
+        "doc_summary". We dedupe by URL, falling back to domain, and then
+        select within a token budget to avoid overflow.
+        """
+        try:
+            quotes = list(getattr(context, "evidence_quotes", None) or [])
+        except Exception:
+            quotes = []
+        if not quotes:
+            return "(no source summaries)"
+
+        # Collate first summary per URL
+        seen: set[str] = set()
+        items_for_budget: List[Dict[str, Any]] = []
+        for q in quotes:
+            url = (q.get("url") or "").strip()
+            dom = (q.get("domain") or "").lower()
+            sid = url or dom
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            summary = q.get("doc_summary") or ""
+            if not summary:
+                continue
+            items_for_budget.append({
+                "id": sid,
+                "domain": dom,
+                "title": "",
+                "snippet": "",
+                "content": f"{dom}: {summary}",
+            })
+
+        if not items_for_budget:
+            return "(no source summaries)"
+        selected, _u, _d = select_items_within_budget(items_for_budget, max_tokens=budget_tokens)
+        selected = selected[:max_items]
+        lines: List[str] = []
+        for it in selected:
+            lines.append(f"- {sanitize_snippet(it.get('content','') or '')}")
+        return "\n".join(lines) if lines else "(no source summaries)"
 
     def _coverage_table(self, context: SynthesisContext, max_rows: int = 6) -> str:
         # Prefer focus areas from EvidenceBundle if present
@@ -567,7 +618,8 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._safe_evidence_block(context, 12)
+            evidence_block = self._safe_evidence_block(context)
+            summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
 
             guard = guardrail_instruction
@@ -582,13 +634,15 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             Coverage Table (Theme | Covered? | Best Domain):
             {coverage_tbl}
             STRICT: Do not invent facts; ground claims in the Evidence Quotes above.
-            Length: {int(2000 * section_def['weight'])} words
+            Source Summaries (context only):
+            {summaries_block}
+            Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="dolores",
-                max_tokens=int(3000 * section_def['weight']),
+                max_tokens=int(SYNTHESIS_BASE_TOKENS * section_def['weight']),
                 temperature=0.7
             )
         except Exception as e:
@@ -886,7 +940,8 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._safe_evidence_block(context, 12)
+            evidence_block = self._safe_evidence_block(context)
+            summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
 
             guard = guardrail_instruction
@@ -914,14 +969,15 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             - Distinguish correlation from causation
             - Acknowledge limitations
             - STRICT: Do not introduce claims not supported by the Evidence Quotes above
-
-            Length: {int(2000 * section_def['weight'])} words
+            Source Summaries (context only):
+            {summaries_block}
+            Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="bernard",
-                max_tokens=int(3000 * section_def['weight']),
+                max_tokens=int(SYNTHESIS_BASE_TOKENS * section_def['weight']),
                 temperature=0.3
             )
         except Exception as e:
@@ -1307,7 +1363,8 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._safe_evidence_block(context, 12)
+            evidence_block = self._safe_evidence_block(context)
+            summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
 
             guard = guardrail_instruction
@@ -1331,13 +1388,15 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             - Include ROI considerations and resource implications
             - Emphasize competitive advantages and market opportunities
 
-            Length: {int(2000 * section_def['weight'])} words
+            Source Summaries (context only):
+            {summaries_block}
+            Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="maeve",
-                max_tokens=int(3000 * section_def['weight']),
+                max_tokens=int(SYNTHESIS_BASE_TOKENS * section_def['weight']),
                 temperature=0.5
             )
         except Exception as e:
@@ -1625,13 +1684,13 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             Isolated Findings:
             {iso_block}
 
-            Length: {int(2000 * section_def['weight'])} words
+            Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="teddy",
-                max_tokens=int(3000 * section_def['weight']),
+                max_tokens=int(SYNTHESIS_BASE_TOKENS * section_def['weight']),
                 temperature=0.6
             )
         except Exception as e:
@@ -1746,12 +1805,13 @@ class AnswerGenerationOrchestrator:
             paradigm = "bernard"  # Default to analytical
 
         # Create synthesis context
+        from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT
         context = SynthesisContext(
             query=query,
             paradigm=paradigm,
             search_results=search_results,
             context_engineering=context_engineering or {},
-            max_length=(options or {}).get("max_length", 2000),
+            max_length=(options or {}).get("max_length", SYNTHESIS_MAX_LENGTH_DEFAULT),
             include_citations=(options or {}).get("include_citations", True),
             tone=(options or {}).get("tone", "professional"),
             metadata=options or {},

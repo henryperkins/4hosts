@@ -1,5 +1,10 @@
 """
 Core configuration and settings for Four Hosts Research API
+
+This module centralizes tunable knobs for synthesis length, token budgets,
+and evidence handling so we can relax previous hard caps without scattering
+magic numbers throughout the codebase. Values can be overridden via env vars
+to balance cost/perf by environment.
 """
 
 import os
@@ -64,3 +69,39 @@ def get_allowed_hosts() -> List[str]:
 def is_production() -> bool:
     """Check if running in production"""
     return get_environment() == "production"
+
+
+# ────────────────────────────────────────────────────────────
+#  Synthesis & Evidence Defaults (env‑overridable)
+# ────────────────────────────────────────────────────────────
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except Exception:
+        return default
+
+
+# Baseline words per entire answer (allocated per section by weight)
+SYNTHESIS_BASE_WORDS: int = _env_int("SYNTHESIS_BASE_WORDS", 5000)
+
+# Baseline max output tokens per entire answer (allocated per section)
+SYNTHESIS_BASE_TOKENS: int = _env_int("SYNTHESIS_BASE_TOKENS", 8000)
+
+# Default max_length for SynthesisContext when callers omit it
+SYNTHESIS_MAX_LENGTH_DEFAULT: int = _env_int("SYNTHESIS_MAX_LENGTH_DEFAULT", 5000)
+
+# Evidence block budgets in prompts
+EVIDENCE_MAX_QUOTES_DEFAULT: int = _env_int("EVIDENCE_MAX_QUOTES_DEFAULT", 30)
+EVIDENCE_BUDGET_TOKENS_DEFAULT: int = _env_int("EVIDENCE_BUDGET_TOKENS_DEFAULT", 2000)
+
+# Evidence extraction limits
+EVIDENCE_MAX_DOCS_DEFAULT: int = _env_int("EVIDENCE_MAX_DOCS_DEFAULT", 20)
+EVIDENCE_QUOTES_PER_DOC_DEFAULT: int = _env_int("EVIDENCE_QUOTES_PER_DOC_DEFAULT", 3)
+EVIDENCE_QUOTE_MAX_CHARS: int = _env_int("EVIDENCE_QUOTE_MAX_CHARS", 360)
+
+# Enable lightweight semantic scoring for quote selection
+EVIDENCE_SEMANTIC_SCORING: bool = (os.getenv("EVIDENCE_SEMANTIC_SCORING", "1").lower() in {"1", "true", "yes"})
+
+# Include short per‑source summaries alongside quotes in prompts
+EVIDENCE_INCLUDE_SUMMARIES: bool = (os.getenv("EVIDENCE_INCLUDE_SUMMARIES", "1").lower() in {"1", "true", "yes"})

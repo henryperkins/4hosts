@@ -5,6 +5,7 @@ Models for answer synthesis and generation
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT
 try:
     # Typed reference to canonical EvidenceBundle
     from .context_models import EvidenceBundle  # type: ignore
@@ -19,7 +20,7 @@ class SynthesisContext:
     paradigm: str
     search_results: List[Dict[str, Any]]
     context_engineering: Dict[str, Any]
-    max_length: int = 2000
+    max_length: int = SYNTHESIS_MAX_LENGTH_DEFAULT
     include_citations: bool = True
     tone: str = "professional"
     metadata: Dict[str, Any] = field(default_factory=dict)

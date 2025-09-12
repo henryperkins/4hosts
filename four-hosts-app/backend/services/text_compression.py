@@ -3,6 +3,7 @@ Text compression utilities for the Four Hosts application
 Provides text and query compression functionality
 """
 
+import os
 import re
 from typing import Optional, List, Dict
 
@@ -12,7 +13,8 @@ class TextCompressor:
     
     def __init__(self):
         self.min_length = 100
-        self.max_length = 2000
+        # Default soft cap; can be overridden per-call
+        self.max_length = int(os.getenv("TEXT_COMPRESSION_MAX_LENGTH", "5000") or 5000)
     
     def compress(self, text: str, max_length: Optional[int] = None) -> str:
         """

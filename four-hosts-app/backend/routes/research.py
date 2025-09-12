@@ -35,6 +35,10 @@ from services.enhanced_integration import (
 )
 from services.context_engineering import context_pipeline
 from services.research_orchestrator import research_orchestrator
+from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT
+from services.result_adapter import ResultAdapter
+import html as _html
+import re as _re
 from models.base import HOST_TO_MAIN_PARADIGM, Paradigm
 from dataclasses import asdict
 from services.webhook_manager import WebhookManager, WebhookEvent
@@ -161,7 +165,8 @@ async def execute_real_research(
             return
             
         if progress_tracker:
-            await progress_tracker.update_progress(research_id, "search_retrieval", 25)
+            # Align with FE "Search & Retrieval" phase key
+            await progress_tracker.update_progress(research_id, "search", 25)
 
         class _UserCtxShim:
             def __init__(self, role: str, source_limit: int):
@@ -175,16 +180,16 @@ async def execute_real_research(
         max_sources = int(getattr(research, "options", ResearchOptions()).max_sources)
         user_ctx = _UserCtxShim(user_role_name, max_sources)
 
-        orch_resp = await research_orchestrator.execute_research(
-            classification=cls,
-            context_engineered=ce,  # legacy shape is supported by the orchestrator
-            user_context=user_ctx,
-            progress_callback=progress_tracker,
-            research_id=research_id,
-            enable_deep_research=(research.options.depth == ResearchDepth.DEEP_RESEARCH),
-            deep_research_mode=None,
-            synthesize_answer=True,
-            answer_options={"research_id": research_id, "max_length": 2000},
+            orch_resp = await research_orchestrator.execute_research(
+                classification=cls,
+                context_engineered=ce,  # legacy shape is supported by the orchestrator
+                user_context=user_ctx,
+                progress_callback=progress_tracker,
+                research_id=research_id,
+                enable_deep_research=(research.options.depth == ResearchDepth.DEEP_RESEARCH),
+                deep_research_mode=None,
+                synthesize_answer=True,
+            answer_options={"research_id": research_id, "max_length": SYNTHESIS_MAX_LENGTH_DEFAULT},
         )
 
         # Normalize answer for frontend
@@ -300,16 +305,21 @@ async def execute_real_research(
 
         # Convert sources from orchestrator response results (already compressed/normalized)
         sources_payload = []
-        for item in orch_resp.get("results", []) or []:
+        for raw in orch_resp.get("results", []) or []:
             try:
-                md = item.get("metadata", {}) or {}
+                r = ResultAdapter(raw)
+                # Extra defensive cleanup in case any provider markup slipped through
+                title = _re.sub(r"<[^>]+>", " ", _html.unescape(r.title or "")).strip()
+                snippet = _re.sub(r"<[^>]+>", " ", _html.unescape(r.snippet or "")).strip()
+                md = r.metadata or {}
+                domain = (r.domain or md.get("domain") or "")
                 sources_payload.append(
                     {
-                        "title": item.get("title", "") or "",
-                        "url": item.get("url", "") or "",
-                        "snippet": item.get("snippet", "") or "",
-                        "domain": md.get("domain", "") or "",
-                        "credibility_score": float(item.get("credibility_score", 0.5) or 0.5),
+                        "title": title,
+                        "url": r.url or md.get("url", "") or "",
+                        "snippet": snippet,
+                        "domain": domain,
+                        "credibility_score": float(r.credibility_score if r.credibility_score is not None else 0.5),
                         "published_date": md.get("published_date"),
                         "source_type": md.get("result_type", "web"),
                         "source_category": md.get("source_category"),
@@ -491,7 +501,7 @@ async def execute_real_research(
                     query=research.query,
                     search_results=flat_results,
                     context_engineering=(getattr(ce, "model_dump", None)() if hasattr(ce, "model_dump") else (ce.dict() if hasattr(ce, "dict") else {})),
-                    options={"research_id": research_id, "max_length": 1600},
+                    options={"research_id": research_id, "max_length": SYNTHESIS_MAX_LENGTH_DEFAULT},
                 )
                 prim = combo.get("primary_paradigm", {}).get("answer")
                 sec = combo.get("secondary_paradigm", {}).get("answer")
@@ -604,7 +614,8 @@ async def execute_real_research(
         await research_store.update_field(research_id, "status", ResearchStatus.COMPLETED)
 
         if progress_tracker:
-            await progress_tracker.update_progress(research_id, "finalizing", 98)
+            # Keep timeline consistent; final bump before completion event
+            await progress_tracker.update_progress(research_id, "complete", 98)
             await progress_tracker.complete_research(research_id, {"summary": answer_payload.get("summary", "")[:200]})
 
     except Exception as e:

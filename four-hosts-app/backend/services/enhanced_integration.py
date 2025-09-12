@@ -173,12 +173,13 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
         # Build ``SynthesisContext`` – replicate logic from the parent implementation
         options = options or {}
 
+        from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT
         context = SynthesisContext(
             query=query,
             paradigm=primary_paradigm_enum.value if isinstance(primary_paradigm_enum, HostParadigm) else str(primary_paradigm_enum),
             search_results=search_results,
             context_engineering=context_engineering,
-            max_length=options.get("max_length", 2000),
+            max_length=options.get("max_length", SYNTHESIS_MAX_LENGTH_DEFAULT),
             include_citations=options.get("include_citations", True),
             tone=options.get("tone", "professional"),
         )

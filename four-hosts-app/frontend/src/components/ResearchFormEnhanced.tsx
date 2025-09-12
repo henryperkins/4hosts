@@ -12,6 +12,7 @@ interface ResearchFormState {
   paradigm: string
   depth: 'quick' | 'standard' | 'deep' | 'deep_research'
   options: ResearchOptions
+  comprehensive: boolean
 }
 
 type FormAction =
@@ -23,6 +24,7 @@ type FormAction =
   | { type: 'UPDATE_OPTIONS'; payload: Partial<ResearchOptions> }
   | { type: 'RESET_FORM' }
   | { type: 'INIT_FROM_PREFERENCES'; payload: { depth: ResearchFormState['depth']; enable_real_search: boolean } }
+  | { type: 'SET_COMPREHENSIVE'; payload: boolean }
 
 function formReducer(state: ResearchFormState, action: FormAction): ResearchFormState {
   switch (action.type) {
@@ -40,6 +42,8 @@ function formReducer(state: ResearchFormState, action: FormAction): ResearchForm
       return { ...state, options: { ...state.options, ...action.payload } }
     case 'RESET_FORM':
       return { ...state, query: '', error: '', paradigm: 'auto' }
+    case 'SET_COMPREHENSIVE':
+      return { ...state, comprehensive: action.payload }
     case 'INIT_FROM_PREFERENCES':
       return {
         ...state,
@@ -107,7 +111,8 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
       language: 'en',
       region: 'us',
       enable_ai_classification: true
-    }
+    },
+    comprehensive: false
   }
 
   const [state, dispatch] = useReducer(formReducer, initialState)
@@ -185,6 +190,30 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   const toggleAdvanced = useCallback(() => {
     dispatch({ type: 'TOGGLE_ADVANCED' })
   }, [])
+
+  // Comprehensive Mode toggle — boosts coverage and analysis depth where allowed
+  const canUseDeep = ['pro', 'enterprise', 'admin'].includes(user?.role || 'free')
+  const handleComprehensiveToggle = useCallback(() => {
+    const next = !state.comprehensive
+    // When enabling, raise sensible limits; when disabling, restore defaults
+    if (next) {
+      const boosted: Partial<ResearchOptions> = {
+        enable_real_search: true,
+        enable_ai_classification: true,
+        // Keep under server-side higher-cost threshold while still broad
+        max_sources: 100,
+        search_context_size: 'large'
+      }
+      dispatch({ type: 'UPDATE_OPTIONS', payload: boosted })
+      if (canUseDeep) {
+        dispatch({ type: 'SET_DEPTH', payload: 'deep' })
+      }
+    } else {
+      dispatch({ type: 'UPDATE_OPTIONS', payload: { max_sources: 50, search_context_size: 'medium' as any } })
+      dispatch({ type: 'SET_DEPTH', payload: state.depth === 'deep' ? 'standard' : state.depth })
+    }
+    dispatch({ type: 'SET_COMPREHENSIVE', payload: next })
+  }, [state.comprehensive, canUseDeep, state.depth])
 
   // Currently not used - for future access control
   // const _canAccessDeepResearch = user?.role && ['pro', 'enterprise', 'admin'].includes(user.role)
@@ -347,6 +376,38 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                   onChange={(e) => dispatch({ type: 'UPDATE_OPTIONS', payload: { max_sources: parseInt(e.target.value) } })}
                   className="input text-sm"
                 />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="flex items-center cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={state.comprehensive}
+                    onChange={handleComprehensiveToggle}
+                    className="h-4 w-4 text-primary focus:ring-primary border-border rounded"
+                  />
+                  <span className="ml-2 text-sm text-text">
+                    Comprehensive Mode
+                    <span className="ml-2 text-xs text-text-muted">broader coverage, larger context</span>
+                  </span>
+                </label>
+                {!canUseDeep && state.comprehensive && (
+                  <p className="mt-1 text-xs text-amber-600">Deep depth requires PRO. We’ll still broaden sources.</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm text-text mb-1">Search context size</label>
+                <select
+                  className="input text-sm"
+                  value={state.options.search_context_size || 'medium'}
+                  onChange={(e) => dispatch({ type: 'UPDATE_OPTIONS', payload: { search_context_size: e.target.value as any } })}
+                >
+                  <option value="small">Small</option>
+                  <option value="medium">Medium</option>
+                  <option value="large">Large</option>
+                </select>
               </div>
             </div>
           </div>

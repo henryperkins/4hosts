@@ -36,6 +36,10 @@ from services.cache import (
     cache_manager,
 )
 from services.text_compression import query_compressor
+from core.config import (
+    EVIDENCE_MAX_DOCS_DEFAULT,
+    SYNTHESIS_MAX_LENGTH_DEFAULT,
+)
 from services.deep_research_service import (
     deep_research_service,
     DeepResearchConfig,
@@ -66,6 +70,17 @@ def bernard_min_relevance() -> float:
         return float(os.getenv("SEARCH_MIN_RELEVANCE_BERNARD", "0.15"))
     except Exception:
         return 0.15
+
+
+def default_source_limit() -> int:
+    """Resolve the default source limit from env or use a sensible default (50).
+    This value is used anywhere a `source_limit` is missing from user context.
+    """
+    try:
+        v = int(os.getenv("DEFAULT_SOURCE_LIMIT", "50") or 50)
+        return max(1, v)
+    except Exception:
+        return 50
 
 
 @dataclass
@@ -103,6 +118,14 @@ class ResultDeduplicator:
     """Removes duplicate search results using various similarity measures"""
 
     def __init__(self, similarity_threshold: float = 0.8):
+        # Allow tuning via env; default to a less aggressive 0.9 to reduce
+        # accidental drops of near-duplicate but distinct items.
+        try:
+            env_thr = os.getenv("DEDUP_SIMILARITY_THRESH")
+            if env_thr is not None:
+                similarity_threshold = float(env_thr)
+        except Exception:
+            pass
         self.similarity_threshold = similarity_threshold
 
     async def deduplicate_results(
@@ -243,10 +266,17 @@ class EarlyRelevanceFilter:
             'singles in your area', 'hot deals', 'limited time offer'
         }
 
-        self.low_quality_domains = {
-            'ezinearticles.com', 'articlesbase.com', 'squidoo.com',
-            'hubpages.com', 'buzzle.com', 'ehow.com'
-        }
+        # Domain blocklist can be disabled via EARLY_FILTER_BLOCK_DOMAINS=0
+        try:
+            if os.getenv("EARLY_FILTER_BLOCK_DOMAINS", "1").lower() in {"1", "true", "yes", "on"}:
+                self.low_quality_domains = {
+                    'ezinearticles.com', 'articlesbase.com', 'squidoo.com',
+                    'hubpages.com', 'buzzle.com', 'ehow.com'
+                }
+            else:
+                self.low_quality_domains = set()
+        except Exception:
+            self.low_quality_domains = set()
 
     def is_relevant(self, result: SearchResult, query: str, paradigm: str) -> bool:
         """Check if a result meets minimum relevance criteria"""
@@ -303,7 +333,7 @@ class EarlyRelevanceFilter:
 
         # Folded-in theme overlap (Jaccard) filter
         try:
-            thr = float(os.getenv("EARLY_THEME_OVERLAP_MIN", "0.12") or 0.12)
+            thr = float(os.getenv("EARLY_THEME_OVERLAP_MIN", "0.08") or 0.08)
             q_terms = set(query_compressor.extract_keywords(query))
             if q_terms:
                 import re as _re
@@ -475,6 +505,13 @@ class UnifiedResearchOrchestrator:
         self.tool_registry = ToolRegistry()
         self.retry_policy = RetryPolicy()
         self.planner = BudgetAwarePlanner(self.tool_registry, self.retry_policy)
+        # Enforce that LLM-based synthesis must be available. If set to 1/true,
+        # any failure to generate an answer will surface as a job failure rather
+        # than silently degrading to evidence-only output. Default: on.
+        try:
+            self.require_synthesis = os.getenv("LLM_REQUIRED", "1").lower() in {"1", "true", "yes", "on"}
+        except Exception:
+            self.require_synthesis = True
         # Agentic loop configuration (can be overridden by env)
         self.agentic_config = {
             "enabled": True,
@@ -678,7 +715,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             search_results,
             classification,
             context_engineered,
-            user_context
+            user_context,
+            progress_callback,
+            research_id
         )
 
         # Check for cancellation before deep research
@@ -714,18 +753,18 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # Optional answer synthesis (P2)
         synthesized_answer = None
-        if synthesize_answer and _ANSWER_GEN_AVAILABLE:
+        if synthesize_answer:
             try:
                 # Build evidence quotes from processed results
-                evidence_quotes: List[Dict[str, Any]] = []
-                try:
-                    from services.evidence_builder import build_evidence_quotes
-                    evidence_quotes = await build_evidence_quotes(
-                        getattr(context_engineered, "original_query", ""),
-                        processed_results["results"],
-                        max_docs=min(12, int(getattr(user_context, "source_limit", 10))),
-                        quotes_per_doc=3,
-                    )
+        evidence_quotes: List[Dict[str, Any]] = []
+        try:
+            from services.evidence_builder import build_evidence_quotes
+            evidence_quotes = await build_evidence_quotes(
+                getattr(context_engineered, "original_query", ""),
+                processed_results["results"],
+                max_docs=min(EVIDENCE_MAX_DOCS_DEFAULT, int(getattr(user_context, "source_limit", default_source_limit()))),
+                quotes_per_doc=3,
+            )
                 except Exception:
                     evidence_quotes = []
                 synthesized_answer = await self._synthesize_answer(
@@ -746,6 +785,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     pass
             except Exception as e:
                 logger.error(f"Answer synthesis failed: {e}")
+                # If synthesis is required, escalate to hard failure so the
+                # request never returns a partial result without an LLM answer.
+                if getattr(self, "require_synthesis", True):
+                    raise
 
         # Assemble high-level response
         response = {
@@ -901,7 +944,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 paradigm=paradigm_code,
                 search_results=sources,
                 context_engineering=ce,
-                max_length=int(options.get("max_length", 2000)),
+                max_length=int(options.get("max_length", SYNTHESIS_MAX_LENGTH_DEFAULT)),
                 include_citations=bool(options.get("include_citations", True)),
                 tone=str(options.get("tone", "professional")),
                 metadata={"research_id": research_id},
@@ -978,15 +1021,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
     def _get_query_limit(self, user_context: Any) -> int:
         """Get query limit based on user context"""
-        base_limits = {
-            "FREE": 3,
-            "BASIC": 5,
-            "PRO": 10,
-            "ENTERPRISE": 20,
-            "ADMIN": 30
-        }
+        # Allow environment overrides per role, else use more generous defaults
+        defaults = {"FREE": 5, "BASIC": 8, "PRO": 15, "ENTERPRISE": 25, "ADMIN": 40}
         role = getattr(user_context, "role", "PRO")
-        return base_limits.get(role, 3)
+        try:
+            env_key = f"QUERY_LIMIT_{role}"
+            if env_key in os.environ:
+                return int(os.getenv(env_key, str(defaults.get(role, 5))) or defaults.get(role, 5))
+        except Exception:
+            pass
+        return defaults.get(role, 5)
 
     def _compress_and_dedup_queries(self, queries: List[str]) -> List[str]:
         optimized_list: List[str] = []
@@ -1017,7 +1061,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         Deterministically execute searches for V2 path. Returns {query_key: [SearchResult, ...]}.
         """
         all_results: Dict[str, List[SearchResult]] = {}
-        max_results = int(getattr(user_context, "source_limit", 10) or 10)
+        max_results = int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())
         paradigm_code = normalize_to_internal_code(primary_paradigm)
         min_rel = bernard_min_relevance() if paradigm_code == "bernard" else 0.25
 
@@ -1029,6 +1073,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             # Progress
             if progress_callback and research_id:
                 try:
+                    # Emit explicit search.started so UI can show total planned searches
+                    try:
+                        await progress_callback.report_search_started(
+                            research_id,
+                            q,
+                            "aggregate",
+                            idx + 1,
+                            len(optimized_queries),
+                        )
+                    except Exception:
+                        pass
                     await progress_callback.update_progress(
                         research_id,
                         phase="search",
@@ -1042,7 +1097,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
             # Basic search config for V2 path
             config = SearchConfig(
-                max_results=min(max_results, 50),
+                max_results=max_results,
                 language="en",
                 region="us",
                 min_relevance_score=min_rel,
@@ -1093,6 +1148,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         classification: ClassificationResultSchema,
         context_engineered: ContextEngineeredQuerySchema,
         user_context: Any,
+        progress_callback: Optional[Any] = None,
+        research_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Combine, validate, dedup, early-filter, rank, and score credibility.
@@ -1147,12 +1204,59 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # 5) Credibility on top-N
         cred_summary = {"average_score": 0.0}
         creds: Dict[str, float] = {}
-        topN = ranked[: min(20, len(ranked))]
+        user_cap = int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())
+        topN = ranked[: min(max(20, user_cap), len(ranked))]
+
+        # Announce analysis phase with total for UI microbar/ETA
+        if progress_callback and research_id:
+            try:
+                await progress_callback.update_progress(
+                    research_id,
+                    phase="analysis",
+                    message="Evaluating source credibility",
+                    progress=55,
+                    items_done=0,
+                    items_total=len(topN),
+                )
+            except Exception:
+                pass
         for idx, r in enumerate(topN):
             try:
                 score, _, _ = await self.get_source_credibility_safe(getattr(r, "domain", ""), paradigm_code)
                 r.credibility_score = score
                 creds[getattr(r, "domain", "")] = score
+                # Stream credibility checks + analyzed counter to UI
+                if progress_callback and research_id:
+                    try:
+                        await progress_callback.report_credibility_check(
+                            research_id,
+                            getattr(r, "domain", ""),
+                            float(score or 0.0),
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await progress_callback.report_source_analyzed(
+                            research_id,
+                            f"src-{idx}",
+                            {"credibility": float(score or 0.0)},
+                        )
+                    except Exception:
+                        pass
+                    # Occasionally push determinate analysis progress
+                    try:
+                        if (idx + 1) == len(topN) or ((idx + 1) % 2 == 0):
+                            pct = 55 + int(((idx + 1) / max(1, len(topN))) * 15)  # 55→70 during analysis
+                            await progress_callback.update_progress(
+                                research_id,
+                                phase="analysis",
+                                progress=pct,
+                                items_done=idx + 1,
+                                items_total=len(topN),
+                            )
+                        
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1163,7 +1267,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 cred_summary["average_score"] = 0.0
 
         # 6) Final limit by user context
-        final_results: List[SearchResult] = ranked[: int(getattr(user_context, "source_limit", 10) or 10)]
+        final_results: List[SearchResult] = ranked[: int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())]
 
         meta = {
             "processing_time": None,  # caller fills
@@ -1377,7 +1481,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
     ) -> ResearchExecutionResult:
         """Run only the deep research path and return a minimal ResearchExecutionResult."""
         class _UserCtxShim:
-            def __init__(self, role="PRO", source_limit=10, is_pro_user=True, preferences=None):
+            def __init__(self, role="PRO", source_limit: int = default_source_limit(), is_pro_user=True, preferences=None):
                 self.role = role
                 self.source_limit = source_limit
                 self.is_pro_user = is_pro_user
@@ -1385,7 +1489,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         uc = getattr(context_engineered, "user_context", None)
         user_context = _UserCtxShim(
             role=getattr(uc, "role", "PRO") if uc else "PRO",
-            source_limit=getattr(uc, "source_limit", 10) if uc else 10,
+            source_limit=getattr(uc, "source_limit", default_source_limit()) if uc else default_source_limit(),
             is_pro_user=getattr(uc, "is_pro_user", True) if uc else True,
             preferences=getattr(uc, "preferences", {}) if uc else {},
         )
@@ -1440,7 +1544,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 continue
 
-        final_results = adapted[: int(getattr(user_context, "source_limit", 10) or 10)]
+        final_results = adapted[: int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())]
         credibility_scores: Dict[str, float] = {}
         for r in final_results[:20]:
             try:

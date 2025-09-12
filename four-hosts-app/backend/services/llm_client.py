@@ -30,6 +30,12 @@ from tenacity import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Central default for output tokens
+try:
+    from core.config import SYNTHESIS_BASE_TOKENS as DEFAULT_MAX_TOKENS
+except Exception:
+    DEFAULT_MAX_TOKENS = 8000
+
 
 # ────────────────────────────────────────────────────────────
 #  Enums / Constants
@@ -256,7 +262,7 @@ class LLMClient:
         *,
         model: str | None = None,
         paradigm: Union[str, "HostParadigm"] = "bernard",
-        max_tokens: int = 2_000,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: Optional[float] = None,
         top_p: float = 0.9,
         frequency_penalty: float = 0.0,
@@ -409,10 +415,10 @@ class LLMClient:
                     "messages": azure_messages,
                 }
                 if model_name.startswith("o"):
-                    cc_req["max_completion_tokens"] = kw.get("max_completion_tokens", kw.get("max_tokens", 2000))
+                    cc_req["max_completion_tokens"] = kw.get("max_completion_tokens", kw.get("max_tokens", DEFAULT_MAX_TOKENS))
                     cc_req["reasoning_effort"] = kw.get("reasoning_effort", "medium")
                 else:
-                    cc_req["max_tokens"] = kw.get("max_tokens", 2000)
+                    cc_req["max_tokens"] = kw.get("max_tokens", DEFAULT_MAX_TOKENS)
                     cc_req["temperature"] = temperature
                     cc_req["top_p"] = top_p
                     cc_req["frequency_penalty"] = frequency_penalty
@@ -525,10 +531,10 @@ class LLMClient:
             
             # Use appropriate token parameter for model type
             if model_name in {"o3", "o1", "gpt-5-mini"}:
-                azure_req["max_completion_tokens"] = 2_000
+                azure_req["max_completion_tokens"] = DEFAULT_MAX_TOKENS
                 azure_req["reasoning_effort"] = "medium"
             else:
-                azure_req["max_tokens"] = 2_000
+                azure_req["max_tokens"] = DEFAULT_MAX_TOKENS
             
             op = await self.azure_client.chat.completions.create(**azure_req)
             result = {
@@ -548,7 +554,7 @@ class LLMClient:
                 ]),
                 tools=cast(Any, tools),
                 tool_choice=cast(Any, wrapped_choice),       # ← use string/dict directly for OpenAI
-                max_tokens=2_000,
+                max_tokens=DEFAULT_MAX_TOKENS,
             )
             result = {
                 "content": self._extract_content_safely(op) if not (op.choices and op.choices[0].message.tool_calls) else (op.choices[0].message.content or ""),
@@ -569,7 +575,7 @@ class LLMClient:
         *,
         model: str | None = None,
         paradigm: str = "bernard",
-        max_tokens: int = 2_000,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 0.7,
     ) -> str:
         """Multi-turn chat conversation helper (non-streaming)."""
@@ -620,7 +626,7 @@ class LLMClient:
         prompt: str,
         *,
         paradigm: Union[str, "HostParadigm"],
-        max_tokens: int = 2_000,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 0.7,
         model: str | None = None,
     ) -> str:

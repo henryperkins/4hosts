@@ -1,111 +1,169 @@
-# Four Hosts Research Application - Claude Code Context
+# CLAUDE.md
 
-This file contains essential information about the Four Hosts paradigm-aware research application for Claude Code and custom subagents.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-The Four Hosts application is a sophisticated research system that classifies queries into four distinct "consciousness paradigms" and executes paradigm-aligned research with AI-powered answer generation.
+The Four Hosts application is a paradigm-aware research system that classifies queries into four consciousness paradigms (based on Westworld hosts) and executes paradigm-aligned research with AI-powered answer generation.
 
-### The Four Paradigms:
+### The Four Paradigms
 - **Dolores (Revolutionary)**: Investigative, exposing systemic issues, challenging status quo
 - **Teddy (Devotion)**: Supportive, community-focused, empathetic care
 - **Bernard (Analytical)**: Data-driven, empirical research, academic rigor
 - **Maeve (Strategic)**: Business intelligence, actionable strategies, optimization
 
-## System Architecture
+## Common Development Commands
 
-### Backend Pipeline Flow:
-1. **Query Classification** → Identifies primary/secondary paradigms
-2. **Context Engineering** → W-S-C-I pipeline refines query
-3. **Search Execution** → Paradigm-aware multi-API search
-4. **Answer Generation** → LLM synthesis with paradigm tone
-
-### Key Backend Components:
-- `main.py`: FastAPI application with WebSocket support
-- `classification_engine.py`: Query analysis and paradigm classification
-- `context_engineering.py`: W-S-C-I (Write-Select-Compress-Isolate) pipeline
-- `paradigm_search.py`: Paradigm-specific search strategies
-- `search_apis.py`: Google, ArXiv, Brave, PubMed API integrations
-- `answer_generator*.py`: Paradigm-aligned content generation
-- `research_orchestrator.py`: Coordinates the research flow
-- `llm_client.py`: Azure OpenAI GPT-4 integration
-
-### Frontend Stack:
-- React 18 with TypeScript
-- Vite build tool
-- Tailwind CSS
-- Context API for state
-- WebSocket for real-time updates
-
-## Custom Subagents
-
-Located in `.claude/agents/`:
-
-1. **paradigm-analyzer**: Reviews code for paradigm alignment
-2. **research-optimizer**: Optimizes search and answer quality
-3. **test-engineer**: Creates paradigm-aware tests
-4. **api-integrator**: Adds new search data sources
-5. **llm-prompt-engineer**: Optimizes GPT-4 prompts
-6. **react-component-builder**: Creates paradigm-aware UI components
-
-## Important Technical Details
-
-### API Limits:
-- Google Custom Search: 100 queries/day (free tier)
-- ArXiv: 3 requests/second
-- Brave Search: 2000 queries/month
-- PubMed: 3 requests/second
-
-### Authentication:
-- JWT-based auth with refresh tokens
-- Role-based access (FREE, BASIC, PRO, ENTERPRISE, ADMIN)
-- Deep research requires PRO+ subscription
-
-### Testing:
-- pytest for backend tests
-- Test files in `backend/tests/`
-- Mock external APIs for consistent testing
-
-### Environment Variables:
-- `AZURE_OPENAI_API_KEY`: Required for LLM
-- `GOOGLE_API_KEY` + `GOOGLE_SEARCH_ENGINE_ID`: For Google search
-- `BRAVE_API_KEY`: For Brave search
-- Database and Redis configuration
-
-## Development Commands
-
+### Backend
 ```bash
-# Backend
+# Start backend server
 cd four-hosts-app/backend
-source venv/bin/activate
-python main.py
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+uvicorn main_new:app --reload
 
-# Frontend
+# Run tests
+pytest                              # Run all tests
+pytest tests/test_main.py          # Run specific test file
+pytest -k "test_classification"    # Run tests matching pattern
+pytest -m integration              # Run integration tests only
+
+# Database migrations
+alembic upgrade head               # Apply migrations
+alembic revision --autogenerate -m "description"  # Create new migration
+```
+
+### Frontend
+```bash
+# Start frontend dev server
 cd four-hosts-app/frontend
 npm run dev
 
-# Tests
-pytest backend/tests/
+# Build for production
+npm run build
+
+# Run linting
+npm run lint
 ```
 
-## Paradigm-Specific Considerations
+### Full Stack
+```bash
+# Start both frontend and backend (from four-hosts-app/)
+./start-app.sh
+```
 
-When working on this codebase:
+## Architecture Overview
 
-1. **Maintain paradigm consistency** across the pipeline
-2. **Check enum mappings** between HostParadigm and Paradigm
-3. **Test with paradigm-specific queries** for each component
-4. **Optimize API usage** due to rate limits
-5. **Follow established patterns** in existing components
+### Backend Pipeline
+1. **Query Classification** (`services/classification_engine.py`)
+   - Analyzes query to identify primary/secondary paradigms
+   - Uses keyword matching, patterns, and optional LLM classification
 
-## Recent Updates
+2. **Context Engineering** (`services/context_engineering.py`)
+   - W-S-C-I (Write-Select-Compress-Isolate) pipeline
+   - Refines queries for optimal search results
 
-- Custom subagents created for specialized development tasks
-- Enhanced with project-specific implementation details
-- Paradigm-aware component patterns documented
-- API integration patterns clarified
-- Testing strategies outlined
+3. **Research Orchestration** (`services/research_orchestrator.py`)
+   - Coordinates entire research flow
+   - Manages search execution across multiple APIs
+   - Handles caching, rate limiting, and result aggregation
 
----
+4. **Search Execution** (`services/search_apis.py`, `services/paradigm_search.py`)
+   - Multi-API search (Google, Brave, ArXiv, PubMed, Semantic Scholar)
+   - Paradigm-specific search strategies
+   - Result deduplication and credibility scoring
 
-*This context file helps Claude Code and subagents understand the system architecture and make paradigm-aligned contributions.*
+5. **Answer Generation** (`services/answer_generator.py`)
+   - LLM-based synthesis using Azure OpenAI GPT-4
+   - Paradigm-aligned tone and structure
+   - Evidence building and citation management
+
+### Key Service Components
+- **Authentication**: JWT-based with refresh tokens (`services/auth_service.py`)
+- **Deep Research**: Enhanced multi-round research (`services/deep_research_service.py`)
+- **Export**: Multiple format export (`services/export_service.py`)
+- **Caching**: Redis-based result caching (`services/cache.py`)
+- **Background Processing**: Async task execution (`services/background_llm.py`)
+
+### Data Models
+- **Paradigm Models**: `models/paradigms.py` - Core paradigm definitions
+- **Context Models**: `models/context_models.py` - Query and classification schemas
+- **Synthesis Models**: `models/synthesis_models.py` - Answer generation structures
+- **Auth Models**: `models/auth.py` - User and authentication
+
+### Frontend Architecture
+- **React 19** with TypeScript
+- **Vite** build tooling
+- **Tailwind CSS v4** for styling
+- **Context API** for state management
+- **WebSocket** support for real-time updates
+- **Key Components**:
+  - `ResearchFormEnhanced.tsx` - Main research input
+  - `ResultsDisplayEnhanced.tsx` - Result presentation
+  - `ResearchProgress.tsx` - Real-time progress tracking
+
+## Important Configuration
+
+### Required Environment Variables
+```bash
+# Azure OpenAI (Required for LLM features)
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_ENDPOINT=
+AZURE_OPENAI_DEPLOYMENT=
+AZURE_OPENAI_API_VERSION=2024-10-01-preview
+
+# Search APIs (At least one required)
+GOOGLE_API_KEY=
+GOOGLE_SEARCH_ENGINE_ID=
+BRAVE_API_KEY=
+
+# Database
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost/fourhost
+
+# Redis (Optional, for caching)
+REDIS_URL=redis://localhost:6379
+
+# Auth
+JWT_SECRET_KEY=your-secret-key
+JWT_ALGORITHM=HS256
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+```
+
+### API Rate Limits
+- Google Custom Search: 100 queries/day (free tier)
+- ArXiv: 3 requests/second
+- Brave Search: 2000 queries/month (free tier)
+- PubMed: 3 requests/second
+- Semantic Scholar: 100 requests/5 minutes
+
+## Testing Strategy
+
+### Backend Testing
+- Unit tests for individual services
+- Integration tests requiring external services (marked with `@pytest.mark.integration`)
+- Mock external APIs for consistent testing
+- Test paradigm classification accuracy
+- Validate answer generation quality
+
+### Key Test Files
+- `tests/test_classification_engine.py` - Paradigm classification
+- `tests/test_azure_openai.py` - LLM integration
+- `tests/test_brave_mcp_integration.py` - Brave search
+- `tests/test_system.py` - End-to-end system tests
+
+## Development Guidelines
+
+1. **Paradigm Consistency**: Ensure paradigm classification flows correctly through the entire pipeline
+2. **Enum Mapping**: Be careful with HostParadigm vs Paradigm enum conversions
+3. **Error Handling**: All external API calls should have proper error handling and fallbacks
+4. **Rate Limiting**: Respect API rate limits; use caching where possible
+5. **Type Safety**: Use TypeScript/Pydantic models for type validation
+6. **Async Patterns**: Backend uses async/await throughout for performance
+
+## Troubleshooting
+
+### Common Issues
+- **LLM not working**: Check Azure OpenAI credentials and deployment name
+- **Search returns no results**: Verify API keys and rate limits
+- **Database errors**: Run `alembic upgrade head` to apply migrations
+- **Frontend build fails**: Ensure Node.js 18+ and run `npm install`
+- **Test failures**: Some tests require environment variables or external services

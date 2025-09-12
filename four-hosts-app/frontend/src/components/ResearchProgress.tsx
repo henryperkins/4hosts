@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useLayoutEffect } from 'react'
-import { FiClock, FiX, FiSearch, FiDatabase, FiCpu, FiCheckCircle, FiZap } from 'react-icons/fi'
+import { FiClock, FiX, FiSearch, FiDatabase, FiCpu, FiCheckCircle, FiZap, FiChevronDown, FiChevronUp } from 'react-icons/fi'
 import { format } from 'date-fns'
 import { Button } from './ui/Button'
 import { Card } from './ui/Card'
@@ -8,6 +8,7 @@ import { ProgressBar } from './ui/ProgressBar'
 import { LoadingSpinner } from './ui/LoadingSpinner'
 import { Badge } from './ui/Badge'
 import api from '../services/api'
+import { stripHtml } from '../utils/sanitize'
 
 interface ResearchProgressProps {
   researchId: string
@@ -85,6 +86,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   })
   const [sourcePreviews, setSourcePreviews] = useState<SourcePreview[]>([])
   const [showSourcePreviews, setShowSourcePreviews] = useState(true)
+  const [sourcesCollapsed, setSourcesCollapsed] = useState(true)
   const [startTime, setStartTime] = useState<number | null>(null)
   const [elapsedSec, setElapsedSec] = useState<number>(0)
   // Track granular layer progress within Context-Engineering (Write/Rewrite/Select/Optimize/Compress/Isolate)
@@ -93,6 +95,8 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [determinateProgress, setDeterminateProgress] = useState<{ done: number; total: number } | null>(null)
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null)
   const [currentPhase, setCurrentPhase] = useState<string>('initialization')
+  const [analysisTotal, setAnalysisTotal] = useState<number | null>(null)
+  const [showVerbose, setShowVerbose] = useState<boolean>(false)
   const updatesContainerRef = useRef<HTMLDivElement>(null)
   // Refs to avoid re-subscribing WebSocket when these change
   const currentStatusRef = useRef<ProgressUpdate['status']>('pending')
@@ -110,6 +114,15 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   useEffect(() => {
     onCancelRef.current = onCancel
   }, [onCancel])
+
+  // Default collapse on small screens
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        setSourcesCollapsed(window.innerWidth < 640)
+      }
+    } catch {}
+  }, [])
 
   useEffect(() => {
     // Establish a single WebSocket connection per researchId
@@ -141,6 +154,9 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             // color W-R-S-O-C-I badges accurately.
             if (data.phase === 'context_engineering') {
               setCeLayerProgress({ done: data.items_done, total: data.items_total })
+            }
+            if (data.phase === 'analysis') {
+              setAnalysisTotal(data.items_total)
             }
           }
           // Update ETA if available
@@ -341,6 +357,21 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     return currentStatus.charAt(0).toUpperCase() + currentStatus.slice(1)
   }
 
+  // Defensive cleanup for any provider HTML that might slip into messages
+  const cleanMessage = (msg?: string) => {
+    if (!msg) return ''
+    try {
+      return stripHtml(msg)
+    } catch {
+      return msg
+    }
+  }
+
+  const isNoisy = (msg?: string) => {
+    const m = (msg || '').toLowerCase()
+    return m.includes('searching') || m.includes('found source') || m.includes('checking credibility') || m.includes('duplicate') || m.includes('agent:')
+  }
+
   const canCancel = () => {
     return currentStatus === 'processing' || currentStatus === 'in_progress' || currentStatus === 'pending'
   }
@@ -372,7 +403,15 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     <Card className="mt-6 animate-slide-up">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-text">Research Progress</h3>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          <Button
+            variant={showVerbose ? 'secondary' : 'ghost'}
+            size="sm"
+            onClick={() => setShowVerbose(v => !v)}
+            className="text-xs"
+          >
+            {showVerbose ? 'Verbose' : 'Concise'}
+          </Button>
           {canCancel() && (
             <Button
               variant="danger"
@@ -477,7 +516,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           </div>
           
           {/* Statistics */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 mb-4">
             <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
               <div className="text-2xl font-bold text-text">{stats.sourcesFound}</div>
               <div className="text-xs text-text-muted">Sources Found</div>
@@ -487,6 +526,12 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
                 {stats.totalSearches > 0 ? `${stats.searchesCompleted}/${stats.totalSearches}` : '-'}
               </div>
               <div className="text-xs text-text-muted">Searches</div>
+            </div>
+            <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
+              <div className="text-2xl font-bold text-text">
+                {analysisTotal ? `${Math.min(stats.sourcesAnalyzed, analysisTotal)}/${analysisTotal}` : '-'}
+              </div>
+              <div className="text-xs text-text-muted">Analyzed</div>
             </div>
             <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
               <div className="text-2xl font-bold text-green-600 dark:text-green-400">
@@ -507,17 +552,38 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               <div className="text-xs text-text-muted">Elapsed</div>
             </div>
           </div>
+
+          {/* Analysis microbar for mobile clarity */}
+          {analysisTotal && (
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-text-muted">Credibility checks</span>
+                <span className="text-xs text-text-muted">{Math.min(stats.sourcesAnalyzed, analysisTotal)} / {analysisTotal}</span>
+              </div>
+              <ProgressBar
+                value={(Math.min(stats.sourcesAnalyzed, analysisTotal) / analysisTotal) * 100}
+                max={100}
+                variant="default"
+                showLabel={false}
+              />
+              {etaSeconds !== null && currentPhase === 'analysis' && (
+                <div className="mt-1 text-right text-[11px] text-text-muted">~{Math.floor(etaSeconds / 60).toString().padStart(2, '0')}:{(etaSeconds % 60).toString().padStart(2, '0')} remaining (analysis)</div>
+              )}
+            </div>
+          )}
         </>
       )}
 
       <div 
         ref={updatesContainerRef}
-        className="space-y-2 max-h-64 overflow-y-auto"
+        className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto"
         role="log"
         aria-label="Research progress updates"
         aria-live="polite"
       >
-        {updates.map((update, index) => {
+        {updates
+          .filter(u => showVerbose || !isNoisy(u.message))
+          .map((update, index) => {
           // Check if this is a search completed message with results
           const isSearchCompleted = update.message?.includes('Found') && update.message?.includes('results')
           const resultsMatch = update.message?.match(/Found (\d+) results/)
@@ -533,7 +599,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               </span>
               <div className="flex-1">
                 <p className="text-text">
-                  {update.message || `Status: ${update.status}`}
+                  {cleanMessage(update.message) || `Status: ${update.status}`}
                 </p>
                 {isSearchCompleted && resultsCount > 0 && (
                   <div className="mt-1">
@@ -577,11 +643,55 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         </div>
       )}
       
-      {/* Source Previews */}
+      {/* Source Previews (collapsible, mobile-first) */}
       {sourcePreviews.length > 0 && showSourcePreviews && (
-        <div className="mt-4 border-t border-border pt-4">
-          <div className="flex items-center justify-between mb-3">
+        <div className="mt-4 border-t border-border pt-2 sm:pt-4">
+          <button
+            className="w-full flex items-center justify-between py-2 text-left"
+            onClick={() => setSourcesCollapsed(v => !v)}
+            aria-expanded={!sourcesCollapsed}
+          >
             <h4 className="text-sm font-medium text-text">Recent Sources</h4>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-text-muted">{sourcePreviews.length}</span>
+              {sourcesCollapsed ? <FiChevronDown className="h-4 w-4" /> : <FiChevronUp className="h-4 w-4" />}
+            </div>
+          </button>
+          {!sourcesCollapsed && (
+            <div className="space-y-2">
+              {sourcePreviews.map((source, index) => (
+                <div
+                  key={index}
+                  className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3 animate-slide-up"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <h5 className="text-sm font-medium text-text truncate">
+                        {source.title}
+                      </h5>
+                      <p className="text-xs text-text-muted mt-1 truncate">
+                        {source.domain}
+                      </p>
+                      {source.snippet && (
+                        <p className="text-xs text-text-muted mt-1 line-clamp-2">
+                          {source.snippet}
+                        </p>
+                      )}
+                    </div>
+                    {source.credibility !== undefined && (
+                      <Badge
+                        variant={source.credibility > 0.7 ? 'success' : source.credibility > 0.4 ? 'warning' : 'error'}
+                        size="sm"
+                      >
+                        {Math.round(source.credibility * 100)}%
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="mt-2 flex items-center justify-end">
             <Button
               variant="ghost"
               size="sm"
@@ -590,38 +700,6 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             >
               Hide
             </Button>
-          </div>
-          <div className="space-y-2">
-            {sourcePreviews.map((source, index) => (
-              <div
-                key={index}
-                className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3 animate-slide-up"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <h5 className="text-sm font-medium text-text truncate">
-                      {source.title}
-                    </h5>
-                    <p className="text-xs text-text-muted mt-1">
-                      {source.domain}
-                    </p>
-                    {source.snippet && (
-                      <p className="text-xs text-text-muted mt-1 line-clamp-2">
-                        {source.snippet}
-                      </p>
-                    )}
-                  </div>
-                  {source.credibility !== undefined && (
-                    <Badge
-                      variant={source.credibility > 0.7 ? 'success' : source.credibility > 0.4 ? 'warning' : 'error'}
-                      size="sm"
-                    >
-                      {Math.round(source.credibility * 100)}%
-                    </Badge>
-                  )}
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       )}

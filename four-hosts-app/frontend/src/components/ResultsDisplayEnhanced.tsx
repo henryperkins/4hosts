@@ -23,6 +23,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   const [traceOpen, setTraceOpen] = useState(false)
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set(['all']))
   const [selectedCredBands, setSelectedCredBands] = useState<Set<'high'|'medium'|'low'>>(() => new Set(['high','medium','low']))
+  // Sources pagination state (default page size: 20)
+  const [sourcesPageSize, setSourcesPageSize] = useState<number>(20)
+  const [sourcesPage, setSourcesPage] = useState<number>(1)
   // Stable timestamp for this render (used for "As of" labels)
   const fetchedAtRef = useRef<string>(new Date().toISOString())
 
@@ -139,6 +142,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       return () => document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [dropdownOpen])
+
+  // When filters change, reset sources to first page
+  useEffect(() => {
+    setSourcesPage(1)
+  }, [selectedCategories, selectedCredBands, results.research_id])
 
   // If there's no answer data, show error state
   if (!answer) {
@@ -856,9 +864,57 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             const byCat = selectedCategories.has('all') ? results.sources : results.sources.filter(s => selectedCategories.has(s.source_category || 'general'))
             const credBand = (score:number) => score >= 0.7 ? 'high' : score >= 0.4 ? 'medium' : 'low'
             const filtered = byCat.filter(s => selectedCredBands.has(credBand(s.credibility_score)))
-            const view = filtered.slice(0, 5)
+            const total = filtered.length
+            const pageSize = Math.max(1, Math.min(sourcesPageSize || 20, total || 20))
+            const pages = Math.max(1, Math.ceil(total / pageSize))
+            const current = Math.min(sourcesPage, pages)
+            const start = (current - 1) * pageSize
+            const end = Math.min(start + pageSize, total)
+            const view = filtered.slice(start, end)
             return (
               <>
+                <div className="flex items-center justify-between mb-3 text-sm text-gray-600 dark:text-gray-400">
+                  <div>
+                    {total === 0 ? 'No sources' : `Showing ${start + 1}–${end} of ${total} sources`}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="whitespace-nowrap">Rows per page</label>
+                    <select
+                      className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                      value={sourcesPageSize}
+                      onChange={(e) => {
+                        const val = e.target.value === 'all' ? (total || 1) : Number(e.target.value)
+                        setSourcesPageSize(val)
+                        setSourcesPage(1)
+                      }}
+                    >
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                      <option value={'all' as any}>All</option>
+                    </select>
+                    <div className="flex items-center gap-1 ml-2">
+                      <button
+                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        onClick={() => setSourcesPage(p => Math.max(1, p - 1))}
+                        disabled={current <= 1}
+                        aria-label="Previous page"
+                      >
+                        ‹
+                      </button>
+                      <span className="px-2">{current} / {pages}</span>
+                      <button
+                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        onClick={() => setSourcesPage(p => Math.min(pages, p + 1))}
+                        disabled={current >= pages}
+                        aria-label="Next page"
+                      >
+                        ›
+                      </button>
+                    </div>
+                  </div>
+                </div>
                 <div className="grid gap-3">
                   {view.map((source, index) => {
                     const quote = (source.snippet || '').trim()
@@ -918,10 +974,46 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     )
                   })}
                 </div>
-                {filtered.length > 5 && (
-                  <p className="mt-4 text-sm text-gray-600 dark:text-gray-400">
-                    Showing 5 of {filtered.length} sources
-                  </p>
+                {total > 0 && (
+                  <div className="mt-4 flex items-center justify-between text-sm text-gray-600 dark:text-gray-400">
+                    <div>
+                      Page {current} of {pages}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        onClick={() => setSourcesPage(1)}
+                        disabled={current === 1}
+                        aria-label="First page"
+                      >
+                        «
+                      </button>
+                      <button
+                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        onClick={() => setSourcesPage(p => Math.max(1, p - 1))}
+                        disabled={current === 1}
+                        aria-label="Previous page"
+                      >
+                        ‹
+                      </button>
+                      <button
+                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        onClick={() => setSourcesPage(p => Math.min(pages, p + 1))}
+                        disabled={current === pages}
+                        aria-label="Next page"
+                      >
+                        ›
+                      </button>
+                      <button
+                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        onClick={() => setSourcesPage(pages)}
+                        disabled={current === pages}
+                        aria-label="Last page"
+                      >
+                        »
+                      </button>
+                    </div>
+                  </div>
                 )}
               </>
             )})()}

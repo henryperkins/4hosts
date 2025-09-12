@@ -5,7 +5,7 @@ Select high-salience, quoted evidence from top web results to ground
 the model's synthesis. Lightweight and dependency‑minimal.
 
 Exports a single async helper:
-    build_evidence_quotes(query, results, max_docs=8, quotes_per_doc=3) -> List[Dict]
+    build_evidence_quotes(query, results, max_docs=20, quotes_per_doc=3) -> List[Dict]
 
 Each returned quote dict has the shape:
     {
@@ -28,6 +28,12 @@ import re
 from typing import Any, Dict, List, Tuple
 
 from utils.injection_hygiene import sanitize_snippet, flag_suspicious_snippet
+from core.config import (
+    EVIDENCE_MAX_DOCS_DEFAULT,
+    EVIDENCE_QUOTES_PER_DOC_DEFAULT,
+    EVIDENCE_QUOTE_MAX_CHARS,
+    EVIDENCE_SEMANTIC_SCORING,
+)
 
 # Reuse existing fetcher that handles HTML and PDFs
 from services.search_apis import fetch_and_parse_url  # type: ignore
@@ -37,6 +43,14 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[\.!?])\s+(?=[A-Z0-9])|
                                \u2022|\u2023|\u25E6|\u2043|\u2219|\n|\r",
                              re.VERBOSE)
 _TOKEN = re.compile(r"[A-Za-z0-9]+")
+
+try:
+    # Optional semantic ranking using TF‑IDF cosine similarity
+    from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
+    from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+    _SK_OK = True
+except Exception:
+    _SK_OK = False
 
 
 def _tokens(text: str) -> List[str]:
@@ -52,6 +66,20 @@ def _score_sentence(qtoks: set[str], sent: str) -> float:
     has_num = 1 if re.search(r"\d", sent) else 0
     length_bonus = min(len(sent) / 200.0, 0.5)
     return overlap + 0.3 * has_num + length_bonus
+
+
+def _semantic_scores(query: str, sentences: List[str]) -> List[float]:
+    if not _SK_OK or not sentences:
+        return [0.0] * len(sentences)
+    try:
+        vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+        X = vec.fit_transform([query] + sentences)
+        sims = cosine_similarity(X[0:1], X[1:]).flatten()
+        # Normalize approximately to 0..1
+        sims = [float(max(0.0, min(1.0, s))) for s in sims]
+        return sims
+    except Exception:
+        return [0.0] * len(sentences)
 
 
 def _domain_from(url: str) -> str:
@@ -111,7 +139,8 @@ def _best_quotes_for_text(
     query: str,
     text: str,
     max_quotes: int = 3,
-    max_len: int = 240,
+    max_len: int = EVIDENCE_QUOTE_MAX_CHARS,
+    use_semantic: bool = EVIDENCE_SEMANTIC_SCORING,
 ) -> List[Tuple[str, int, int]]:
     if not text:
         return []
@@ -119,10 +148,14 @@ def _best_quotes_for_text(
     # Break into sentences / list items
     parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p and len(p.strip()) > 20]
     scored = []
-    for p in parts:
+    sem = _semantic_scores(query, parts) if use_semantic else [0.0] * len(parts)
+    for idx, p in enumerate(parts):
         # Trim long parts to a focused window around query terms when possible
         p_clean = sanitize_snippet(p, max_len=max_len * 2)
-        score = _score_sentence(qtoks, p_clean)
+        kw = _score_sentence(qtoks, p_clean)
+        sem_sc = sem[idx] if idx < len(sem) else 0.0
+        # Blend: semantic (60%), keyword overlap & numerics (40%)
+        score = 0.6 * sem_sc + 0.4 * kw
         if score <= 0:
             continue
         # Find approximate start offset (optional)
@@ -139,12 +172,33 @@ def _best_quotes_for_text(
     return top
 
 
+def _summarize_text(query: str, text: str, max_sentences: int = 3, max_len: int = 500) -> str:
+    """Lightweight extractive summary using TF‑IDF similarity to the query.
+
+    Falls back to the first few sentences when semantic scoring is unavailable.
+    """
+    if not text:
+        return ""
+    parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p and len(p.strip()) > 20]
+    if not parts:
+        return sanitize_snippet(text[:max_len], max_len=max_len)
+    sem = _semantic_scores(query, parts)
+    idxs = list(range(len(parts)))
+    # Rank by semantic score then length (prefer informative)
+    idxs.sort(key=lambda i: (sem[i] if i < len(sem) else 0.0) + min(len(parts[i]) / 200.0, 0.5), reverse=True)
+    picked = []
+    for i in idxs[:max_sentences]:
+        picked.append(sanitize_snippet(parts[i], max_len=max_len // max(1, max_sentences)))
+    out = " ".join(picked)
+    return sanitize_snippet(out, max_len=max_len)
+
+
 async def build_evidence_quotes(
     query: str,
     results: List[Dict[str, Any]],
     *,
-    max_docs: int = 8,
-    quotes_per_doc: int = 3,
+    max_docs: int = EVIDENCE_MAX_DOCS_DEFAULT,
+    quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
 ) -> List[Dict[str, Any]]:
     """Return prioritized quotes across high-credibility, diverse sources."""
     if not results:
@@ -163,6 +217,7 @@ async def build_evidence_quotes(
         domain = md.get("domain") or _domain_from(url)
         text = texts.get(url, "")
         triples = _best_quotes_for_text(query, text, max_quotes=quotes_per_doc)
+        doc_summary = _summarize_text(query, text) if text else (sanitize_snippet(d.get("snippet", ""), max_len=300) if d.get("snippet") else "")
         if not triples:
             # fallback to snippet
             snip = d.get("snippet", "")
@@ -180,6 +235,7 @@ async def build_evidence_quotes(
                 "published_date": md.get("published_date"),
                 "credibility_score": d.get("credibility_score"),
                 "suspicious": bool(flag_suspicious_snippet(quote)),
+                "doc_summary": doc_summary,
             }
             quotes.append(item)
             qid += 1
@@ -197,4 +253,3 @@ async def build_evidence_quotes(
 
     # Cap hard limit to protect prompt
     return balanced[: max_docs * quotes_per_doc]
-

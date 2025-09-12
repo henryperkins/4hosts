@@ -16,7 +16,7 @@ services:
   # ==========================================================================
   # Primary data store for user accounts, research history, and system data
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     # container_name removed to avoid conflicts when running multiple stacks.
     # Docker Compose will auto-name the container (project_service_index) and
     # service DNS remains 'postgres' for inter-service communication.
@@ -25,7 +25,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: fourhosts
     ports:
-      - "5432:5432"  # Expose PostgreSQL on standard port for local development
+      - "5433:5432"  # Expose PostgreSQL on port 5433 to avoid conflicts
     volumes:
       # Persistent volume for database data (survives container restarts)
       - postgres_data:/var/lib/postgresql/data
@@ -52,7 +52,7 @@ services:
     image: redis:7-alpine
     # container_name removed to prevent collision with backend-only compose file.
     ports:
-      - "6379:6379"  # Expose Redis on standard port for local development
+      - "6380:6379"  # Expose Redis on port 6380 to avoid conflicts
     volumes:
       # Persistent volume for Redis data (optional persistence)
       - redis_data:/data
@@ -99,9 +99,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # Allow host port override via BACKEND_PORT env (defaults to 8000)
+    # Allow host port override via BACKEND_PORT env (defaults to 8001)
     ports:
-      # Bind to 8001 by default to avoid conflicts with local dev servers
+      # Bind to 8001 by default to avoid conflicts with Portainer/local dev
       - "${BACKEND_PORT:-8001}:8000"  # host:container
     restart: unless-stopped
     networks:
@@ -177,10 +177,10 @@ networks:
 #
 # ACCESS POINTS:
 # - Frontend:      http://localhost:5173
-# - Backend API:   http://localhost:8000
-# - API Docs:      http://localhost:8000/docs
-# - PostgreSQL:    localhost:5432 (user/password/fourhosts)
-# - Redis:         localhost:6379
+# - Backend API:   http://localhost:8001 (default, avoids Portainer on 8000)
+# - API Docs:      http://localhost:8001/docs
+# - PostgreSQL:    localhost:5433 (user/password/fourhosts)
+# - Redis:         localhost:6380
 #
 # MONITORING:
 # - Check service health:  docker-compose ps
