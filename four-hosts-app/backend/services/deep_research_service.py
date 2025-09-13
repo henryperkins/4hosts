@@ -65,6 +65,9 @@ class DeepResearchConfig:
     # Web search specific config
     search_context_size: SearchContextSize = SearchContextSize.MEDIUM
     user_location: Optional[Dict[str, str]] = None
+    # Experimentation (optional)
+    experiment_name: Optional[str] = None
+    prompt_variant: Optional[str] = None
 
 
 @dataclass
@@ -172,6 +175,65 @@ Your analysis should enable strategic decision-making and competitive advantage.
 """
 }
 
+# Optional prompt variant (v2) for lightweight A/B experiments.
+# Keeps semantics but tightens phrasing and adds explicit grounding/citation
+# emphasis to test impact on quality metrics.
+PARADIGM_SYSTEM_PROMPTS_V2 = {
+    HostParadigm.DOLORES: """
+You are a revolutionary investigator. Your mission: expose systemic injustices with rigor and precision, then equip readers to act.
+
+Method:
+- Map power structures, incentives, and failure modes
+- Surface whistleblower accounts and primary-source evidence
+- Contrast official narratives with independent reporting
+- Document harms, accountability gaps, and proposed remedies
+
+Ground rules:
+- STRICT: cite claims inline; prefer primary sources
+- Flag uncertainties and missing evidence
+- Avoid speculation; propose verifiable next steps
+""",
+    HostParadigm.TEDDY: """
+You are a compassionate care researcher. Your goal: find effective, humane support pathways and present them clearly.
+
+Method:
+- Aggregate practical resources and eligibility details
+- Highlight community programs and successful interventions
+- Include crisis, low-cost, and accessible options
+
+Ground rules:
+- STRICT: cite resources and hotlines
+- Note contraindications and risks
+- Offer step-by-step, stigma-free guidance
+""",
+    HostParadigm.BERNARD: """
+You are an analytical researcher. Optimize for methodological soundness and reproducibility.
+
+Method:
+- Prioritize meta-analyses, RCTs, and large datasets
+- Describe methodology and limitations
+- Quantify effects with CIs and sample sizes
+
+Ground rules:
+- STRICT: inline citations for all statistics
+- Identify confounders and alternative explanations
+- Prefer pre-registered and peer-reviewed studies
+""",
+    HostParadigm.MAEVE: """
+You are a strategic analyst. Deliver actionable competitive insight with measurable outcomes.
+
+Method:
+- Triangulate market data, unit economics, and case studies
+- Analyze competitor moats, switching costs, and adoption risks
+- Propose initiatives with resourcing and KPIs
+
+Ground rules:
+- STRICT: cite market figures and sources
+- State assumptions and sensitivity ranges
+- Provide a 30/60/90-day action plan
+""",
+}
+
 
 # ────────────────────────────────────────────────────────────
 #  Deep Research Service
@@ -248,9 +310,9 @@ class DeepResearchService:
                     classification.primary_paradigm, config
                 )
             
-            # Build system prompt
+            # Build system prompt (with experiment-aware variant selection)
             system_prompt = self._build_system_prompt(
-                query, classification, context_engineering, config
+                query, classification, context_engineering, config, research_id
             )
             
             # Build research prompt
@@ -354,6 +416,7 @@ class DeepResearchService:
                     ),
                     success=True,
                     model=deep_model,
+                    prompt_version=(config.prompt_variant or None),
                 )
             except Exception:
                 pass
@@ -410,6 +473,7 @@ class DeepResearchService:
                     ),
                     success=True,
                     model=deep_model,
+                    prompt_version=(config.prompt_variant or None),
                 )
             except Exception:
                 pass
@@ -518,13 +582,28 @@ class DeepResearchService:
         classification: Optional[ClassificationResult],
         context_engineering: Optional[ContextEngineeredQuery],
         config: DeepResearchConfig,
+        research_id: Optional[str] = None,
     ) -> str:
         """Build system prompt based on paradigm and context"""
         parts = []
         
         # Add paradigm-specific prompt if available
         if config.include_paradigm_context and classification:
-            paradigm_prompt = PARADIGM_SYSTEM_PROMPTS.get(
+            # Experiment: choose prompt variant deterministically when enabled
+            try:
+                from . import experiments
+                unit_id = (research_id or query or "").strip() or "anon"
+                experiment_name = "deep_research_paradigm_prompt"
+                variant = experiments.variant_or_default(experiment_name, unit_id, default="v1")
+                config.experiment_name = experiment_name
+                config.prompt_variant = variant
+            except Exception:
+                variant = "v1"
+                config.prompt_variant = variant
+                config.experiment_name = None
+
+            prompt_map = PARADIGM_SYSTEM_PROMPTS if (config.prompt_variant or "v1") == "v1" else PARADIGM_SYSTEM_PROMPTS_V2
+            paradigm_prompt = prompt_map.get(
                 classification.primary_paradigm,
                 "You are conducting comprehensive research. Be thorough and analytical."
             )

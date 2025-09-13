@@ -191,6 +191,57 @@ class BaseAnswerGenerator:
         except Exception:
             return {}
 
+    # ─────────── Experiments (A/B) helpers ───────────
+    def _resolve_prompt_variant(self, context: SynthesisContext, experiment_name: str = "answer_generation_prompt") -> str:
+        # Respect explicit option first
+        try:
+            pv = (getattr(context, "metadata", {}) or {}).get("prompt_variant")
+            if isinstance(pv, str) and pv in {"v1", "v2"}:
+                return pv
+        except Exception:
+            pass
+        # Deterministic assignment when experiments are enabled
+        try:
+            from . import experiments  # lazy import
+            unit_id = (getattr(getattr(context, "metadata", {}), "get", lambda *_: None)("research_id") or context.query or "").strip() or "anon"
+            return experiments.variant_or_default(experiment_name, unit_id, default="v1")
+        except Exception:
+            return "v1"
+
+    def _variant_addendum(self, context: SynthesisContext, paradigm: str) -> str:
+        variant = self._resolve_prompt_variant(context)
+        if variant != "v2":
+            return ""
+        if paradigm == "bernard":
+            return (
+                "Variant v2 directives:\n"
+                "- STRICT: include inline citations for every statistic.\n"
+                "- Prefer meta-analyses, RCTs; note sample sizes & CIs.\n"
+                "- Avoid speculation; state limitations explicitly.\n"
+            )
+        if paradigm == "maeve":
+            return (
+                "Variant v2 directives:\n"
+                "- Provide a numbered 30/60/90-day plan with KPIs.\n"
+                "- Include risks, mitigations, and resource needs.\n"
+                "- Quantify ROI where possible (ranges acceptable).\n"
+            )
+        if paradigm == "dolores":
+            return (
+                "Variant v2 directives:\n"
+                "- Map power structures and conflicts of interest.\n"
+                "- Cite primary sources; flag uncertain claims.\n"
+                "- End with 2–3 concrete calls to action.\n"
+            )
+        if paradigm == "teddy":
+            return (
+                "Variant v2 directives:\n"
+                "- List inclusive resources with eligibility and cost.\n"
+                "- Add crisis options and accessibility notes.\n"
+                "- Use stigma-free, empowering language.\n"
+            )
+        return ""
+
     def _top_relevant_results(self, context: SynthesisContext, k: int = 5) -> List[Dict[str, Any]]:
         """Select top-k results by credibility, ensuring domain diversity."""
         results = list(context.search_results or [])
@@ -668,6 +719,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             coverage_tbl = self._coverage_table(context)
 
             guard = guardrail_instruction
+            variant_extra = self._variant_addendum(context, "dolores")
             prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
@@ -681,6 +733,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             STRICT: Do not invent facts; ground claims in the Evidence Quotes above.
             Source Summaries (context only):
             {summaries_block}
+            {variant_extra}
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
@@ -990,6 +1043,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             coverage_tbl = self._coverage_table(context)
 
             guard = guardrail_instruction
+            variant_extra = self._variant_addendum(context, "bernard")
             prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
@@ -1016,6 +1070,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             - STRICT: Do not introduce claims not supported by the Evidence Quotes above
             Source Summaries (context only):
             {summaries_block}
+            {variant_extra}
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
@@ -1413,6 +1468,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             coverage_tbl = self._coverage_table(context)
 
             guard = guardrail_instruction
+            variant_extra = self._variant_addendum(context, "maeve")
             prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
@@ -1435,6 +1491,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
 
             Source Summaries (context only):
             {summaries_block}
+            {variant_extra}
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
@@ -1716,6 +1773,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
 
+            variant_extra = self._variant_addendum(context, "teddy")
             prompt = f"""{guardrail_instruction}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
@@ -1729,6 +1787,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             Isolated Findings:
             {iso_block}
 
+            {variant_extra}
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 

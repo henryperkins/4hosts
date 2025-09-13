@@ -6,7 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header
 
 from models.research import (
     ResearchQuery,
@@ -122,7 +122,7 @@ async def execute_real_research(
             await progress_tracker.update_progress(research_id, "context_engineering", 15)
 
         # Use global pipeline to accumulate metrics
-        ce = await context_pipeline.process_query(cls)
+        ce = await context_pipeline.process_query(cls, research_id=research_id)
 
         # Stream context engineering summary for transparency
         try:
@@ -641,6 +641,7 @@ async def submit_research(
     research: ResearchQuery,
     background_tasks: BackgroundTasks,
     current_user=Depends(get_current_user),
+    x_experiment: str | None = Header(None, alias="X-Experiment"),
 ):
     """Submit a research query for paradigm-based analysis"""
     # Check role requirements for research depth
@@ -682,6 +683,13 @@ async def submit_research(
         )
 
         # Store research request
+        # Optional experiment override via header (e.g., X-Experiment: v2)
+        exp_override = None
+        if x_experiment and isinstance(x_experiment, str):
+            val = x_experiment.strip().lower()
+            if val in {"v1", "v2"}:
+                exp_override = {"prompt_variant": val, "raw": x_experiment}
+
         research_data = {
             "id": research_id,
             "user_id": str(current_user.user_id),
@@ -691,6 +699,7 @@ async def submit_research(
             "paradigm_classification": classification.dict(),
             "created_at": datetime.utcnow().isoformat(),
             "results": None,
+            **({"experiment": exp_override} if exp_override else {}),
         }
         await research_store.set(research_id, research_data)
 

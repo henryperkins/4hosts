@@ -160,6 +160,15 @@ class LLMClient:
         except Exception as e:
             logger.warning(f"LLM client initialization deferred: {e}")
 
+    # Internal helper: map requested model to Azure deployment name
+    def _azure_model_for(self, requested: str) -> str:
+        """Return the Azure deployment name to use for 'model'.
+
+        Azure's SDK expects the deployment name as the model identifier.
+        Fall back to the requested name (e.g., 'o3') if no env override is set.
+        """
+        return os.getenv("AZURE_OPENAI_DEPLOYMENT", requested)
+
     # ─────────── client initialisation ───────────
     def _init_clients(self) -> None:
         # Azure OpenAI
@@ -167,13 +176,13 @@ class LLMClient:
         endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
         deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
         api_version = os.getenv("AZURE_OPENAI_API_VERSION", "preview")
-        
+
         if azure_key and endpoint and deployment:
             # Use AsyncOpenAI with Azure endpoint for Responses API.
             # For SDK calls we rely on the resource's v1 routing (no query string here).
             endpoint = endpoint.rstrip("/")
             base_url = f"{endpoint}/openai/v1/"
-                
+
             self.azure_client = AsyncOpenAI(api_key=azure_key, base_url=base_url)
             logger.info(f"✓ Azure OpenAI client initialised (endpoint: {base_url})")
         else:
@@ -187,7 +196,7 @@ class LLMClient:
             if missing:
                 logger.debug(f"Azure OpenAI not configured - missing: {', '.join(missing)}")
             self.azure_client = None
-            
+
         # OpenAI cloud
         openai_key = os.getenv("OPENAI_API_KEY")
         if openai_key:
@@ -195,10 +204,10 @@ class LLMClient:
             logger.info("✓ OpenAI client initialised")
         else:
             self.openai_client = None
-            
+
         if not self.azure_client and not self.openai_client:
             raise RuntimeError("Neither AZURE_OPENAI_* nor OPENAI_API_KEY environment variables are set")
-    
+
     def _ensure_initialized(self) -> None:
         """Ensure client is initialized before use."""
         if not self._initialized:
@@ -348,8 +357,8 @@ class LLMClient:
                         input_msgs.append({"role": role, "content": msg.get("content", "")})
 
                     resp_req: Dict[str, Any] = {
-                        # For Azure, the deployment name equals the model name in your setup
-                        "model": model_name,
+                        # Azure expects the deployment name in the 'model' field
+                        "model": self._azure_model_for(model_name),
                         "input": input_msgs,
                     }
                     # Token & reasoning knobs for Responses API
@@ -411,7 +420,7 @@ class LLMClient:
                     azure_messages.append({"role": role, "content": msg.get("content", "")})
 
                 cc_req = {
-                    "model": deployment,
+                    "model": self._azure_model_for(model_name),
                     "messages": azure_messages,
                 }
                 if model_name.startswith("o"):
@@ -441,7 +450,7 @@ class LLMClient:
             except Exception as exc:
                 logger.error(f"Azure OpenAI request failed • {exc}")
                 raise
-                
+
         # ─── OpenAI path ───
         if self.openai_client:
             try:
@@ -453,7 +462,7 @@ class LLMClient:
                         op_kwargs.pop(p, None)
                 if tools and tool_choice:
                     op_kwargs["tool_choice"] = self._wrap_tool_choice(tool_choice)
-                    
+
                 op_res = await self.openai_client.chat.completions.create(
                     **op_kwargs,
                     stream=stream,
@@ -510,7 +519,7 @@ class LLMClient:
         result: Dict[str, Any] | None = None
 
         wrapped_choice = self._wrap_tool_choice(tool_choice)
-        
+
         # Use Azure for o3/o1 models
         if model_name in {"o3", "o1", "azure", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o"} and self.azure_client:
             azure_msgs = [
@@ -520,22 +529,22 @@ class LLMClient:
                 },
                 {"role": "user", "content": prompt},
             ]
-            
+
             azure_req = {
-                # Use the requested model/deployment directly on Azure
-                "model": model_name,
+                # Use Azure deployment name for 'model'
+                "model": self._azure_model_for(model_name),
                 "messages": cast(Any, azure_msgs),
                 "tools": cast(Any, tools),
                 "tool_choice": cast(Any, wrapped_choice),
             }
-            
+
             # Use appropriate token parameter for model type
             if model_name in {"o3", "o1", "gpt-5-mini"}:
                 azure_req["max_completion_tokens"] = DEFAULT_MAX_TOKENS
                 azure_req["reasoning_effort"] = "medium"
             else:
                 azure_req["max_tokens"] = DEFAULT_MAX_TOKENS
-            
+
             op = await self.azure_client.chat.completions.create(**azure_req)
             result = {
                 "content": self._extract_content_safely(op) if not (op.choices and op.choices[0].message.tool_calls) else (op.choices[0].message.content or ""),
@@ -594,11 +603,11 @@ class LLMClient:
         # for gpt-4o style deployments use standard chat params.
         if self.azure_client:
             azure_req = {
-                # Use requested model/deployment directly (o3, gpt-4.1, gpt-4.1-mini)
-                "model": model_name,
+                # Use Azure deployment name for 'model'
+                "model": self._azure_model_for(model_name),
                 "messages": cast(Any, full_msgs),
             }
-            
+
             # Use appropriate parameters for model type
             if model_name.startswith("o") or model_name in {"gpt-5-mini"}:
                 azure_req["max_completion_tokens"] = max_tokens
@@ -606,7 +615,7 @@ class LLMClient:
             else:
                 azure_req["max_tokens"] = max_tokens
                 azure_req["temperature"] = temperature
-            
+
             op = await self.azure_client.chat.completions.create(**azure_req)
             return self._extract_content_safely(op)
         # Use OpenAI (cloud) if Azure not configured
@@ -644,7 +653,7 @@ class LLMClient:
             return result
         # Should not happen with stream=False, but handle it defensively
         return ""
-    
+
     async def generate_background(
         self,
         messages: List[Dict[str, Any]],
@@ -656,11 +665,11 @@ class LLMClient:
         """Submit a long-running task to background processing"""
         if not self.azure_client or not hasattr(self.azure_client, 'responses'):
             raise NotImplementedError("Background mode requires Azure OpenAI Responses API")
-        
+
         from services.background_llm import background_llm_manager
         if not background_llm_manager:
             raise RuntimeError("Background LLM manager not initialized")
-        
+
         # Submit task to background processing
         task_id = await background_llm_manager.submit_background_task(
             messages=messages,
@@ -668,7 +677,7 @@ class LLMClient:
             callback=callback,
             **kwargs
         )
-        
+
         return task_id
 
 
@@ -676,11 +685,11 @@ class LLMClient:
         """Safely extract text content from various response types"""
         if isinstance(response, str):
             return response.strip()
-        
+
         # Handle Azure Responses API response
         if hasattr(response, 'output_text') and response.output_text:
             return str(response.output_text).strip()
-        
+
         # Handle output array
         if hasattr(response, 'output') and response.output:
             text_content = ""
@@ -691,7 +700,7 @@ class LLMClient:
                             text_content += content_item.text
             if text_content:
                 return text_content.strip()
-        
+
         # Handle ChatCompletion-like response (OpenAI 1.x & Azure)
         # Try dataclass/dict access patterns robustly.
         try:
@@ -738,15 +747,15 @@ class LLMClient:
                     return str(choice.text).strip()
             except Exception:
                 pass
-        
+
         # Handle direct content attribute
         if hasattr(response, 'content') and response.content:
             return str(response.content).strip()
-        
+
         # Handle text attribute
         if hasattr(response, 'text') and response.text:
             return str(response.text).strip()
-        
+
         # Default fallback
         logger.warning(f"Could not extract text from response type: {type(response)}")
         return ""
@@ -758,7 +767,7 @@ class LLMClient:
         async for chunk in raw:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
-    
+
     @staticmethod
     async def _iter_responses_stream(raw: AsyncIterator[Any]) -> AsyncIterator[str]:
         """Yield token strings from Azure Responses API stream."""
@@ -782,16 +791,16 @@ async def initialise_llm_client() -> bool:
         if not llm_client._initialized:
             llm_client._init_clients()
             llm_client._initialized = True
-            
+
             # Initialize background LLM manager if Azure client is available
             if llm_client.azure_client:
                 from services.background_llm import initialize_background_manager
                 initialize_background_manager(llm_client.azure_client)
-            
+
             # Initialize MCP integration
             from services.mcp_integration import configure_default_servers
             configure_default_servers()
-            
+
             logger.info("✓ LLM client initialized successfully")
         else:
             logger.info("LLM client already initialized")
@@ -964,8 +973,21 @@ async def responses_deep_research(
     })
 
     client = get_responses_client()
+    # Resolve model: allow env override; default to o3 for Azure (no deep-research deployment),
+    # otherwise prefer o3-deep-research when available
+    try:
+        deep_model_env = os.getenv("DEEP_RESEARCH_MODEL")
+    except Exception:
+        deep_model_env = None
+    try:
+        _rc = get_responses_client()
+        is_azure = getattr(_rc, "is_azure", False)
+    except Exception:
+        is_azure = True
+    deep_model = deep_model_env or ("o3" if is_azure else "o3-deep-research")
+
     return await client.create_response(
-        model="o3-deep-research",
+        model=deep_model,
         input=input_messages,
         tools=tools,
         background=background,

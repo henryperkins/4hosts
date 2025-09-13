@@ -90,8 +90,19 @@ async def lifespan(app: FastAPI):
 
         # Initialize LLM client
         from services.llm_client import initialise_llm_client
-        await initialise_llm_client()
-        logger.info("✓ LLM client initialized")
+        llm_ok = await initialise_llm_client()
+        # Record status for health endpoint and accurate logs
+        try:
+            app.state.llm_initialized = bool(llm_ok)
+        except Exception:
+            pass
+        if llm_ok:
+            logger.info("✓ LLM client initialized")
+        else:
+            logger.warning(
+                "LLM client not initialized – set AZURE_OPENAI_* or OPENAI_API_KEY. "
+                "See backend/docs/azure_openai_integration.md or docs/README_PHASE4.md."
+            )
 
         # Initialize search manager with cache integration
         from services.search_apis import create_search_manager
@@ -417,7 +428,7 @@ def setup_custom_endpoints(app: FastAPI):
                     "database": "healthy",
                     "cache": "healthy",
                     "research": "healthy",
-                    "llm": "healthy",
+                    "llm": "healthy" if getattr(app.state, "llm_initialized", False) else "degraded",
                 },
             }
 

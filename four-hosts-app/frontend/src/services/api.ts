@@ -23,7 +23,7 @@ const API_PREFIX = '/v1'
 function normalizePath(url: string): string {
   try {
     if (!url || url.startsWith(API_PREFIX)) return url
-    const needsPrefix = [/^\/auth\//, /^\/research\//, /^\/paradigms\//, /^\/users\//, /^\/search\//, /^\/sources\//, /^\/system\//, /^\/webhooks\//]
+    const needsPrefix = [/^\/auth\//, /^\/research\//, /^\/paradigms\//, /^\/users\//, /^\/search\//, /^\/sources\//, /^\/system\//, /^\/webhooks\//, /^\/feedback\//]
       .some((re) => re.test(url))
     return needsPrefix ? `${API_PREFIX}${url}` : url
   } catch {
@@ -767,18 +767,42 @@ class APIService {
   }
 
   // Feedback API
-  async submitFeedback(researchId: string, satisfactionScore: number, paradigmFeedback?: string): Promise<void> {
-    const response = await this.fetchWithAuth(`/research/feedback/${researchId}`, {
+  async submitClassificationFeedback(payload: {
+    research_id?: string
+    query: string
+    original: {
+      primary: string
+      secondary?: string | null
+      distribution?: Record<string, number>
+      confidence?: number
+    }
+    user_correction?: string
+    rationale?: string
+  }): Promise<void> {
+    const response = await this.fetchWithAuth('/feedback/classification', {
       method: 'POST',
-      body: JSON.stringify({
-        satisfaction_score: satisfactionScore,
-        paradigm_feedback: paradigmFeedback
-      })
+      body: JSON.stringify(payload)
     })
-
     if (!response.ok) {
       const error = await response.json()
-      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to submit feedback')
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to submit classification feedback')
+    }
+  }
+
+  async submitAnswerFeedback(payload: {
+    research_id: string
+    rating: number
+    reason?: string
+    improvements?: string[]
+    helpful?: boolean
+  }): Promise<void> {
+    const response = await this.fetchWithAuth('/feedback/answer', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to submit answer feedback')
     }
   }
 

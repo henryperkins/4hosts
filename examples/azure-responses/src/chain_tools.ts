@@ -53,10 +53,41 @@ async function getWeather({ location }: Weather) {
     }
   }
 
+  const responseFormat = {
+    type: "json_schema",
+    json_schema: {
+      name: "action_items",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          action_items: {
+            type: "array",
+            description: "List of extracted action items.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                description: { type: "string", description: "Concise, verb-first task." },
+                owner: { type: "string", description: "Responsible person or team." },
+                due_date: { type: ["string", "null"], description: "YYYY-MM-DD or null." }
+              },
+              required: ["description", "owner", "due_date"]
+            }
+          }
+        },
+        required: ["action_items"]
+      }
+    }
+  } as const;
+
   const step2 = await client.responses.create({
     model,
     previous_response_id: step1.id,
     input: outputs,
+    response_format: responseFormat,
+    max_output_tokens: 600,
   });
 
   console.log(step2.output_text);

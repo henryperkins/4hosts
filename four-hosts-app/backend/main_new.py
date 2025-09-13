@@ -7,10 +7,18 @@ import os
 import logging
 import uvicorn
 from dotenv import load_dotenv
-from core.app import create_app
 
-# Load environment variables from .env file
-load_dotenv()
+# IMPORTANT: Load environment before importing application modules that read env
+# This ensures variables like JWT_SECRET_KEY from backend/.env are available
+_here = os.path.dirname(os.path.abspath(__file__))
+_env_path = os.path.join(_here, ".env")
+if os.path.exists(_env_path):
+    load_dotenv(dotenv_path=_env_path)
+else:
+    # Fallback to default search (cwd/upwards) if file not found next to this module
+    load_dotenv()
+
+from core.app import create_app
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

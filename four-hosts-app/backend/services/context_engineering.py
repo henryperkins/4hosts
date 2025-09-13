@@ -18,6 +18,10 @@ from .classification_engine import HostParadigm, ClassificationResult, QueryFeat
 from . import paradigm_search
 from services.search_apis import QueryOptimizer  # type: ignore
 from services.llm_client import llm_client  # type: ignore
+try:
+    from . import experiments  # Optional A/B helper
+except Exception:
+    experiments = None  # type: ignore
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -331,11 +335,21 @@ class RewriteLayer(ContextLayer):
         method = "heuristic"
         # Prefer LLM rewrite when available
         try:
-            prompt = (
-                "Rewrite the user query to be concise, specific, and search-friendly. "
-                "Preserve the intent. Quote named entities and key phrases.\n\n"
-                f"Query: {original}"
-            )
+            # Choose a variant if experiments are enabled
+            variant = (previous_outputs or {}).get("_experiment", {}).get("context_rewrite_variant", "v1")
+            if variant == "v2":
+                prompt = (
+                    "Rewrite the user query for search. Produce exactly 3 rewritten variants,"
+                    " each on its own line. Keep named entities in quotes. Remove filler words,"
+                    " prefer active verbs, and add one domain-specific keyword when obvious.\n\n"
+                    f"Query: {original}"
+                )
+            else:
+                prompt = (
+                    "Rewrite the user query to be concise, specific, and search-friendly. "
+                    "Preserve the intent. Quote named entities and key phrases.\n\n"
+                    f"Query: {original}"
+                )
             txt = await llm_client.generate_completion(prompt, paradigm=paradigm, temperature=0.3, max_tokens=160)
             if isinstance(txt, str) and txt.strip():
                 lines = [l.strip("- ") for l in str(txt).splitlines() if l.strip()]
@@ -859,7 +873,10 @@ class OptimizeLayer(ContextLayer):
             import os
             if os.getenv("ENABLE_QUERY_LLM", "0").lower() in {"1", "true", "yes"}:
                 try:
-                    from services.llm_query_optimizer import propose_semantic_variations
+                    try:
+                        from backend.services.llm_query_optimizer import propose_semantic_variations  # type: ignore
+                    except Exception:  # pragma: no cover
+                        from services.llm_query_optimizer import propose_semantic_variations  # type: ignore
                     llm_vars = await propose_semantic_variations(
                         base_query,
                         paradigm,
@@ -931,6 +948,17 @@ class ContextEngineeringPipeline:
 
         # Track outputs from each layer
         outputs = {}
+
+        # Seed experiment context for downstream layers (e.g., Rewrite)
+        try:
+            unit_id = (research_id or classification.query or "").strip() or "anon"
+            variant = (
+                experiments.variant_or_default("context_rewrite_prompt", unit_id, default="v1")
+                if experiments else "v1"
+            )
+            outputs["_experiment"] = {"unit_id": unit_id, "context_rewrite_variant": variant}
+        except Exception:
+            outputs["_experiment"] = {"unit_id": research_id or "anon", "context_rewrite_variant": "v1"}
         total_layers = 6  # W-S-C-I + Rewrite + Optimize
 
         # Process through Write layer

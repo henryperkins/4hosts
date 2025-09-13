@@ -6,6 +6,7 @@ import { ResearchFormEnhanced } from './ResearchFormEnhanced'
 import { ResearchProgress } from './ResearchProgress'
 import { ResultsDisplayEnhanced } from './ResultsDisplayEnhanced'
 import ParadigmDisplay from './ParadigmDisplay'
+import { ClassificationFeedback } from './feedback/ClassificationFeedback'
 import api from '../services/api'
 import type { ResearchResult, ParadigmClassification, ResearchOptions } from '../types'
 
@@ -205,12 +206,28 @@ export const ResearchPage = () => {
         <div className="animate-scale-in">
           <div className="mb-2 text-xs text-text-muted">Live Paradigm Preview</div>
           <ParadigmDisplay classification={liveClassification} />
+          {/* Optional classification feedback before run (research_id omitted) */}
+          <div className="mt-2">
+            <ClassificationFeedback
+              researchId={null}
+              query={liveQuery}
+              classification={liveClassification}
+            />
+          </div>
         </div>
       )}
 
       {paradigmClassification && (
         <div className="animate-scale-in">
           <ParadigmDisplay classification={paradigmClassification} />
+          {/* Classification feedback tied to this research run when available */}
+          <div className="mt-2">
+            <ClassificationFeedback
+              researchId={results?.research_id || null}
+              query={results?.query || liveQuery}
+              classification={paradigmClassification}
+            />
+          </div>
         </div>
       )}
 

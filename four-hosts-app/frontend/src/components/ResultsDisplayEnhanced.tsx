@@ -6,6 +6,7 @@ import type { ResearchResult, AnswerSection } from '../types'
 import { getParadigmClass, getParadigmDescription } from '../constants/paradigm'
 import { ContextMetricsPanel } from './ContextMetricsPanel'
 import { EvidencePanel } from './EvidencePanel'
+import { AnswerFeedback } from './feedback/AnswerFeedback'
 
 interface ResultsDisplayEnhancedProps {
   results: ResearchResult
@@ -540,6 +541,40 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
         )}
 
+        {/* Action Items */}
+        <div className="mt-4 p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg border border-yellow-200 dark:border-yellow-800 transition-colors duration-200">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-sm font-semibold text-yellow-900 dark:text-yellow-100">Action Items</h4>
+            <span className="text-xs text-yellow-800 dark:text-yellow-200">{actionItems.length} found</span>
+          </div>
+          {actionItems.length > 0 ? (
+            <ul className="divide-y divide-yellow-200 dark:divide-yellow-800">
+              {actionItems.map((it: any, idx: number) => (
+                <li key={idx} className="py-2 flex items-start gap-3">
+                  <div className="mt-0.5" aria-hidden>
+                    {getPriorityIcon(String(it.priority || 'low'))}
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-sm text-gray-900 dark:text-gray-100">
+                      {it.action || '—'}
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                      {it.timeframe && (
+                        <span className="px-2 py-0.5 rounded bg-white dark:bg-gray-800 border border-yellow-200 dark:border-yellow-700">{it.timeframe}</span>
+                      )}
+                      {it.paradigm && (
+                        <span className={`px-2 py-0.5 rounded border ${getParadigmClass(it.paradigm)}`}>{String(it.paradigm).charAt(0).toUpperCase() + String(it.paradigm).slice(1)}</span>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-gray-700 dark:text-gray-300">No action items identified.</p>
+          )}
+        </div>
+
         {/* Context Engineering Info (unified view) */}
         {contextLayers && (
           <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors duration-200">
@@ -1054,6 +1089,14 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
         </div>
       )}
+
+      {/* Feedback */}
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.55s' }}>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Feedback</h3>
+        <div className="grid grid-cols-1">
+          <AnswerFeedback researchId={results.research_id} />
+        </div>
+      </div>
 
       {/* Citations with Credibility */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.6s' }}>

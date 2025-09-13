@@ -522,7 +522,6 @@ class UnifiedResearchOrchestrator:
             "max_new_queries_per_iter": 4,
         }
         try:
-            import os
             if os.getenv("AGENTIC_ENABLE_LLM_CRITIC", "0") == "1":
                 self.agentic_config["enable_llm_critic"] = True
             if os.getenv("AGENTIC_ENABLE_LLM_CRITIC", "0") == "0" and "AGENTIC_ENABLE_LLM_CRITIC" in os.environ:
@@ -581,7 +580,6 @@ class UnifiedResearchOrchestrator:
 
         # Per-search task timeout (seconds) for external API calls
         try:
-            import os
             self.search_task_timeout = float(os.getenv("SEARCH_TASK_TIMEOUT_SEC", "20") or 20)
         except Exception:
             self.search_task_timeout = 20.0
@@ -960,6 +958,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             pass
 
+        # Optionally pass prompt variant override from research record
+        try:
+            rec = await self.research_store.get(research_id)
+            pv = ((rec or {}).get("experiment") or {}).get("prompt_variant")
+            if isinstance(pv, str) and pv in {"v1", "v2"}:
+                options = {**options, "prompt_variant": pv}
+        except Exception:
+            pass
+
         # Call the generator using the legacy signature for broad compatibility
         assert answer_orchestrator is not None, "Answer generation not available"
         answer = await answer_orchestrator.generate_answer(
@@ -1194,10 +1201,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # 4) Paradigm strategy ranking
         strategy = get_search_strategy(paradigm_code)
+
+        # Safely normalize secondary paradigm only when present to satisfy type checker
+        secondary_val = getattr(classification, "secondary_paradigm", None)
+        secondary_code = (
+            normalize_to_internal_code(secondary_val) if secondary_val is not None else None
+        )
+
         search_ctx = SearchContext(
             original_query=getattr(context_engineered, "original_query", ""),
             paradigm=paradigm_code,
-            secondary_paradigm=normalize_to_internal_code(getattr(classification, "secondary_paradigm", None)) if getattr(classification, "secondary_paradigm", None) else None,
+            secondary_paradigm=secondary_code,
         )
         ranked: List[SearchResult] = await strategy.filter_and_rank_results(early, search_ctx)
 
@@ -1426,6 +1440,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             background=True,
             include_paradigm_context=True,
         )
+
+        # Apply experiment override from research record when available
+        try:
+            if research_id:
+                rec = await self.research_store.get(research_id)
+                pv = ((rec or {}).get("experiment") or {}).get("prompt_variant")
+                if isinstance(pv, str) and pv in {"v1", "v2"}:
+                    deep_config.prompt_variant = pv
+        except Exception:
+            pass
 
         deep_result = await deep_research_service.execute_deep_research(
             query=context_engineered.original_query,

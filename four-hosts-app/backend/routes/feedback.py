@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 # Pydantic request / event models
@@ -82,8 +82,12 @@ async def _persist_feedback_event(
 
     try:
         if research_id:
-            # Attach to an existing research run
-            rec = await research_store.get(research_id) or {}
+            # Attach to an existing research run (create record if missing)
+            rec = await research_store.get(research_id)
+            if not rec:
+                rec = {"feedback_events": []}
+                # Create a new record so subsequent update_field works reliably
+                await research_store.set(research_id, rec)
             rec.setdefault("feedback_events", []).append(evt)
             await research_store.update_field(
                 research_id, "feedback_events", rec["feedback_events"]
@@ -105,6 +109,7 @@ async def _persist_feedback_event(
 @router.post("/classification", status_code=201)
 async def submit_classification_feedback(
     feedback: ClassificationFeedbackRequest,
+    request: Request,
     current_user=Depends(get_current_user),
 ):
     """
@@ -112,20 +117,36 @@ async def submit_classification_feedback(
 
     Body: models.feedback.ClassificationFeedbackRequest
     """
-    # Sanity-check optional correction
-    if feedback.user_correction:
-        correction = feedback.user_correction.strip().lower()
-        if correction not in {"dolores", "teddy", "bernard", "maeve"}:
-            raise HTTPException(status_code=400, detail="Invalid paradigm correction")
+    try:
+        # Sanity-check optional correction
+        if feedback.user_correction:
+            correction = feedback.user_correction.strip().lower()
+            if correction not in {"dolores", "teddy", "bernard", "maeve"}:
+                raise HTTPException(status_code=400, detail="Invalid paradigm correction")
 
-    await _persist_feedback_event(
-        event_type=EVENT_CLASSIFICATION,
-        payload=feedback.dict(),
-        user_id=str(current_user.user_id),
-        research_id=feedback.research_id,
-    )
+        await _persist_feedback_event(
+            event_type=EVENT_CLASSIFICATION,
+            payload=feedback.dict(),
+            user_id=str(current_user.user_id),
+            research_id=feedback.research_id,
+        )
 
-    return JSONResponse({"success": True}, status_code=201)
+        # Metrics: count classification feedback submissions
+        try:  # best-effort
+            from backend.services.metrics import metrics  # type: ignore
+            metrics.increment("feedback_classification_submitted")
+        except Exception:
+            pass
+
+        return JSONResponse({"success": True}, status_code=201)
+    except HTTPException:
+        # Already contains a clear detail; re-raise
+        logger.warning("Classification feedback rejected: %s", feedback.dict())
+        raise
+    except Exception as exc:
+        # Provide a structured 400 for easier debugging in tests/dev
+        logger.error("Classification feedback failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Classification feedback error: {exc}")
 
 
 # --------------------------------------------------------------------------- #
@@ -134,6 +155,7 @@ async def submit_classification_feedback(
 @router.post("/answer", status_code=201)
 async def submit_answer_feedback(
     feedback: AnswerFeedbackRequest,
+    request: Request,
     current_user=Depends(get_current_user),
 ):
     """
@@ -141,24 +163,51 @@ async def submit_answer_feedback(
 
     Body: models.feedback.AnswerFeedbackRequest
     """
-    # Persist first to avoid losing the event if downstream hooks fail
-    await _persist_feedback_event(
-        event_type=EVENT_ANSWER,
-        payload=feedback.dict(),
-        user_id=str(current_user.user_id),
-        research_id=feedback.research_id,
-    )
-
-    # Best-effort self-healing / ML pipeline hook
     try:
-        await record_user_feedback(
-            query_id=feedback.research_id,
-            satisfaction_score=float(feedback.rating),
-            paradigm_feedback=None,
+        # Persist first to avoid losing the event if downstream hooks fail
+        await _persist_feedback_event(
+            event_type=EVENT_ANSWER,
+            payload=feedback.dict(),
+            user_id=str(current_user.user_id),
+            research_id=feedback.research_id,
         )
-    except Exception as exc:  # pragma: no cover
-        logger.debug("record_user_feedback failed (non-fatal): %s", exc)
 
-    return JSONResponse(
-        {"success": True, "normalized_rating": float(feedback.rating)}, status_code=201
-    )
+        # Best-effort self-healing / ML pipeline hook
+        try:
+            await record_user_feedback(
+                query_id=feedback.research_id,
+                satisfaction_score=float(feedback.rating),
+                paradigm_feedback=None,
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.debug("record_user_feedback failed (non-fatal): %s", exc)
+
+        # Metrics: count answer feedback and bucketed rating/helpful
+        try:  # best-effort
+            from backend.services.metrics import metrics  # type: ignore
+            metrics.increment("feedback_answer_submitted")
+            # bucketed rating (0-1 normalized) to 5-star bins
+            try:
+                r = float(feedback.rating)
+            except Exception:
+                r = 0.0
+            stars = 1 + int(round((max(0.0, min(1.0, r)) * 4)))
+            metrics.increment("feedback_answer_rating", str(stars))
+            if feedback.helpful is True:
+                metrics.increment("feedback_answer_helpful", "yes")
+            elif feedback.helpful is False:
+                metrics.increment("feedback_answer_helpful", "no")
+            else:
+                metrics.increment("feedback_answer_helpful", "unset")
+        except Exception:
+            pass
+
+        return JSONResponse(
+            {"success": True, "normalized_rating": float(feedback.rating)}, status_code=201
+        )
+    except HTTPException:
+        logger.warning("Answer feedback rejected: %s", feedback.dict())
+        raise
+    except Exception as exc:
+        logger.error("Answer feedback failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Answer feedback error: {exc}")
