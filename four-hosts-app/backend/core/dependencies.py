@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from fastapi import Request, HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from services.auth_service import get_current_user as auth_get_current_user
 from models.base import UserRole
 
 
@@ -29,6 +28,9 @@ async def get_current_user(
     2. Authorization header via HTTPBearer
     3. Manual Authorization header inspection
     """
+    # Moved import to fix circular dependency
+    from services.auth_service import get_current_user as auth_get_current_user
+
     token: Optional[str] = request.cookies.get("access_token")
 
     # Token provided via HTTPBearer dependency
