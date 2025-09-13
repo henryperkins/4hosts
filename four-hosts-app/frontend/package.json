@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "design:lint": "bash ./qa/check-tokens.sh"
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.16",

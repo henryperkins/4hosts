@@ -40,12 +40,12 @@ export const UserProfile: React.FC = () => {
   if (!user) return null
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6">
+    <div className="bg-surface border border-border rounded-lg shadow-md p-6">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">User Profile</h2>
+        <h2 className="text-2xl font-bold text-text">User Profile</h2>
         <button
           onClick={handleLogout}
-          className="flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+          className="flex items-center gap-2 px-4 py-2 text-error hover:bg-error/10 rounded-lg transition-colors"
         >
           <FiLogOut className="h-4 w-4" />
           Logout
@@ -53,25 +53,25 @@ export const UserProfile: React.FC = () => {
       </div>
 
       {/* User Info */}
-      <div className="mb-8 p-4 bg-gray-50 rounded-lg">
+      <div className="mb-8 p-4 bg-surface-subtle rounded-lg">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-            <FiUser className="h-8 w-8 text-blue-600" />
+          <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center">
+            <FiUser className="h-8 w-8 text-primary" />
           </div>
           <div>
-            <h3 className="font-semibold text-lg text-gray-900">{user.username}</h3>
-            <p className="text-gray-600">{user.email}</p>
+            <h3 className="font-semibold text-lg text-text">{user.username}</h3>
+            <p className="text-text-muted">{user.email}</p>
             <div className="flex items-center gap-4 mt-1">
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-text-subtle">
                 Member since {user.created_at ? new Date(user.created_at).toLocaleDateString() : 'Unknown'}
               </p>
               {/* Role Badge */}
               <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                user.role === 'admin' ? 'bg-red-100 text-red-800' :
-                user.role === 'enterprise' ? 'bg-purple-100 text-purple-800' :
-                user.role === 'pro' ? 'bg-yellow-100 text-yellow-800' :
-                user.role === 'basic' ? 'bg-blue-100 text-blue-800' :
-                'bg-gray-100 text-gray-800'
+                user.role === 'admin' ? 'bg-error/10 text-error' :
+                user.role === 'enterprise' ? 'bg-primary/10 text-primary' :
+                user.role === 'pro' ? 'bg-success/10 text-success' :
+                user.role === 'basic' ? 'bg-surface-subtle text-text' :
+                'bg-surface-subtle text-text'
               }`}>
                 {user.role?.toUpperCase() || 'FREE'}
               </span>
@@ -81,8 +81,8 @@ export const UserProfile: React.FC = () => {
 
         {/* Role-specific features notice */}
         {user.role === 'free' && (
-          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-            <p className="text-sm text-blue-800">
+          <div className="mt-4 p-3 bg-primary/10 border border-primary/30 rounded-lg">
+            <p className="text-sm text-primary">
               🎯 Upgrade to unlock deep research, export features, and advanced analytics!
             </p>
           </div>
@@ -92,11 +92,11 @@ export const UserProfile: React.FC = () => {
       {/* Preferences */}
       <div className="space-y-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">Preferences</h3>
+          <h3 className="text-lg font-semibold text-text">Preferences</h3>
           {!isEditing ? (
             <button
               onClick={() => setIsEditing(true)}
-              className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+              className="flex items-center gap-2 px-4 py-2 text-primary hover:bg-primary/10 rounded-lg transition-colors"
             >
               <FiSettings className="h-4 w-4" />
               Edit
@@ -105,14 +105,14 @@ export const UserProfile: React.FC = () => {
             <div className="flex gap-2">
               <button
                 onClick={() => setIsEditing(false)}
-                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                className="px-4 py-2 text-text-muted hover:bg-surface-subtle rounded-lg transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSave}
                 disabled={isSaving}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
               >
                 <FiSave className="h-4 w-4" />
                 {isSaving ? 'Saving...' : 'Save'}
@@ -123,7 +123,7 @@ export const UserProfile: React.FC = () => {
 
         {/* Default Paradigm */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+          <label className="block text-sm font-medium text-text mb-2">
             Default Paradigm
           </label>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -135,8 +135,8 @@ export const UserProfile: React.FC = () => {
                 onClick={() => setPreferences({ ...preferences, default_paradigm: paradigm })}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                   preferences.default_paradigm === paradigm
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    ? 'bg-primary text-white'
+                    : 'bg-surface-muted text-text hover:bg-surface-subtle'
                 } ${!isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
               >
                 {paradigm.charAt(0).toUpperCase() + paradigm.slice(1)}
@@ -148,8 +148,8 @@ export const UserProfile: React.FC = () => {
               onClick={() => setPreferences({ ...preferences, default_paradigm: undefined })}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                 !preferences.default_paradigm
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  ? 'bg-primary text-white'
+                  : 'bg-surface-muted text-text hover:bg-surface-subtle'
               } ${!isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
             >
               Auto-detect
@@ -159,7 +159,7 @@ export const UserProfile: React.FC = () => {
 
         {/* Default Research Depth */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+          <label className="block text-sm font-medium text-text mb-2">
             Default Research Depth
           </label>
           <div className="grid grid-cols-3 gap-2">
@@ -171,8 +171,8 @@ export const UserProfile: React.FC = () => {
                 onClick={() => setPreferences({ ...preferences, default_depth: depth })}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                   preferences.default_depth === depth
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    ? 'bg-primary text-white'
+                    : 'bg-surface-muted text-text hover:bg-surface-subtle'
                 } ${!isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
               >
                 {depth.charAt(0).toUpperCase() + depth.slice(1)}
@@ -183,12 +183,12 @@ export const UserProfile: React.FC = () => {
 
         {/* Feature Toggles */}
         <div className="space-y-3">
-          <label className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+          <label className="flex items-center justify-between p-3 bg-surface-subtle rounded-lg">
             <div className="flex items-center gap-3">
-              <FiDatabase className="h-5 w-5 text-gray-600" />
+              <FiDatabase className="h-5 w-5 text-text-muted" />
               <div>
-                <p className="font-medium text-gray-900">Enable Real Search</p>
-                <p className="text-sm text-gray-600">Use live search APIs for current data</p>
+                <p className="font-medium text-text">Enable Real Search</p>
+                <p className="text-sm text-text-muted">Use live search APIs for current data</p>
               </div>
             </div>
             <input
@@ -196,16 +196,16 @@ export const UserProfile: React.FC = () => {
               disabled={!isEditing}
               checked={preferences.enable_real_search || false}
               onChange={(e) => setPreferences({ ...preferences, enable_real_search: e.target.checked })}
-              className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded disabled:opacity-50"
+              className="h-5 w-5 text-primary focus:ring-blue-500 border-border rounded disabled:opacity-50"
             />
           </label>
 
-          <label className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+          <label className="flex items-center justify-between p-3 bg-surface-subtle rounded-lg">
             <div className="flex items-center gap-3">
-              <FiCpu className="h-5 w-5 text-gray-600" />
+              <FiCpu className="h-5 w-5 text-text-muted" />
               <div>
-                <p className="font-medium text-gray-900">Enable AI Classification</p>
-                <p className="text-sm text-gray-600">Use advanced AI for paradigm detection</p>
+                <p className="font-medium text-text">Enable AI Classification</p>
+                <p className="text-sm text-text-muted">Use advanced AI for paradigm detection</p>
               </div>
             </div>
             <input
@@ -213,27 +213,27 @@ export const UserProfile: React.FC = () => {
               disabled={!isEditing}
               checked={preferences.enable_ai_classification || false}
               onChange={(e) => setPreferences({ ...preferences, enable_ai_classification: e.target.checked })}
-              className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded disabled:opacity-50"
+              className="h-5 w-5 text-primary focus:ring-blue-500 border-border rounded disabled:opacity-50"
             />
           </label>
 
-          <label className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+          <label className="flex items-center justify-between p-3 bg-surface-subtle rounded-lg">
             <div className="flex items-center gap-3">
               {preferences.theme === 'dark' ? (
-                <FiMoon className="h-5 w-5 text-gray-600" />
+                <FiMoon className="h-5 w-5 text-text-muted" />
               ) : (
-                <FiSun className="h-5 w-5 text-gray-600" />
+                <FiSun className="h-5 w-5 text-text-muted" />
               )}
               <div>
-                <p className="font-medium text-gray-900">Theme</p>
-                <p className="text-sm text-gray-600">Choose your preferred theme</p>
+                <p className="font-medium text-text">Theme</p>
+                <p className="text-sm text-text-muted">Choose your preferred theme</p>
               </div>
             </div>
             <select
               disabled={!isEditing}
               value={preferences.theme || 'light'}
               onChange={(e) => setPreferences({ ...preferences, theme: e.target.value as 'light' | 'dark' })}
-              className="px-3 py-1 border border-gray-300 rounded-lg text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+              className="px-3 py-1 border border-border rounded-lg text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
             >
               <option value="light">Light</option>
               <option value="dark">Dark</option>

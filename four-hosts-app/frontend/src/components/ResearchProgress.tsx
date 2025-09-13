@@ -471,10 +471,10 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               const completed = ceLayerProgress.done > idx
               const isActiveLayer = ceLayerProgress.done === idx
               const badgeStyle = completed
-                ? 'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300'
+                ? 'bg-primary/10 border-primary/30 text-primary'
                 : isActiveLayer
-                  ? 'bg-yellow-100 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700 text-yellow-700 dark:text-yellow-300'
-                  : 'bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-500 dark:text-gray-400'
+                  ? 'bg-primary/10 border-primary/30 text-primary'
+                  : 'bg-surface-subtle border-border text-text-muted'
 
               return (
                 <span
@@ -488,16 +488,16 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           </div>
           
           {/* Research Phases */}
-          <div className="mb-4 bg-gray-50 dark:bg-gray-800/30 rounded-lg p-4">
+          <div className="mb-4 bg-surface-subtle rounded-lg p-4">
             <div className="flex justify-between items-center gap-2">
               {researchPhases.map((phase, index) => (
                 <div key={phase.name} className="flex items-center flex-1">
                   <div className="flex flex-col items-center flex-1">
                     <div className={`
                       p-2 rounded-full mb-1 transition-colors
-                      ${phase.isCompleted ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400' : 
-                        phase.isActive ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 animate-pulse' : 
-                        'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600'}
+                      ${phase.isCompleted ? 'bg-success/10 text-success' : 
+                        phase.isActive ? 'bg-primary/10 text-primary animate-pulse' : 
+                        'bg-surface-subtle text-text-muted'}
                     `}>
                       {phase.isCompleted ? <FiCheckCircle className="h-4 w-4" /> : phase.icon}
                     </div>
@@ -507,7 +507,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
                   </div>
                   {index < researchPhases.length - 1 && (
                     <div className={`h-0.5 flex-1 mx-2 transition-colors ${
-                      phase.isCompleted ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'
+                      phase.isCompleted ? 'bg-success' : 'bg-surface-muted'
                     }`} />
                   )}
                 </div>
@@ -517,35 +517,35 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           
           {/* Statistics */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 mb-4">
-            <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
+            <div className="bg-surface-subtle rounded-lg p-3">
               <div className="text-2xl font-bold text-text">{stats.sourcesFound}</div>
               <div className="text-xs text-text-muted">Sources Found</div>
             </div>
-            <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
+            <div className="bg-surface-subtle rounded-lg p-3">
               <div className="text-2xl font-bold text-text">
                 {stats.totalSearches > 0 ? `${stats.searchesCompleted}/${stats.totalSearches}` : '-'}
               </div>
               <div className="text-xs text-text-muted">Searches</div>
             </div>
-            <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
+            <div className="bg-surface-subtle rounded-lg p-3">
               <div className="text-2xl font-bold text-text">
                 {analysisTotal ? `${Math.min(stats.sourcesAnalyzed, analysisTotal)}/${analysisTotal}` : '-'}
               </div>
               <div className="text-xs text-text-muted">Analyzed</div>
             </div>
-            <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
-              <div className="text-2xl font-bold text-green-600 dark:text-green-400">
+            <div className="bg-surface-subtle rounded-lg p-3">
+              <div className="text-2xl font-bold text-success">
                 {stats.highQualitySources}
               </div>
               <div className="text-xs text-text-muted">High Quality</div>
             </div>
-            <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
+            <div className="bg-surface-subtle rounded-lg p-3">
               <div className="text-2xl font-bold text-text">
                 {stats.sourcesFound > 0 ? `${Math.round((stats.highQualitySources / stats.sourcesFound) * 100)}%` : '-'}
               </div>
               <div className="text-xs text-text-muted">Quality Rate</div>
             </div>
-            <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
+            <div className="bg-surface-subtle rounded-lg p-3">
               <div className="text-2xl font-bold text-text">
                 {`${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`}
               </div>
@@ -611,7 +611,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               </div>
               {/* Icon indicators for different message types */}
               {update.message?.includes('Searching') && (
-                <FiSearch className="h-4 w-4 text-blue-500 animate-pulse" />
+                <FiSearch className="h-4 w-4 text-primary animate-pulse" />
               )}
               {update.message?.includes('credibility') && (
                 <FiCheckCircle className="h-4 w-4 text-green-500" />
@@ -662,7 +662,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               {sourcePreviews.map((source, index) => (
                 <div
                   key={index}
-                  className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3 animate-slide-up"
+                  className="bg-surface-subtle rounded-lg p-3 animate-slide-up"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">

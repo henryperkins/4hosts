@@ -169,6 +169,7 @@ class OpenAIResponsesClient:
         instructions: Optional[str] = None,
         store: bool = True,
         previous_response_id: Optional[str] = None,
+        max_output_tokens: Optional[int] = None,
     ) -> Union[Dict[str, Any], AsyncIterator[Dict[str, Any]]]:
         """
         Create a response using the Responses API.
@@ -235,6 +236,8 @@ class OpenAIResponsesClient:
             request_data["instructions"] = instructions
         if previous_response_id:
             request_data["previous_response_id"] = previous_response_id
+        if max_output_tokens is not None:
+            request_data["max_output_tokens"] = max_output_tokens
         
         # Make request
         async with httpx.AsyncClient(timeout=3600) as client:

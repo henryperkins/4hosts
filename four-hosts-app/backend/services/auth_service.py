@@ -29,10 +29,9 @@ from .auth.tokens import (
     create_refresh_token,
     decode_token,
 )
-from core.config import (
-    ALGORITHM as _CFG_ALGORITHM,
-    ACCESS_TOKEN_EXPIRE_MINUTES as _CFG_ACCESS_TOKEN_EXPIRE_MINUTES,
-)
+# Define directly to avoid circular imports
+_CFG_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+_CFG_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 # Import database models and connection
 from database.models import (
@@ -365,7 +364,7 @@ class AuthService:
             )
 
             db_user = DBUser(
-                email=user_data.email,
+                email=user_data.email.lower(),
                 username=user_data.username,
                 password_hash=await hash_password(user_data.password),
                 role=role_value,
@@ -411,11 +410,14 @@ class AuthService:
             should_close_gen = None
 
         try:
-            from sqlalchemy import select
+            from sqlalchemy import select, func
 
-            # Async query
+            # Normalize email for case-insensitive lookup
+            email_normalized = login_data.email.strip().lower()
+
+            # Async query (case-insensitive email match)
             result = await db.execute(
-                select(DBUser).filter(DBUser.email == login_data.email)
+                select(DBUser).filter(func.lower(DBUser.email) == email_normalized)
             )
             db_user = result.scalars().first()
 

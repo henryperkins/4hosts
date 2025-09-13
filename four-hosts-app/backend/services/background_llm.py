@@ -64,23 +64,25 @@ class BackgroundLLMManager:
             else:
                 norm_messages = messages
 
-            # Prepare request with background mode
-            response_kwargs = {
-                "model": model,
-                "input": norm_messages,
-                "background": True,  # Responses API background mode
-                "store": True,       # Required by Azure for background tasks
-                "max_output_tokens": kwargs.get("max_output_tokens", 4000),
-            }
+            # Submit via HTTP Responses client for consistent api-version handling
+            from services.openai_responses_client import get_responses_client
+            rc = get_responses_client()
 
-            if tools:
-                response_kwargs["tools"] = tools
+            response = await rc.create_response(
+                model=model,
+                input=norm_messages,
+                tools=tools,
+                background=True,
+                stream=False,
+                reasoning={"summary": "auto"},
+                max_tool_calls=kwargs.get("max_tool_calls"),
+                instructions=kwargs.get("instructions"),
+                store=True,
+                max_output_tokens=kwargs.get("max_output_tokens", 4000),
+            )
 
-            # Submit to Azure OpenAI (Responses API)
-            response = await self.azure_client.responses.create(**response_kwargs)
-
-            # Extract task ID from response
-            task_id = response.id if hasattr(response, 'id') else str(response)
+            # Extract task ID from HTTP JSON
+            task_id = response.get("id") if isinstance(response, dict) else str(response)
 
             # Store task info
             self.active_tasks[task_id] = {
@@ -140,13 +142,13 @@ class BackgroundLLMManager:
         # Update status
         self.active_tasks[task_id]["status"] = BackgroundTaskStatus.CANCELLED
 
-        # Attempt to cancel server-side job as well
+        # Attempt to cancel server-side job as well (HTTP Responses client)
         try:
-            await self.azure_client.responses.cancel(task_id)
+            from services.openai_responses_client import get_responses_client
+            rc = get_responses_client()
+            await rc.cancel_response(task_id)
         except Exception as e:
-            logger.debug(
-                f"Azure cancel failed or not supported for {task_id}: {e}"
-            )
+            logger.debug(f"Cancel failed or not supported for {task_id}: {e}")
 
         # Cancel polling task
         if task_id in self._polling_tasks:
@@ -175,18 +177,20 @@ class BackgroundLLMManager:
                     self.active_tasks[task_id]["error"] = "Task timed out"
                     break
 
-                # Poll Azure API for status
+                # Poll Responses API for status via HTTP client
                 try:
-                    # Get task status from Azure
-                    response = await self.azure_client.responses.retrieve(task_id)
+                    from services.openai_responses_client import get_responses_client
+                    rc = get_responses_client()
+                    response = await rc.retrieve_response(task_id)
 
-                    if hasattr(response, 'status'):
-                        if response.status == "completed":
+                    status = response.get('status') if isinstance(response, dict) else None
+                    if status:
+                        if status == "completed":
                             # Task completed
                             self.active_tasks[task_id]["status"] = BackgroundTaskStatus.COMPLETED
 
-                            # Extract result
-                            result = self._extract_result(response)
+                            # Extract result from JSON
+                            result = response
 
                             # Cache result
                             await cache_manager.set(f"llm_response:{task_id}", result)
@@ -199,13 +203,9 @@ class BackgroundLLMManager:
                             logger.info(f"Background task {task_id} completed")
                             break
 
-                        elif response.status == "failed":
+                        elif status == "failed":
                             self.active_tasks[task_id]["status"] = BackgroundTaskStatus.FAILED
-                            self.active_tasks[task_id]["error"] = getattr(
-                                response,
-                                "error",
-                                "Unknown error",
-                            )
+                            self.active_tasks[task_id]["error"] = response.get("error", "Unknown error")
                             logger.error(f"Background task {task_id} failed")
                             break
 

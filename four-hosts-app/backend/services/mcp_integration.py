@@ -174,6 +174,22 @@ class MCPIntegration:
             pass
         return all_tools
 
+    def get_responses_mcp_tools(self, require_approval: str = "never") -> List[Dict[str, Any]]:
+        """Return a list of Responses API MCP tool descriptors for all registered servers.
+
+        Shape matches OpenAI Responses MCP tool objects:
+          {"type":"mcp", "server_label": name, "server_url": url, "require_approval": "never"}
+        """
+        tools: List[Dict[str, Any]] = []
+        for name, srv in self.servers.items():
+            tools.append({
+                "type": "mcp",
+                "server_label": name,
+                "server_url": srv.url,
+                "require_approval": require_approval,
+            })
+        return tools
+
 
 # Global MCP integration instance
 mcp_integration = MCPIntegration()

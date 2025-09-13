@@ -153,20 +153,20 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   if (!answer) {
     return (
       <div className="mt-8 animate-fade-in">
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center transition-colors duration-200">
-          <FiAlertCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
-          <h3 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
+        <div className="bg-surface rounded-lg shadow-lg p-8 text-center transition-colors duration-200 border border-border">
+          <FiAlertCircle className="h-16 w-16 text-error mx-auto mb-4" />
+          <h3 className="text-xl font-semibold text-text mb-2">
             Research Incomplete
           </h3>
-          <p className="text-gray-600 dark:text-gray-400 mb-4">
+          <p className="text-text-muted mb-4">
             This research could not be completed due to an error during processing.
           </p>
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-            <p className="text-sm text-red-600 dark:text-red-400">
+          <div className="bg-error/10 border border-error/30 rounded-lg p-4">
+            <p className="text-sm text-error">
               Status: {results.status || 'Unknown'}
             </p>
             {results.metadata && (
-              <p className="text-sm text-red-600 dark:text-red-400 mt-1">
+              <p className="text-sm text-error mt-1">
                 Research ID: {results.research_id}
               </p>
             )}
@@ -266,12 +266,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   return (
     <div className="mt-8 space-y-6 animate-fade-in">
       {/* Summary Section */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up">
+      <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border">
         <div className="flex items-start justify-between mb-4">
           <div>
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Research results</h2>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Query: "{results.query}"</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">As of {new Date(fetchedAtRef.current).toLocaleString()}</p>
+            <h2 className="text-2xl font-bold text-text">Research results</h2>
+            <p className="text-sm text-text-muted mt-1">Query: "{results.query}"</p>
+            <p className="text-xs text-text-subtle">As of {new Date(fetchedAtRef.current).toLocaleString()}</p>
           </div>
 
           <div className="flex items-center gap-2">
@@ -292,7 +292,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               <button
                 onClick={() => setDropdownOpen(!dropdownOpen)}
                 disabled={isExporting}
-                className="p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800"
+                className="p-2 text-text-muted hover:text-text hover:bg-surface-subtle rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 aria-label="Export results"
                 aria-expanded={dropdownOpen}
                 aria-haspopup="true"
@@ -306,7 +306,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
               {/* Build export list dynamically from backend-provided URLs when available */}
               <div
-                className={`absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 transition-all duration-200 z-10 ${
+                className={`absolute right-0 mt-2 w-48 bg-surface rounded-lg shadow-xl border border-border transition-all duration-200 z-10 ${
                   dropdownOpen ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible -translate-y-2'
                 }`}
               >
@@ -324,7 +324,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                       <button
                         key={fmt}
                         onClick={() => handleExport(fmt)}
-                        className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200 flex items-center gap-2 capitalize"
+                        className="w-full text-left px-4 py-2 text-sm text-text hover:bg-surface-subtle transition-colors duration-200 flex items-center gap-2 capitalize"
                         disabled={isExporting}
                       >
                         {exportFormat === fmt && isExporting ? (
@@ -342,115 +342,115 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
         {/* Bottom line and evidence snapshot */}
         <div className="mt-3">
-          <p className="text-gray-900 dark:text-gray-100 text-base"><span className="font-semibold">Bottom line:</span> {bottomLine(summary)}</p>
-          <div className="mt-2 text-sm text-gray-700 dark:text-gray-300">
+          <p className="text-text text-base"><span className="font-semibold">Bottom line:</span> {bottomLine(summary)}</p>
+          <div className="mt-2 text-sm text-text">
             <span className="font-medium">Evidence:</span> {evidenceSnapshot.total.toLocaleString()} sources ({evidenceSnapshot.strong} strong, {evidenceSnapshot.moderate} moderate, {evidenceSnapshot.weak} weak){evidenceSnapshot.window ? ` · timeframe ${evidenceSnapshot.window}` : ''}.
           </div>
-          <div className="mt-1 text-sm text-gray-700 dark:text-gray-300">
+          <div className="mt-1 text-sm text-text">
             <span className="font-medium">Confidence:</span> {confidenceInfo.band} ({Math.round(confidenceInfo.conf)}%){confidenceInfo.because ? ` — because ${confidenceInfo.because}.` : '.'}
           </div>
         </div>
 
         {/* Quality checks & paradigm fit */}
         <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="bg-gray-50 dark:bg-gray-700 p-3 rounded-lg border border-gray-200 dark:border-gray-600">
+          <div className="bg-surface-subtle p-3 rounded-lg border border-border">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600 dark:text-gray-300">Actionable Content</span>
+              <span className="text-sm text-text-muted">Actionable Content</span>
               <span className={`text-xs font-semibold px-2 py-0.5 rounded ${actionableRatio >= 0.85 ? 'bg-green-600 text-white' : 'bg-amber-500 text-white'}`}>
                 {(actionableRatio * 100).toFixed(0)}%
               </span>
             </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Estimated share of concrete actions and key insights.</p>
+            <p className="text-xs text-text-subtle mt-1">Estimated share of concrete actions and key insights.</p>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-700 p-3 rounded-lg border border-gray-200 dark:border-gray-600">
+          <div className="bg-surface-subtle p-3 rounded-lg border border-border">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600 dark:text-gray-300">Bias Check</span>
+              <span className="text-sm text-text-muted">Bias Check</span>
               <span className={`text-xs font-semibold px-2 py-0.5 rounded ${bias?.balanced ? 'bg-green-600 text-white' : 'bg-amber-500 text-white'}`}>
                 {bias?.balanced ? 'Balanced' : 'Needs Balance'}
               </span>
             </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Domain diversity {(bias?.domain_diversity ? (bias.domain_diversity * 100).toFixed(0) : '0')}%{bias?.dominant_domain ? `, dominant: ${bias.dominant_domain} ${(bias.dominant_share! * 100).toFixed(0)}%` : ''}</p>
+            <p className="text-xs text-text-subtle mt-1">Domain diversity {(bias?.domain_diversity ? (bias.domain_diversity * 100).toFixed(0) : '0')}%{bias?.dominant_domain ? `, dominant: ${bias.dominant_domain} ${(bias.dominant_share! * 100).toFixed(0)}%` : ''}</p>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-700 p-3 rounded-lg border border-gray-200 dark:border-gray-600">
+          <div className="bg-surface-subtle p-3 rounded-lg border border-border">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600 dark:text-gray-300">Paradigm Fit</span>
+              <span className="text-sm text-text-muted">Paradigm Fit</span>
               <span className="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-600 text-white">
                 {((results.metadata?.paradigm_fit?.confidence || 0) * 100).toFixed(0)}% conf · margin {((results.metadata?.paradigm_fit?.margin || 0) * 100).toFixed(0)}%
               </span>
             </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Primary: {results.metadata?.paradigm_fit?.primary || '-'}</p>
+            <p className="text-xs text-text-subtle mt-1">Primary: {results.metadata?.paradigm_fit?.primary || '-'}</p>
           </div>
         </div>
 
         {/* Analyzed → High-Quality banner */}
-        <div className="mt-3 text-sm text-gray-700 dark:text-gray-300">
+        <div className="mt-3 text-sm text-text">
           <span className="font-medium">Analyzed</span> {results.metadata.total_sources_analyzed} sources
           <span> → </span>
           <span className="font-medium">{results.metadata.high_quality_sources}</span> high‑quality
           {results.metadata?.credibility_summary?.average_score !== undefined && (
-            <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">avg credibility {(results.metadata.credibility_summary.average_score * 100).toFixed(0)}%</span>
+            <span className="ml-2 text-xs text-text-subtle">avg credibility {(results.metadata.credibility_summary.average_score * 100).toFixed(0)}%</span>
           )}
         </div>
 
         {/* Scales used */}
-        <div className="mt-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600">
-          <p className="text-xs text-gray-600 dark:text-gray-300">
+        <div className="mt-3 p-3 rounded-lg bg-surface-subtle border border-border">
+          <p className="text-xs text-text-muted">
             <span className="font-semibold">Scales:</span> Confidence — High ≥ 80%, Medium 60–79%, Low &lt; 60%. Quality — Strong ≥ 0.80, Moderate 0.60–0.79, Weak &lt; 0.60.
           </p>
         </div>
 
         <div className="prose dark:prose-invert max-w-none mt-3">
-          <p className="text-gray-700 dark:text-gray-300">{integrated_synthesis ? integrated_synthesis.integrated_summary : summary}</p>
+          <p className="text-text">{integrated_synthesis ? integrated_synthesis.integrated_summary : summary}</p>
         </div>
 
         <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-          <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 transition-colors duration-200">
-            <p className="text-gray-600 dark:text-gray-400">Sources Analyzed</p>
-            <p className="font-semibold text-lg text-gray-900 dark:text-gray-100">{results.metadata.total_sources_analyzed}</p>
+          <div className="bg-surface-subtle rounded-lg p-3 transition-colors duration-200">
+            <p className="text-text-muted">Sources Analyzed</p>
+            <p className="font-semibold text-lg text-text">{results.metadata.total_sources_analyzed}</p>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 transition-colors duration-200">
-            <p className="text-gray-600 dark:text-gray-400">High Quality</p>
-            <p className="font-semibold text-lg text-gray-900 dark:text-gray-100">{results.metadata.high_quality_sources}</p>
+          <div className="bg-surface-subtle rounded-lg p-3 transition-colors duration-200">
+            <p className="text-text-muted">High Quality</p>
+            <p className="font-semibold text-lg text-text">{results.metadata.high_quality_sources}</p>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 transition-colors duration-200">
-            <p className="text-gray-600 dark:text-gray-400">Processing Time</p>
-            <p className="font-semibold text-lg text-gray-900 dark:text-gray-100">{results.metadata.processing_time_seconds}s</p>
+          <div className="bg-surface-subtle rounded-lg p-3 transition-colors duration-200">
+            <p className="text-text-muted">Processing Time</p>
+            <p className="font-semibold text-lg text-text">{results.metadata.processing_time_seconds}s</p>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 transition-colors duration-200">
-            <p className="text-gray-600 dark:text-gray-400">Paradigms Used</p>
-            <p className="font-semibold text-lg text-gray-900 dark:text-gray-100">{results.metadata.paradigms_used.length}</p>
+          <div className="bg-surface-subtle rounded-lg p-3 transition-colors duration-200">
+            <p className="text-text-muted">Paradigms Used</p>
+            <p className="font-semibold text-lg text-text">{results.metadata.paradigms_used.length}</p>
           </div>
         </div>
 
         {/* Source Category & Credibility Distribution */}
         <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-          <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
-            <p className="text-gray-600 dark:text-gray-300 mb-2">Source categories</p>
+          <div className="bg-surface-subtle rounded-lg p-3">
+            <p className="text-text mb-2">Source categories</p>
             <div className="flex flex-wrap gap-2">
               {Object.entries((results as any)?.metadata?.category_distribution || {}).map(([cat, count]) => (
-                <span key={cat} className="px-2 py-1 rounded bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-xs text-gray-700 dark:text-gray-200">
+                <span key={cat} className="px-2 py-1 rounded bg-surface border border-border text-xs text-text">
                   {cat}: <span className="font-semibold">{String(count)}</span>
                 </span>
               ))}
               {Object.keys((results as any)?.metadata?.category_distribution || {}).length === 0 && (
-                <span className="text-gray-500 dark:text-gray-400">No category data</span>
+                <span className="text-text-subtle">No category data</span>
               )}
             </div>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
-            <p className="text-gray-600 dark:text-gray-300 mb-2">Credibility Distribution</p>
+          <div className="bg-surface-subtle rounded-lg p-3">
+            <p className="text-text mb-2">Credibility Distribution</p>
             {(() => {
               const dist = ((results as any)?.metadata?.credibility_summary?.score_distribution) || {}
               const total: number = (Object.values(dist) as any[]).reduce((a:number,b:any)=>a+Number(b||0),0) || 1
               const pct = (k: string) => Math.round(((Number((dist as any)[k]||0))/total)*100)
               return (
                 <div>
-                  <div className="h-2 w-full rounded bg-gray-200 dark:bg-gray-600 overflow-hidden">
+                  <div className="h-2 w-full rounded bg-surface-muted overflow-hidden">
                     <div className="h-2 bg-green-600" style={{width:`${pct('high')}%`}} />
                     <div className="h-2 bg-yellow-500" style={{width:`${pct('medium')}%`}} />
                     <div className="h-2 bg-red-500" style={{width:`${pct('low')}%`}} />
                   </div>
-                  <div className="mt-2 flex gap-2 text-xs text-gray-700 dark:text-gray-300">
+                  <div className="mt-2 flex gap-2 text-xs text-text">
                     <span className="px-2 py-0.5 rounded bg-green-600 text-white">High {pct('high')}%</span>
                     <span className="px-2 py-0.5 rounded bg-yellow-500 text-white">Medium {pct('medium')}%</span>
                     <span className="px-2 py-0.5 rounded bg-red-500 text-white">Low {pct('low')}%</span>
@@ -462,16 +462,16 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
 
         {/* Bias Distribution */}
-        <div className="mt-4 bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
-          <p className="text-gray-600 dark:text-gray-300 mb-2">Bias Distribution</p>
+        <div className="mt-4 bg-surface-subtle rounded-lg p-3">
+          <p className="text-text mb-2">Bias Distribution</p>
           <div className="flex flex-wrap gap-2 text-xs">
             {Object.entries((results as any)?.metadata?.bias_distribution || {}).map(([k,v]) => (
-              <span key={k} className="px-2 py-0.5 rounded bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200">
+              <span key={k} className="px-2 py-0.5 rounded bg-surface border border-border text-text">
                 {k}: <span className="font-semibold">{String(v)}</span>
               </span>
             ))}
             {Object.keys((results as any)?.metadata?.bias_distribution || {}).length === 0 && (
-              <span className="text-gray-500 dark:text-gray-400">No bias data</span>
+              <span className="text-text-subtle">No bias data</span>
             )}
           </div>
         </div>
@@ -493,9 +493,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         )}
 
         {/* Executive Summary (Maeve focus) */}
-        <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-800/40 rounded-lg border border-gray-200 dark:border-gray-700 transition-colors duration-200">
-          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">Executive Summary</h4>
-          <ul className="list-disc list-inside text-sm text-gray-700 dark:text-gray-300 space-y-1">
+        <div className="mt-4 p-4 bg-surface-subtle rounded-lg border border-border transition-colors duration-200">
+          <h4 className="text-sm font-semibold text-text mb-2">Executive Summary</h4>
+          <ul className="list-disc list-inside text-sm text-text space-y-1">
             {((integrated_synthesis?.primary_answer?.action_items || results.answer?.action_items || []) as any[]).slice(0,3).map((a, i) => (
               <li key={i}>{a.action || ''}{a.timeframe ? ` (${a.timeframe})` : ''}</li>
             ))}
@@ -511,29 +511,29 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             <h4 className="text-sm font-semibold text-green-900 dark:text-green-100 mb-3">Strategic Framework</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Immediate Opportunities (Maeve) */}
-              <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+              <div className="bg-surface rounded-lg border border-border p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <h5 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Immediate Opportunities (Maeve)</h5>
+                  <h5 className="text-sm font-semibold text-text">Immediate Opportunities (Maeve)</h5>
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${getParadigmClass('maeve')}`}>Strategic</span>
                 </div>
                 {Array.isArray(integrated_synthesis.primary_answer?.action_items) && integrated_synthesis.primary_answer.action_items.length > 0 ? (
-                  <ul className="list-disc list-inside text-sm text-gray-700 dark:text-gray-300 space-y-1">
+                  <ul className="list-disc list-inside text-sm text-text space-y-1">
                     {integrated_synthesis.primary_answer.action_items.map((it: any, idx: number) => (
-                      <li key={idx}><span className="font-medium capitalize">{it.priority}</span>: {it.action} {it.timeframe ? (<em className="text-xs text-gray-500 dark:text-gray-400">({it.timeframe})</em>) : null}</li>
+                      <li key={idx}><span className="font-medium capitalize">{it.priority}</span>: {it.action} {it.timeframe ? (<em className="text-xs text-text-subtle">({it.timeframe})</em>) : null}</li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="text-sm text-gray-700 dark:text-gray-300">No immediate actions extracted.</p>
+                  <p className="text-sm text-text">No immediate actions extracted.</p>
                 )}
               </div>
 
               {/* Systemic Context (Dolores) */}
-              <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+              <div className="bg-surface rounded-lg border border-border p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <h5 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Systemic Context (Dolores)</h5>
+                  <h5 className="text-sm font-semibold text-text">Systemic Context (Dolores)</h5>
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${getParadigmClass('dolores')}`}>Revolutionary</span>
                 </div>
-                <div className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                <div className="text-sm text-text whitespace-pre-wrap">
                   {integrated_synthesis.secondary_perspective?.content || '—'}
                 </div>
               </div>
@@ -555,12 +555,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     {getPriorityIcon(String(it.priority || 'low'))}
                   </div>
                   <div className="flex-1">
-                    <div className="text-sm text-gray-900 dark:text-gray-100">
+                    <div className="text-sm text-text">
                       {it.action || '—'}
                     </div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-text-muted">
                       {it.timeframe && (
-                        <span className="px-2 py-0.5 rounded bg-white dark:bg-gray-800 border border-yellow-200 dark:border-yellow-700">{it.timeframe}</span>
+                        <span className="px-2 py-0.5 rounded bg-surface border border-border">{it.timeframe}</span>
                       )}
                       {it.paradigm && (
                         <span className={`px-2 py-0.5 rounded border ${getParadigmClass(it.paradigm)}`}>{String(it.paradigm).charAt(0).toUpperCase() + String(it.paradigm).slice(1)}</span>
@@ -571,58 +571,58 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-gray-700 dark:text-gray-300">No action items identified.</p>
+            <p className="text-sm text-text">No action items identified.</p>
           )}
         </div>
 
         {/* Context Engineering Info (unified view) */}
         {contextLayers && (
           <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors duration-200">
-            <h4 className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">Context engineering pipeline</h4>
+            <h4 className="text-sm font-semibold text-text mb-2">Context engineering pipeline</h4>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
               {('write_focus' in contextLayers) && (
                 <div>
-                  <p className="text-blue-700 dark:text-blue-300">Write Focus</p>
-                  <p className="font-semibold text-blue-900 dark:text-blue-100">{contextLayers.write_focus || '—'}</p>
+                  <p className="text-text-muted">Write Focus</p>
+                  <p className="font-semibold text-text">{contextLayers.write_focus || '—'}</p>
                 </div>
               )}
               <div>
-                <p className="text-blue-700 dark:text-blue-300">Compression Ratio</p>
-                <p className="font-semibold text-blue-900 dark:text-blue-100">{(contextLayers.compression_ratio * 100).toFixed(0)}%</p>
+                <p className="text-text-muted">Compression Ratio</p>
+                <p className="font-semibold text-text">{(contextLayers.compression_ratio * 100).toFixed(0)}%</p>
               </div>
               <div>
-                <p className="text-blue-700 dark:text-blue-300">Token Budget</p>
-                <p className="font-semibold text-blue-900 dark:text-blue-100">{Number(contextLayers.token_budget).toLocaleString()}</p>
+                <p className="text-text-muted">Token Budget</p>
+                <p className="font-semibold text-text">{Number(contextLayers.token_budget).toLocaleString()}</p>
               </div>
               <div>
-                <p className="text-blue-700 dark:text-blue-300">Search Queries</p>
-                <p className="font-semibold text-blue-900 dark:text-blue-100">{contextLayers.search_queries_count}</p>
+                <p className="text-text-muted">Search Queries</p>
+                <p className="font-semibold text-text">{contextLayers.search_queries_count}</p>
               </div>
               <div>
-                <p className="text-blue-700 dark:text-blue-300">Isolation Strategy</p>
-                <p className="font-semibold capitalize text-blue-900 dark:text-blue-100">{contextLayers.isolation_strategy}</p>
+                <p className="text-text-muted">Isolation Strategy</p>
+                <p className="font-semibold capitalize text-text">{contextLayers.isolation_strategy}</p>
               </div>
             </div>
             {contextLayers.layer_times && (
               <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 {Object.entries(contextLayers.layer_times).map(([k, v]) => (
                   <div key={k} className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
-                    <p className="text-blue-800 dark:text-blue-200">{k.charAt(0).toUpperCase() + k.slice(1)} Time</p>
-                    <p className="font-semibold text-blue-900 dark:text-blue-100">{Number(v).toFixed(2)}s</p>
+                    <p className="text-text">{k.charAt(0).toUpperCase() + k.slice(1)} Time</p>
+                    <p className="font-semibold text-text">{Number(v).toFixed(2)}s</p>
                   </div>
                 ))}
               </div>
             )}
             {contextLayers.budget_plan && Object.keys(contextLayers.budget_plan).length > 0 && (
               <div className="mt-3">
-                <p className="text-xs text-blue-800 dark:text-blue-200 mb-1">Token Budget Plan</p>
+                <p className="text-xs text-text mb-1">Token Budget Plan</p>
                 <div className="flex items-center gap-1">
                   {Object.entries(contextLayers.budget_plan).map(([k,v]) => (
                     <div key={k} className="flex-1">
                       <div className="h-2 rounded" style={{ width: '100%', background: 'rgba(59,130,246,0.15)' }}>
                         <div className="h-2 rounded bg-blue-600" style={{ width: `${Math.min(100, (Number(v) / Math.max(1, Number(contextLayers.token_budget))) * 100)}%` }} />
                       </div>
-                      <div className="text-[10px] text-blue-900 dark:text-blue-100 mt-0.5">{k} · {Number(v).toLocaleString()}t</div>
+                      <div className="text-[10px] text-text mt-0.5">{k} · {Number(v).toLocaleString()}t</div>
                     </div>
                   ))}
                 </div>
@@ -632,32 +632,32 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 {contextLayers.rewrite_primary && (
                   <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
-                    <p className="text-blue-800 dark:text-blue-200 mb-1">Rewritten Query {typeof contextLayers.rewrite_alternatives === 'number' ? `(${contextLayers.rewrite_alternatives} alts)` : ''}</p>
-                    <p className="font-mono text-[11px] break-words text-blue-900 dark:text-blue-100">{contextLayers.rewrite_primary}</p>
+                    <p className="text-text mb-1">Rewritten Query {typeof contextLayers.rewrite_alternatives === 'number' ? `(${contextLayers.rewrite_alternatives} alts)` : ''}</p>
+                    <p className="font-mono text-[11px] break-words text-text">{contextLayers.rewrite_primary}</p>
                   </div>
                 )}
                 {contextLayers.optimize_primary && (
                   <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
-                    <p className="text-blue-800 dark:text-blue-200 mb-1">Optimized Primary {typeof contextLayers.optimize_variations_count === 'number' ? `(${contextLayers.optimize_variations_count} vars)` : ''}</p>
-                    <p className="font-mono text-[11px] break-words text-blue-900 dark:text-blue-100">{contextLayers.optimize_primary}</p>
+                    <p className="text-text mb-1">Optimized Primary {typeof contextLayers.optimize_variations_count === 'number' ? `(${contextLayers.optimize_variations_count} vars)` : ''}</p>
+                    <p className="font-mono text-[11px] break-words text-text">{contextLayers.optimize_primary}</p>
                   </div>
                 )}
               </div>
             )}
             {typeof contextLayers.refined_queries_count === 'number' && (
-              <p className="mt-2 text-[11px] text-blue-800 dark:text-blue-200">Refined queries: {contextLayers.refined_queries_count}</p>
+              <p className="mt-2 text-[11px] text-text">Refined queries: {contextLayers.refined_queries_count}</p>
             )}
             {contextLayers.isolated_findings && (
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
-                  <p className="text-blue-800 dark:text-blue-200">Isolation Focus Areas</p>
-                  <p className="font-semibold text-blue-900 dark:text-blue-100 truncate">
+                  <p className="text-text">Isolation Focus Areas</p>
+                  <p className="font-semibold text-text truncate">
                     {(contextLayers.isolated_findings.focus_areas || []).join(', ') || '—'}
                   </p>
                 </div>
                 <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
-                  <p className="text-blue-800 dark:text-blue-200">Extraction Patterns</p>
-                  <p className="font-semibold text-blue-900 dark:text-blue-100">{Number(contextLayers.isolated_findings.patterns || 0)}</p>
+                  <p className="text-text">Extraction Patterns</p>
+                  <p className="font-semibold text-text">{Number(contextLayers.isolated_findings.patterns || 0)}</p>
                 </div>
               </div>
             )}
@@ -709,20 +709,20 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
       {/* Agent Trace (transparency) */}
       {Array.isArray(results.metadata?.agent_trace) && results.metadata.agent_trace.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.55s' }}>
+        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.55s' }}>
           <button
             onClick={() => setTraceOpen(!traceOpen)}
             className="w-full text-left flex items-center justify-between"
             aria-expanded={traceOpen}
           >
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Agentic research trace</h3>
+            <h3 className="text-lg font-semibold text-text">Agentic research trace</h3>
             {traceOpen ? <FiChevronUp className="h-5 w-5" /> : <FiChevronDown className="h-5 w-5" />}
           </button>
           {traceOpen && (
-            <div className="mt-3 space-y-2 text-sm text-gray-700 dark:text-gray-300">
+            <div className="mt-3 space-y-2 text-sm text-text">
               {results.metadata.agent_trace.map((entry: any, idx: number) => (
-                <div key={idx} className="border border-gray-200 dark:border-gray-700 rounded p-3">
-                  <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                <div key={idx} className="border border-border rounded p-3 bg-surface">
+                  <div className="flex items-center gap-2 text-text-muted">
                     <FiClock className="h-4 w-4" />
                     <span className="uppercase tracking-wide text-xs font-semibold">{String(entry.step || 'revise')}</span>
                     {typeof entry.iteration === 'number' && (
@@ -734,7 +734,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   </div>
                   {Array.isArray(entry.proposed_queries) && entry.proposed_queries.length > 0 && (
                     <div className="mt-2">
-                      <p className="text-xs text-gray-500 dark:text-gray-400">Proposed Queries</p>
+                      <p className="text-xs text-text-subtle">Proposed Queries</p>
                       <ul className="list-disc list-inside space-y-1">
                         {entry.proposed_queries.map((q: string, i: number) => (
                           <li key={i} className="break-all">{q}</li>
@@ -764,20 +764,20 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
       {/* Mesh Network Analysis */}
       {integrated_synthesis && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.1s' }}>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Mesh network analysis</h3>
+        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.1s' }}>
+            <h3 className="text-lg font-semibold text-text mb-4">Mesh network analysis</h3>
             {integrated_synthesis.synergies.length > 0 && (
                 <div className="mb-4">
-                    <h4 className="font-semibold text-gray-800 dark:text-gray-200 flex items-center"><FiGitMerge className="h-5 w-5 mr-2 text-green-500 dark:text-green-400" />Synergies</h4>
-                    <ul className="list-disc list-inside mt-2 text-gray-700 dark:text-gray-300">
+                    <h4 className="font-semibold text-text flex items-center"><FiGitMerge className="h-5 w-5 mr-2 text-success" />Synergies</h4>
+                    <ul className="list-disc list-inside mt-2 text-text">
                         {integrated_synthesis.synergies.map((synergy, i) => <li key={i}>{synergy}</li>)}
                     </ul>
                 </div>
             )}
             {integrated_synthesis.conflicts_identified.length > 0 && (
                 <div>
-                    <h4 className="font-semibold text-gray-800 dark:text-gray-200 flex items-center"><FiZap className="h-5 w-5 mr-2 text-red-500 dark:text-red-400" />Conflicts</h4>
-                    <ul className="list-disc list-inside mt-2 text-gray-700 dark:text-gray-300">
+                    <h4 className="font-semibold text-text flex items-center"><FiZap className="h-5 w-5 mr-2 text-error" />Conflicts</h4>
+                    <ul className="list-disc list-inside mt-2 text-text">
                         {integrated_synthesis.conflicts_identified.map((conflict, i) => <li key={i}>{conflict.description}</li>)}
                     </ul>
                 </div>
@@ -788,33 +788,33 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       {/* Detailed Sections */}
       <div className="space-y-4">
         {allSections.map((section: AnswerSection, index) => (
-          <div key={index} className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-all duration-300 animate-slide-up" style={{ animationDelay: `${0.2 + index * 0.05}s` }}>
+          <div key={index} className="bg-surface rounded-lg shadow-lg overflow-hidden transition-all duration-300 animate-slide-up border border-border" style={{ animationDelay: `${0.2 + index * 0.05}s` }}>
             <button
               onClick={() => toggleSection(index)}
-              className="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500 dark:focus:ring-blue-400"
+              className="w-full px-6 py-4 flex items-center justify-between hover:bg-surface-subtle transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500"
             >
               <div className="flex items-center gap-3">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{section.title}</h3>
+                <h3 className="text-lg font-semibold text-text">{section.title}</h3>
                 <span className={`px-2 py-1 rounded text-xs font-medium ${
                   getParadigmClass(section.paradigm)
                 }`}>
                   {getParadigmDescription(section.paradigm)}
                 </span>
-                <span className="text-sm text-gray-600 dark:text-gray-400">
+                <span className="text-sm text-text-muted">
                   {section.sources_count} sources • {Math.round(section.confidence * 100)}% confidence
                 </span>
               </div>
               {expandedSections.has(index) ? (
-                <FiChevronUp className="h-5 w-5 text-gray-400 transition-transform duration-200" />
+                <FiChevronUp className="h-5 w-5 text-text-muted transition-transform duration-200" />
               ) : (
-                <FiChevronDown className="h-5 w-5 text-gray-400 transition-transform duration-200" />
+                <FiChevronDown className="h-5 w-5 text-text-muted transition-transform duration-200" />
               )}
             </button>
 
             {expandedSections.has(index) && (
-              <div className="px-6 pb-4 border-t border-gray-200 dark:border-gray-700 animate-slide-down">
+              <div className="px-6 pb-4 border-t border-border animate-slide-down">
                 <div className="prose dark:prose-invert max-w-none mt-4">
-                  <p className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{section.content}</p>
+                  <p className="text-text whitespace-pre-wrap">{section.content}</p>
                 </div>
               </div>
             )}
@@ -824,17 +824,17 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
       {/* Action items */}
       {actionItems.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.3s' }}>
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Action items</h3>
+        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.3s' }}>
+          <h3 className="text-lg font-semibold text-text mb-4">Action items</h3>
           <div className="space-y-3">
             {actionItems.map((item, index) => (
-              <div key={index} className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg transition-colors duration-200 hover:bg-gray-100 dark:hover:bg-gray-600">
+              <div key={index} className="flex items-start gap-3 p-3 bg-surface-subtle rounded-lg transition-colors duration-200 hover:bg-surface">
                 <div className="mt-0.5">
                   {getPriorityIcon(item.priority)}
                 </div>
                 <div className="flex-1">
-                  <p className="text-gray-900 dark:text-gray-100 font-medium">{item.action}</p>
-                  <div className="flex items-center gap-4 mt-1 text-sm text-gray-600 dark:text-gray-400">
+                  <p className="text-text font-medium">{item.action}</p>
+                  <div className="flex items-center gap-4 mt-1 text-sm text-text-muted">
                     <span>Timeframe: {item.timeframe || '—'}</span>
                     <span>Owner: {item.owner || 'Unassigned'}</span>
                     <span>Due: {item.due_date ? new Date(item.due_date).toLocaleDateString() : 'Set due date'}</span>
@@ -853,17 +853,17 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
       {/* Sources Overview with Category Filter */}
       {results.sources && results.sources.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.4s' }}>
+        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.4s' }}>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Research sources</h3>
+            <h3 className="text-lg font-semibold text-text">Research sources</h3>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
-                <FiFilter className="h-4 w-4 text-gray-500 dark:text-gray-400" />
+                <FiFilter className="h-4 w-4 text-text-subtle" />
                 <div className="flex flex-wrap gap-2">
                   {['all', ...Object.keys((results as any)?.metadata?.category_distribution || {})].map((cat) => (
                     <button
                       key={cat}
-                      className={`px-2 py-1 rounded text-xs ${selectedCategories.has(cat) ? 'bg-blue-600 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
+                      className={`px-2 py-1 rounded text-xs ${selectedCategories.has(cat) ? 'bg-primary text-white' : 'bg-surface-subtle text-text'}`}
                       onClick={() => {
                         setSelectedCategories(prev => {
                           const next = new Set(prev)
@@ -882,7 +882,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 {(['high','medium','low'] as const).map(band => (
                   <button
                     key={band}
-                    className={`px-2 py-1 rounded ${selectedCredBands.has(band) ? (band==='high'?'bg-green-600':band==='medium'?'bg-yellow-500':'bg-red-500')+' text-white':''} ${!selectedCredBands.has(band)?'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300':''}`}
+                    className={`px-2 py-1 rounded ${selectedCredBands.has(band) ? (band==='high'?'bg-success':band==='medium'?'bg-primary':'bg-error')+' text-white':''} ${!selectedCredBands.has(band)?'bg-surface-subtle text-text':''}`}
                     onClick={() => setSelectedCredBands(prev => {
                       const next = new Set(prev)
                       if (next.has(band)) next.delete(band); else next.add(band)
@@ -908,14 +908,14 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             const view = filtered.slice(start, end)
             return (
               <>
-                <div className="flex items-center justify-between mb-3 text-sm text-gray-600 dark:text-gray-400">
+                <div className="flex items-center justify-between mb-3 text-sm text-text-muted">
                   <div>
                     {total === 0 ? 'No sources' : `Showing ${start + 1}–${end} of ${total} sources`}
                   </div>
                   <div className="flex items-center gap-2">
                     <label className="whitespace-nowrap">Rows per page</label>
                     <select
-                      className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                      className="border border-border rounded px-2 py-1 bg-surface text-text"
                       value={sourcesPageSize}
                       onChange={(e) => {
                         const val = e.target.value === 'all' ? (total || 1) : Number(e.target.value)
@@ -931,7 +931,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     </select>
                     <div className="flex items-center gap-1 ml-2">
                       <button
-                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        className="px-2 py-1 rounded border border-border disabled:opacity-50"
                         onClick={() => setSourcesPage(p => Math.max(1, p - 1))}
                         disabled={current <= 1}
                         aria-label="Previous page"
@@ -940,7 +940,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                       </button>
                       <span className="px-2">{current} / {pages}</span>
                       <button
-                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        className="px-2 py-1 rounded border border-border disabled:opacity-50"
                         onClick={() => setSourcesPage(p => Math.min(pages, p + 1))}
                         disabled={current >= pages}
                         aria-label="Next page"
@@ -964,42 +964,42 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     }
                     const why = whyByCategory[(source.source_category || '').toLowerCase()] || 'Adds perspective relevant to the decision.'
                     return (
-                      <div key={index} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200 hover:shadow-md">
-                        <h4 className="font-medium text-gray-900 dark:text-gray-100">{source.title}</h4>
+                      <div key={index} className="border border-border rounded-lg p-4 hover:border-border transition-all duration-200 hover:shadow-md bg-surface">
+                        <h4 className="font-medium text-text">{source.title}</h4>
                         <div className="mt-2 grid md:grid-cols-3 gap-3 text-sm">
                           <div>
-                            <p className="text-gray-500 dark:text-gray-400">What it says</p>
-                            <p className="text-gray-800 dark:text-gray-200">{source.snippet || '—'}</p>
+                            <p className="text-text-subtle">What it says</p>
+                            <p className="text-text">{source.snippet || '—'}</p>
                           </div>
                           <div>
-                            <p className="text-gray-500 dark:text-gray-400">Key quote</p>
-                            <p className="italic text-gray-800 dark:text-gray-200">{quote ? `“${shortQuote}”` : '—'}</p>
+                            <p className="text-text-subtle">Key quote</p>
+                            <p className="italic text-text">{quote ? `“${shortQuote}”` : '—'}</p>
                           </div>
                           <div>
-                            <p className="text-gray-500 dark:text-gray-400">Why it matters</p>
-                            <p className="text-gray-800 dark:text-gray-200">{why}</p>
+                            <p className="text-text-subtle">Why it matters</p>
+                            <p className="text-text">{why}</p>
                           </div>
                         </div>
                         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
-                          <span className="text-gray-500 dark:text-gray-400">{source.domain}</span>
+                          <span className="text-text-subtle">{source.domain}</span>
                           {source.source_category && (
-                            <span className="px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600">{source.source_category}</span>
+                            <span className="px-2 py-0.5 rounded bg-surface-subtle text-text border border-border">{source.source_category}</span>
                           )}
-                          <span className="px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600">
+                          <span className="px-2 py-0.5 rounded bg-surface-subtle text-text border border-border">
                             Quality: {qual}{typeof source.credibility_score === 'number' ? ` (${(source.credibility_score * 100).toFixed(0)}%)` : ''}
                           </span>
                           {source.published_date && (
-                            <span className="text-gray-500 dark:text-gray-400">Published {new Date(source.published_date).toLocaleDateString()}</span>
+                            <span className="text-text-subtle">Published {new Date(source.published_date).toLocaleDateString()}</span>
                           )}
-                          <span className="text-gray-500 dark:text-gray-400">Indexed {new Date(fetchedAtRef.current).toLocaleDateString()}</span>
+                          <span className="text-text-subtle">Indexed {new Date(fetchedAtRef.current).toLocaleDateString()}</span>
                           {source.credibility_explanation && (
-                            <span className="text-gray-500 dark:text-gray-400">{source.credibility_explanation}</span>
+                            <span className="text-text-subtle">{source.credibility_explanation}</span>
                           )}
                           <a
                             href={source.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="ml-auto inline-flex items-center gap-1 px-2 py-1 text-blue-700 dark:text-blue-300 hover:underline"
+              className="ml-auto inline-flex items-center gap-1 px-2 py-1 text-primary hover:underline"
                             aria-label="Open source"
                           >
                             <FiExternalLink className="h-3.5 w-3.5" /> Open source
@@ -1010,13 +1010,13 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   })}
                 </div>
                 {total > 0 && (
-                  <div className="mt-4 flex items-center justify-between text-sm text-gray-600 dark:text-gray-400">
+                  <div className="mt-4 flex items-center justify-between text-sm text-text-muted">
                     <div>
                       Page {current} of {pages}
                     </div>
                     <div className="flex items-center gap-1">
                       <button
-                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        className="px-2 py-1 rounded border border-border disabled:opacity-50"
                         onClick={() => setSourcesPage(1)}
                         disabled={current === 1}
                         aria-label="First page"
@@ -1024,7 +1024,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                         «
                       </button>
                       <button
-                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        className="px-2 py-1 rounded border border-border disabled:opacity-50"
                         onClick={() => setSourcesPage(p => Math.max(1, p - 1))}
                         disabled={current === 1}
                         aria-label="Previous page"
@@ -1032,7 +1032,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                         ‹
                       </button>
                       <button
-                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        className="px-2 py-1 rounded border border-border disabled:opacity-50"
                         onClick={() => setSourcesPage(p => Math.min(pages, p + 1))}
                         disabled={current === pages}
                         aria-label="Next page"
@@ -1040,7 +1040,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                         ›
                       </button>
                       <button
-                        className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50"
+                        className="px-2 py-1 rounded border border-border disabled:opacity-50"
                         onClick={() => setSourcesPage(pages)}
                         disabled={current === pages}
                         aria-label="Last page"
@@ -1055,21 +1055,21 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
       )}
       {Array.isArray(results.sources) && results.sources.length === 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.4s' }}>
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Research sources</h3>
-          <p className="text-sm text-gray-600 dark:text-gray-400">No sources available. Try broadening the query or enabling real search.</p>
+        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.4s' }}>
+          <h3 className="text-lg font-semibold text-text mb-2">Research sources</h3>
+          <p className="text-sm text-text-muted">No sources available. Try broadening the query or enabling real search.</p>
         </div>
       )}
 
       {/* Cost and Metadata Information */}
       {results.cost_info && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.5s' }}>
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Research metrics</h3>
+        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.5s' }}>
+          <h3 className="text-lg font-semibold text-text mb-4">Research metrics</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {Object.entries(results.cost_info).map(([key, value]) => (
-              <div key={key} className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
-                <p className="text-sm text-gray-600 dark:text-gray-400">{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</p>
-                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              <div key={key} className="bg-surface-subtle rounded-lg p-3">
+                <p className="text-sm text-text-muted">{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</p>
+                <p className="text-lg font-semibold text-text">
                   {typeof value === 'number'
                     ? (key.includes('cost') ? `$${value.toFixed(4)}` : value.toFixed(2))
                     : (typeof value === 'string'
@@ -1079,9 +1079,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               </div>
             ))}
             {results.metadata?.processing_time_seconds && (
-              <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
-                <p className="text-sm text-gray-600 dark:text-gray-400">Processing Time</p>
-                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              <div className="bg-surface-subtle rounded-lg p-3">
+                <p className="text-sm text-text-muted">Processing Time</p>
+                <p className="text-lg font-semibold text-text">
                   {results.metadata.processing_time_seconds.toFixed(1)}s
                 </p>
               </div>
@@ -1091,27 +1091,27 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       )}
 
       {/* Feedback */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.55s' }}>
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Feedback</h3>
+      <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.55s' }}>
+        <h3 className="text-lg font-semibold text-text mb-4">Feedback</h3>
         <div className="grid grid-cols-1">
           <AnswerFeedback researchId={results.research_id} />
         </div>
       </div>
 
       {/* Citations with Credibility */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up" style={{ animationDelay: '0.6s' }}>
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Answer citations</h3>
+      <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.6s' }}>
+        <h3 className="text-lg font-semibold text-text mb-4">Answer citations</h3>
         <div className="space-y-3">
           {displayedCitations.map((citation) => {
             const info = domainInfo[(citation.source || '').toLowerCase()] || {}
             const parsed = parseExplanation(info.explanation)
             const trustLabel = citation.credibility_score >= 0.8 ? 'Very High' : citation.credibility_score >= 0.6 ? 'High' : citation.credibility_score >= 0.4 ? 'Moderate' : citation.credibility_score >= 0.2 ? 'Low' : 'Very Low'
             return (
-            <div key={citation.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200 hover:shadow-md">
+            <div key={citation.id} className="border border-border rounded-lg p-4 hover:border-border transition-all duration-200 hover:shadow-md bg-surface">
               <div className="flex items-start justify-between">
                 <div className="flex-1">
-                  <h4 className="font-medium text-gray-900 dark:text-gray-100">{citation.title}</h4>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{citation.source}</p>
+                  <h4 className="font-medium text-text">{citation.title}</h4>
+                  <p className="text-sm text-text-muted mt-1">{citation.source}</p>
 
                   <div className="flex items-center gap-4 mt-2">
                     <div className={`flex items-center gap-1 text-sm ${getCredibilityColor(citation.credibility_score)}`}>
@@ -1121,17 +1121,17 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                       </span>
                     </div>
                     {info.category && (
-                      <span className="px-2 py-0.5 rounded text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600">
+                      <span className="px-2 py-0.5 rounded text-xs bg-surface-subtle text-text border border-border">
                         {info.category}
                       </span>
                     )}
                     {parsed.bias && (
-                      <span className="px-2 py-0.5 rounded text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600">
+                      <span className="px-2 py-0.5 rounded text-xs bg-surface-subtle text-text border border-border">
                         bias: {parsed.bias}
                       </span>
                     )}
                     {parsed.fact && (
-                      <span className="px-2 py-0.5 rounded text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600">
+                      <span className="px-2 py-0.5 rounded text-xs bg-surface-subtle text-text border border-border">
                         factual: {parsed.fact}
                       </span>
                     )}
@@ -1148,7 +1148,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   href={citation.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="ml-4 p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
+                  className="ml-4 p-2 text-text-muted hover:text-text hover:bg-surface-subtle rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   aria-label="Open citation in new tab"
                 >
                   <FiExternalLink className="h-4 w-4" />
@@ -1161,7 +1161,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         {citations.length > 5 && (
           <button
             onClick={() => setShowAllCitations(!showAllCitations)}
-            className="mt-4 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium transition-colors duration-200 focus:outline-none focus:underline"
+            className="mt-4 text-sm text-primary hover:opacity-80 font-medium transition-colors duration-200 focus:outline-none focus:underline"
           >
             {showAllCitations ? 'Show less' : `Show all ${citations.length} citations`}
           </button>

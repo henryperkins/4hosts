@@ -355,9 +355,28 @@ class DeepResearchService:
             except Exception:
                 is_azure = True
             deep_model = deep_model_env or ("o3" if is_azure else "o3-deep-research")
+            # Map model name to Azure deployment name when using Azure
+            if is_azure:
+                try:
+                    from .llm_client import llm_client as _lc
+                    deep_model = _lc._azure_model_for(deep_model)
+                except Exception:
+                    deep_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", deep_model)
 
             from time import perf_counter
             stage1_start = perf_counter()
+            # Build tool list (web_search, code interpreter, optional MCP)
+            mcp_tools = []
+            try:
+                if config.mcp_servers:
+                    mcp_tools = config.mcp_servers
+                else:
+                    if os.getenv("ENABLE_MCP_DEFAULT", "0").lower() in {"1", "true", "yes"}:
+                        from .mcp_integration import mcp_integration
+                        mcp_tools = mcp_integration.get_responses_mcp_tools()
+            except Exception:
+                mcp_tools = []
+
             stage1 = await client.create_response(
                 model=deep_model,
                 input=[
@@ -376,11 +395,8 @@ class DeepResearchService:
                 ],
                 tools=(
                     ([web_search_config] if web_search_config else [])
-                    + (
-                        [CodeInterpreterTool()]
-                        if config.enable_code_interpreter
-                        else []
-                    )
+                    + ([CodeInterpreterTool()] if config.enable_code_interpreter else [])
+                    + (mcp_tools or [])
                 ),
                 reasoning={"summary": "auto"},
                 max_tool_calls=config.max_tool_calls,

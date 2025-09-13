@@ -2,7 +2,8 @@
 Core package for Four Hosts Research API
 """
 
-from core.app import create_app
+# Don't import create_app here to avoid circular imports
+# from core.app import create_app
 from core.config import (
     TRUSTED_ORIGINS,
     PARADIGM_EXPLANATIONS,
@@ -23,7 +24,7 @@ from core.error_handlers import (
 )
 
 __all__ = [
-    "create_app",
+    # "create_app",  # Import directly from core.app when needed
     "TRUSTED_ORIGINS",
     "PARADIGM_EXPLANATIONS",
     "get_environment",

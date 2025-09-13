@@ -16,7 +16,9 @@ services:
   # ==========================================================================
   # Primary data store for user accounts, research history, and system data
   postgres:
-    image: postgres:16-alpine
+    # Using 15-alpine to match existing data directory initialized under PG 15.
+    # Upgrade path: run 15 -> dump or pg_upgrade to 16, then retag.
+    image: postgres:15-alpine
     # container_name removed to avoid conflicts when running multiple stacks.
     # Docker Compose will auto-name the container (project_service_index) and
     # service DNS remains 'postgres' for inter-service communication.
@@ -51,8 +53,10 @@ services:
   redis:
     image: redis:7-alpine
     # container_name removed to prevent collision with backend-only compose file.
-    ports:
-      - "6380:6379"  # Expose Redis on port 6380 to avoid conflicts
+    # Port mapping removed: services communicate over internal network at redis:6379.
+    # Exposing Redis to host is unnecessary for normal app operation and caused
+    # a port allocation conflict when 6380 was already in use. If external
+    # access is required for debugging, re-add a mapping like '6381:6379'.
     volumes:
       # Persistent volume for Redis data (optional persistence)
       - redis_data:/data

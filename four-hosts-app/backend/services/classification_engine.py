@@ -596,8 +596,23 @@ class ParadigmClassifier:
             if open_braces > close_braces:
                 s = s + ("}" * (open_braces - close_braces))
 
+            # Also balance brackets
+            open_brackets = s.count("[")
+            close_brackets = s.count("]")
+            if open_brackets > close_brackets:
+                s = s + ("]" * (open_brackets - close_brackets))
+
             try:
                 return json.loads(s)
+            except json.JSONDecodeError as e:
+                # Try one more time with additional closing brace
+                # (common issue when LLM truncates output)
+                if "Expecting" in str(e) and open_braces > 0:
+                    try:
+                        return json.loads(s + "}")
+                    except:
+                        pass
+                return None
             except Exception:
                 return None
         # Create a prompt for the LLM

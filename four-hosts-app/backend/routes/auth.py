@@ -67,9 +67,10 @@ async def register(user_data: UserCreate, request: Request, response: Response):
 
     # Align behavior with /auth/login: set tokens as httpOnly cookies
     # Determine cookie attributes based on actual scheme to avoid Secure over HTTP in dev
-    is_https = request.url.scheme == "https"
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_https = forwarded_proto == "https" or request.url.scheme == "https"
     same_site = "none" if is_https else "lax"
-    secure_flag = is_https
+    secure_flag = True if is_https else False
 
     response.set_cookie(
         key="access_token",
@@ -121,9 +122,10 @@ async def login(login_data: UserLogin, response: Response, request: Request):
     )
 
     # Set cookie attributes based on actual scheme to avoid Secure cookies over HTTP
-    is_https = request.url.scheme == "https"
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_https = forwarded_proto == "https" or request.url.scheme == "https"
     same_site = "none" if is_https else "lax"
-    secure_flag = is_https
+    secure_flag = True if is_https else False
 
     response.set_cookie(
         key="access_token",
@@ -166,7 +168,7 @@ async def login(login_data: UserLogin, response: Response, request: Request):
 async def refresh_token(request: Request, response: Response):
     """Refresh access token using secure token rotation"""
     refresh_token = request.cookies.get("refresh_token")
-    
+
     if not refresh_token:
         raise HTTPException(status_code=401, detail="No refresh token provided")
 
@@ -198,10 +200,11 @@ async def refresh_token(request: Request, response: Response):
             {"user_id": str(user.id), "email": user.email, "role": user.role.value}
         )
 
-        # Set cookie attributes based on actual scheme
-        is_https = request.url.scheme == "https"
+        # Set cookie attributes based on actual scheme (respect proxies)
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+        is_https = forwarded_proto == "https" or request.url.scheme == "https"
         same_site = "none" if is_https else "lax"
-        secure_flag = is_https
+        secure_flag = True if is_https else False
 
         response.set_cookie(
             key="access_token",

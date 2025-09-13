@@ -9,10 +9,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Final
 
 from utils.async_utils import run_in_thread
-from core.config import (
-    ALGORITHM as _CFG_ALGORITHM,
-    ACCESS_TOKEN_EXPIRE_MINUTES as _CFG_ACCESS_TOKEN_EXPIRE_MINUTES,
-)
 
 # Configuration
 SECRET_KEY_ENV = os.getenv("JWT_SECRET_KEY")
@@ -22,9 +18,11 @@ if SECRET_KEY_ENV is None or SECRET_KEY_ENV.strip() == "":
         "Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
     )
 SECRET_KEY: Final[str] = SECRET_KEY_ENV
+print(f"[DEBUG] JWT_SECRET_KEY loaded in tokens.py: {SECRET_KEY[:10]}...")
 
-ALGORITHM = _CFG_ALGORITHM
-ACCESS_TOKEN_EXPIRE_MINUTES = _CFG_ACCESS_TOKEN_EXPIRE_MINUTES
+# Define constants directly to avoid circular imports
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 
 def create_access_token(

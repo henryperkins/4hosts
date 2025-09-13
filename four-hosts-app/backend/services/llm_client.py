@@ -237,6 +237,43 @@ class LLMClient:
         """Close underlying httpx client(s) to release sockets."""
         # No longer needed as we create httpx clients on demand
 
+    # ─────────── metrics helpers ───────────
+    def _record_stage_metrics(self, stage: str, model: str | None, start_ts: float, success: bool = True, tokens_in: Optional[int] = None, tokens_out: Optional[int] = None) -> None:
+        try:
+            from services.metrics import metrics
+            dur_ms = (time.perf_counter() - start_ts) * 1000.0
+            metrics.record_stage(
+                stage=stage,
+                duration_ms=dur_ms,
+                paradigm=None,
+                success=success,
+                fallback=False,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                model=model,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _extract_usage_tokens_from_chat(op: Any) -> tuple[Optional[int], Optional[int]]:
+        # Try OpenAI/azure ChatCompletion-like usage fields
+        try:
+            usage = getattr(op, 'usage', None)
+            if usage and hasattr(usage, 'prompt_tokens'):
+                return int(getattr(usage, 'prompt_tokens', 0) or 0), int(getattr(usage, 'completion_tokens', 0) or 0)
+        except Exception:
+            pass
+        # Pydantic payload path
+        try:
+            payload = op.model_dump() if hasattr(op, 'model_dump') else None
+            if isinstance(payload, dict) and 'usage' in payload:
+                u = payload['usage'] or {}
+                return int(u.get('prompt_tokens') or 0), int(u.get('completion_tokens') or 0)
+        except Exception:
+            pass
+        return None, None
+
     # ─────────── diagnostics / info ───────────
     def get_active_backend_info(self) -> Dict[str, Any]:
         """Return a small diagnostic snapshot of the configured LLM backend.
@@ -288,6 +325,8 @@ class LLMClient:
         Returns either the full response string or an async iterator of tokens.
         """
         self._ensure_initialized()
+        import time as time
+        _start = time.perf_counter()
         model_name = _select_model(paradigm, model)
         paradigm_key = _norm_code(paradigm)
         # Apply sensible defaults if not provided
@@ -343,72 +382,45 @@ class LLMClient:
         # ─── Azure OpenAI path (prefer Responses API when enabled) ───
         if model_name in {"o3", "o1", "azure", "gpt-5-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-5-mini", "gpt-5"} and self.azure_client:
             try:
-                # Use Responses API when enabled (supports non-stream + stream)
-                if self._azure_use_responses:
-                    # Build Responses API payload
-                    # The Responses API expects an "input" which can be a string or array of messages.
-                    # We pass system + user as a list for clarity/statefulness.
+                # Use Responses API when enabled or when structured output requested on o-series
+                force_responses = bool((response_format or json_schema) and model_name.startswith("o"))
+                if self._azure_use_responses or force_responses:
+                    # Build Responses API payload via HTTP client for consistent api-version
                     input_msgs: List[Dict[str, str]] = []
                     for msg in messages:
                         role = msg.get("role", "user")
-                        # Convert "system" to "developer" for o* models to preserve instruction semantics
                         if role == "system" and model_name.startswith("o"):
                             role = "developer"
                         input_msgs.append({"role": role, "content": msg.get("content", "")})
 
                     resp_req: Dict[str, Any] = {
-                        # Azure expects the deployment name in the 'model' field
                         "model": self._azure_model_for(model_name),
                         "input": input_msgs,
+                        "max_output_tokens": kw.get("max_completion_tokens", kw.get("max_tokens", max_tokens)),
+                        "reasoning": ({"effort": reasoning_effort} if model_name.startswith("o") else None),
+                        "tools": tools or None,
+                        "background": False,
+                        "stream": stream,
+                        "store": True,
                     }
-                    # Token & reasoning knobs for Responses API
-                    max_out = kw.get("max_completion_tokens", kw.get("max_tokens", max_tokens))
-                    resp_req["max_output_tokens"] = max_out
-                    # Reasoning config (supported by o*); tolerate if not supported
-                    if model_name.startswith("o"):
-                        reason: Dict[str, Any] = {"effort": reasoning_effort}
-                        rs = os.getenv("AZURE_REASONING_SUMMARY")  # auto | concise | detailed
-                        if rs:
-                            reason["summary"] = rs
-                        resp_req["reasoning"] = reason
-                    # Response formatting
-                    if response_format:
-                        resp_req["response_format"] = response_format
-                    elif json_schema:
+                    if json_schema:
                         resp_req["response_format"] = {"type": "json_schema", "json_schema": json_schema}
-                    # Tools
-                    if tools:
-                        resp_req["tools"] = tools
-                        if tool_choice:
-                            resp_req["tool_choice"] = self._wrap_tool_choice(tool_choice)
+                    elif response_format:
+                        resp_req["response_format"] = response_format
+                    if tool_choice and tools:
+                        resp_req["tool_choice"] = self._wrap_tool_choice(tool_choice)
 
-                    # Streaming path via Responses API
+                    from services.llm_client import responses_create  # self-module helper
                     if stream:
-                        resp_req["stream"] = True
-                        try:
-                            stream_iter = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
-                        except TypeError as te:
-                            if "response_format" in str(te):
-                                logger.warning("Azure SDK changed: retrying responses.create without 'response_format'")
-                                resp_req.pop("response_format", None)
-                                stream_iter = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
-                            else:
-                                raise
+                        stream_iter = await responses_create(**{k: v for k, v in resp_req.items() if v is not None})
+                        # Streaming – can't compute tokens; return iterator
                         return self._iter_responses_stream(cast(AsyncIterator[Any], stream_iter))
                     else:
-                        try:
-                            op_res = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
-                        except TypeError as te:
-                            # Some SDK versions may not accept response_format; retry without it.
-                            if "response_format" in str(te):
-                                logger.warning(
-                                    "Azure SDK changed: retrying responses.create without 'response_format' param"
-                                )
-                                resp_req.pop("response_format", None)
-                                op_res = await self.azure_client.responses.create(**resp_req)  # type: ignore[attr-defined]
-                            else:
-                                raise
-                        return self._extract_content_safely(op_res)
+                        op_res = await responses_create(**{k: v for k, v in resp_req.items() if v is not None})
+                        out = self._extract_content_safely(op_res)
+                        # Metrics (Responses JSON has no standard token usage yet)
+                        self._record_stage_metrics("llm_generate", model_name, _start, success=True)
+                        return out
 
                 # Fallback: Chat Completions path (legacy / when Responses disabled)
                 # Remove Azure-incompatible params
@@ -432,10 +444,11 @@ class LLMClient:
                     cc_req["top_p"] = top_p
                     cc_req["frequency_penalty"] = frequency_penalty
                     cc_req["presence_penalty"] = presence_penalty
-                if response_format:
-                    cc_req["response_format"] = response_format
-                elif json_schema:
-                    cc_req["response_format"] = {"type": "json_schema", "json_schema": json_schema}
+                if not str(model_name).startswith("o"):
+                    if response_format:
+                        cc_req["response_format"] = response_format
+                    elif json_schema:
+                        cc_req["response_format"] = {"type": "json_schema", "json_schema": json_schema}
                 if tools:
                     cc_req["tools"] = tools
                     if tool_choice:
@@ -488,6 +501,8 @@ class LLMClient:
         paradigm: Union[str, "HostParadigm"] = "bernard",
     ) -> Dict[str, Any]:
         """Return JSON matching the provided schema."""
+        import time as time
+        _start = time.perf_counter()
         raw = await self.generate_completion(
             prompt,
             model=model,
@@ -498,9 +513,12 @@ class LLMClient:
         )
         if isinstance(raw, str):
             try:
-                return json.loads(raw)
+                data = json.loads(raw)
+                self._record_stage_metrics("llm_structured", model or _select_model(paradigm, model), _start, success=True)
+                return data
             except json.JSONDecodeError as exc:
                 logger.error("Structured output parse error", exc_info=exc)
+        self._record_stage_metrics("llm_structured", model or _select_model(paradigm, model), _start, success=False)
         raise ValueError("Structured generation failed")
 
     async def generate_with_tools(
@@ -516,6 +534,8 @@ class LLMClient:
         self._ensure_initialized()
         model_name = _select_model(paradigm, model)
         paradigm_key = _norm_code(paradigm)
+        import time as time
+        _start = time.perf_counter()
         result: Dict[str, Any] | None = None
 
         wrapped_choice = self._wrap_tool_choice(tool_choice)
@@ -573,10 +593,12 @@ class LLMClient:
             raise RuntimeError("No LLM back-ends configured for tool calling.")
 
         # Normalise return shape
-        return {
+        out = {
             "content": result.get("content", ""),
             "tool_calls": result.get("tool_calls", []),
         }
+        self._record_stage_metrics("llm_tools", model_name, _start, success=True)
+        return out
 
     async def create_conversation(
         self,
@@ -616,8 +638,11 @@ class LLMClient:
                 azure_req["max_tokens"] = max_tokens
                 azure_req["temperature"] = temperature
 
-            op = await self.azure_client.chat.completions.create(**azure_req)
-            return self._extract_content_safely(op)
+                op = await self.azure_client.chat.completions.create(**azure_req)
+            text = self._extract_content_safely(op)
+            pin, pout = self._extract_usage_tokens_from_chat(op)
+            self._record_stage_metrics("llm_generate", model_name, _start, success=True, tokens_in=pin, tokens_out=pout)
+            return text
         # Use OpenAI (cloud) if Azure not configured
         elif self.openai_client:
             op = await self.openai_client.chat.completions.create(
@@ -626,8 +651,12 @@ class LLMClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-            return self._extract_content_safely(op)
+            text = self._extract_content_safely(op)
+            pin, pout = self._extract_usage_tokens_from_chat(op)
+            self._record_stage_metrics("llm_generate", model_name, _start, success=True, tokens_in=pin, tokens_out=pout)
+            return text
 
+        self._record_stage_metrics("llm_generate", model_name, _start, success=False)
         raise RuntimeError("No LLM back-ends configured for conversation.")
 
     async def generate_paradigm_content(
@@ -772,9 +801,16 @@ class LLMClient:
     async def _iter_responses_stream(raw: AsyncIterator[Any]) -> AsyncIterator[str]:
         """Yield token strings from Azure Responses API stream."""
         async for event in raw:
+            # Handle SDK-style objects
             if hasattr(event, 'type') and event.type == 'response.output_text.delta':
                 if hasattr(event, 'delta'):
                     yield event.delta
+                continue
+            # Handle HTTP SSE dicts
+            if isinstance(event, dict):
+                et = event.get('type')
+                if et == 'response.output_text.delta' and 'delta' in event:
+                    yield str(event.get('delta') or '')
 
 
 
@@ -914,6 +950,7 @@ async def responses_create(
     instructions: Optional[str] = None,
     store: bool = True,
     previous_response_id: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> Union[Dict[str, Any], AsyncIterator[Dict[str, Any]]]:
     from services.openai_responses_client import get_responses_client
     client = get_responses_client()
@@ -928,6 +965,7 @@ async def responses_create(
         instructions=instructions,
         store=store,
         previous_response_id=previous_response_id,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -985,6 +1023,13 @@ async def responses_deep_research(
     except Exception:
         is_azure = True
     deep_model = deep_model_env or ("o3" if is_azure else "o3-deep-research")
+    if is_azure:
+        try:
+            # Map to Azure deployment name
+            from services.llm_client import llm_client as _lc
+            deep_model = _lc._azure_model_for(deep_model)
+        except Exception:
+            deep_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", deep_model)
 
     return await client.create_response(
         model=deep_model,

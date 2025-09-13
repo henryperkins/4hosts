@@ -31,6 +31,11 @@ RUN apt-get update && apt-get install -y \
 # Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
+# Set explicit HOME for appuser and prepare HuggingFace cache directories
+ENV HOME=/home/appuser
+RUN mkdir -p /home/appuser/.cache/huggingface/hub && \
+    chown -R appuser:appuser /home/appuser
+
 # Set working directory
 WORKDIR /app
 
@@ -49,11 +54,17 @@ COPY --chown=appuser:appuser . .
 RUN mkdir -p /app/logs /app/data /app/nltk_data && \
     chown -R appuser:appuser /app
 
+# Ensure ownership (defensive) of HF cache after code copy
+RUN chown -R appuser:appuser /home/appuser/.cache
+
 # Configure runtime environment
 ENV NLTK_DATA=/app/nltk_data
 
 # Switch to non-root user
 USER appuser
+
+# Explicitly set HF cache location (optional clarity)
+ENV HF_HOME=/home/appuser/.cache/huggingface
 
 # Expose port
 EXPOSE 8000

@@ -68,8 +68,9 @@ function App() {
             }}
           />
           <Navigation />
-          <Suspense fallback={<LoadingSpinner />}>
-            <Routes>
+          <main id="main" role="main" tabIndex={-1} className="focus:outline-none">
+            <Suspense fallback={<LoadingSpinner />}>
+              <Routes>
                 {/* Public routes */}
                 <Route path="/login" element={<LoginForm />} />
                 <Route path="/register" element={<RegisterForm />} />
@@ -123,11 +124,12 @@ function App() {
               } />
 
               {/* Default redirect */}
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
-          </div>
-        </Router>
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </Suspense>
+          </main>
+        </div>
+    </Router>
   )
 }
 

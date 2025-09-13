@@ -28,31 +28,39 @@ const MetricCard = React.memo<{
   value: string | number
   subtitle?: string
   trend?: number
-  color?: string
-}>(({ icon: Icon, title, value, subtitle, trend, color = 'text-blue-600' }) => (
-  <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-100">
-    <div className="flex items-center justify-between">
-      <div>
-        <p className="text-sm text-gray-600 mb-1">{title}</p>
-        <p className="text-2xl font-bold text-gray-900">{value}</p>
-        {subtitle && (
-          <p className="text-sm text-gray-500 mt-1">{subtitle}</p>
-        )}
+  accent?: 'primary' | 'success' | 'error'
+}>(({ icon: Icon, title, value, subtitle, trend, accent = 'primary' }) => {
+  const accentClasses = {
+    primary: { text: 'text-primary', bg: 'bg-primary/10' },
+    success: { text: 'text-success', bg: 'bg-success/10' },
+    error: { text: 'text-error', bg: 'bg-error/10' },
+  } as const
+  const a = accentClasses[accent]
+  return (
+    <div className="bg-surface rounded-lg p-6 shadow-sm border border-border">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-text-muted mb-1">{title}</p>
+          <p className="text-2xl font-bold text-text">{value}</p>
+          {subtitle && (
+            <p className="text-sm text-text-subtle mt-1">{subtitle}</p>
+          )}
+        </div>
+        <div className={`p-3 rounded-lg ${a.bg}`}>
+          <Icon className={`h-6 w-6 ${a.text}`} />
+        </div>
       </div>
-      <div className={`p-3 rounded-lg bg-opacity-10 ${color.replace('text-', 'bg-')}`}>
-        <Icon className={`h-6 w-6 ${color}`} />
-      </div>
+      {trend !== undefined && (
+        <div className="mt-4 flex items-center">
+          <FiTrendingUp className={`h-4 w-4 ${trend > 0 ? 'text-success' : 'text-error'}`} />
+          <span className={`text-sm ml-1 ${trend > 0 ? 'text-success' : 'text-error'}`}>
+            {Math.abs(trend)}%
+          </span>
+        </div>
+      )}
     </div>
-    {trend !== undefined && (
-      <div className="mt-4 flex items-center">
-        <FiTrendingUp className={`h-4 w-4 ${trend > 0 ? 'text-green-500' : 'text-red-500'}`} />
-        <span className={`text-sm ml-1 ${trend > 0 ? 'text-green-500' : 'text-red-500'}`}>
-          {Math.abs(trend)}%
-        </span>
-      </div>
-    )}
-  </div>
-))
+  )
+})
 
 export const MetricsDashboard: React.FC = () => {
   const [stats, setStats] = useState<MetricsData | null>(null)
@@ -143,9 +151,9 @@ export const MetricsDashboard: React.FC = () => {
 
   if (isLoading) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-8">
+      <div className="bg-surface border border-border rounded-lg shadow-md p-8">
         <div className="flex items-center justify-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
         </div>
       </div>
     )
@@ -153,10 +161,10 @@ export const MetricsDashboard: React.FC = () => {
 
   if (error || !stats) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-8">
+      <div className="bg-surface border border-border rounded-lg shadow-md p-8">
         <div className="text-center">
-          <FiAlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-          <p className="text-red-600">{error || 'No data available'}</p>
+          <FiAlertCircle className="h-12 w-12 text-error mx-auto mb-4" />
+          <p className="text-error">{error || 'No data available'}</p>
         </div>
       </div>
     )
@@ -177,7 +185,7 @@ export const MetricsDashboard: React.FC = () => {
           title="Active Research"
           value={stats?.active_research || 0}
           subtitle="Currently processing"
-          color="text-green-600"
+          accent="success"
         />
         <MetricCard
           icon={FiClock}
@@ -185,7 +193,7 @@ export const MetricsDashboard: React.FC = () => {
           value={`${(stats?.average_processing_time || 0).toFixed(1)}s`}
           subtitle="Per query"
           trend={-8}
-          color="text-purple-600"
+          accent="primary"
         />
         <MetricCard
           icon={FiDatabase}
@@ -193,7 +201,7 @@ export const MetricsDashboard: React.FC = () => {
           value={`${((stats?.cache_hit_rate || 0) * 100).toFixed(1)}%`}
           subtitle="Performance boost"
           trend={5}
-          color="text-orange-600"
+          accent="primary"
         />
       </div>
 
@@ -205,28 +213,28 @@ export const MetricsDashboard: React.FC = () => {
             title="Classification p95"
             value={extended.latency?.classification ? `${extended.latency.classification.p95.toFixed(0)}ms` : '—'}
             subtitle="Latency"
-            color="text-indigo-600"
+            accent="primary"
           />
           <MetricCard
             icon={FiClock}
             title="Answer Synth p95"
             value={extended.latency?.answer_synthesis ? `${extended.latency.answer_synthesis.p95.toFixed(0)}ms` : '—'}
             subtitle="Latency"
-            color="text-teal-600"
+            accent="primary"
           />
           <MetricCard
             icon={FiAlertCircle}
             title="Classification Fallback"
             value={extended.fallback_rates?.classification !== undefined ? `${(extended.fallback_rates.classification * 100).toFixed(1)}%` : '—'}
             subtitle="Rule→LLM usage"
-            color="text-red-600"
+            accent="error"
           />
             <MetricCard
               icon={FiAlertCircle}
               title="Answer Fallback"
               value={extended.fallback_rates?.answer_synthesis !== undefined ? `${(extended.fallback_rates.answer_synthesis * 100).toFixed(1)}%` : '—'}
               subtitle="Heuristic→LLM"
-              color="text-pink-600"
+              accent="primary"
             />
         </div>
       )}
@@ -234,8 +242,8 @@ export const MetricsDashboard: React.FC = () => {
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Paradigm Distribution */}
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Paradigm Distribution</h3>
+        <div className="bg-surface rounded-lg shadow-md p-6 border border-border">
+          <h3 className="text-lg font-semibold text-text mb-4">Paradigm Distribution</h3>
           <ResponsiveContainer width="100%" height={300}>
             <PieChart>
               <Pie
@@ -258,35 +266,35 @@ export const MetricsDashboard: React.FC = () => {
         </div>
 
         {/* Performance Metrics */}
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Performance Metrics</h3>
+        <div className="bg-surface rounded-lg shadow-md p-6 border border-border">
+          <h3 className="text-lg font-semibold text-text mb-4">Performance Metrics</h3>
           <div className="space-y-4">
             <div>
               <div className="flex justify-between text-sm mb-1">
-                <span className="text-gray-600">Cache Hit Rate</span>
-                <span className="font-medium">{((stats.cache_hit_rate || 0) * 100).toFixed(1)}%</span>
+                <span className="text-text-muted">Cache Hit Rate</span>
+                <span className="font-medium text-text">{((stats.cache_hit_rate || 0) * 100).toFixed(1)}%</span>
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
+              <div className="w-full bg-surface-muted rounded-full h-2">
                 <div
-                  className="bg-blue-600 h-2 rounded-full"
+                  className="bg-primary h-2 rounded-full"
                   style={{ width: `${(stats.cache_hit_rate || 0) * 100}%` }}
                 />
               </div>
             </div>
 
-            <div className="pt-4 border-t">
-              <h4 className="text-sm font-medium text-gray-700 mb-2">System Insights</h4>
-              <ul className="space-y-2 text-sm text-gray-600">
+            <div className="pt-4 border-t border-border">
+              <h4 className="text-sm font-medium text-text mb-2">System Insights</h4>
+              <ul className="space-y-2 text-sm text-text">
                 <li className="flex items-center gap-2">
-                  <FiTrendingUp className="h-4 w-4 text-green-500" />
+                  <FiTrendingUp className="h-4 w-4 text-success" />
                   {stats.total_queries > 1000 ? 'High usage detected' : 'Normal usage patterns'}
                 </li>
                 <li className="flex items-center gap-2">
-                  <FiActivity className="h-4 w-4 text-blue-500" />
+                  <FiActivity className="h-4 w-4 text-primary" />
                   {stats.active_research > 10 ? 'System under load' : 'System running smoothly'}
                 </li>
                 <li className="flex items-center gap-2">
-                  <FiClock className="h-4 w-4 text-purple-500" />
+                  <FiClock className="h-4 w-4 text-primary" />
                   {stats.average_processing_time < 30 ? 'Fast response times' : 'Consider optimization'}
                 </li>
               </ul>
@@ -296,53 +304,53 @@ export const MetricsDashboard: React.FC = () => {
       </div>
 
       {/* Additional Insights */}
-      <div className="bg-white rounded-lg shadow-md p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Usage Patterns</h3>
+      <div className="bg-surface rounded-lg shadow-md p-6 border border-border">
+        <h3 className="text-lg font-semibold text-text mb-4">Usage Patterns</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="text-center">
-            <p className="text-3xl font-bold text-blue-600">
+            <p className="text-3xl font-bold text-primary">
               {Math.round(((paradigmData.find(p => p.name.toLowerCase() === 'dolores')?.value ?? 0) / stats.total_queries) * 100)}%
             </p>
-            <p className="text-sm text-gray-600 mt-1">Truth-seeking queries</p>
+            <p className="text-sm text-text-muted mt-1">Truth-seeking queries</p>
           </div>
           <div className="text-center">
-            <p className="text-3xl font-bold text-green-600">
+            <p className="text-3xl font-bold text-success">
               {Math.round(((paradigmData.find(p => p.name.toLowerCase() === 'bernard')?.value ?? 0) / stats.total_queries) * 100)}%
             </p>
-            <p className="text-sm text-gray-600 mt-1">Analytical queries</p>
+            <p className="text-sm text-text-muted mt-1">Analytical queries</p>
           </div>
           <div className="text-center">
-            <p className="text-3xl font-bold text-purple-600">
+            <p className="text-3xl font-bold text-primary">
               {(stats.cache_hit_rate || 0) > 0.5 ? 'High' : 'Low'}
             </p>
-            <p className="text-sm text-gray-600 mt-1">Cache efficiency</p>
+            <p className="text-sm text-text-muted mt-1">Cache efficiency</p>
           </div>
         </div>
       </div>
 
       {/* A/B Test Results */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">A/B Test: Standard vs IdeaBrowser View</h3>
+      <div className="bg-surface rounded-lg shadow-md p-6 border border-border">
+        <h3 className="text-lg font-semibold text-text mb-4">A/B Test: Standard vs IdeaBrowser View</h3>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Comparison Metrics */}
           <div>
-            <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-4">Key Performance Metrics</h4>
+            <h4 className="text-sm font-medium text-text mb-4">Key Performance Metrics</h4>
             <div className="space-y-4">
               <div>
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Task Completion Rate</span>
+                  <span className="text-sm text-text-muted">Task Completion Rate</span>
                   <div className="flex gap-4 text-sm">
-                    <span className="text-gray-500">Standard: {(abTestMetrics.standardView.completionRate * 100).toFixed(0)}%</span>
-                    <span className="font-medium text-green-600">IdeaBrowser: {(abTestMetrics.ideaBrowserView.completionRate * 100).toFixed(0)}%</span>
+                    <span className="text-text-subtle">Standard: {(abTestMetrics.standardView.completionRate * 100).toFixed(0)}%</span>
+                    <span className="font-medium text-success">IdeaBrowser: {(abTestMetrics.ideaBrowserView.completionRate * 100).toFixed(0)}%</span>
                   </div>
                 </div>
-                <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div className="relative h-2 bg-surface-muted rounded-full overflow-hidden">
                   <div
-                    className="absolute top-0 left-0 h-full bg-gray-400"
+                    className="absolute top-0 left-0 h-full bg-text-muted"
                     style={{ width: `${abTestMetrics.standardView.completionRate * 100}%` }}
                   />
                   <div
-                    className="absolute top-0 left-0 h-full bg-green-600"
+                    className="absolute top-0 left-0 h-full bg-success"
                     style={{ width: `${abTestMetrics.ideaBrowserView.completionRate * 100}%` }}
                   />
                 </div>
@@ -350,15 +358,15 @@ export const MetricsDashboard: React.FC = () => {
 
               <div>
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Time to First Insight (seconds)</span>
+                  <span className="text-sm text-text-muted">Time to First Insight (seconds)</span>
                   <div className="flex gap-4 text-sm">
-                    <span className="text-gray-500">Standard: {abTestMetrics.standardView.avgTimeToInsight}s</span>
-                    <span className="font-medium text-green-600">IdeaBrowser: {abTestMetrics.ideaBrowserView.avgTimeToInsight}s</span>
+                    <span className="text-text-subtle">Standard: {abTestMetrics.standardView.avgTimeToInsight}s</span>
+                    <span className="font-medium text-success">IdeaBrowser: {abTestMetrics.ideaBrowserView.avgTimeToInsight}s</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <FiZap className="h-4 w-4 text-green-500" />
-                  <span className="text-sm text-green-600">
+                  <FiZap className="h-4 w-4 text-success" />
+                  <span className="text-sm text-success">
                     {((1 - abTestMetrics.ideaBrowserView.avgTimeToInsight / abTestMetrics.standardView.avgTimeToInsight) * 100).toFixed(0)}% faster
                   </span>
                 </div>
@@ -366,40 +374,40 @@ export const MetricsDashboard: React.FC = () => {
 
               <div>
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm text-gray-600 dark:text-gray-400">User Engagement Score</span>
+                  <span className="text-sm text-text-muted">User Engagement Score</span>
                   <div className="flex gap-4 text-sm">
-                    <span className="text-gray-500">Standard: {(abTestMetrics.standardView.engagement * 100).toFixed(0)}%</span>
-                    <span className="font-medium text-green-600">IdeaBrowser: {(abTestMetrics.ideaBrowserView.engagement * 100).toFixed(0)}%</span>
+                    <span className="text-text-subtle">Standard: {(abTestMetrics.standardView.engagement * 100).toFixed(0)}%</span>
+                    <span className="font-medium text-success">IdeaBrowser: {(abTestMetrics.ideaBrowserView.engagement * 100).toFixed(0)}%</span>
                   </div>
                 </div>
-                <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div className="relative h-2 bg-surface-muted rounded-full overflow-hidden">
                   <div
-                    className="absolute top-0 left-0 h-full bg-gray-400"
+                    className="absolute top-0 left-0 h-full bg-text-muted"
                     style={{ width: `${abTestMetrics.standardView.engagement * 100}%` }}
                   />
                   <div
-                    className="absolute top-0 left-0 h-full bg-blue-600"
+                    className="absolute top-0 left-0 h-full bg-primary"
                     style={{ width: `${abTestMetrics.ideaBrowserView.engagement * 100}%` }}
                   />
                 </div>
               </div>
 
-              <div className="pt-4 border-t">
+              <div className="pt-4 border-t border-border">
                 <div className="flex items-center gap-2 mb-2">
-                  <FiTarget className="h-4 w-4 text-green-500" />
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Overall Improvement</span>
+                  <FiTarget className="h-4 w-4 text-success" />
+                  <span className="text-sm font-medium text-text">Overall Improvement</span>
                 </div>
-                <p className="text-2xl font-bold text-green-600">
+                <p className="text-2xl font-bold text-success">
                   +{((abTestMetrics.ideaBrowserView.completionRate / abTestMetrics.standardView.completionRate - 1) * 100).toFixed(0)}%
                 </p>
-                <p className="text-sm text-gray-600 dark:text-gray-400">in task completion rate</p>
+                <p className="text-sm text-text-muted">in task completion rate</p>
               </div>
             </div>
           </div>
 
           {/* Session Distribution */}
           <div>
-            <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-4">Session Distribution</h4>
+            <h4 className="text-sm font-medium text-text mb-4">Session Distribution</h4>
             <ResponsiveContainer width="100%" height={200}>
               <BarChart
                 data={[
@@ -425,12 +433,12 @@ export const MetricsDashboard: React.FC = () => {
               </BarChart>
             </ResponsiveContainer>
 
-            <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+            <div className="mt-4 p-4 bg-primary/10 rounded-lg">
               <div className="flex items-start gap-2">
-                <FiEye className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                <FiEye className="h-5 w-5 text-primary flex-shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-sm font-medium text-blue-900 dark:text-blue-100">Migration Readiness</p>
-                  <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">
+                  <p className="text-sm font-medium text-text">Migration Readiness</p>
+                  <p className="text-sm text-text mt-1">
                     Based on current metrics, IdeaBrowser view shows strong improvements across all KPIs.
                     Consider defaulting to IdeaBrowser view in the next phase.
                   </p>
@@ -441,17 +449,17 @@ export const MetricsDashboard: React.FC = () => {
         </div>
 
         {/* Test Status */}
-        <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+        <div className="mt-6 p-4 bg-surface-subtle rounded-lg">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <FiMousePointer className="h-5 w-5 text-gray-600" />
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Test Status</span>
+              <FiMousePointer className="h-5 w-5 text-text-muted" />
+              <span className="text-sm font-medium text-text">Test Status</span>
             </div>
-            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">
               Active
             </span>
           </div>
-          <div className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+          <div className="mt-2 text-sm text-text-muted">
             <p>Total sessions analyzed: {abTestMetrics.standardView.sessions + abTestMetrics.ideaBrowserView.sessions}</p>
             <p>Test duration: 2 weeks (Phase 2 - User Testing)</p>
           </div>

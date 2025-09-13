@@ -44,7 +44,7 @@ export const Navigation = () => {
 
   return (
     <>
-      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 bg-primary text-white px-4 py-2 rounded-md z-50">
+      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 bg-primary text-white px-4 py-2 rounded-md z-50">
         Skip to main content
       </a>
       <nav className="bg-surface shadow-lg border-b border-border animate-slide-down transition-all duration-300 backdrop-blur-sm bg-opacity-95 dark:bg-opacity-95">
@@ -53,7 +53,7 @@ export const Navigation = () => {
           <div className="flex items-center gap-8">
             <Link
               to="/"
-              className="text-xl font-bold text-text hover:text-blue-600 dark:hover:text-blue-400 transition-all duration-300 flex items-center gap-2 group touch-target"
+              className="text-xl font-bold text-text hover:text-primary transition-all duration-300 flex items-center gap-2 group touch-target"
               onClick={closeMobileMenu}
             >
               <span className="text-2xl group-hover:rotate-12 transition-transform duration-300 inline-block" role="img" aria-label="Theater masks">🎭</span>
@@ -68,7 +68,7 @@ export const Navigation = () => {
                     to={path}
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 hover-lift focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 touch-target ${
                       isActive(path)
-                        ? 'bg-linear-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300 shadow-lg scale-105'
+                        ? 'bg-primary/10 text-primary shadow-lg scale-105'
                         : `text-text-muted hover:bg-surface-subtle ${getParadigmHoverClass(paradigm)} active:scale-95`
                     }`}
                     aria-current={isActive(path) ? 'page' : undefined}
@@ -99,7 +99,7 @@ export const Navigation = () => {
               to="/profile"
               className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 hover-lift focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                 isActive('/profile')
-                  ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 shadow-md'
+                  ? 'bg-primary/10 text-primary shadow-md'
                   : 'text-text-muted hover:text-text hover:bg-surface-subtle'
               }`}
               aria-current={isActive('/profile') ? 'page' : undefined}
@@ -133,7 +133,7 @@ export const Navigation = () => {
                 onClick={closeMobileMenu}
                 className={`block px-4 py-2 transition-all duration-300 transform hover:translate-x-2 ${
                   isActive(path)
-                  ? 'bg-linear-to-r from-blue-50 to-blue-100 dark:from-blue-900/30 dark:to-blue-800/30 text-blue-700 dark:text-blue-300'
+                  ? 'bg-primary/10 text-primary'
                     : 'text-text-muted hover:bg-surface-subtle'
                 }`}
               >

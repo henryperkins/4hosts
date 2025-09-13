@@ -80,7 +80,7 @@ export const ResearchResultPage = () => {
         <Card className="text-center">
           <CardHeader>
             <div className="flex justify-center mb-4">
-              <FiAlertCircle className="h-16 w-16 text-red-500" />
+              <FiAlertCircle className="h-16 w-16 text-error" />
             </div>
             <CardTitle>Research Unavailable</CardTitle>
           </CardHeader>
