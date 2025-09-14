@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from prometheus_client import generate_latest
 
 from core.config import TRUSTED_ORIGINS, get_allowed_hosts, is_production
+from core.config import ENABLE_FEEDBACK_RECONCILE, FEEDBACK_RECONCILE_WINDOW_MINUTES
 from middleware.security import (
     csrf_protection_middleware,
     security_middleware
@@ -166,6 +167,21 @@ async def lifespan(app: FastAPI):
         app.state.export_service = ExportService()
         logger.info("✓ Production services initialized")
 
+        # Start feedback reconciliation (optional feature)
+        if ENABLE_FEEDBACK_RECONCILE:
+            try:
+                from services.feedback_reconciliation import feedback_reconciliation
+                from datetime import timedelta
+                try:
+                    feedback_reconciliation._window = timedelta(minutes=FEEDBACK_RECONCILE_WINDOW_MINUTES)
+                except Exception:
+                    # Keep default window if assignment fails
+                    pass
+                await feedback_reconciliation.start()
+                logger.info("✓ Feedback reconciliation service started")
+            except Exception as e:
+                logger.warning("Feedback reconciliation not started: %s", e)
+
         # Mount export routes under /v1 using the initialized service
         try:
             export_router = create_export_router(app.state.export_service)
@@ -260,6 +276,15 @@ async def lifespan(app: FastAPI):
         from services.self_healing_system import self_healing_system
         await self_healing_system.stop()
         logger.info("✓ Self-healing system stopped")
+
+        # Stop feedback reconciliation (if running)
+        if ENABLE_FEEDBACK_RECONCILE:
+            try:
+                from services.feedback_reconciliation import feedback_reconciliation
+                await feedback_reconciliation.stop()
+                logger.info("✓ Feedback reconciliation service stopped")
+            except Exception as e:
+                logger.warning("Failed to stop feedback reconciliation: %s", e)
 
         # Cleanup search manager
         if hasattr(app.state, 'search_manager'):

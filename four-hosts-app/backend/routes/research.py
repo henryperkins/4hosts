@@ -34,8 +34,9 @@ from services.enhanced_integration import (
 )
 from services.context_engineering import context_pipeline
 from services.research_orchestrator import research_orchestrator
-from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT
+from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT, ENABLE_MESH_NETWORK
 from services.result_adapter import ResultAdapter
+from services.mesh_network import mesh_negotiator
 import html as _html
 import re as _re
 from models.base import Paradigm
@@ -618,6 +619,34 @@ async def execute_real_research(
             # Use module-level logger; avoid overshadowing it within function scope
             logger.warning("Integrated synthesis assembly skipped: %s", e)
 
+        # Mesh network negotiation (optional)
+        mesh_synthesis = None
+        if ENABLE_MESH_NETWORK:
+            try:
+                if await mesh_negotiator.should_negotiate(cls):
+                    evidence_pool = orch_resp.get("results", []) or []
+                    mesh = await mesh_negotiator.negotiate(
+                        classification=cls,
+                        evidence_pool=evidence_pool,
+                        context={"query": research.query, "research_id": research_id},
+                    )
+                    mesh_synthesis = {
+                        "integrated": mesh.integrated_recommendation,
+                        "synthesis": mesh.primary_synthesis,
+                        "stances": [
+                            {
+                                "paradigm": (s.paradigm.value if hasattr(s.paradigm, "value") else str(s.paradigm)),
+                                "perspective": s.perspective,
+                                "key_points": list(s.key_points or []),
+                            }
+                            for s in mesh.paradigm_stances
+                        ],
+                        "synergies": list(mesh.synergies or []),
+                        "tensions": list(mesh.tensions or []),
+                    }
+            except Exception as e:
+                logger.warning("Mesh negotiation failed: %s", e)
+
         final_result = {
             "research_id": research_id,
             "query": research.query,
@@ -625,6 +654,7 @@ async def execute_real_research(
             "paradigm_analysis": paradigm_analysis,
             "answer": answer_payload,
             "integrated_synthesis": integrated_synthesis,
+            "mesh_synthesis": mesh_synthesis,
             "sources": sources_payload,
             "metadata": metadata,
             "cost_info": orch_resp.get("cost_info", {}),
