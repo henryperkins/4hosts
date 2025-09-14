@@ -40,6 +40,9 @@ from backend.core.dependencies import get_current_user
 from backend.services.research_store import research_store
 # Enhanced integration helpers – self-healing & ML pipeline hooks
 from backend.services.enhanced_integration import record_user_feedback
+# Feature flags and rate limiting
+from backend.core.config import ENABLE_FEEDBACK_RATE_LIMIT
+from backend.services.rate_limiter import RateLimitExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +120,23 @@ async def submit_classification_feedback(
 
     Body: models.feedback.ClassificationFeedbackRequest
     """
+    # Optional per-user rate limiting
+    if ENABLE_FEEDBACK_RATE_LIMIT:
+        try:
+            limiter = getattr(request.app.state, "rate_limiter", None)
+            if limiter is not None:
+                allowed, info = await limiter.check_rate_limit(
+                    f"user:{current_user.user_id}", current_user.role, "api"
+                )
+                if not allowed and info:
+                    raise RateLimitExceeded(
+                        retry_after=info.get("retry_after", 60),
+                        limit_type=info.get("limit_type", "requests_per_minute"),
+                        limit=info.get("limit", 0),
+                    )
+        except Exception as rl_exc:
+            # Non-fatal: log and continue to preserve feedback path robustness
+            logger.debug("Rate limit check error (non-fatal): %s", rl_exc)
     try:
         # Sanity-check optional correction
         if feedback.user_correction:
@@ -163,6 +183,23 @@ async def submit_answer_feedback(
 
     Body: models.feedback.AnswerFeedbackRequest
     """
+    # Optional per-user rate limiting
+    if ENABLE_FEEDBACK_RATE_LIMIT:
+        try:
+            limiter = getattr(request.app.state, "rate_limiter", None)
+            if limiter is not None:
+                allowed, info = await limiter.check_rate_limit(
+                    f"user:{current_user.user_id}", current_user.role, "api"
+                )
+                if not allowed and info:
+                    raise RateLimitExceeded(
+                        retry_after=info.get("retry_after", 60),
+                        limit_type=info.get("limit_type", "requests_per_minute"),
+                        limit=info.get("limit", 0),
+                    )
+        except Exception as rl_exc:
+            # Non-fatal: log and continue to preserve feedback path robustness
+            logger.debug("Rate limit check error (non-fatal): %s", rl_exc)
     try:
         # Persist first to avoid losing the event if downstream hooks fail
         await _persist_feedback_event(

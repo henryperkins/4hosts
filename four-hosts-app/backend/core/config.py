@@ -105,3 +105,19 @@ EVIDENCE_SEMANTIC_SCORING: bool = (os.getenv("EVIDENCE_SEMANTIC_SCORING", "1").l
 
 # Include short per‑source summaries alongside quotes in prompts
 EVIDENCE_INCLUDE_SUMMARIES: bool = (os.getenv("EVIDENCE_INCLUDE_SUMMARIES", "1").lower() in {"1", "true", "yes"})
+
+# ────────────────────────────────────────────────────────────
+#  Feature Flags
+# ────────────────────────────────────────────────────────────
+
+# Feedback
+ENABLE_FEEDBACK_RATE_LIMIT: bool = (os.getenv("ENABLE_FEEDBACK_RATE_LIMIT", "1").lower() in {"1", "true", "yes"})
+FEEDBACK_RATE_LIMIT_PER_MINUTE: int = _env_int("FEEDBACK_RATE_LIMIT_PER_MINUTE", 30)
+
+ENABLE_FEEDBACK_RECONCILE: bool = (os.getenv("ENABLE_FEEDBACK_RECONCILE", "0").lower() in {"1", "true", "yes"})
+FEEDBACK_RECONCILE_WINDOW_MINUTES: int = _env_int("FEEDBACK_RECONCILE_WINDOW_MINUTES", 10)
+
+# Mesh Network
+ENABLE_MESH_NETWORK: bool = (os.getenv("ENABLE_MESH_NETWORK", "0").lower() in {"1", "true", "yes"})
+MESH_MIN_PROBABILITY: float = float(os.getenv("MESH_MIN_PROBABILITY", "0.25") or 0.25)
+MESH_MAX_PARADIGMS: int = _env_int("MESH_MAX_PARADIGMS", 3)

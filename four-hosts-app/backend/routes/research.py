@@ -5,8 +5,9 @@ Research routes for the Four Hosts Research API
 import logging
 import uuid
 from datetime import datetime, timedelta
+from typing import Any, Optional, cast
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Response
 
 from models.research import (
     ResearchQuery,
@@ -18,7 +19,8 @@ from models.base import (
     ResearchStatus,
     UserRole,
     HOST_TO_MAIN_PARADIGM,
-    ParadigmClassification
+    ParadigmClassification,
+    HostParadigm,
 )
 from core.dependencies import get_current_user
 from services.research_store import research_store
@@ -37,7 +39,7 @@ from services.result_adapter import ResultAdapter
 import html as _html
 import re as _re
 from models.base import Paradigm
-from services.webhook_manager import WebhookEvent
+from services.webhook_manager import WebhookEvent, WebhookManager
 from services.export_service import ExportOptions, ExportFormat, ExportService
 
 logger = logging.getLogger(__name__)
@@ -48,7 +50,7 @@ router = APIRouter(prefix="/research", tags=["research"])
 
 # Mock services for now - these will be injected
 progress_tracker = _ws_progress_tracker
-webhook_manager = None
+webhook_manager: WebhookManager | None = None
 
 
 async def execute_real_research(
@@ -66,12 +68,12 @@ async def execute_real_research(
     - Paradigm-aware synthesis (enhanced answer orchestrator)
     - Persist results to research_store and broadcast completion
     """
-    
+
     async def check_cancelled():
         """Check if research has been cancelled"""
         research_data = await research_store.get(research_id)
         return research_data and research_data.get("status") == ResearchStatus.CANCELLED
-    
+
     try:
         # Mark in-progress
         await research_store.update_field(research_id, "status", ResearchStatus.IN_PROGRESS)
@@ -80,7 +82,7 @@ async def execute_real_research(
         if await check_cancelled():
             logger.info(f"Research {research_id} cancelled before classification")
             return
-            
+
         if progress_tracker:
             await progress_tracker.update_progress(research_id, "classification", 5)
 
@@ -117,7 +119,7 @@ async def execute_real_research(
         if await check_cancelled():
             logger.info(f"Research {research_id} cancelled before context engineering")
             return
-            
+
         if progress_tracker:
             await progress_tracker.update_progress(research_id, "context_engineering", 15)
 
@@ -158,7 +160,7 @@ async def execute_real_research(
         if await check_cancelled():
             logger.info(f"Research {research_id} cancelled before search/retrieval")
             return
-            
+
         if progress_tracker:
             # Align with FE "Search & Retrieval" phase key
             await progress_tracker.update_progress(research_id, "search", 25)
@@ -169,15 +171,13 @@ async def execute_real_research(
                 self.source_limit = source_limit
 
         # Resolve user role string (e.g., 'PRO') for orchestrator context
-        user_role_name = (
-            user_role.name if hasattr(user_role, "name") else str(user_role).upper()
-        ) or "PRO"
-        max_sources = int(getattr(research, "options", ResearchOptions()).max_sources)
+        user_role_name = user_role.name if isinstance(user_role, UserRole) else str(user_role).upper()
+        max_sources = int(research.options.max_sources)
         user_ctx = _UserCtxShim(user_role_name, max_sources)
 
         orch_resp = await research_orchestrator.execute_research(
-            classification=cls,
-            context_engineered=ce,  # legacy shape is supported by the orchestrator
+            classification=cls,  # type: ignore[arg-type]
+            context_engineered=ce,  # legacy shape is supported by the orchestrator  # type: ignore[arg-type]
             user_context=user_ctx,
             progress_callback=progress_tracker,
             research_id=research_id,
@@ -224,20 +224,27 @@ async def execute_real_research(
                 # Citations (answer_obj.citations is a dict[str, Citation])
                 raw_citations = getattr(answer_obj, "citations", {}) or {}
                 if isinstance(raw_citations, dict):
-                    primary_paradigm = HOST_TO_MAIN_PARADIGM.get(
-                        getattr(cls, "primary_paradigm", None), Paradigm.BERNARD
-                    ).value
-                    # Build domain lookup from sources for category/explanation enrichment
+                    primary_attr = getattr(cls, "primary_paradigm", None)
+                    primary_host = primary_attr if isinstance(primary_attr, HostParadigm) else HostParadigm.BERNARD
+                    primary_paradigm = HOST_TO_MAIN_PARADIGM.get(primary_host, Paradigm.BERNARD).value
+                    # Build domain lookup from orchestrator results for category/explanation enrichment
                     domain_map = {}
                     try:
-                        for s in sources_payload:
-                            d = (s.get("domain") or "").lower()
-                            if d and d not in domain_map:
-                                domain_map[d] = {
-                                    "source_category": s.get("source_category"),
-                                    "credibility_explanation": s.get("credibility_explanation"),
-                                    "credibility_score": s.get("credibility_score"),
-                                }
+                        raw_results = (orch_resp.get("results", []) or [])
+                        for raw in raw_results:
+                            try:
+                                r = ResultAdapter(raw)
+                                d = (r.domain or (r.metadata or {}).get("domain") or "")
+                                d = (d or "").lower()
+                                if d and d not in domain_map:
+                                    md = r.metadata or {}
+                                    domain_map[d] = {
+                                        "source_category": md.get("source_category"),
+                                        "credibility_explanation": md.get("credibility_explanation"),
+                                        "credibility_score": float(r.credibility_score if r.credibility_score is not None else 0.5),
+                                    }
+                            except Exception:
+                                continue
                     except Exception:
                         domain_map = {}
                     for c in raw_citations.values():
@@ -271,9 +278,9 @@ async def execute_real_research(
                     if not isinstance(raw_actions, list):
                         raw_actions = []
                     # Reuse primary paradigm for defaulting
-                    primary_paradigm = HOST_TO_MAIN_PARADIGM.get(
-                        getattr(cls, "primary_paradigm", None), Paradigm.BERNARD
-                    ).value
+                    primary_attr = getattr(cls, "primary_paradigm", None)
+                    primary_host = primary_attr if isinstance(primary_attr, HostParadigm) else HostParadigm.BERNARD
+                    primary_paradigm = HOST_TO_MAIN_PARADIGM.get(primary_host, Paradigm.BERNARD).value
                     for it in raw_actions:
                         if not isinstance(it, dict):
                             continue
@@ -327,7 +334,7 @@ async def execute_real_research(
         # Build paradigm analysis summary for UI
         paradigm_analysis = {
             "primary": {
-                "paradigm": HOST_TO_MAIN_PARADIGM.get(cls.primary_paradigm, Paradigm.BERNARD).value,
+                "paradigm": HOST_TO_MAIN_PARADIGM.get(cast(HostParadigm, getattr(cls, "primary_paradigm", HostParadigm.BERNARD)), Paradigm.BERNARD).value,
                 "confidence": float(getattr(cls, "confidence", 0.75) or 0.75),
                 "approach": getattr(ce.write_output, "documentation_focus", "")[:140] if hasattr(ce, "write_output") else "",
                 "focus": ", ".join((getattr(ce.write_output, "key_themes", []) or [])[:3]) if hasattr(ce, "write_output") else "",
@@ -337,7 +344,7 @@ async def execute_real_research(
         # Optional: include secondary paradigm summary in analysis
         if getattr(cls, "secondary_paradigm", None):
             paradigm_analysis["secondary"] = {
-                "paradigm": HOST_TO_MAIN_PARADIGM.get(cls.secondary_paradigm, Paradigm.BERNARD).value,
+                "paradigm": HOST_TO_MAIN_PARADIGM.get(cast(HostParadigm, getattr(cls, "secondary_paradigm", HostParadigm.BERNARD)), Paradigm.BERNARD).value,
                 "confidence": float(getattr(cls, "confidence", 0.6) or 0.6) * 0.8,
                 "approach": getattr(ce.write_output, "documentation_focus", "")[:120] if hasattr(ce, "write_output") else "",
                 "focus": ", ".join((getattr(ce.write_output, "key_themes", []) or [])[:2]) if hasattr(ce, "write_output") else "",
@@ -499,13 +506,26 @@ async def execute_real_research(
                 # Extract list of results for answer generation
                 flat_results = orch_resp.get("results", []) or []
                 from services.answer_generator import answer_orchestrator as _ans
+                # Get method references safely and ensure proper typing
+                model_dump_method = getattr(ce, "model_dump", None)
+                dict_method = getattr(ce, "dict", None)
+
+                # Use callable methods or fallback to empty dict, with explicit type casting
+                context_engineering: dict[str, Any] = {}
+                if model_dump_method and callable(model_dump_method):
+                    result = model_dump_method()
+                    context_engineering = result if isinstance(result, dict) else {}
+                elif dict_method and callable(dict_method):
+                    result = dict_method()
+                    context_engineering = result if isinstance(result, dict) else {}
+
                 # Generate combined answers
                 combo = await _ans.generate_multi_paradigm_answer(
                     primary_paradigm=primary_ui,
                     secondary_paradigm=secondary_ui,
                     query=research.query,
                     search_results=flat_results,
-                    context_engineering=(getattr(ce, "model_dump", None)() if hasattr(ce, "model_dump") else (ce.dict() if hasattr(ce, "dict") else {})),
+                    context_engineering=context_engineering,
                     options={"research_id": research_id, "max_length": SYNTHESIS_MAX_LENGTH_DEFAULT},
                 )
                 prim = combo.get("primary_paradigm", {}).get("answer")
@@ -667,7 +687,7 @@ async def submit_research(
         classification = ParadigmClassification(
             primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
             secondary=(
-                HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm)
+                HOST_TO_MAIN_PARADIGM.get(cast(HostParadigm, classification_result.secondary_paradigm))
                 if classification_result.secondary_paradigm
                 else None
             ),
@@ -723,7 +743,7 @@ async def submit_research(
             )
 
         # Trigger webhook (if available)
-        if webhook_manager:
+        if webhook_manager is not None:
             await webhook_manager.trigger_event(
                 WebhookEvent.RESEARCH_STARTED,
                 {
@@ -921,7 +941,7 @@ async def submit_deep_research(
         classification = ParadigmClassification(
             primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
             secondary=(
-                HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm)
+                HOST_TO_MAIN_PARADIGM.get(cast(HostParadigm, classification_result.secondary_paradigm))
                 if classification_result.secondary_paradigm
                 else None
             ),
@@ -969,7 +989,7 @@ async def submit_deep_research(
             )
 
         # Webhook
-        if webhook_manager:
+        if webhook_manager is not None:
             await webhook_manager.trigger_event(
                 WebhookEvent.RESEARCH_STARTED,
                 {
@@ -1080,7 +1100,7 @@ async def resume_deep_research(
         classification = ParadigmClassification(
             primary=HOST_TO_MAIN_PARADIGM[classification_result.primary_paradigm],
             secondary=(
-                HOST_TO_MAIN_PARADIGM.get(classification_result.secondary_paradigm)
+                HOST_TO_MAIN_PARADIGM.get(cast(HostParadigm, classification_result.secondary_paradigm))
                 if classification_result.secondary_paradigm
                 else None
             ),
@@ -1277,7 +1297,7 @@ async def get_research_history(
 async def submit_research_feedback(
     research_id: str,
     satisfaction_score: float,
-    paradigm_feedback: str = None,
+    paradigm_feedback: Optional[str] = None,
     current_user=Depends(get_current_user),
 ):
     """Submit feedback for a research query to improve the system"""
@@ -1363,7 +1383,6 @@ async def export_research_result(
     export_service = ExportService()
     try:
         result = await export_service.export_research(export_payload, options)
-        from fastapi import Response
 
         # Mark this legacy endpoint as deprecated; point to unified export router
         headers = {
