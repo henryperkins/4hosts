@@ -5,7 +5,7 @@ Implements specialized search approaches for each paradigm (Dolores, Teddy, Bern
 
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import quote_plus
@@ -18,6 +18,7 @@ from .search_apis import (
     create_search_manager,
 )
 from .credibility import get_source_credibility, CredibilityScore
+from models.paradigms import normalize_to_internal_code
 from .cache import cache_manager
 
 logging.basicConfig(level=logging.INFO)
@@ -1020,8 +1021,16 @@ class MaeveSearchStrategy:
 
 
 # Factory function to get strategy by paradigm
-def get_search_strategy(paradigm: str):
-    """Get the appropriate search strategy for a paradigm"""
+def get_search_strategy(paradigm: Union[str, Any]):
+    """Get the appropriate search strategy for a paradigm.
+
+    Accepts internal codes (dolores/bernard/...), enum values (analytical/...),
+    or HostParadigm; normalizes to internal code.
+    """
+    try:
+        key = normalize_to_internal_code(paradigm)
+    except Exception:
+        key = str(paradigm).strip().lower()
     strategies = {
         "dolores": DoloresSearchStrategy(),
         "teddy": TeddySearchStrategy(),
@@ -1029,7 +1038,7 @@ def get_search_strategy(paradigm: str):
         "maeve": MaeveSearchStrategy(),
     }
 
-    return strategies.get(paradigm, BernardSearchStrategy())  # Default to Bernard
+    return strategies.get(key, BernardSearchStrategy())  # Default to Bernard
 
 
 # Example usage and testing

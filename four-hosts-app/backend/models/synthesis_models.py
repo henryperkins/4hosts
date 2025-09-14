@@ -8,7 +8,7 @@ from datetime import datetime
 from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT
 try:
     # Typed reference to canonical EvidenceBundle
-    from .context_models import EvidenceBundle  # type: ignore
+    from .evidence import EvidenceBundle  # type: ignore
 except Exception:  # Fallback type alias for runtime resilience
     EvidenceBundle = Any  # type: ignore
 

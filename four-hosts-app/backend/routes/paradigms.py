@@ -19,6 +19,7 @@ from models.base import (
 )
 from core.dependencies import get_current_user
 from core.config import PARADIGM_EXPLANATIONS
+from models.paradigms import normalize_to_internal_code
 from services.research_store import research_store
 from services.enhanced_integration import (
     enhanced_classification_engine as classification_engine
@@ -32,13 +33,17 @@ router = APIRouter(prefix="/paradigms", tags=["paradigms"])
 
 def get_paradigm_approach_suggestion(paradigm: Paradigm) -> str:
     """Get approach suggestion for a paradigm"""
-    suggestions = {
+    try:
+        key = normalize_to_internal_code(paradigm.value)
+    except Exception:
+        key = str(paradigm.value)
+    cfg = PARADIGM_EXPLANATIONS.get(key) or {}
+    return cfg.get("approach_suggestion") or {
         Paradigm.DOLORES: "Focus on exposing systemic issues and empowering resistance",
         Paradigm.TEDDY: "Prioritize community support and protective measures",
         Paradigm.BERNARD: "Emphasize empirical research and data-driven analysis",
         Paradigm.MAEVE: "Develop strategic frameworks and actionable plans",
-    }
-    return suggestions[paradigm]
+    }[paradigm]
 
 
 @router.post("/classify")
@@ -122,28 +127,68 @@ async def override_paradigm(
         current_user.role != UserRole.ADMIN):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Update paradigm and reset status
-    await research_store.update_field(
-        payload.research_id, "override_paradigm", payload.paradigm.value
-    )
-    await research_store.update_field(
-        payload.research_id, "status", "processing"
-    )
+    # Update stored record: set override + reset status and results
+    try:
+        # Persist override for traceability
+        await research_store.update_field(
+            payload.research_id, "override_paradigm", payload.paradigm.value
+        )
+        if payload.reason:
+            await research_store.update_field(
+                payload.research_id, "override_reason", payload.reason
+            )
 
-    # Note: Re-queuing logic would go here in the actual implementation
-    # For now, just log the override
+        # Update nested options.paradigm_override for the executor path
+        try:
+            options = dict(research.get("options") or {})
+            options["paradigm_override"] = payload.paradigm.value
+            await research_store.update_field(payload.research_id, "options", options)
+        except Exception:
+            # Non-fatal; executor also reads top-level override
+            pass
+
+        # Reset execution state for re-processing
+        await research_store.update_field(payload.research_id, "status", "processing")
+        await research_store.update_field(payload.research_id, "results", None)
+        await research_store.update_field(payload.research_id, "error", None)
+        await research_store.update_field(payload.research_id, "requeued_at", __import__("datetime").datetime.utcnow().isoformat())
+    except Exception as e:
+        logger.error("Failed to update research for override: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to persist override")
+
+    # Re-queue the job to run with the override applied
+    try:
+        from models.research import ResearchQuery, ResearchOptions
+        from routes.research import execute_real_research
+
+        # Reconstruct canonical ResearchQuery using stored options + new override
+        opts = ResearchOptions(**(research.get("options") or {}))
+        opts.paradigm_override = payload.paradigm
+        rq = ResearchQuery(query=research.get("query", ""), options=opts)
+
+        # Use the original job's user_id to attribute execution; role uses caller's role
+        background_tasks.add_task(
+            execute_real_research,
+            payload.research_id,
+            rq,
+            research.get("user_id", str(current_user.user_id)),
+            current_user.role,
+        )
+    except Exception as e:
+        logger.error("Failed to enqueue override reprocessing: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to re-queue research")
+
     logger.info(
-        "Paradigm override requested for research %s: %s -> %s",
+        "Paradigm override enqueued for research %s: -> %s",
         payload.research_id,
-        research.get("paradigm_classification", {}).get("primary", "unknown"),
-        payload.paradigm.value
+        payload.paradigm.value,
     )
 
     return {
         "success": True,
         "research_id": payload.research_id,
         "new_paradigm": payload.paradigm.value,
-        "status": "re-processing",
+        "status": "in_progress",
     }
 
 

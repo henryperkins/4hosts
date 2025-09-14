@@ -264,15 +264,27 @@ class BaseAnswerGenerator:
             eb = getattr(context, "evidence_bundle", None)
             if eb is not None and getattr(eb, "quotes", None):
                 quotes = list(getattr(eb, "quotes", []) or [])[:max_quotes]
-            else:
-                quotes = (getattr(context, "evidence_quotes", None) or [])[:max_quotes]
         except Exception:
-            quotes = (getattr(context, "evidence_quotes", None) or [])[:max_quotes]
+            quotes = []
+        def _qval(q, name, default=""):
+            try:
+                if isinstance(q, dict):
+                    return q.get(name, default)
+                # pydantic v2
+                if hasattr(q, name):
+                    return getattr(q, name)
+                if hasattr(q, "model_dump"):
+                    return q.model_dump().get(name, default)
+                if hasattr(q, "dict"):
+                    return q.dict().get(name, default)
+            except Exception:
+                return default
+            return default
         lines: List[str] = []
         for q in quotes:
-            qid = q.get("id", "")
-            dom = (q.get("domain") or "").lower()
-            qt = q.get("quote", "")
+            qid = _qval(q, "id", "")
+            dom = (_qval(q, "domain", "") or "").lower()
+            qt = _qval(q, "quote", "")
             lines.append(f"- [{qid}][{dom}] {qt}")
         return "\n".join(lines) if lines else "(no evidence quotes)"
 
@@ -283,21 +295,32 @@ class BaseAnswerGenerator:
             eb = getattr(context, "evidence_bundle", None)
             if eb is not None and getattr(eb, "quotes", None):
                 quotes = list(getattr(eb, "quotes", []) or [])
-            else:
-                quotes = list(getattr(context, "evidence_quotes", None) or [])
         except Exception:
-            quotes = list(getattr(context, "evidence_quotes", None) or [])
+            quotes = []
         if not quotes:
             return "(no evidence quotes)"
         # Build items compatible with select_items_within_budget (uses estimate_tokens_for_result)
         items_for_budget: List[Dict[str, Any]] = []
+        def _qval(q, name, default=""):
+            try:
+                if isinstance(q, dict):
+                    return q.get(name, default)
+                if hasattr(q, name):
+                    return getattr(q, name)
+                if hasattr(q, "model_dump"):
+                    return q.model_dump().get(name, default)
+                if hasattr(q, "dict"):
+                    return q.dict().get(name, default)
+            except Exception:
+                return default
+            return default
         for q in quotes:
             items_for_budget.append({
-                "id": q.get("id", ""),
-                "domain": q.get("domain", ""),
+                "id": _qval(q, "id", ""),
+                "domain": _qval(q, "domain", ""),
                 "title": "",           # no title for quotes
                 "snippet": "",         # no snippet for quotes
-                "content": q.get("quote", "") or "",
+                "content": _qval(q, "quote", "") or "",
             })
         selected, _used, _dropped = select_items_within_budget(items_for_budget, max_tokens=budget_tokens)
         selected = selected[:max_quotes]
@@ -318,7 +341,8 @@ class BaseAnswerGenerator:
         select within a token budget to avoid overflow.
         """
         try:
-            quotes = list(getattr(context, "evidence_quotes", None) or [])
+            eb = getattr(context, "evidence_bundle", None)
+            quotes = list(getattr(eb, "quotes", []) or []) if eb is not None else []
         except Exception:
             quotes = []
         if not quotes:
@@ -327,14 +351,27 @@ class BaseAnswerGenerator:
         # Collate first summary per URL
         seen: set[str] = set()
         items_for_budget: List[Dict[str, Any]] = []
+        def _qval(q, name, default=""):
+            try:
+                if isinstance(q, dict):
+                    return q.get(name, default)
+                if hasattr(q, name):
+                    return getattr(q, name)
+                if hasattr(q, "model_dump"):
+                    return q.model_dump().get(name, default)
+                if hasattr(q, "dict"):
+                    return q.dict().get(name, default)
+            except Exception:
+                return default
+            return default
         for q in quotes:
-            url = (q.get("url") or "").strip()
-            dom = (q.get("domain") or "").lower()
+            url = (_qval(q, "url", "") or "").strip()
+            dom = (_qval(q, "domain", "") or "").lower()
             sid = url or dom
             if not sid or sid in seen:
                 continue
             seen.add(sid)
-            summary = q.get("doc_summary") or ""
+            summary = _qval(q, "doc_summary", "") or ""
             if not summary:
                 continue
             items_for_budget.append({
@@ -355,14 +392,12 @@ class BaseAnswerGenerator:
         return "\n".join(lines) if lines else "(no source summaries)"
 
     def _coverage_table(self, context: SynthesisContext, max_rows: int = 6) -> str:
-        # Prefer focus areas from EvidenceBundle if present
+        # Use focus areas from EvidenceBundle
         focus: List[str] = []
         try:
             eb = getattr(context, "evidence_bundle", None)
             if eb is not None and getattr(eb, "focus_areas", None):
                 focus = list(getattr(eb, "focus_areas", []) or [])
-            elif isinstance(context.context_engineering, dict):
-                focus = list((context.context_engineering.get("isolated_findings", {}) or {}).get("focus_areas", []) or [])
         except Exception:
             focus = []
         if not focus:
@@ -405,13 +440,7 @@ class BaseAnswerGenerator:
                     "focus_areas": list(getattr(eb, "focus_areas", []) or []),
                 }
         except Exception:
-            pass
-        try:
-            if isinstance(context.context_engineering, dict):
-                return dict(context.context_engineering.get("isolated_findings", {}) or {})
-        except Exception:
-            pass
-        return {"matches": [], "by_domain": {}, "focus_areas": []}
+            return {"matches": [], "by_domain": {}, "focus_areas": []}
 
     def create_citation(self, source: Dict[str, Any], fact_type: str = "reference") -> Citation:
         """Create a citation from a source"""
@@ -569,9 +598,19 @@ class BaseAnswerGenerator:
             search_results = list(getattr(context, "search_results", []) or [])
             try:
                 eb = getattr(context, "evidence_bundle", None)
-                evidence_quotes = list(getattr(eb, "quotes", []) or []) if eb is not None else []
+                raw_quotes = list(getattr(eb, "quotes", []) or []) if eb is not None else []
+                # Normalize to plain dicts for downstream action generator
+                evidence_quotes = []
+                for q in raw_quotes:
+                    if isinstance(q, dict):
+                        evidence_quotes.append(q)
+                    elif hasattr(q, "model_dump"):
+                        evidence_quotes.append(q.model_dump())
+                    elif hasattr(q, "dict"):
+                        evidence_quotes.append(q.dict())
+                
             except Exception:
-                evidence_quotes = list(getattr(context, "evidence_quotes", []) or [])
+                evidence_quotes = []
 
             items = await _gen_actions(
                 query=getattr(context, "query", ""),

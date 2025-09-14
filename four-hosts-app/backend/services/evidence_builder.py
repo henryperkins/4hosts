@@ -4,8 +4,10 @@ Evidence Builder
 Select high-salience, quoted evidence from top web results to ground
 the model's synthesis. Lightweight and dependency‑minimal.
 
-Exports a single async helper:
-    build_evidence_quotes(query, results, max_docs=20, quotes_per_doc=3) -> List[Dict]
+Exports helpers:
+    - build_evidence_quotes(query, results, max_docs=20, quotes_per_doc=3) -> List[EvidenceQuote]
+    - convert_quote_dicts_to_typed(quotes_raw) -> List[EvidenceQuote]
+    - quotes_to_plain_dicts(quotes_typed) -> List[Dict]
 
 Each returned quote dict has the shape:
     {
@@ -26,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any, Dict, List, Tuple
+from models.evidence import EvidenceQuote
 
 from utils.injection_hygiene import sanitize_snippet, flag_suspicious_snippet
 from core.config import (
@@ -199,8 +202,12 @@ async def build_evidence_quotes(
     *,
     max_docs: int = EVIDENCE_MAX_DOCS_DEFAULT,
     quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
-) -> List[Dict[str, Any]]:
-    """Return prioritized quotes across high-credibility, diverse sources."""
+) -> List[EvidenceQuote]:
+    """Return prioritized quotes across high-credibility, diverse sources.
+
+    The return type is a list of `EvidenceQuote` models. Use
+    `quotes_to_plain_dicts(...)` if a plain-JSON shape is needed.
+    """
     if not results:
         return []
 
@@ -208,7 +215,7 @@ async def build_evidence_quotes(
     urls = [d.get("url", "") for d in docs if d.get("url")]
     texts = await _fetch_texts(urls)
 
-    quotes: List[Dict[str, Any]] = []
+    quotes: List[EvidenceQuote] = []
     qid = 1
     for d in docs:
         url = d.get("url", "")
@@ -224,27 +231,29 @@ async def build_evidence_quotes(
             if snip:
                 triples = [(sanitize_snippet(snip, 200), -1, -1)]
         for quote, start, end in triples:
-            item = {
-                "id": f"q{qid:03d}",
-                "url": url,
-                "title": title,
-                "domain": domain,
-                "quote": quote,
-                "start": int(start) if isinstance(start, int) else -1,
-                "end": int(end) if isinstance(end, int) else -1,
-                "published_date": md.get("published_date"),
-                "credibility_score": d.get("credibility_score"),
-                "suspicious": bool(flag_suspicious_snippet(quote)),
-                "doc_summary": doc_summary,
-            }
-            quotes.append(item)
+            quotes.append(
+                EvidenceQuote(
+                    id=f"q{qid:03d}",
+                    url=url,
+                    title=title or "",
+                    domain=domain or "",
+                    quote=quote,
+                    start=int(start) if isinstance(start, int) else None,
+                    end=int(end) if isinstance(end, int) else None,
+                    published_date=md.get("published_date"),
+                    credibility_score=d.get("credibility_score"),
+                    suspicious=bool(flag_suspicious_snippet(quote)),
+                    doc_summary=doc_summary or None,
+                    source_type=md.get("result_type", "web"),
+                )
+            )
             qid += 1
 
     # Balance by domain: keep at most 4 per domain overall
     by_domain: Dict[str, int] = {}
-    balanced: List[Dict[str, Any]] = []
+    balanced: List[EvidenceQuote] = []
     for q in quotes:
-        dom = (q.get("domain") or "").lower()
+        dom = (getattr(q, "domain", "") or "").lower()
         c = by_domain.get(dom, 0)
         if c >= 4:
             continue
@@ -253,3 +262,33 @@ async def build_evidence_quotes(
 
     # Cap hard limit to protect prompt
     return balanced[: max_docs * quotes_per_doc]
+
+
+def convert_quote_dicts_to_typed(quotes_raw: List[Dict[str, Any]]) -> List[EvidenceQuote]:
+    out: List[EvidenceQuote] = []
+    for q in quotes_raw or []:
+        try:
+            out.append(EvidenceQuote.model_validate(q))
+        except Exception:
+            try:
+                out.append(EvidenceQuote(
+                    id=str(q.get("id", f"q{len(out)+1:03d}")),
+                    url=q.get("url", ""),
+                    title=q.get("title", ""),
+                    domain=q.get("domain", ""),
+                    quote=q.get("quote", ""),
+                    start=q.get("start"),
+                    end=q.get("end"),
+                    published_date=q.get("published_date"),
+                    credibility_score=q.get("credibility_score"),
+                    suspicious=q.get("suspicious"),
+                    doc_summary=q.get("doc_summary"),
+                    source_type=q.get("source_type"),
+                ))
+            except Exception:
+                continue
+    return out
+
+
+def quotes_to_plain_dicts(quotes_typed: List[EvidenceQuote]) -> List[Dict[str, Any]]:
+    return [q.model_dump() for q in quotes_typed or []]

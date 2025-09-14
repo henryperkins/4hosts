@@ -5,6 +5,13 @@ Provides custom OpenAPI schema and documentation UI
 
 from typing import Dict, Any
 from fastapi import FastAPI
+try:
+    # Import Pydantic models to include schemas in OpenAPI components
+    from models.evidence import EvidenceBundle, EvidenceQuote, EvidenceMatch  # type: ignore
+except Exception:
+    EvidenceBundle = None  # type: ignore
+    EvidenceQuote = None   # type: ignore
+    EvidenceMatch = None   # type: ignore
 from fastapi.openapi.utils import get_openapi
 
 
@@ -133,6 +140,16 @@ def custom_openapi(app: FastAPI) -> Dict[str, Any]:
     }
 
     app.openapi_schema = openapi_schema
+    # Inject Evidence schemas when available to lock contract visibility
+    try:
+        comps = app.openapi_schema.setdefault("components", {})
+        schemas = comps.setdefault("schemas", {})
+        if EvidenceQuote and EvidenceMatch and EvidenceBundle:
+            schemas.setdefault("EvidenceQuote", EvidenceQuote.model_json_schema())
+            schemas.setdefault("EvidenceMatch", EvidenceMatch.model_json_schema())
+            schemas.setdefault("EvidenceBundle", EvidenceBundle.model_json_schema())
+    except Exception:
+        pass
     return app.openapi_schema
 
 

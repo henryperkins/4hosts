@@ -34,6 +34,7 @@ from .context_engineering import ContextEngineeredQuery
 from .websocket_service import ResearchProgressTracker
 from .research_store import research_store
 from utils.token_budget import trim_text_to_tokens
+from models.evidence import EvidenceQuote
 
 # Logging
 logger = logging.getLogger(__name__)
@@ -787,6 +788,49 @@ General requirements:
             cost_info=cost_info,
             raw_response=response,
         )
+
+
+# ────────────────────────────────────────────────────────────
+#  EvidenceQuote Conversion for Deep Research Citations
+# ────────────────────────────────────────────────────────────
+def convert_citations_to_evidence_quotes(
+    citations: List[Citation],
+    content: str,
+) -> List[EvidenceQuote]:
+    """Convert deep research citations into EvidenceQuote entries.
+
+    When URL is missing, synthesize an about:blank anchor (marked by caller as unlinked).
+    Extract a short quote span from `content` using start/end indexes when provided.
+    """
+    out: List[EvidenceQuote] = []
+    if not citations:
+        return out
+    for idx, c in enumerate(citations):
+        try:
+            url = getattr(c, "url", "") or ""
+            title = getattr(c, "title", "") or ""
+            s = int(getattr(c, "start_index", 0) or 0)
+            e = int(getattr(c, "end_index", s) or s)
+            snippet = content[s:e][:240] if isinstance(content, str) else ""
+            if not url:
+                safe_oid = "deep"
+                url = f"about:blank#citation-{safe_oid}-{(hash((title or snippet)[:64]) & 0xFFFFFFFF)}"
+            domain = url.split('/')[2] if ('/' in url and len(url.split('/')) > 2) else url
+            out.append(EvidenceQuote(
+                id=f"dq{idx+1:03d}",
+                url=url,
+                title=title or (url.split('/')[-1] if url else "(deep research)"),
+                domain=domain,
+                quote=snippet or (title or ""),
+                start=s if s >= 0 else None,
+                end=e if e >= 0 else None,
+                credibility_score=0.9,
+                source_type="deep_research",
+                doc_summary=(snippet[:240] if snippet else None),
+            ))
+        except Exception:
+            continue
+    return out
     
     def _estimate_costs(self, response: Dict[str, Any]) -> Dict[str, float]:
         """Estimate costs based on tool usage"""

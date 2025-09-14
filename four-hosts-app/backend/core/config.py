@@ -33,22 +33,26 @@ PARADIGM_EXPLANATIONS: Dict[str, Dict[str, Any]] = {
         "name": "Revolutionary Paradigm",
         "description": (
             "Expose systemic issues and empower transformative change."
-        )
+        ),
+        "approach_suggestion": "Focus on exposing systemic issues and empowering resistance",
     },
     "teddy": {
         "paradigm": "teddy",
         "name": "Devotion Paradigm",
-        "description": "Provide compassionate support and protective measures."
+        "description": "Provide compassionate support and protective measures.",
+        "approach_suggestion": "Prioritize community support and protective measures",
     },
     "bernard": {
         "paradigm": "bernard",
         "name": "Analytical Paradigm",
-        "description": "Focus on empirical, data-driven analysis."
+        "description": "Focus on empirical, data-driven analysis.",
+        "approach_suggestion": "Emphasize empirical research and data-driven analysis",
     },
     "maeve": {
         "paradigm": "maeve",
         "name": "Strategic Paradigm",
-        "description": "Deliver actionable strategies and optimization."
+        "description": "Deliver actionable strategies and optimization.",
+        "approach_suggestion": "Develop strategic frameworks and actionable plans",
     },
 }
 

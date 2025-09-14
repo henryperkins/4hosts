@@ -565,6 +565,8 @@ class UnifiedResearchOrchestrator:
         }
         self._diag_samples = {"no_url": []}
         self._supports_search_with_api = False
+        # Capture deep research citations per research_id to merge into EvidenceBundle later
+        self._deep_citations_map: Dict[str, List[Any]] = {}
 
         # Performance tracking (cap history to prevent unbounded memory growth)
         self.execution_history = deque(maxlen=100)
@@ -753,10 +755,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         synthesized_answer = None
         if synthesize_answer:
             try:
-                # Build evidence quotes from processed results
-                evidence_quotes: List[Dict[str, Any]] = []
+                # Build evidence quotes from processed results (typed EvidenceQuote)
+                evidence_quotes = []
                 try:
-                    from services.evidence_builder import build_evidence_quotes
+                    from services.evidence_builder import build_evidence_quotes, quotes_to_plain_dicts
                     evidence_quotes = await build_evidence_quotes(
                         getattr(context_engineered, "original_query", ""),
                         processed_results["results"],
@@ -771,7 +773,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     results=processed_results["results"],
                     research_id=research_id or f"research_{int(start_time.timestamp())}",
                     options=answer_options or {},
-                    evidence_quotes=evidence_quotes,
+                    evidence_quotes=(quotes_to_plain_dicts(evidence_quotes) if evidence_quotes else []),
                 )
                 # Attach contradiction summary to answer metadata if available
                 try:
@@ -925,15 +927,62 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # Predeclare evidence bundle holder for type-checkers
         eb = None  # will be optionally assigned below
 
-        # Build synthesis context (not strictly required by the generator but useful for parity)
+        # Build synthesis context (typed EvidenceBundle)
         if SynthesisContextModel:
             try:
-                from models.context_models import EvidenceBundle  # type: ignore
+                from models.evidence import EvidenceBundle, EvidenceQuote, EvidenceMatch  # type: ignore
+                # Normalize isolation findings into typed matches
+                iso = (ce.get("isolated_findings", {}) or {}) if isinstance(ce, dict) else {}
+                raw_matches = list(iso.get("matches", []) or [])
+                matches_typed = []
+                for m in raw_matches:
+                    try:
+                        matches_typed.append(EvidenceMatch.model_validate(m))
+                    except Exception:
+                        # best-effort: shape possibly {domain:str, fragments:list}
+                        if isinstance(m, dict) and m.get("domain"):
+                            fragments = m.get("fragments") or []
+                            if isinstance(fragments, list):
+                                matches_typed.append(EvidenceMatch(domain=m.get("domain"), fragments=fragments))
+                # Merge quotes from evidence_builder and optional deep research
+                deep_q: List[Any] = []
+                try:
+                    if research_id and hasattr(self, "_deep_citations_map"):
+                        deep_q = list(getattr(self, "_deep_citations_map", {}).get(research_id, []) or [])
+                        # clear after use to avoid leaks across requests
+                        if research_id in self._deep_citations_map:
+                            self._deep_citations_map.pop(research_id, None)
+                except Exception:
+                    deep_q = []
+                quotes_typed: List[EvidenceQuote] = []
+                for q in list(evidence_quotes or []) + list(deep_q or []):
+                    try:
+                        if isinstance(q, EvidenceQuote):
+                            quotes_typed.append(q)
+                        else:
+                            quotes_typed.append(EvidenceQuote.model_validate(q))
+                    except Exception:
+                        # tolerate partial records
+                        if isinstance(q, dict) and q.get("quote"):
+                            quotes_typed.append(EvidenceQuote(
+                                id=str(q.get("id", f"q{len(quotes_typed)+1:03d}")),
+                                url=q.get("url", ""),
+                                title=q.get("title", ""),
+                                domain=q.get("domain", ""),
+                                quote=q.get("quote", ""),
+                                start=q.get("start"),
+                                end=q.get("end"),
+                                published_date=q.get("published_date"),
+                                credibility_score=q.get("credibility_score"),
+                                suspicious=q.get("suspicious"),
+                                doc_summary=q.get("doc_summary"),
+                                source_type=q.get("source_type"),
+                            ))
                 eb = EvidenceBundle(
-                    matches=list((ce.get("isolated_findings", {}) or {}).get("matches", []) or []),
-                    by_domain=dict((ce.get("isolated_findings", {}) or {}).get("by_domain", {}) or {}),
-                    focus_areas=list((ce.get("isolated_findings", {}) or {}).get("focus_areas", []) or []),
-                    quotes=evidence_quotes or [],
+                    matches=matches_typed,
+                    by_domain=dict(iso.get("by_domain", {}) or {}),
+                    focus_areas=list(iso.get("focus_areas", []) or []),
+                    quotes=quotes_typed,
                 )
             except Exception:
                 eb = None  # type: ignore
@@ -946,7 +995,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 include_citations=bool(options.get("include_citations", True)),
                 tone=str(options.get("tone", "professional")),
                 metadata={"research_id": research_id},
-                evidence_quotes=evidence_quotes or [],
+                evidence_quotes=[],  # legacy field suppressed by unified bundle
                 evidence_bundle=eb,
             )
 
@@ -987,8 +1036,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         try:
             if hasattr(answer, "metadata") and isinstance(getattr(answer, "metadata"), dict):
                 # Avoid accidental overwrites
-                if "evidence_quotes" not in answer.metadata:
-                    answer.metadata["evidence_quotes"] = evidence_quotes or []
+                # Publish canonical bundle; legacy field retained only when absent
+                if "evidence_bundle" not in answer.metadata and 'eb' in locals() and eb is not None:
+                    try:
+                        answer.metadata["evidence_bundle"] = eb.model_dump()
+                    except Exception:
+                        pass
+                if "evidence_quotes" not in answer.metadata and (evidence_quotes or []):
+                    # Temporary back-compat for frontends expecting raw quotes
+                    try:
+                        from services.evidence_builder import quotes_to_plain_dicts
+                        answer.metadata["evidence_quotes"] = quotes_to_plain_dicts(evidence_quotes)  # type: ignore[arg-type]
+                    except Exception:
+                        # Best-effort fallback
+                        answer.metadata["evidence_quotes"] = [getattr(q, "model_dump", lambda: getattr(q, "__dict__", {}))() for q in (evidence_quotes or [])]
                 # Summarize isolation findings if available in CE dict
                 try:
                     if isinstance(ce, dict) and isinstance(ce.get("isolated_findings"), dict):
@@ -1464,6 +1525,18 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             return []
 
         deep_search_results = []
+        # Convert deep research citations into typed EvidenceQuote and stash for bundle merge
+        try:
+            from services.deep_research_service import convert_citations_to_evidence_quotes
+            evq = convert_citations_to_evidence_quotes(
+                getattr(deep_result, "citations", []) or [],
+                getattr(deep_result, "content", "") or "",
+            )
+            if research_id and evq:
+                self._deep_citations_map[research_id] = evq
+        except Exception:
+            pass
+
         for citation in getattr(deep_result, "citations", []) or []:
             title = getattr(citation, "title", "") or ""
             url = getattr(citation, "url", "") or ""

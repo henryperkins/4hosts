@@ -77,28 +77,12 @@ _PARADIGM_REASONING: Dict[str, str] = {
     "teddy": "low",
 }
 
-_SYSTEM_PROMPTS: Dict[str, str] = {
-    "dolores": (
-        "You are a revolutionary truth-seeker exposing systemic injustices. "
-        "Focus on revealing hidden power structures and systemic failures. "
-        "Use emotional, impactful language that moves people to action. "
-        "Cite specific examples and evidence of wrongdoing."
-    ),
-    "teddy": (
-        "You are a compassionate caregiver focused on helping and protecting others. "
-        "Show deep understanding and empathy. Provide comprehensive resources and "
-        "support options with uplifting, supportive language."
-    ),
-    "bernard": (
-        "You are an analytical researcher focused on empirical evidence. "
-        "Present statistical findings, identify patterns, and maintain "
-        "scientific objectivity."
-    ),
-    "maeve": (
-        "You are a strategic advisor focused on competitive advantage. "
-        "Provide specific tactical recommendations and define clear success metrics."
-    ),
-}
+def _system_prompt(paradigm_key: str) -> str:
+    try:
+        from models.paradigms_prompts import SYSTEM_PROMPTS as _SP
+        return _SP.get(paradigm_key, "")
+    except Exception:
+        return ""
 
 
 # NOTE: Avoid importing models.paradigms at module import time to prevent
@@ -341,7 +325,7 @@ class LLMClient:
         messages = [
             {
                 "role": _system_role_for(model_name),
-                "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
+                "content": _system_prompt(paradigm_key),
             },
             {"role": "user", "content": prompt},
         ]
@@ -545,7 +529,7 @@ class LLMClient:
             azure_msgs = [
                 {
                     "role": _system_role_for(model_name),
-                    "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
+                    "content": _system_prompt(paradigm_key),
                 },
                 {"role": "user", "content": prompt},
             ]
@@ -577,7 +561,7 @@ class LLMClient:
                 messages=cast(Any, [
                     {
                         "role": _system_role_for(model_name),
-                        "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
+                        "content": _system_prompt(paradigm_key),
                     },
                     {"role": "user", "content": prompt},
                 ]),
@@ -615,7 +599,7 @@ class LLMClient:
         full_msgs = [
             {
                 "role": _system_role_for(model_name),
-                "content": _SYSTEM_PROMPTS.get(paradigm_key, ""),
+                "content": _system_prompt(paradigm_key),
             },
             *messages,
         ]

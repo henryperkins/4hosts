@@ -4,7 +4,6 @@ Defines data structures for context engineering and search results
 """
 
 from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field
 from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -226,11 +225,5 @@ class ContextEngineeredQuerySSOTA(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
-# Canonical payload carrying isolation findings and quotes across layers
-@dataclass
-class EvidenceBundle:
-    """Unified evidence payload produced in CE and enriched by Orchestrator."""
-    matches: List[Dict[str, Any]] = field(default_factory=list)
-    by_domain: Dict[str, int] = field(default_factory=dict)
-    focus_areas: List[str] = field(default_factory=list)
-    quotes: List[Dict[str, Any]] = field(default_factory=list)
+# Re-export canonical EvidenceBundle from models.evidence to avoid drift
+from .evidence import EvidenceBundle  # noqa: F401

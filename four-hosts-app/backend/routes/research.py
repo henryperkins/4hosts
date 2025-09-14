@@ -89,6 +89,57 @@ async def execute_real_research(
 
         cls = await classification_engine.classify_query(research.query)
 
+        # Respect explicit paradigm override from request/options if present
+        try:
+            override_ui = getattr(getattr(research, "options", object()), "paradigm_override", None)
+            if override_ui:
+                from models.base import HOST_TO_MAIN_PARADIGM as _HTM
+
+                # Map UI paradigm (Paradigm enum) back to HostParadigm
+                host_override = None
+                for hp, ui in _HTM.items():
+                    if ui == override_ui:
+                        host_override = hp
+                        break
+
+                if host_override and host_override != getattr(cls, "primary_paradigm", None):
+                    prev_primary = getattr(cls, "primary_paradigm", None)
+                    # Force primary
+                    cls.primary_paradigm = host_override  # type: ignore[attr-defined]
+                    # Optionally demote previous primary to secondary for transparency
+                    try:
+                        cls.secondary_paradigm = prev_primary  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    # Nudge distribution toward override for UI metrics
+                    try:
+                        dist = getattr(cls, "distribution", {}) or {}
+                        if dist:
+                            # Set override high and smooth the rest
+                            for p in list(dist.keys()):
+                                dist[p] = 0.025
+                            dist[host_override] = 0.9
+                            cls.distribution = dist  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    # Raise confidence to reflect explicit override
+                    try:
+                        cls.confidence = max(float(getattr(cls, "confidence", 0.0) or 0.0), 0.9)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    # Add reasoning note for auditability
+                    try:
+                        rsn = getattr(cls, "reasoning", {}) or {}
+                        arr = list(rsn.get(host_override, []) or [])
+                        arr.insert(0, f"User override applied: forced primary to {override_ui.value}")
+                        rsn[host_override] = arr
+                        cls.reasoning = rsn  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+        except Exception:
+            # Non-fatal; continue with original classification
+            pass
+
         # Stream classification summary
         try:
             if progress_tracker:
@@ -462,6 +513,17 @@ async def execute_real_research(
                 "margin": margin,
             },
         }
+
+        # Record override info in metadata for transparency (if any)
+        try:
+            override_ui = getattr(getattr(research, "options", object()), "paradigm_override", None)
+            if override_ui:
+                metadata["override"] = {
+                    "applied": True,
+                    "paradigm": getattr(override_ui, "value", str(override_ui)),
+                }
+        except Exception:
+            pass
 
         # Add detailed classification breakdown for UI/analytics
         try:
