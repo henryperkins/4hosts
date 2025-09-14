@@ -216,7 +216,7 @@ class OpenAIResponsesClient:
         # Your deployments are named the same as models (o3, gpt-4.1, gpt-4.1-mini),
         # so we should pass through the requested model directly.
         # Fall back to AZURE_OPENAI_DEPLOYMENT only when model is not provided.
-        request_data = {
+        request_data: Dict[str, Any] = {
             "model": (model or os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")),
             "input": input,
             "store": store,

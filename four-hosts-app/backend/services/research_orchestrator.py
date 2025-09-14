@@ -1174,7 +1174,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             try:
                 # Prefer google for determinism; fall back is inside _perform_search()
                 results = await self._perform_search(
-                    q, "google", config, check_cancelled=check_cancelled
+                    q, "google", config, check_cancelled=check_cancelled, progress_callback=progress_callback, research_id=research_id
                 )
                 all_results[q] = results
                 # Cost track
@@ -1251,6 +1251,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # 2) Dedup
         dedup = await self.deduplicator.deduplicate_results(combined)
         deduped: List[SearchResult] = list(dedup["unique_results"])
+        # Report deduplication stats to UI
+        try:
+            if progress_callback and research_id:
+                await progress_callback.report_deduplication(
+                    research_id,
+                    before_count=len(combined),
+                    after_count=len(deduped),
+                )
+        except Exception:
+            pass
 
         # 3) Early filtering
         paradigm_code = normalize_to_internal_code(classification.primary_paradigm)
@@ -1371,6 +1381,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         api: str,
         config: SearchConfig,
         check_cancelled: Optional[Any] = None,
+        progress_callback: Optional[Any] = None,
+        research_id: Optional[str] = None,
     ) -> List[SearchResult]:
         """
         Unified single-search with retries/backoff and per-attempt timeout.
@@ -1397,8 +1409,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
             attempt += 1
             try:
-                # Just use search_all - SearchAPIManager doesn't support per-API search
-                coro = sm.search_all(query, config)
+                # Use search_all and emit per-provider progress updates
+                coro = sm.search_all(query, config, progress_callback=progress_callback, research_id=research_id)
                 task_result = await asyncio.wait_for(coro, timeout=self.search_task_timeout)
                 if isinstance(task_result, list):
                     results = task_result

@@ -63,6 +63,10 @@ class WSEventType(str, Enum):
     CREDIBILITY_CHECK = "credibility.check"
     DEDUPLICATION = "deduplication.progress"
 
+    # MCP events
+    MCP_TOOL_EXECUTING = "mcp.tool_executing"
+    MCP_TOOL_COMPLETED = "mcp.tool_completed"
+
     # System events
     RATE_LIMIT_WARNING = "rate_limit.warning"
     SYSTEM_NOTIFICATION = "system.notification"
@@ -407,6 +411,8 @@ class ConnectionManager:
             WSEventType.SYNTHESIS_COMPLETED: "research_completed",
             WSEventType.CREDIBILITY_CHECK: "credibility.check",
             WSEventType.DEDUPLICATION: "deduplication.progress",
+            WSEventType.MCP_TOOL_EXECUTING: "system.notification",
+            WSEventType.MCP_TOOL_COMPLETED: "system.notification",
         }
 
         # Clone data and, if cancelled event, include explicit status for UI hooks

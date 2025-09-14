@@ -102,7 +102,7 @@ export interface WebSocketMessage {
     | 'credibility.check'
     | 'deduplication.progress'
   data: {
-    status?: 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
+    status?: string
     progress?: number
     message?: string
     result?: ResearchResult
@@ -119,6 +119,12 @@ export interface WebSocketMessage {
     }
     total_sources?: number
     api?: string
+    engine?: string
+    server?: string
+    tool?: string
+    limit_type?: string
+    remaining?: number
+    reset_time?: string
     duplicates_removed?: number
     unique_sources?: number
     total_checked?: number

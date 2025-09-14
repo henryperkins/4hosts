@@ -9,6 +9,7 @@ from typing import Dict, Optional, Any, Callable
 from datetime import datetime, timedelta
 from enum import Enum
 import os
+from services.progress import progress as _pt
 
 from services.cache import cache_manager
 
@@ -45,6 +46,7 @@ class BackgroundLLMManager:
         messages: list,
         tools: Optional[list] = None,
         callback: Optional[Callable] = None,
+        research_id: Optional[str] = None,
         **kwargs
     ) -> str:
         """Submit a task to run in background mode"""
@@ -85,12 +87,27 @@ class BackgroundLLMManager:
             task_id = response.get("id") if isinstance(response, dict) else str(response)
 
             # Store task info
+            metadata = dict(kwargs.get("metadata", {}) or {})
+            if research_id:
+                metadata["research_id"] = research_id
             self.active_tasks[task_id] = {
                 "status": BackgroundTaskStatus.PENDING,
                 "created_at": datetime.utcnow(),
                 "callback": callback,
-                "metadata": kwargs.get("metadata", {}),
+                "metadata": metadata,
             }
+
+            # Emit initial progress event so UI shows activity
+            try:
+                if research_id and _pt:
+                    await _pt.update_progress(
+                        research_id,
+                        phase="synthesis",
+                        message="Background LLM task submitted",
+                        custom_data={"bg_task_id": task_id, "status": "pending"},
+                    )
+            except Exception:
+                pass
 
             # Start polling task with task registry
             from services.task_registry import task_registry, TaskPriority
@@ -155,12 +172,30 @@ class BackgroundLLMManager:
             self._polling_tasks[task_id].cancel()
             del self._polling_tasks[task_id]
 
+        # Notify UI if we have a research_id
+        try:
+            r_id = (self.active_tasks.get(task_id) or {}).get("metadata", {}).get("research_id")
+            if r_id and _pt:
+                await _pt.update_progress(
+                    r_id,
+                    phase="synthesis",
+                    message="Background LLM task cancelled",
+                    custom_data={"bg_task_id": task_id, "status": "cancelled"},
+                )
+        except Exception:
+            pass
+
         logger.info(f"Cancelled background task: {task_id}")
         return True
 
     async def _poll_task_status(self, task_id: str):
         """Poll for task completion"""
         start_time = datetime.utcnow()
+        # Try to correlate with a research_id to emit WebSocket progress updates
+        try:
+            research_id = (self.active_tasks.get(task_id) or {}).get("metadata", {}).get("research_id")
+        except Exception:
+            research_id = None
 
         try:
             while True:
@@ -175,6 +210,17 @@ class BackgroundLLMManager:
                     logger.warning(f"Background task {task_id} timed out")
                     self.active_tasks[task_id]["status"] = BackgroundTaskStatus.FAILED
                     self.active_tasks[task_id]["error"] = "Task timed out"
+                    # Notify failure
+                    try:
+                        if research_id and _pt:
+                            await _pt.update_progress(
+                                research_id,
+                                phase="synthesis",
+                                message="Background LLM task timed out",
+                                custom_data={"bg_task_id": task_id, "status": "timeout"},
+                            )
+                    except Exception:
+                        pass
                     break
 
                 # Poll Responses API for status via HTTP client
@@ -200,18 +246,67 @@ class BackgroundLLMManager:
                             if callback:
                                 await callback(task_id, result)
 
+                            # Notify completion
+                            try:
+                                if research_id and _pt:
+                                    await _pt.update_progress(
+                                        research_id,
+                                        phase="synthesis",
+                                        message="Background LLM task completed",
+                                        progress=95,
+                                        custom_data={"bg_task_id": task_id, "status": "completed"},
+                                    )
+                            except Exception:
+                                pass
+
                             logger.info(f"Background task {task_id} completed")
                             break
 
                         elif status == "failed":
                             self.active_tasks[task_id]["status"] = BackgroundTaskStatus.FAILED
                             self.active_tasks[task_id]["error"] = response.get("error", "Unknown error")
+                            # Notify failure
+                            try:
+                                if research_id and _pt:
+                                    await _pt.update_progress(
+                                        research_id,
+                                        phase="synthesis",
+                                        message="Background LLM task failed",
+                                        custom_data={"bg_task_id": task_id, "status": "failed"},
+                                    )
+                            except Exception:
+                                pass
                             logger.error(f"Background task {task_id} failed")
                             break
 
                         else:
                             # Still processing
+                            prev = self.active_tasks[task_id].get("last_state")
                             self.active_tasks[task_id]["status"] = BackgroundTaskStatus.RUNNING
+                            self.active_tasks[task_id]["last_state"] = BackgroundTaskStatus.RUNNING
+                            # Transition notification
+                            if research_id and prev != BackgroundTaskStatus.RUNNING:
+                                try:
+                                    await _pt.update_progress(
+                                        research_id,
+                                        phase="synthesis",
+                                        message="Background LLM is processing...",
+                                        custom_data={"bg_task_id": task_id, "status": "running"},
+                                    )
+                                except Exception:
+                                    pass
+                            # Heartbeat every ~5 seconds
+                            try:
+                                now = datetime.utcnow()
+                                last_emit = self.active_tasks[task_id].get("last_emit")
+                                if research_id and (not last_emit or (now - last_emit).total_seconds() >= 5):
+                                    await _pt.update_progress(
+                                        research_id,
+                                        custom_data={"bg_task_id": task_id, "status": "running", "heartbeat": True},
+                                    )
+                                    self.active_tasks[task_id]["last_emit"] = now
+                            except Exception:
+                                pass
 
                 except Exception as e:
                     logger.error(f"Error polling task {task_id}: {e}")

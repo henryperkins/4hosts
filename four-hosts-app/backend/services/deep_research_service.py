@@ -924,6 +924,8 @@ def convert_citations_to_evidence_quotes(
         poll_interval = 5  # Check every 5 seconds
         elapsed = 0
         last_progress = 25
+        # Track already-announced tool calls to emit itemized evidence-gathering progress
+        seen_tool_ids: set[str] = set()
         
         # Store response ID for potential recovery
         if research_id:
@@ -938,7 +940,40 @@ def convert_citations_to_evidence_quotes(
                 
                 if status not in [ResponseStatus.QUEUED, ResponseStatus.IN_PROGRESS]:
                     return response
-                
+                 
+                # Emit tool-by-tool evidence gathering events the first time we see them
+                try:
+                    tool_calls = self.client.extract_tool_calls(response)
+                except Exception:
+                    tool_calls = None
+                if progress_tracker and research_id and tool_calls:
+                    for tc in tool_calls:
+                        try:
+                            tc_type = tc.get("type") or "tool_call"
+                            # Prefer explicit IDs; fall back to a synthetic key
+                            tc_id = tc.get("id") or f"{tc_type}:{tc.get('name') or tc.get('tool') or tc.get('server') or tc.get('server_label') or len(seen_tool_ids)+1}"
+                            if tc_id not in seen_tool_ids:
+                                seen_tool_ids.add(tc_id)
+                                # Best-effort naming for UI
+                                tc_name = tc.get("name") or tc.get("tool") or tc.get("server") or tc.get("server_label")
+                                msg_name = f" {tc_name}" if tc_name else ""
+                                # Stream as standard research_progress so FE status bar and log update
+                                await progress_tracker.update_progress(
+                                    research_id,
+                                    message=f"Deep research: executing {tc_type}{msg_name}",
+                                    items_done=len(seen_tool_ids),
+                                    custom_data={
+                                        "deep_research_tool": {
+                                            "type": tc_type,
+                                            "name": tc_name,
+                                            "id": tc_id,
+                                        }
+                                    },
+                                )
+                        except Exception:
+                            # Never fail polling loop due to progress emission
+                            pass
+                 
                 # Update progress based on elapsed time
                 if progress_tracker and research_id:
                     # Progress from 25% to 90% over the course of execution

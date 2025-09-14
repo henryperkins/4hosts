@@ -617,6 +617,16 @@
   .scrollbar-hide-mobile::-webkit-scrollbar {
     display: none;
   }
+
+  /* Hide scrollbar universally */
+  .scrollbar-hide {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Mobile-first media queries */

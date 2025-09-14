@@ -81,7 +81,7 @@ export const WebSocketMessageSchema = z.object({
     'search.started', 'search.completed', 'credibility.check', 'deduplication.progress'
   ]),
   data: z.object({
-    status: z.enum(['pending', 'processing', 'in_progress', 'completed', 'failed', 'cancelled']).optional(),
+    status: z.string().optional(),
     progress: z.number().optional(),
     message: z.string().optional(),
     result: ResearchResultSchema.optional(),
@@ -98,6 +98,12 @@ export const WebSocketMessageSchema = z.object({
     }).optional(),
     total_sources: z.number().optional(),
     api: z.string().optional(),
+    engine: z.string().optional(),
+    server: z.string().optional(),
+    tool: z.string().optional(),
+    limit_type: z.string().optional(),
+    remaining: z.number().optional(),
+    reset_time: z.string().optional(),
     duplicates_removed: z.number().optional(),
     unique_sources: z.number().optional(),
     total_checked: z.number().optional(),

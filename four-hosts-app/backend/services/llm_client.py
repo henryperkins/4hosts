@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time  # Moved to module level to resolve undefined variable
 from enum import Enum
-from typing import Any, AsyncIterator, Dict, List, Optional, Union, cast
+from typing import Any, AsyncIterator, Dict, List, Optional, Union, cast, TYPE_CHECKING
 
 import httpx
 from openai import AsyncOpenAI
@@ -23,6 +24,13 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+
+# Import HostParadigm explicitly (assuming from models.paradigms; adjust if needed)
+from models.paradigms import HostParadigm  # Resolves reportUndefinedVariable for HostParadigm
+
+# Type checking imports to avoid circular imports
+if TYPE_CHECKING:
+    from services.openai_responses_client import WebSearchTool, CodeInterpreterTool, MCPTool
 
 # ────────────────────────────────────────────────────────────
 #  Logging
@@ -90,14 +98,14 @@ def _system_prompt(paradigm_key: str) -> str:
 # during global initialization). We'll import lazily inside helper functions.
 
 
-def _norm_code(value: Union[str, "HostParadigm"]) -> str:
+def _norm_code(value: Union[str, HostParadigm]) -> str:
     # Lazy import to break circular dependency
     from models.paradigms import normalize_to_internal_code as _norm
     return _norm(value)
 
 
 def _select_model(
-    paradigm: Union[str, "HostParadigm"],
+    paradigm: Union[str, HostParadigm],
     explicit_model: str | None = None,
 ) -> str:
     """Return the model to use, preferring an explicit value when provided.
@@ -292,7 +300,7 @@ class LLMClient:
         prompt: str,
         *,
         model: str | None = None,
-        paradigm: Union[str, "HostParadigm"] = "bernard",
+        paradigm: Union[str, HostParadigm] = "bernard",
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: Optional[float] = None,
         top_p: float = 0.9,
@@ -306,12 +314,11 @@ class LLMClient:
         reasoning_effort: Optional[str] = None,
     ) -> Union[str, AsyncIterator[str]]:
         """
-        Chat-style completion with optional SSE stream support.
+        Chat-style MEL completion with optional SSE stream support.
         Returns either the full response string or an async iterator of tokens.
         """
         self._ensure_initialized()
-        import time as time
-        _start = time.perf_counter()
+        _start = time.perf_counter()  # Define _start here to avoid unbound issues
         model_name = _select_model(paradigm, model)
         paradigm_key = _norm_code(paradigm)
         # Apply sensible defaults if not provided
@@ -421,7 +428,7 @@ class LLMClient:
                         role = "developer"
                     azure_messages.append({"role": role, "content": msg.get("content", "")})
 
-                cc_req = {
+                cc_req: Dict[str, Any] = {
                     "model": self._azure_model_for(model_name),
                     "messages": azure_messages,
                 }
@@ -488,11 +495,10 @@ class LLMClient:
         schema: Dict[str, Any],
         *,
         model: str | None = None,
-        paradigm: Union[str, "HostParadigm"] = "bernard",
+        paradigm: Union[str, HostParadigm] = "bernard",
     ) -> Dict[str, Any]:
         """Return JSON matching the provided schema."""
-        import time as time
-        _start = time.perf_counter()
+        _start = time.perf_counter()  # Define here
         raw = await self.generate_completion(
             prompt,
             model=model,
@@ -518,14 +524,13 @@ class LLMClient:
         *,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = "auto",
         model: str | None = None,
-        paradigm: Union[str, "HostParadigm"] = "bernard",
+        paradigm: Union[str, HostParadigm] = "bernard",
     ) -> Dict[str, Any]:
         """Invoke model with tool-calling enabled and return content + tool_calls."""
         self._ensure_initialized()
         model_name = _select_model(paradigm, model)
         paradigm_key = _norm_code(paradigm)
-        import time as time
-        _start = time.perf_counter()
+        _start = time.perf_counter()  # Define here
         result: Dict[str, Any] | None = None
 
         wrapped_choice = self._wrap_tool_choice(tool_choice)
@@ -552,10 +557,12 @@ class LLMClient:
                 from services.llm_client import responses_create as _resp_create
                 op_res = await _resp_create(**{k: v for k, v in resp_req.items() if v is not None})
                 # Extract content and tool_calls from Responses payload
+                # Since stream=False, op_res is guaranteed to be Dict[str, Any], not AsyncIterator
+                op_res_dict = cast(Dict[str, Any], op_res)
                 from services.llm_client import extract_responses_final_text as _resp_text, extract_responses_tool_calls as _resp_tools
                 result = {
-                    "content": _resp_text(op_res) or "",
-                    "tool_calls": _resp_tools(op_res) or [],
+                    "content": _resp_text(op_res_dict) or "",
+                    "tool_calls": _resp_tools(op_res_dict) or [],
                 }
                 out = {"content": result.get("content", ""), "tool_calls": result.get("tool_calls", [])}
                 self._record_stage_metrics("llm_tools", model_name, _start, success=True)
@@ -584,11 +591,17 @@ class LLMClient:
             else:
                 azure_req["max_tokens"] = DEFAULT_MAX_TOKENS
 
-            op = await self.azure_client.chat.completions.create(**azure_req)
-            result = {
-                "content": self._extract_content_safely(op) if not (op.choices and op.choices[0].message.tool_calls) else (op.choices[0].message.content or ""),
-                "tool_calls": op.choices[0].message.tool_calls or [] if op.choices else [],
-            }
+            op = await self.azure_client.chat.completions.create(**azure_req)  # Ensure op is defined
+            if not hasattr(op, 'choices') or not op.choices:
+                result = {"content": "", "tool_calls": []}
+            else:
+                choice = op.choices[0]
+                content = self._extract_content_safely(op) if not (choice.message and hasattr(choice.message, 'tool_calls')) else (choice.message.content or "")
+                tool_calls = choice.message.tool_calls if (choice.message and hasattr(choice.message, 'tool_calls')) else []
+                result = {
+                    "content": content,
+                    "tool_calls": tool_calls,
+                }
         # Use OpenAI
         elif self.openai_client:
             op = await self.openai_client.chat.completions.create(
@@ -604,10 +617,16 @@ class LLMClient:
                 tool_choice=cast(Any, wrapped_choice),       # ← use string/dict directly for OpenAI
                 max_tokens=DEFAULT_MAX_TOKENS,
             )
-            result = {
-                "content": self._extract_content_safely(op) if not (op.choices and op.choices[0].message.tool_calls) else (op.choices[0].message.content or ""),
-                "tool_calls": op.choices[0].message.tool_calls or [] if op.choices else [],
-            }
+            if not hasattr(op, 'choices') or not op.choices:
+                result = {"content": "", "tool_calls": []}
+            else:
+                choice = op.choices[0]
+                content = self._extract_content_safely(op) if not (choice.message and hasattr(choice.message, 'tool_calls')) else (choice.message.content or "")
+                tool_calls = choice.message.tool_calls if (choice.message and hasattr(choice.message, 'tool_calls')) else []
+                result = {
+                    "content": content,
+                    "tool_calls": tool_calls,
+                }
         else:
             raise RuntimeError("No LLM back-ends configured for tool calling.")
 
@@ -631,6 +650,7 @@ class LLMClient:
         """Multi-turn chat conversation helper (non-streaming)."""
         model_name = _select_model(paradigm, model)
         paradigm_key = _norm_code(paradigm)
+        _start = time.perf_counter()  # Define here
         full_msgs = [
             {
                 "role": _system_role_for(model_name),
@@ -638,7 +658,6 @@ class LLMClient:
             },
             *messages,
         ]
-
 
         # Prefer Azure when available. For o1/o3 family use max_completion_tokens,
         # for gpt-4o style deployments use standard chat params.
@@ -661,7 +680,9 @@ class LLMClient:
                     max_output_tokens=max_tokens,
                     reasoning={"effort": "medium"} if model_name.startswith("o") else None,
                 )
-                text = _resp_text(op_res) or ""
+                # Since stream=False, op_res is guaranteed to be Dict[str, Any], not AsyncIterator
+                op_res_dict = cast(Dict[str, Any], op_res)
+                text = _resp_text(op_res_dict) or ""
                 self._record_stage_metrics("llm_generate", model_name, _start, success=True)
                 return text
 
@@ -679,7 +700,7 @@ class LLMClient:
                 azure_req["max_tokens"] = max_tokens
                 azure_req["temperature"] = temperature
 
-                op = await self.azure_client.chat.completions.create(**azure_req)
+            op = await self.azure_client.chat.completions.create(**azure_req)  # Ensure op defined
             text = self._extract_content_safely(op)
             pin, pout = self._extract_usage_tokens_from_chat(op)
             self._record_stage_metrics("llm_generate", model_name, _start, success=True, tokens_in=pin, tokens_out=pout)
@@ -704,7 +725,7 @@ class LLMClient:
         self,
         prompt: str,
         *,
-        paradigm: Union[str, "HostParadigm"],
+        paradigm: Union[str, HostParadigm],
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 0.7,
         model: str | None = None,
@@ -751,7 +772,7 @@ class LLMClient:
         return task_id
 
 
-    def _extract_content_safely(self, response) -> str:
+    def _extract_content_safely(self, response: Any) -> str:
         """Safely extract text content from various response types"""
         if isinstance(response, str):
             return response.strip()
@@ -759,60 +780,68 @@ class LLMClient:
         # Handle raw dict payloads from Responses API
         if isinstance(response, dict):
             try:
-                text = extract_responses_final_text(response)
+                text = extract_responses_final_text(cast(Dict[str, Any], response))  # Cast for type
                 if text:
                     return text.strip()
             except Exception:
                 pass
 
-        # Handle Azure Responses API response
-        if hasattr(response, 'output_text') and response.output_text:
-            return str(response.output_text).strip()
+        # Handle Azure Responses API response (add type checks)
+        if hasattr(response, 'output_text') and getattr(response, 'output_text', None):
+            return str(getattr(response, 'output_text')).strip()
 
         # Handle output array
-        if hasattr(response, 'output') and response.output:
+        if hasattr(response, 'output') and getattr(response, 'output', None):
+            output = getattr(response, 'output')  # Type: ignore
             text_content = ""
-            for output in response.output:
-                if hasattr(output, 'content') and output.content:
-                    for content_item in output.content:
-                        if hasattr(content_item, 'text') and content_item.type == 'output_text':
-                            text_content += content_item.text
+            for item in output:  # Renamed from 'output' to 'item' to avoid shadowing
+                if hasattr(item, 'content') and getattr(item, 'content', None):
+                    for content_item in getattr(item, 'content'):
+                        if hasattr(content_item, 'text') and hasattr(content_item, 'type') and getattr(content_item, 'type') == 'output_text':
+                            text_content += getattr(content_item, 'text')
             if text_content:
                 return text_content.strip()
 
         # Handle ChatCompletion-like response (OpenAI 1.x & Azure)
         # Try dataclass/dict access patterns robustly.
         try:
-            # Pydantic models expose model_dump(); fall back to __dict__ if missing
-            payload = response.model_dump() if hasattr(response, 'model_dump') else None
-        except Exception:
-            payload = None
+            # Handle dict responses directly
+            if isinstance(response, dict):
+                payload = response
+            # Pydantic models expose model_dump()
+            elif hasattr(response, 'model_dump'):
+                payload = response.model_dump()
+            # Fall back to __dict__ for other objects
+            else:
+                payload = getattr(response, '__dict__', None)
 
-        if payload and isinstance(payload, dict):
-            try:
-                choices = payload.get('choices') or []
-                if choices:
-                    msg = (choices[0].get('message') or {})
-                    content = msg.get('content') or msg.get('refusal') or ''
-                    if isinstance(content, list):
-                        # Some SDKs may return content as array of parts
-                        parts = []
-                        for part in content:
-                            if isinstance(part, dict) and 'text' in part:
-                                parts.append(str(part['text']))
-                        content = ''.join(parts)
-                    if content:
-                        return str(content).strip()
-            except Exception:
-                pass
+            if isinstance(payload, dict):
+                try:
+                    choices = payload.get('choices') or []
+                    if choices:
+                        msg = (choices[0].get('message') or {})
+                        content = msg.get('content') or msg.get('refusal') or ''
+                        if isinstance(content, list):
+                            # Some SDKs may return content as array of parts
+                            parts = []
+                            for part in content:
+                                if isinstance(part, dict) and 'text' in part:
+                                    parts.append(str(part['text']))
+                            content = ''.join(parts)
+                        if content:
+                            return str(content).strip()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # Attribute-style ChatCompletion handling
-        if hasattr(response, 'choices') and getattr(response, 'choices'):
+        if hasattr(response, 'choices') and getattr(response, 'choices', None):
             try:
-                choice = response.choices[0]
+                choice = getattr(response, 'choices')[0]  # Type: ignore
                 # Newer SDKs: choice.message.content may be None when tool_calls are present
                 if hasattr(choice, 'message'):
-                    msg = choice.message
+                    msg = getattr(choice, 'message')
                     # Prefer content; fall back to text-like fields if any
                     content = getattr(msg, 'content', None)
                     if not content and hasattr(msg, 'refusal'):
@@ -822,18 +851,18 @@ class LLMClient:
                     if content:
                         return str(content).strip()
                 # Some responses may have .text at top level per choice (legacy)
-                if hasattr(choice, 'text') and choice.text:
-                    return str(choice.text).strip()
+                if hasattr(choice, 'text') and getattr(choice, 'text', None):
+                    return str(getattr(choice, 'text')).strip()
             except Exception:
                 pass
 
         # Handle direct content attribute
-        if hasattr(response, 'content') and response.content:
-            return str(response.content).strip()
+        if hasattr(response, 'content') and getattr(response, 'content', None):
+            return str(getattr(response, 'content')).strip()
 
         # Handle text attribute
-        if hasattr(response, 'text') and response.text:
-            return str(response.text).strip()
+        if hasattr(response, 'text') and getattr(response, 'text', None):
+            return str(getattr(response, 'text')).strip()
 
         # Default fallback
         logger.warning(f"Could not extract text from response type: {type(response)}")
@@ -844,7 +873,7 @@ class LLMClient:
     async def _iter_openai_stream(raw: AsyncIterator[Any]) -> AsyncIterator[str]:
         """Yield token strings from OpenAI chat stream."""
         async for chunk in raw:
-            if chunk.choices and chunk.choices[0].delta.content:
+            if hasattr(chunk, 'choices') and chunk.choices and hasattr(chunk.choices[0], 'delta') and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
     @staticmethod
@@ -917,9 +946,9 @@ def extract_responses_final_text(payload: Dict[str, Any]) -> Optional[str]:
     if not isinstance(payload, dict) or "output" not in payload:
         return None
     for item in reversed(payload.get("output") or []):
-        if item.get("type") == "message" and item.get("content"):
+        if isinstance(item, dict) and item.get("type") == "message" and item.get("content"):
             for content in item["content"]:
-                if content.get("type") == "output_text":
+                if isinstance(content, dict) and content.get("type") == "output_text":
                     return content.get("text")
     return None
 
@@ -933,11 +962,11 @@ def extract_responses_citations(payload: Dict[str, Any]) -> List[Dict[str, Any]]
     if not isinstance(payload, dict) or "output" not in payload:
         return citations
     for item in payload.get("output") or []:
-        if item.get("type") == "message" and item.get("content"):
+        if isinstance(item, dict) and item.get("type") == "message" and item.get("content"):
             for content in item["content"]:
-                if content.get("type") == "output_text" and "annotations" in content:
+                if isinstance(content, dict) and content.get("type") == "output_text" and "annotations" in content:
                     for ann in content.get("annotations") or []:
-                        if ann.get("type") == "url_citation":
+                        if isinstance(ann, dict) and ann.get("type") == "url_citation":
                             citations.append(
                                 {
                                     "url": ann.get("url"),
@@ -955,14 +984,14 @@ def extract_responses_tool_calls(payload: Dict[str, Any]) -> List[Dict[str, Any]
     if not isinstance(payload, dict) or "output" not in payload:
         return tool_calls
     for item in payload.get("output") or []:
-        if item.get("type") in {"web_search_call", "code_interpreter_call", "mcp_call"}:
+        if isinstance(item, dict) and item.get("type") in {"web_search_call", "code_interpreter_call", "mcp_call"}:
             tool_calls.append(item)
     return tool_calls
 
 
 def extract_responses_web_search_calls(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract only web_search_call entries from a Responses payload."""
-    return [c for c in extract_responses_tool_calls(payload) if c.get("type") == "web_search_call"]
+    return [c for c in extract_responses_tool_calls(payload) if isinstance(c, dict) and c.get("type") == "web_search_call"]
 
 
 class ResponsesNormalized(BaseModel):
@@ -992,7 +1021,7 @@ async def responses_create(
     *,
     model: str,
     input: Union[str, List[Dict[str, Any]]],
-    tools: Optional[List[Dict[str, Any]]] = None,
+    tools: Optional[List[Union['WebSearchTool', 'CodeInterpreterTool', 'MCPTool', Dict[str, Any]]]] = None,
     background: bool = False,
     stream: bool = False,
     reasoning: Optional[Dict[str, str]] = None,
@@ -1018,7 +1047,6 @@ async def responses_create(
         max_output_tokens=max_output_tokens,
     )
 
-
 async def responses_retrieve(response_id: str) -> Dict[str, Any]:
     from services.openai_responses_client import get_responses_client
     return await get_responses_client().retrieve_response(response_id)
@@ -1041,7 +1069,7 @@ async def responses_deep_research(
     background: bool = True,
 ) -> Dict[str, Any]:
     from services.openai_responses_client import get_responses_client, WebSearchTool, CodeInterpreterTool, MCPTool
-    tools: List[Any] = []
+    tools: List[Union[WebSearchTool, CodeInterpreterTool, MCPTool, Dict[str, Any]]] = []  # Expanded type to match arg
     if use_web_search:
         tools.append(web_search_config or WebSearchTool())
     if use_code_interpreter:
@@ -1081,7 +1109,7 @@ async def responses_deep_research(
         except Exception:
             deep_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", deep_model)
 
-    return await client.create_response(
+    result = await client.create_response(
         model=deep_model,
         input=input_messages,
         tools=tools,
@@ -1089,3 +1117,5 @@ async def responses_deep_research(
         reasoning={"summary": "auto"},
         max_tool_calls=max_tool_calls,
     )
+    # Since stream defaults to False, result is guaranteed to be Dict[str, Any], not AsyncIterator
+    return cast(Dict[str, Any], result)

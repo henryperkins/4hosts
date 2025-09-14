@@ -7,6 +7,8 @@ import { StatusBadge, type StatusType } from './ui/StatusIcon'
 import { ProgressBar } from './ui/ProgressBar'
 import { LoadingSpinner } from './ui/LoadingSpinner'
 import { Badge } from './ui/Badge'
+import { SwipeableTabs } from './ui/SwipeableTabs'
+import { CollapsibleEvent } from './ui/CollapsibleEvent'
 import api from '../services/api'
 import { stripHtml } from '../utils/sanitize'
 
@@ -21,6 +23,9 @@ interface ProgressUpdate {
   progress?: number
   message?: string
   timestamp: string
+  type?: string
+  priority?: 'low' | 'medium' | 'high' | 'critical'
+  data?: any // Store original event data for expandable details
 }
 
 interface WebSocketData {
@@ -29,6 +34,7 @@ interface WebSocketData {
   message?: string
   query?: string
   engine?: string
+  api?: string
   index?: number
   total?: number
   results_count?: number
@@ -44,6 +50,19 @@ interface WebSocketData {
   phase?: string
   old_phase?: string
   new_phase?: string
+  // MCP + system notifications
+  server?: string
+  tool?: string
+  limit_type?: string
+  remaining?: number
+  reset_time?: string
+}
+
+interface RateLimitWarningData {
+  message?: string
+  limit_type?: string
+  remaining?: number
+  reset_time?: string
 }
 
 interface ResearchPhase {
@@ -60,6 +79,9 @@ interface ResearchStats {
   searchesCompleted: number
   totalSearches: number
   highQualitySources: number
+  duplicatesRemoved: number
+  mcpToolsUsed: number
+  apisQueried: Set<string>
 }
 
 interface SourcePreview {
@@ -82,7 +104,10 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     sourcesAnalyzed: 0,
     searchesCompleted: 0,
     totalSearches: 0,
-    highQualitySources: 0
+    highQualitySources: 0,
+    duplicatesRemoved: 0,
+    mcpToolsUsed: 0,
+    apisQueried: new Set<string>()
   })
   const [sourcePreviews, setSourcePreviews] = useState<SourcePreview[]>([])
   const [showSourcePreviews, setShowSourcePreviews] = useState(true)
@@ -96,7 +121,10 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null)
   const [currentPhase, setCurrentPhase] = useState<string>('initialization')
   const [analysisTotal, setAnalysisTotal] = useState<number | null>(null)
-  const [showVerbose, setShowVerbose] = useState<boolean>(false)
+  const [showVerbose, setShowVerbose] = useState<boolean>(true)
+  const [rateLimitWarning, setRateLimitWarning] = useState<RateLimitWarningData | null>(null)
+  const [activeCategory, setActiveCategory] = useState<'all' | 'search' | 'sources' | 'analysis' | 'system' | 'errors'>('all')
+  const [isMobile, setIsMobile] = useState(false)
   const updatesContainerRef = useRef<HTMLDivElement>(null)
   // Refs to avoid re-subscribing WebSocket when these change
   const currentStatusRef = useRef<ProgressUpdate['status']>('pending')
@@ -115,11 +143,18 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     onCancelRef.current = onCancel
   }, [onCancel])
 
-  // Default collapse on small screens
+  // Default collapse on small screens and detect mobile
   useEffect(() => {
     try {
       if (typeof window !== 'undefined') {
-        setSourcesCollapsed(window.innerWidth < 640)
+        const checkMobile = () => {
+          const mobile = window.innerWidth < 640
+          setIsMobile(mobile)
+          setSourcesCollapsed(mobile)
+        }
+        checkMobile()
+        window.addEventListener('resize', checkMobile)
+        return () => window.removeEventListener('resize', checkMobile)
       }
     } catch {}
   }, [])
@@ -137,8 +172,14 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
 
       switch (message.type) {
         case 'research_progress':
+          // Normalize status for UI
+          const s = (data.status || '').toLowerCase()
+          const normalized = s === 'in_progress' ? 'processing'
+            : (s === 'pending' || s === 'processing' || s === 'completed' || s === 'failed' || s === 'cancelled')
+              ? (s as ProgressUpdate['status'])
+              : undefined
           statusUpdate = {
-            status: data.status,
+            status: normalized,
             progress: data.progress,
             message: data.message || `Phase: ${data.phase || 'processing'}`,
             items_done: data.items_done,
@@ -171,6 +212,27 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               setCeLayerProgress({ done: 0, total: CE_LAYERS.length })
             }
           }
+          break
+        case 'system.notification':
+          // Handle MCP tool events and other notifications
+          if (data.server && data.tool) {
+            const phase = data.status ? 'completed' : 'executing'
+            statusUpdate = {
+              message: `🔧 MCP ${data.server}.${data.tool} ${phase}`
+            }
+            // Count completed tool runs
+            if (data.status) {
+              setStats(prev => ({ ...prev, mcpToolsUsed: (prev.mcpToolsUsed || 0) + 1 }))
+            }
+          } else {
+            statusUpdate = { message: data.message }
+          }
+          break
+        case 'rate_limit.warning':
+          statusUpdate = {
+            message: `⚠️ Rate limit warning: ${data.message || data.limit_type}`
+          }
+          setRateLimitWarning(data)
           break
         case 'research_phase_change':
           statusUpdate = {
@@ -233,7 +295,12 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           statusUpdate = {
             message: `Searching (${data.index}/${data.total}): ${data.query}`
           }
-          setStats(prev => ({ ...prev, totalSearches: data.total || prev.totalSearches }))
+          setStats(prev => {
+            const apiName = (data.engine || data.api || '').trim()
+            const nextSet = new Set(prev.apisQueried)
+            if (apiName) nextSet.add(apiName)
+            return { ...prev, totalSearches: data.total || prev.totalSearches, apisQueried: nextSet }
+          })
           break
         case 'search.completed':
           statusUpdate = {
@@ -257,14 +324,42 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           statusUpdate = {
             message: `Removed ${data.removed} duplicate results`
           }
+          setStats(prev => ({
+            ...prev,
+            duplicatesRemoved: (prev.duplicatesRemoved || 0) + (data.removed || 0)
+          }))
           break
         default:
           // Handle legacy message format
+          const s2 = (data.status || '').toLowerCase()
+          const normalized2 = s2 === 'in_progress' ? 'processing'
+            : (s2 === 'pending' || s2 === 'processing' || s2 === 'completed' || s2 === 'failed' || s2 === 'cancelled')
+              ? (s2 as ProgressUpdate['status'])
+              : undefined
           statusUpdate = {
-            status: data.status,
+            status: normalized2,
             progress: data.progress,
             message: data.message
           }
+      }
+
+      // Assign priority based on event type
+      const toPriority = (t?: string): ProgressUpdate['priority'] => {
+        switch (t) {
+          case 'research_failed':
+          case 'error':
+            return 'critical'
+          case 'research_completed':
+          case 'research_phase_change':
+            return 'high'
+          case 'credibility.check':
+          case 'deduplication.progress':
+          case 'source_found':
+          case 'source_analyzed':
+            return 'medium'
+          default:
+            return 'low'
+        }
       }
 
       const update: ProgressUpdate = {
@@ -272,13 +367,21 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         progress: statusUpdate.progress,
         message: statusUpdate.message,
         timestamp: new Date().toISOString(),
+        type: message.type,
+        priority: toPriority(message.type),
+        data: data // Store original data for expandable details
       }
 
       // Keep only a rolling window of updates to avoid memory leaks
       setUpdates(prev => [...prev.slice(-(MAX_UPDATES - 1)), update])
 
       if (data.status) {
-        setCurrentStatus(data.status)
+        const s = (data.status || '').toLowerCase()
+        const normalized = s === 'in_progress' ? 'processing'
+          : (s === 'pending' || s === 'processing' || s === 'completed' || s === 'failed' || s === 'cancelled')
+            ? (s as ProgressUpdate['status'])
+            : undefined
+        if (normalized) setCurrentStatus(normalized)
       }
 
       if (data.progress !== undefined) {
@@ -369,11 +472,76 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
 
   const isNoisy = (msg?: string) => {
     const m = (msg || '').toLowerCase()
-    return m.includes('searching') || m.includes('found source') || m.includes('checking credibility') || m.includes('duplicate') || m.includes('agent:')
+    // Only hide truly repetitive messages
+    return m.includes('heartbeat') || m.includes('still processing')
   }
+
+  // Categorize updates for filtered views
+  const categorize = (u: ProgressUpdate): 'search' | 'sources' | 'analysis' | 'system' | 'errors' | 'all' => {
+    const t = (u.type || '').toLowerCase()
+    if (t.includes('search.')) return 'search'
+    if (t === 'source_found' || t === 'source_analyzed') return 'sources'
+    if (t === 'research_phase_change' && (u.message || '').toLowerCase().includes('analysis')) return 'analysis'
+    if (t === 'credibility.check' || t === 'deduplication.progress') return 'analysis'
+    if (t === 'system.notification' || t === 'rate_limit.warning' || t === 'connected' || t === 'disconnected') return 'system'
+    if (t === 'error' || t === 'research_failed') return 'errors'
+    return 'all'
+  }
+
+  const getMessageStyle = (p?: ProgressUpdate['priority']) => {
+    switch (p) {
+      case 'critical':
+        return 'border-l-4 border-error bg-error/5'
+      case 'high':
+        return 'border-l-4 border-primary bg-primary/5'
+      default:
+        return ''
+    }
+  }
+
+  type CategoryKey = 'all' | 'search' | 'sources' | 'analysis' | 'system' | 'errors'
+  const categoryCounts = React.useMemo((): Record<CategoryKey, number> => {
+    const counts: Record<CategoryKey, number> = { all: updates.length, search: 0, sources: 0, analysis: 0, system: 0, errors: 0 }
+    for (const u of updates) {
+      const cat = categorize(u) as CategoryKey
+      counts[cat] += 1
+    }
+    return counts
+  }, [updates])
 
   const canCancel = () => {
     return currentStatus === 'processing' || currentStatus === 'in_progress' || currentStatus === 'pending'
+  }
+
+  // Helper function to render events
+  const renderEvents = () => {
+    return updates
+      .filter(u => showVerbose || !isNoisy(u.message))
+      .filter(u => (activeCategory === 'all' ? true : categorize(u) === activeCategory))
+      .map((update, index) => {
+        // Determine icon for the event
+        let icon: React.ReactNode = null
+        if (update.message?.includes('Searching')) {
+          icon = <FiSearch className="h-4 w-4 text-primary animate-pulse" />
+        } else if (update.message?.includes('credibility')) {
+          icon = <FiCheckCircle className="h-4 w-4 text-green-500" />
+        } else if (update.message?.includes('duplicate')) {
+          icon = <FiDatabase className="h-4 w-4 text-yellow-500" />
+        }
+
+        return (
+          <CollapsibleEvent
+            key={index}
+            message={cleanMessage(update.message) || `Status: ${update.status}`}
+            timestamp={format(new Date(update.timestamp), 'HH:mm:ss')}
+            details={update.data}
+            priority={update.priority}
+            type={update.type}
+            icon={icon}
+            className={getMessageStyle(update.priority)}
+          />
+        )
+      })
   }
 
   // Define research phases
@@ -432,16 +600,51 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           />
         </div>
       </div>
+      {rateLimitWarning && (
+        <div className="mb-3 p-3 rounded-lg border border-error/30 bg-error/10 text-error text-sm">
+          <div className="font-medium">Rate limit warning</div>
+          <div className="text-xs">
+            {rateLimitWarning.message || `Approaching ${rateLimitWarning.limit_type} limit. ${rateLimitWarning.remaining ?? ''} remaining.`}
+          </div>
+        </div>
+      )}
+
+      {/* Persistent Session Summary (compact) */}
+      <div className="mb-3 p-3 bg-surface-subtle rounded-lg">
+        <h4 className="text-sm font-medium mb-2">Session Summary</h4>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div>✅ {stats.searchesCompleted} searches completed</div>
+          <div>📊 {stats.sourcesAnalyzed} sources analyzed</div>
+          <div>🔍 {stats.highQualitySources} high-quality sources</div>
+          <div>🗑️ {stats.duplicatesRemoved} duplicates removed</div>
+          <div>🔧 {stats.mcpToolsUsed} tools executed</div>
+          <div>⚡ {stats.apisQueried.size} APIs queried</div>
+        </div>
+      </div>
+
+      {/* API status indicators */}
+      {stats.apisQueried.size > 0 && (
+        <div className="flex gap-2 mb-2">
+          {Array.from(stats.apisQueried).map(apiName => (
+            <Badge
+              key={apiName}
+              variant={currentPhase === 'search' ? 'info' : 'default'}
+              size="sm"
+              className={currentPhase === 'search' ? 'animate-pulse' : ''}
+            >
+              {apiName}
+            </Badge>
+          ))}
+        </div>
+      )}
 
       {progress > 0 && (currentStatus === 'processing' || currentStatus === 'in_progress') && (
         <>
-          <div className="mb-4">
+          {/* Multi-layer progress: overall + sub-phase */}
+          <div className="mb-4 space-y-2">
             <div className="flex items-center justify-between mb-1">
               <span className="text-sm text-text-muted">
-                {determinateProgress ? 
-                  `${determinateProgress.done} / ${determinateProgress.total} items` : 
-                  'Progress'
-                }
+                {determinateProgress ? `${determinateProgress.done} / ${determinateProgress.total} items` : 'Progress'}
               </span>
               {etaSeconds !== null && etaSeconds > 0 && (
                 <span className="text-xs text-text-muted">
@@ -450,14 +653,35 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               )}
             </div>
             <ProgressBar
-              value={determinateProgress ? (determinateProgress.done / determinateProgress.total) * 100 : progress}
+              value={determinateProgress ? (determinateProgress.done / Math.max(1, determinateProgress.total)) * 100 : progress}
               max={100}
               variant="default"
+              label="Overall"
               showLabel={false}
               shimmer
             />
+            {currentPhase === 'search' && stats.totalSearches > 0 && (
+              <ProgressBar
+                value={(Math.min(stats.searchesCompleted, stats.totalSearches) / Math.max(1, stats.totalSearches)) * 100}
+                max={100}
+                variant="info"
+                size="sm"
+                label={`Search ${Math.min(stats.searchesCompleted, stats.totalSearches)}/${stats.totalSearches}`}
+                showLabel={false}
+              />
+            )}
+            {currentPhase === 'analysis' && analysisTotal && analysisTotal > 0 && (
+              <ProgressBar
+                value={(Math.min(stats.sourcesAnalyzed, analysisTotal) / Math.max(1, analysisTotal)) * 100}
+                max={100}
+                variant="info"
+                size="sm"
+                label={`Analyzing ${Math.min(stats.sourcesAnalyzed, analysisTotal)}/${analysisTotal}`}
+                showLabel={false}
+              />
+            )}
             {currentPhase && (
-              <div className="mt-2">
+              <div className="pt-1">
                 <Badge variant="info" size="sm" className="capitalize">
                   {currentPhase.replace(/_/g, ' ')}
                 </Badge>
@@ -516,7 +740,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           </div>
           
           {/* Statistics */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 mb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-8 gap-3 mb-4">
             <div className="bg-surface-subtle rounded-lg p-3">
               <div className="text-2xl font-bold text-text">{stats.sourcesFound}</div>
               <div className="text-xs text-text-muted">Sources Found</div>
@@ -546,6 +770,14 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               <div className="text-xs text-text-muted">Quality Rate</div>
             </div>
             <div className="bg-surface-subtle rounded-lg p-3">
+              <div className="text-2xl font-bold text-error">{stats.duplicatesRemoved || 0}</div>
+              <div className="text-xs text-text-muted">Duplicates Removed</div>
+            </div>
+            <div className="bg-surface-subtle rounded-lg p-3">
+              <div className="text-2xl font-bold text-primary">{stats.apisQueried.size || 0}</div>
+              <div className="text-xs text-text-muted">APIs Used</div>
+            </div>
+            <div className="bg-surface-subtle rounded-lg p-3">
               <div className="text-2xl font-bold text-text">
                 {`${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`}
               </div>
@@ -553,76 +785,64 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             </div>
           </div>
 
-          {/* Analysis microbar for mobile clarity */}
-          {analysisTotal && (
-            <div className="mb-4">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs text-text-muted">Credibility checks</span>
-                <span className="text-xs text-text-muted">{Math.min(stats.sourcesAnalyzed, analysisTotal)} / {analysisTotal}</span>
-              </div>
-              <ProgressBar
-                value={(Math.min(stats.sourcesAnalyzed, analysisTotal) / analysisTotal) * 100}
-                max={100}
-                variant="default"
-                showLabel={false}
-              />
-              {etaSeconds !== null && currentPhase === 'analysis' && (
-                <div className="mt-1 text-right text-[11px] text-text-muted">~{Math.floor(etaSeconds / 60).toString().padStart(2, '0')}:{(etaSeconds % 60).toString().padStart(2, '0')} remaining (analysis)</div>
-              )}
-            </div>
-          )}
         </>
       )}
 
-      <div 
-        ref={updatesContainerRef}
-        className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto"
-        role="log"
-        aria-label="Research progress updates"
-        aria-live="polite"
-      >
-        {updates
-          .filter(u => showVerbose || !isNoisy(u.message))
-          .map((update, index) => {
-          // Check if this is a search completed message with results
-          const isSearchCompleted = update.message?.includes('Found') && update.message?.includes('results')
-          const resultsMatch = update.message?.match(/Found (\d+) results/)
-          const resultsCount = resultsMatch ? parseInt(resultsMatch[1]) : 0
-          
-          return (
-            <div
-              key={index}
-              className="flex items-start gap-3 text-sm py-2 border-b border-border last:border-0 animate-slide-up"
-            >
-              <span className="text-text-muted text-xs font-mono">
-                {format(new Date(update.timestamp), 'HH:mm:ss')}
-              </span>
-              <div className="flex-1">
-                <p className="text-text">
-                  {cleanMessage(update.message) || `Status: ${update.status}`}
-                </p>
-                {isSearchCompleted && resultsCount > 0 && (
-                  <div className="mt-1">
-                    <Badge variant="default" size="sm">
-                      {resultsCount} results
-                    </Badge>
-                  </div>
-                )}
-              </div>
-              {/* Icon indicators for different message types */}
-              {update.message?.includes('Searching') && (
-                <FiSearch className="h-4 w-4 text-primary animate-pulse" />
-              )}
-              {update.message?.includes('credibility') && (
-                <FiCheckCircle className="h-4 w-4 text-green-500" />
-              )}
-              {update.message?.includes('duplicate') && (
-                <FiDatabase className="h-4 w-4 text-yellow-500" />
-              )}
-            </div>
-          )
-        })}
-      </div>
+      {/* Category filters - SwipeableTabs on mobile, regular tabs on desktop */}
+      {isMobile ? (
+        <SwipeableTabs
+          tabs={[
+            { key: 'all', label: 'All', badge: categoryCounts.all },
+            { key: 'search', label: 'Search', badge: categoryCounts.search },
+            { key: 'sources', label: 'Sources', badge: categoryCounts.sources },
+            { key: 'analysis', label: 'Analysis', badge: categoryCounts.analysis },
+            { key: 'system', label: 'System', badge: categoryCounts.system },
+            { key: 'errors', label: 'Errors', badge: categoryCounts.errors, badgeVariant: categoryCounts.errors > 0 ? 'error' : 'default' },
+          ]}
+          activeTab={activeCategory}
+          onTabChange={(key) => setActiveCategory(key as typeof activeCategory)}
+        >
+          <div
+            ref={updatesContainerRef}
+            className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto"
+            role="log"
+            aria-label="Research progress updates"
+            aria-live="polite"
+          >
+            {renderEvents()}
+          </div>
+        </SwipeableTabs>
+      ) : (
+        <>
+          <div className="mb-2 flex flex-wrap gap-2 text-xs">
+            {([
+              { key: 'all', label: `All (${categoryCounts.all})` },
+              { key: 'search', label: `Search (${categoryCounts.search})` },
+              { key: 'sources', label: `Sources (${categoryCounts.sources})` },
+              { key: 'analysis', label: `Analysis (${categoryCounts.analysis})` },
+              { key: 'system', label: `System (${categoryCounts.system})` },
+              { key: 'errors', label: `Errors (${categoryCounts.errors})`, emphasize: categoryCounts.errors > 0 },
+            ] as const).map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveCategory(tab.key)}
+                className={`px-2 py-1 rounded border ${activeCategory === tab.key ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-surface-subtle border-border text-text-muted'} ${'emphasize' in tab && tab.emphasize ? 'text-error border-error/30' : ''}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div
+            ref={updatesContainerRef}
+            className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto"
+            role="log"
+            aria-label="Research progress updates"
+            aria-live="polite"
+          >
+            {renderEvents()}
+          </div>
+        </>
+      )}
 
       {updates.length === 0 && !isConnecting && (
         <div className="text-center py-8 animate-fade-in">

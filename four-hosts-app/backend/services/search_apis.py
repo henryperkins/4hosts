@@ -22,7 +22,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union, cast
+from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union, cast, Callable, Awaitable
 import html as _html
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
@@ -388,7 +388,7 @@ class RespectfulFetcher:
         except Exception:
             return True
 
-    async def fetch(self, session: aiohttp.ClientSession, url: str) -> str | None:
+    async def fetch(self, session: aiohttp.ClientSession, url: str, on_rate_limit: Optional[Callable[[str], Awaitable[None]]] = None) -> str | None:
         url = URLNormalizer.normalize_url(url)
         if not URLNormalizer.is_valid_url(url):
             return None
@@ -397,6 +397,11 @@ class RespectfulFetcher:
         if domain in self.blocked_domains or any(domain.endswith("." + d) for d in self.blocked_domains):
             return None
         if not self.circuit.ok(domain):
+            if on_rate_limit:
+                try:
+                    await on_rate_limit(domain)
+                except Exception:
+                    pass
             return None
         if not await self._can_fetch(url):
             return None
@@ -411,7 +416,12 @@ class RespectfulFetcher:
             if text:
                 self.circuit.success(domain)
             return text
-        except Exception:
+        except Exception as e:
+            if isinstance(e, RateLimitedError) and on_rate_limit:
+                try:
+                    await on_rate_limit(domain)
+                except Exception:
+                    pass
             self.circuit.fail(domain)
             return None
 
@@ -1310,7 +1320,16 @@ class SearchAPIManager:
                 self._fallback_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
             return self._fallback_session
 
-    async def search_all(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
+    async def search_all(self, query: str, cfg: SearchConfig, progress_callback: Optional[Any] = None, research_id: Optional[str] = None) -> List[SearchResult]:
+        # Provider-specific start events so UI shows "Searching Brave...", "Searching Google..."
+        if progress_callback and research_id:
+            try:
+                total = max(1, len(self.apis))
+                for idx, name in enumerate(self.apis.keys()):
+                    await progress_callback.report_search_started(research_id, query, name, idx + 1, total)
+            except Exception:
+                pass
+
         tasks = {name: asyncio.create_task(api.search_with_variations(query, cfg))
                  for name, api in self.apis.items()}
         all_res: List[SearchResult] = []
@@ -1335,6 +1354,13 @@ class SearchAPIManager:
                 name = name_by_task.get(t, "unknown")
                 try:
                     res = t.result()
+                    # Provider-specific completion event
+                    if progress_callback and research_id:
+                        try:
+                            count = len(res) if isinstance(res, list) else 0
+                            await progress_callback.report_search_completed(research_id, query, count)
+                        except Exception:
+                            pass
                     all_res.extend(res if isinstance(res, list) else [])
                 except Exception as e:
                     logger.error(f"{name} failed: {e}")
@@ -1356,7 +1382,27 @@ class SearchAPIManager:
                 return
             session = self._any_session()
             async with self._fetch_sem:
-                fetched = await self.fetcher.fetch(session, res.url)
+                async def _emit_rate_limit(domain: str, provider: Optional[str] = None):
+                    if progress_callback and research_id:
+                        try:
+                            from services.websocket_service import connection_manager, WSMessage, WSEventType
+                            await connection_manager.broadcast_to_research(
+                                research_id,
+                                WSMessage(
+                                    type=WSEventType.RATE_LIMIT_WARNING,
+                                    data={
+                                        "research_id": research_id,
+                                        "limit_type": "search_provider",
+                                        "provider": provider or res.source,
+                                        "domain": domain,
+                                        "message": f"Rate limit encountered on {provider or res.source} for {domain}",
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    },
+                                ),
+                            )
+                        except Exception:
+                            pass
+                fetched = await self.fetcher.fetch(session, res.url, on_rate_limit=lambda domain: _emit_rate_limit(domain, res.source))
             if fetched:
                 res.content = fetched
 

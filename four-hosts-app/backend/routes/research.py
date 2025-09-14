@@ -563,8 +563,9 @@ async def execute_real_research(
         # If suitable, generate an integrated synthesis (e.g., Maeve + Dolores)
         integrated_synthesis = None
         try:
-            primary_ui = paradigm_analysis["primary"]["paradigm"]
+            primary_ui = str(paradigm_analysis["primary"]["paradigm"])
             secondary_ui = paradigm_analysis.get("secondary", {}).get("paradigm")
+            secondary_ui = str(secondary_ui) if secondary_ui is not None else None
             if primary_ui == "maeve" and secondary_ui == "dolores":
                 # Extract list of results for answer generation
                 flat_results = orch_resp.get("results", []) or []
@@ -673,8 +674,10 @@ async def execute_real_research(
 
                 # Ensure metadata includes both paradigms
                 try:
-                    if secondary_ui not in metadata["paradigms_used"]:
-                        metadata["paradigms_used"].append(secondary_ui)
+                    if secondary_ui is not None:
+                        paradigms_used = metadata.get("paradigms_used")
+                        if isinstance(paradigms_used, list) and secondary_ui not in paradigms_used:
+                            paradigms_used.append(secondary_ui)
                 except Exception:
                     pass
         except Exception as e:

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import Enum
 import aiohttp
 from pydantic import BaseModel, HttpUrl
+from datetime import datetime, timezone
+from services.websocket_service import WSMessage, WSEventType, progress_tracker  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,32 @@ class MCPIntegration:
     
     async def _execute_tool(self, server: MCPServer, tool_name: str, parameters: Dict[str, Any]) -> Any:
         """Execute a tool on a remote MCP server"""
+        # Extract research_id for progress broadcasting if provided
+        research_id = None
+        try:
+            if isinstance(parameters, dict):
+                research_id = parameters.get("research_id")
+        except Exception:
+            research_id = None
+
+        # Notify start of MCP tool execution
+        if research_id:
+            try:
+                await progress_tracker.connection_manager.broadcast_to_research(
+                    str(research_id),
+                    WSMessage(
+                        type=WSEventType.MCP_TOOL_EXECUTING,
+                        data={
+                            "research_id": str(research_id),
+                            "server": server.name,
+                            "tool": tool_name,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    ),
+                )
+            except Exception:
+                pass
+
         request = MCPRequest(
             method="tools.execute",
             params={
@@ -135,6 +163,24 @@ class MCPIntegration:
         )
         
         response = await self._send_request(server, request)
+        # Notify completion of MCP tool execution
+        if research_id:
+            try:
+                await progress_tracker.connection_manager.broadcast_to_research(
+                    str(research_id),
+                    WSMessage(
+                        type=WSEventType.MCP_TOOL_COMPLETED,
+                        data={
+                            "research_id": str(research_id),
+                            "server": server.name,
+                            "tool": tool_name,
+                            "status": "error" if response.error else "ok",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    ),
+                )
+            except Exception:
+                pass
         
         if response.error:
             logger.warning(f"Tool execution error: {response.error}")
