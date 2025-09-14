@@ -61,6 +61,9 @@ class MCPIntegration:
         self.servers: Dict[str, MCPServer] = {}
         self.session: Optional[aiohttp.ClientSession] = None
         self._tool_handlers: Dict[str, Callable] = {}
+        # Cache of discovered tools per server so callers can aggregate without
+        # re-querying remote endpoints.
+        self._discovered_tools: Dict[str, List[MCPToolDefinition]] = {}
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -107,6 +110,8 @@ class MCPIntegration:
             
             # Register handler for this tool
             self._tool_handlers[tool_def.function["name"]] = lambda params, t=tool_data, s=server: self._execute_tool(s, t["name"], params)
+        # Cache discovered tools for aggregation later
+        self._discovered_tools[server_name] = tools
         
         return tools
     
@@ -166,13 +171,25 @@ class MCPIntegration:
             return MCPResponse(error={"code": -32001, "message": str(e)})
     
     def get_all_tools(self) -> List[MCPToolDefinition]:
-        """Get all registered tools from all servers"""
-        all_tools = []
-        for server_name in self.servers:
-            # Note: This is synchronous, you'd need to call discover_tools first
-            # In practice, you'd cache discovered tools
-            pass
-        return all_tools
+        """Aggregate all cached tool definitions discovered so far.
+
+        This does not perform network discovery; callers should invoke
+        ``discover_tools(server_name)`` at least once per server to populate
+        the cache. The returned list is a flattened snapshot across servers.
+        """
+        tools: List[MCPToolDefinition] = []
+        # Prefer cached discoveries
+        for server_name, items in self._discovered_tools.items():
+            if not items:
+                continue
+            tools.extend(items)
+
+        # If nothing has been discovered yet, fall back to constructing
+        # empty function descriptors for known servers so callers have a
+        # deterministic (though empty) response without raising.
+        if not tools and self.servers:
+            return []
+        return tools
 
     def get_responses_mcp_tools(self, require_approval: str = "never") -> List[Dict[str, Any]]:
         """Return a list of Responses API MCP tool descriptors for all registered servers.

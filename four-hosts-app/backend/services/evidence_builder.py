@@ -42,8 +42,8 @@ from core.config import (
 from services.search_apis import fetch_and_parse_url  # type: ignore
 
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[\.!?])\s+(?=[A-Z0-9])|
-                               \u2022|\u2023|\u25E6|\u2043|\u2219|\n|\r",
+_SENTENCE_SPLIT = re.compile(r"(?<=[\.!?])\s+(?=[A-Z0-9])|"
+                             r"\u2022|\u2023|\u25E6|\u2043|\u2219|\n|\r",
                              re.VERBOSE)
 _TOKEN = re.compile(r"[A-Za-z0-9]+")
 

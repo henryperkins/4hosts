@@ -270,7 +270,8 @@ class LLMClient:
             "openai_enabled": bool(self.openai_client is not None),
             "use_responses_api": bool(self._azure_use_responses),
             "default_deployment": os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3"),
-            "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "preview"),
+            # Report configured Azure API version (default used if unset)
+            "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-01-preview"),
         }
         try:
             # AsyncOpenAI stores base_url on ._client.base_url
@@ -387,10 +388,15 @@ class LLMClient:
                         "stream": stream,
                         "store": True,
                     }
-                    if json_schema:
-                        resp_req["response_format"] = {"type": "json_schema", "json_schema": json_schema}
-                    elif response_format:
-                        resp_req["response_format"] = response_format
+
+                    # Responses API doesn't support response_format parameter
+                    # Instead, add JSON instructions to guide structured output
+                    if json_schema or response_format:
+                        json_instruction = "You must respond with valid JSON that matches the required schema."
+                        if response_format and response_format.get("type") == "json_object":
+                            json_instruction = "You must respond with valid JSON."
+                        resp_req["instructions"] = json_instruction
+
                     if tool_choice and tools:
                         resp_req["tool_choice"] = self._wrap_tool_choice(tool_choice)
 
@@ -526,6 +532,35 @@ class LLMClient:
 
         # Use Azure for o3/o1 models
         if model_name in {"o3", "o1", "azure", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o"} and self.azure_client:
+            # Prefer Responses API when enabled
+            if self._azure_use_responses:
+                input_msgs: List[Dict[str, Any]] = [
+                    {"role": _system_role_for(model_name), "content": _system_prompt(paradigm_key)},
+                    {"role": "user", "content": prompt},
+                ]
+                resp_req: Dict[str, Any] = {
+                    "model": self._azure_model_for(model_name),
+                    "input": input_msgs,
+                    "tools": cast(Any, tools),
+                    "background": False,
+                    "stream": False,
+                    "store": True,
+                    "max_output_tokens": DEFAULT_MAX_TOKENS,
+                }
+                if wrapped_choice:
+                    resp_req["tool_choice"] = wrapped_choice
+                from services.llm_client import responses_create as _resp_create
+                op_res = await _resp_create(**{k: v for k, v in resp_req.items() if v is not None})
+                # Extract content and tool_calls from Responses payload
+                from services.llm_client import extract_responses_final_text as _resp_text, extract_responses_tool_calls as _resp_tools
+                result = {
+                    "content": _resp_text(op_res) or "",
+                    "tool_calls": _resp_tools(op_res) or [],
+                }
+                out = {"content": result.get("content", ""), "tool_calls": result.get("tool_calls", [])}
+                self._record_stage_metrics("llm_tools", model_name, _start, success=True)
+                return out
+
             azure_msgs = [
                 {
                     "role": _system_role_for(model_name),
@@ -608,6 +643,28 @@ class LLMClient:
         # Prefer Azure when available. For o1/o3 family use max_completion_tokens,
         # for gpt-4o style deployments use standard chat params.
         if self.azure_client:
+            # Prefer Azure Responses API when enabled
+            if self._azure_use_responses:
+                input_msgs: List[Dict[str, Any]] = []
+                for m in full_msgs:
+                    role = m.get("role", "user")
+                    if role == "system" and model_name.startswith("o"):
+                        role = "developer"
+                    input_msgs.append({"role": role, "content": m.get("content", "")})
+                from services.llm_client import responses_create as _resp_create, extract_responses_final_text as _resp_text
+                op_res = await _resp_create(
+                    model=self._azure_model_for(model_name),
+                    input=input_msgs,
+                    background=False,
+                    stream=False,
+                    store=True,
+                    max_output_tokens=max_tokens,
+                    reasoning={"effort": "medium"} if model_name.startswith("o") else None,
+                )
+                text = _resp_text(op_res) or ""
+                self._record_stage_metrics("llm_generate", model_name, _start, success=True)
+                return text
+
             azure_req = {
                 # Use Azure deployment name for 'model'
                 "model": self._azure_model_for(model_name),
@@ -698,6 +755,15 @@ class LLMClient:
         """Safely extract text content from various response types"""
         if isinstance(response, str):
             return response.strip()
+
+        # Handle raw dict payloads from Responses API
+        if isinstance(response, dict):
+            try:
+                text = extract_responses_final_text(response)
+                if text:
+                    return text.strip()
+            except Exception:
+                pass
 
         # Handle Azure Responses API response
         if hasattr(response, 'output_text') and response.output_text:

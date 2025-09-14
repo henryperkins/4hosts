@@ -244,7 +244,7 @@ async def response_body_snippet(
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    wait=wait_exponential(multiplier=2, min=4, max=30),
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
 )
 async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
@@ -256,11 +256,21 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
         "Accept-Encoding": "gzip, deflate",
         "DNT": "1",
     }
-    timeout = aiohttp.ClientTimeout(total=float(os.getenv("SEARCH_FETCH_TIMEOUT_SEC", "25")))
+
+    # Use shorter timeout for DOI/SSRN to avoid long delays
+    timeout_sec = float(os.getenv("SEARCH_FETCH_TIMEOUT_SEC", "25"))
+    if "doi.org" in url or "ssrn.com" in url:
+        timeout_sec = min(timeout_sec, 10.0)
+    timeout = aiohttp.ClientTimeout(total=timeout_sec)
+
     async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as r:
         if r.status == 429:
             retry_hdr = r.headers.get("retry-after")
-            delay = float(retry_hdr) if retry_hdr and retry_hdr.isdigit() else random.uniform(2, 6)
+            # Respect the retry-after header if present
+            if retry_hdr and retry_hdr.isdigit():
+                delay = min(float(retry_hdr), 30)  # Cap at 30 seconds
+            else:
+                delay = random.uniform(5, 10)  # Default longer backoff
             _structured_log("warning", "rate_limited_fetch", {"url": url, "delay": delay})
             await asyncio.sleep(delay)
             raise RateLimitedError()  # let tenacity retry
@@ -803,7 +813,9 @@ class BaseSearchAPI:
 
     def _sess(self) -> aiohttp.ClientSession:
         if not self.session or self.session.closed:
-            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+            # Use configurable timeout with default 30s
+            timeout_sec = float(os.getenv("SEARCH_API_TIMEOUT_SEC", "30"))
+            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_sec))
         return self.session
 
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
@@ -887,6 +899,9 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         super().__init__(api_key, rate=60)
         self.cx = cx
 
+    @retry(stop=stop_after_attempt(3),
+           wait=wait_exponential(min=2, max=10),
+           retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)))
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         params = {
@@ -897,10 +912,16 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
             "safe": "active" if cfg.safe_search == "strict" else "off" if cfg.safe_search == "off" else "medium",
             "hl": cfg.language,
         }
-        async with self._sess().get(self.BASE, params=params) as r:
-            if r.status != 200:
-                return []
-            data = await r.json()
+        # Use a reasonable timeout for Google Search
+        timeout = aiohttp.ClientTimeout(total=15)
+        try:
+            async with self._sess().get(self.BASE, params=params, timeout=timeout) as r:
+                if r.status != 200:
+                    return []
+                data = await r.json()
+        except asyncio.TimeoutError:
+            logger.warning(f"Google Search timeout for query: {query[:50]}")
+            return []
         items = data.get("items", []) or []
         results: List[SearchResult] = []
         for it in items:
@@ -1127,8 +1148,8 @@ class SemanticScholarAPI(BaseSearchAPI):
             self._key_idx = (self._key_idx + 1) % len(self._keys)
             self.api_key = self._keys[self._key_idx]
 
-    @retry(stop=stop_after_attempt(4),
-           wait=wait_exponential(min=4, max=30),
+    @retry(stop=stop_after_attempt(3),
+           wait=wait_exponential(min=2, max=10),
            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)))
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
@@ -1141,13 +1162,19 @@ class SemanticScholarAPI(BaseSearchAPI):
         if self.api_key:
             headers["x-api-key"] = self.api_key
 
-        async with self._sess().get(self.BASE, params=params, headers=headers) as r:
-            if r.status == 429:
-                self._rotate_key()
-                raise RateLimitedError()
-            if r.status != 200:
-                return []
-            data = await r.json()
+        # Use shorter timeout for Semantic Scholar (10s)
+        timeout = aiohttp.ClientTimeout(total=10)
+        try:
+            async with self._sess().get(self.BASE, params=params, headers=headers, timeout=timeout) as r:
+                if r.status == 429:
+                    self._rotate_key()
+                    raise RateLimitedError()
+                if r.status != 200:
+                    return []
+                data = await r.json()
+        except asyncio.TimeoutError:
+            logger.warning(f"Semantic Scholar timeout for query: {query[:50]}")
+            return []
 
         papers = data.get("data") or data.get("papers") or []
         results: List[SearchResult] = []
@@ -1295,9 +1322,10 @@ class SearchAPIManager:
                 # Prefer explicit provider timeout; fall back to overall task timeout if provided
                 _prov_to = float(_os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC") or 0.0)
                 if not _prov_to:
-                    _prov_to = float(_os.getenv("SEARCH_TASK_TIMEOUT_SEC", "15") or 15)
+                    # Increase default timeout to 25s to allow APIs to complete
+                    _prov_to = float(_os.getenv("SEARCH_TASK_TIMEOUT_SEC", "25") or 25)
             except Exception:
-                _prov_to = 15.0
+                _prov_to = 25.0
 
             name_by_task = {t: n for n, t in tasks.items()}
             done, pending = await asyncio.wait(set(tasks.values()), timeout=_prov_to)

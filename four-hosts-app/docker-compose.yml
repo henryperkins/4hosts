@@ -164,11 +164,8 @@ volumes:
 # ==========================================================================
 networks:
   fourhosts-network:
+    external: true
     name: fourhosts-network
-    driver: bridge
-    labels:
-      com.fourhosts.network: "main"
-      com.fourhosts.description: "Internal network for service communication"
 
 # ==========================================================================
 # USAGE INSTRUCTIONS
