@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
 
+# Security utilities
+from utils.security import sanitize_user_input, pattern_validator
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -91,15 +94,26 @@ class QueryAnalyzer:
         self.intent_patterns = self._compile_patterns()
 
     def _compile_patterns(self) -> Dict[HostParadigm, List[re.Pattern]]:
-        """Compile regex patterns for efficiency"""
+        """Compile regex patterns for efficiency with safety checks"""
         compiled = {}
-        # Use canonical pattern list
+        # Use canonical pattern list with safe compilation
         for paradigm, pattern_list in self._CANON_PATTERNS.items():
-            compiled[paradigm] = [re.compile(p, re.IGNORECASE) for p in pattern_list]
+            compiled[paradigm] = []
+            for p in pattern_list:
+                # Use safe pattern compilation to prevent ReDoS
+                safe_pattern = pattern_validator.safe_compile(p, re.IGNORECASE)
+                if safe_pattern:
+                    compiled[paradigm].append(safe_pattern)
+                else:
+                    logger.warning(f"Skipped unsafe pattern for {paradigm}: {p[:50]}...")
         return compiled
 
     def analyze(self, query: str, research_id: Optional[str] = None) -> QueryFeatures:
         """Extract comprehensive features from query"""
+        # Sanitize input using centralized security utility
+        query = sanitize_user_input(query)
+        logger.debug(f"Analyzing sanitized query (length={len(query)})")
+
         # Note: This runs in executor so can't use async progress tracking directly
         # But we can track via the main classify method
         tokens = self._tokenize(query)
@@ -154,7 +168,8 @@ class QueryAnalyzer:
 
         action_words = ["create", "build", "stop", "prevent", "improve", "help"]
         for word in action_words:
-            if word in query_lower:
+            # Use word boundary matching to prevent false positives and injection
+            if re.search(rf'\b{re.escape(word)}\b', query_lower):
                 signals.append(f"action_{word}")
         return signals
 
@@ -754,6 +769,10 @@ class ClassificationEngine:
 
     async def classify_query(self, query: str, research_id: Optional[str] = None) -> ClassificationResult:
         """Classify a query with caching and logging"""
+        # Input validation
+        if not query or len(query) > 10000:
+            raise ValueError("Query must be between 1 and 10000 characters")
+
         from time import perf_counter
         start = perf_counter()
         cache_hit = False

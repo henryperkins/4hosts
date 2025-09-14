@@ -11,7 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse
-from prometheus_client import generate_latest
+
+# Try to import prometheus_client, but allow graceful degradation
+try:
+    from prometheus_client import generate_latest, CollectorRegistry
+    PROMETHEUS_AVAILABLE = True
+except ImportError:
+    PROMETHEUS_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("prometheus_client not installed - monitoring metrics will be unavailable")
 
 from core.config import TRUSTED_ORIGINS, get_allowed_hosts, is_production
 from core.config import ENABLE_FEEDBACK_RECONCILE, FEEDBACK_RECONCILE_WINDOW_MINUTES
@@ -133,14 +141,21 @@ async def lifespan(app: FastAPI):
             create_monitoring_middleware,
             HealthCheckService,
         )
-        from prometheus_client import CollectorRegistry
 
-        metrics_registry = CollectorRegistry()
-        prometheus = PrometheusMetrics(metrics_registry)
-        insights = ApplicationInsights(prometheus)
-        monitoring_middleware = create_monitoring_middleware(
-            prometheus, insights
-        )
+        if PROMETHEUS_AVAILABLE:
+            metrics_registry = CollectorRegistry()
+            prometheus = PrometheusMetrics(metrics_registry)
+            insights = ApplicationInsights(prometheus)
+            monitoring_middleware = create_monitoring_middleware(
+                prometheus, insights
+            )
+        else:
+            # Fallback: monitoring without prometheus
+            prometheus = None
+            insights = None
+            monitoring_middleware = None
+            logger.warning("Prometheus monitoring disabled - install prometheus_client to enable")
+
         health_service = HealthCheckService()
 
         app.state.monitoring = {
@@ -149,7 +164,7 @@ async def lifespan(app: FastAPI):
             "middleware": monitoring_middleware,
             "health": health_service,
         }
-        logger.info("✓ Monitoring systems initialized")
+        logger.info("✓ Monitoring systems initialized" if PROMETHEUS_AVAILABLE else "✓ Health service initialized (prometheus disabled)")
 
         # Initialize production services
         from services.auth_service import auth_service
@@ -237,8 +252,8 @@ async def lifespan(app: FastAPI):
                 try:
                     payload = {
                         "research_id": getattr(record, "query_id", None),
-                        "from_paradigm": decision.original_paradigm.value,
-                        "to_paradigm": decision.recommended_paradigm.value,
+                        "from_paradigm": decision.originalParadigm.value,
+                        "to_paradigm": decision.recommendedParadigm.value,
                         "confidence": decision.confidence,
                         "reasons": decision.reasons,
                         "expected_improvement": decision.expected_improvement,
@@ -401,13 +416,13 @@ def setup_routes(app: FastAPI):
 
 def setup_custom_endpoints(app: FastAPI):
     """Setup custom endpoints"""
-    
+
     @app.get("/api/csrf-token")
     async def get_csrf_token_api(request: Request, response: Response):
         """Get CSRF token for API calls"""
         from middleware.security import get_csrf_token
         return get_csrf_token(request, response)
-    
+
     @app.post("/api/session/create")
     async def create_session(request: Request, response: Response):
         """Create a new session and return CSRF token"""
@@ -493,6 +508,12 @@ def setup_custom_endpoints(app: FastAPI):
     @app.get("/metrics", include_in_schema=False)
     async def metrics():
         try:
+            if not PROMETHEUS_AVAILABLE:
+                return Response(
+                    content="# Prometheus metrics disabled - install prometheus_client\n",
+                    media_type="text/plain; charset=utf-8",
+                    status_code=503
+                )
             prometheus = getattr(app.state, "monitoring", {}).get("prometheus")
             if not prometheus:
                 return Response(status_code=204)

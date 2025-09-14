@@ -110,3 +110,4 @@ torch>=2.0.0
 # optimum>=1.16.0
 # onnxruntime>=1.16.0
 
+bleach==6.1.0

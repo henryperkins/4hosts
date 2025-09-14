@@ -407,7 +407,7 @@ class LLMClient:
                     if tool_choice and tools:
                         resp_req["tool_choice"] = self._wrap_tool_choice(tool_choice)
 
-                    from services.llm_client import responses_create  # self-module helper
+
                     if stream:
                         stream_iter = await responses_create(**{k: v for k, v in resp_req.items() if v is not None})
                         # Streaming – can't compute tokens; return iterator
@@ -453,7 +453,8 @@ class LLMClient:
                 if stream:
                     cc_req["stream"] = stream
 
-                op_res = await self.azure_client.chat.completions.create(**cc_req)
+                create_fn = cast(Any, self.azure_client.chat.completions.create)
+                op_res = await create_fn(**cc_req)
                 if stream:
                     return self._iter_openai_stream(cast(AsyncIterator[Any], op_res))
                 return self._extract_content_safely(op_res)
@@ -554,15 +555,15 @@ class LLMClient:
                 }
                 if wrapped_choice:
                     resp_req["tool_choice"] = wrapped_choice
-                from services.llm_client import responses_create as _resp_create
-                op_res = await _resp_create(**{k: v for k, v in resp_req.items() if v is not None})
+
+                op_res = await responses_create(**{k: v for k, v in resp_req.items() if v is not None})
                 # Extract content and tool_calls from Responses payload
                 # Since stream=False, op_res is guaranteed to be Dict[str, Any], not AsyncIterator
                 op_res_dict = cast(Dict[str, Any], op_res)
-                from services.llm_client import extract_responses_final_text as _resp_text, extract_responses_tool_calls as _resp_tools
+
                 result = {
-                    "content": _resp_text(op_res_dict) or "",
-                    "tool_calls": _resp_tools(op_res_dict) or [],
+                    "content": extract_responses_final_text(op_res_dict) or "",
+                    "tool_calls": extract_responses_tool_calls(op_res_dict) or [],
                 }
                 out = {"content": result.get("content", ""), "tool_calls": result.get("tool_calls", [])}
                 self._record_stage_metrics("llm_tools", model_name, _start, success=True)
@@ -591,7 +592,8 @@ class LLMClient:
             else:
                 azure_req["max_tokens"] = DEFAULT_MAX_TOKENS
 
-            op = await self.azure_client.chat.completions.create(**azure_req)  # Ensure op is defined
+            create_fn = cast(Any, self.azure_client.chat.completions.create)
+            op = await create_fn(**azure_req)  # Ensure op is defined
             if not hasattr(op, 'choices') or not op.choices:
                 result = {"content": "", "tool_calls": []}
             else:
@@ -670,8 +672,8 @@ class LLMClient:
                     if role == "system" and model_name.startswith("o"):
                         role = "developer"
                     input_msgs.append({"role": role, "content": m.get("content", "")})
-                from services.llm_client import responses_create as _resp_create, extract_responses_final_text as _resp_text
-                op_res = await _resp_create(
+
+                op_res = await responses_create(
                     model=self._azure_model_for(model_name),
                     input=input_msgs,
                     background=False,
@@ -682,7 +684,7 @@ class LLMClient:
                 )
                 # Since stream=False, op_res is guaranteed to be Dict[str, Any], not AsyncIterator
                 op_res_dict = cast(Dict[str, Any], op_res)
-                text = _resp_text(op_res_dict) or ""
+                text = extract_responses_final_text(op_res_dict) or ""
                 self._record_stage_metrics("llm_generate", model_name, _start, success=True)
                 return text
 
@@ -700,7 +702,8 @@ class LLMClient:
                 azure_req["max_tokens"] = max_tokens
                 azure_req["temperature"] = temperature
 
-            op = await self.azure_client.chat.completions.create(**azure_req)  # Ensure op defined
+            create_fn = cast(Any, self.azure_client.chat.completions.create)
+            op = await create_fn(**azure_req)  # Ensure op defined
             text = self._extract_content_safely(op)
             pin, pout = self._extract_usage_tokens_from_chat(op)
             self._record_stage_metrics("llm_generate", model_name, _start, success=True, tokens_in=pin, tokens_out=pout)
@@ -1104,8 +1107,7 @@ async def responses_deep_research(
     if is_azure:
         try:
             # Map to Azure deployment name
-            from services.llm_client import llm_client as _lc
-            deep_model = _lc._azure_model_for(deep_model)
+            deep_model = llm_client._azure_model_for(deep_model)
         except Exception:
             deep_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", deep_model)
 

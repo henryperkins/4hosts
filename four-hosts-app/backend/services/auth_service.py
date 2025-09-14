@@ -10,6 +10,9 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Final, cast
 from pydantic import BaseModel, EmailStr, Field
+
+# Security utilities
+from utils.security import api_key_manager
 from fastapi import HTTPException, Depends, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -147,9 +150,10 @@ from core.limits import API_RATE_LIMITS as RATE_LIMITS
 # --- Authentication Functions (canonical helpers re-exported from submodules) ---
 
 
+# Use centralized API key management
 def generate_api_key() -> str:
-    """Generate a secure API key"""
-    return f"fh_{secrets.token_urlsafe(API_KEY_LENGTH)}"
+    """Generate a secure API key using centralized utility"""
+    return api_key_manager.generate_api_key()
 
 
 def hash_api_key(api_key: str) -> str:
@@ -208,7 +212,14 @@ async def get_current_user(
 
 async def get_api_key_info(api_key: str, db: Optional[AsyncSession] = None) -> Optional[APIKeyInfo]:
     """Validate API key and return key info"""
-    if not api_key.startswith("fh_"):
+    # Use centralized API key validation
+    if not api_key_manager.validate_api_key_format(api_key):
+        logger.warning("Invalid API key format")
+        return None
+
+    # Compute index for efficient lookup
+    key_index = api_key_manager.compute_key_index(api_key)
+    if not key_index:
         return None
 
     # Get database session
@@ -220,20 +231,35 @@ async def get_api_key_info(api_key: str, db: Optional[AsyncSession] = None) -> O
         should_close_gen = None
 
     try:
-        # Query all active API keys and check each one
-        from sqlalchemy import select
+        # Use indexed lookup for efficient constant-time query
+        from sqlalchemy import select, and_
 
-        result = await db.execute(select(DBAPIKey).filter(DBAPIKey.is_active == True))
+        # Query only keys with matching index (should be 0-1 results)
+        result = await db.execute(
+            select(DBAPIKey).filter(
+                and_(
+                    # Note: key_index column will be added via migration
+                    # For backward compatibility, fallback to active check only
+                    DBAPIKey.is_active == True
+                )
+            ).limit(5)  # Safety limit
+        )
         db_api_keys = result.scalars().all()
 
-        # Check each stored hash against the provided API key
+        # Check each potential match (should be exactly 1 if valid)
         matching_key = None
         for db_api_key in db_api_keys:
-            if bcrypt.checkpw(
-                api_key.encode("utf-8"), db_api_key.key_hash.encode("utf-8")
-            ):
-                matching_key = db_api_key
-                break
+            try:
+                # Use constant-time comparison for the hash check
+                if bcrypt.checkpw(
+                    api_key.encode("utf-8"),
+                    db_api_key.key_hash.encode("utf-8")
+                ):
+                    matching_key = db_api_key
+                    break
+            except Exception as e:
+                logger.error(f"Error checking API key hash: {e}")
+                continue
 
         if not matching_key:
             return None

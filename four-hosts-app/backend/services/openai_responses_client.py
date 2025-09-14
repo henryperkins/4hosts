@@ -11,16 +11,17 @@ import asyncio
 import json
 import logging
 import os
+from functools import lru_cache
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
-from datetime import datetime
+from typing import Any, AsyncIterator, cast, Dict, List, Optional, Union
 
 import httpx
 from openai import AsyncOpenAI
 from tenacity import (
     retry,
     retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 #  Enums / Constants
 # ────────────────────────────────────────────────────────────
 class ResponseStatus(Enum):
+    """Lifecycle states for a Responses API task."""
+
     QUEUED = "queued"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -41,12 +44,16 @@ class ResponseStatus(Enum):
 
 
 class SearchContextSize(Enum):
+    """Web search breadth preset for the preview tool."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
 
 
 class WebSearchAction(Enum):
+    """Supported actions for the web search tool."""
+
     SEARCH = "search"
     OPEN_PAGE = "open_page"
     FIND_IN_PAGE = "find_in_page"
@@ -64,7 +71,7 @@ class WebSearchTool:
 class CodeInterpreterTool:
     """Configuration for code interpreter tool"""
     type: str = "code_interpreter"
-    container: Dict[str, Any] = None
+    container: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if self.container is None:
@@ -125,28 +132,42 @@ class OpenAIResponsesClient:
         """Initialise for OpenAI Cloud or Azure OpenAI.
 
         Preference order:
-        1) Azure OpenAI when AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT are set
+        1) Azure OpenAI when AZURE_OPENAI_API_KEY and
+           AZURE_OPENAI_ENDPOINT are set
         2) OpenAI Cloud when OPENAI_API_KEY is set
         """
 
         azure_key = os.getenv("AZURE_OPENAI_API_KEY")
         azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        azure_api_version_env = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-01-preview")
+        # Prefer Azure v1 preview by default for Responses API
+        azure_api_version_env = os.getenv(
+            "AZURE_OPENAI_API_VERSION", "preview"
+        )
 
         self.is_azure = bool(azure_key and azure_endpoint)
         if self.is_azure:
-            self.api_key = azure_key  # type: ignore[assignment]
-            endpoint = azure_endpoint.rstrip("/")  # type: ignore[union-attr]
+            # These env vars are guaranteed when is_azure is True.
+            self.api_key: str = cast(str, azure_key)
+            endpoint = cast(str, azure_endpoint).rstrip("/")
             # Azure Responses API base path mirrors OpenAI's /openai/v1
             self.base_url = f"{endpoint}/openai/v1"
             # Use configured API version (default to env or 2024-10-01-preview)
             self.azure_api_version = azure_api_version_env
-            # SDK client configured to hit Azure base_url as well (not strictly required here)
-            self.client = AsyncOpenAI(api_key=self.api_key, base_url=f"{self.base_url}/", timeout=3600)
+            # SDK client configured to hit Azure base_url as well
+            # (not strictly required here)
+            self.client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=f"{self.base_url}/",
+                timeout=3600,
+            )
         else:
-            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-            if not self.api_key:
-                raise ValueError("OpenAI API key is required (or set AZURE_OPENAI_API_KEY/ENDPOINT)")
+            key = api_key or os.getenv("OPENAI_API_KEY")
+            if not key:
+                raise ValueError(
+                    "OpenAI API key is required "
+                    "(or set AZURE_OPENAI_API_KEY/ENDPOINT)"
+                )
+            self.api_key = key
             self.client = AsyncOpenAI(api_key=self.api_key, timeout=3600)
             self.base_url = "https://api.openai.com/v1"
 
@@ -154,14 +175,29 @@ class OpenAIResponsesClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError)),
+        retry=(
+            retry_if_exception_type(
+                (httpx.TimeoutException, httpx.ConnectError)
+            )
+            | retry_if_exception(
+                lambda e: isinstance(e, httpx.HTTPStatusError)
+                and (e.response is not None)
+                and (
+                    e.response.status_code == 429
+                    or 500 <= e.response.status_code <= 599
+                )
+            )
+        ),
+        reraise=True,
     )
-    async def create_response(
+    async def create_response(  # pylint: disable=redefined-builtin
         self,
         model: str,
         input: Union[str, List[Dict[str, Any]]],
         *,
-        tools: Optional[List[Union[WebSearchTool, CodeInterpreterTool, MCPTool, Dict]]] = None,
+        tools: Optional[
+            List[Union[WebSearchTool, CodeInterpreterTool, MCPTool, Dict]]
+        ] = None,
         background: bool = False,
         stream: bool = False,
         reasoning: Optional[Dict[str, str]] = None,
@@ -189,14 +225,21 @@ class OpenAIResponsesClient:
             Response object or async iterator for streaming
         """
         # Convert tool objects to dicts
-        tool_dicts = []
+        tool_dicts: List[Dict[str, Any]] = []
         if tools:
             for tool in tools:
-                if isinstance(tool, (WebSearchTool, CodeInterpreterTool, MCPTool)):
-                    tool_dict = {"type": tool.type}
+                if isinstance(
+                    tool, (WebSearchTool, CodeInterpreterTool, MCPTool)
+                ):
+                    tool_dict: Dict[str, Any] = {"type": tool.type}
                     if isinstance(tool, WebSearchTool):
-                        if tool.search_context_size != SearchContextSize.MEDIUM:
-                            tool_dict["search_context_size"] = tool.search_context_size.value
+                        if (
+                            tool.search_context_size
+                            != SearchContextSize.MEDIUM
+                        ):
+                            tool_dict["search_context_size"] = (
+                                tool.search_context_size.value
+                            )
                         if tool.user_location:
                             tool_dict["user_location"] = tool.user_location
                     elif isinstance(tool, CodeInterpreterTool):
@@ -211,9 +254,25 @@ class OpenAIResponsesClient:
                 else:
                     tool_dicts.append(tool)
 
+        # Azure limitation: Responses API currently does not support
+        # web_search tools
+        if self.is_azure and tool_dicts:
+            filtered = [
+                t
+                for t in tool_dicts
+                if not str(t.get("type", "")).startswith("web_search")
+            ]
+            if len(filtered) < len(tool_dicts):
+                logger.warning(
+                    "Removed web_search tool(s) on Azure "
+                    "(Responses API unsupported)."
+                )
+            tool_dicts = filtered
+
         # Build request
         # Azure expects the deployment name in the "model" field.
-        # Your deployments are named the same as models (o3, gpt-4.1, gpt-4.1-mini),
+        # Your deployments are named the same as models
+        # (o3, gpt-4.1, gpt-4.1-mini),
         # so we should pass through the requested model directly.
         # Fall back to AZURE_OPENAI_DEPLOYMENT only when model is not provided.
         request_data: Dict[str, Any] = {
@@ -221,6 +280,13 @@ class OpenAIResponsesClient:
             "input": input,
             "store": store,
         }
+
+        # Background mode requires stored responses for later
+        # retrieval/streaming
+        if background and not store:
+            raise ValueError(
+                "Background mode requires store=True for Responses API."
+            )
 
         if tool_dicts:
             request_data["tools"] = tool_dicts
@@ -242,22 +308,33 @@ class OpenAIResponsesClient:
         # Make request
         async with httpx.AsyncClient(timeout=3600) as client:
             if self.is_azure:
-                headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+                headers: Dict[str, str] = {
+                    "api-key": cast(str, self.api_key),
+                    "Content-Type": "application/json",
+                }
                 base = f"{self.base_url}/responses"
                 sep = "?" if "?" not in base else "&"
                 url = f"{base}{sep}api-version={self.azure_api_version}"
             else:
-                headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+                headers: Dict[str, str] = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                }
                 url = f"{self.base_url}/responses"
 
             if stream:
                 # Ensure server-sent events (SSE) for streaming
-                stream_headers = dict(headers)
+                stream_headers: Dict[str, str] = dict(headers)
                 stream_headers["Accept"] = "text/event-stream"
 
                 async def _generator():
                     async with httpx.AsyncClient(timeout=3600) as _c:
-                        async with _c.stream("POST", url, headers=stream_headers, json=request_data) as resp:
+                        async with _c.stream(
+                            "POST",
+                            url,
+                            headers=stream_headers,
+                            json=request_data,
+                        ) as resp:
                             resp.raise_for_status()
                             async for line in resp.aiter_lines():
                                 if line.startswith("data: "):
@@ -267,21 +344,41 @@ class OpenAIResponsesClient:
                                     yield json.loads(data)
                 return _generator()
             else:
-                response = await client.post(url, headers=headers, json=request_data, timeout=3600)
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    json=request_data,
+                    timeout=3600,
+                )
                 response.raise_for_status()
                 return response.json()
 
-    async def retrieve_response(self, response_id: str) -> Dict[str, Any]:
-        """Retrieve a response by ID (for background mode)"""
+    async def retrieve_response(
+        self,
+        response_id: str,
+        *,
+        include: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Retrieve a response by ID (for background mode).
+        Optionally include extra fields (e.g., include=["reasoning"])."""
         async with httpx.AsyncClient() as client:
             if self.is_azure:
-                headers = {"api-key": self.api_key}
+                headers: Dict[str, str] = {"api-key": cast(str, self.api_key)}
                 base = f"{self.base_url}/responses/{response_id}"
                 sep = "?" if "?" not in base else "&"
                 url = f"{base}{sep}api-version={self.azure_api_version}"
+                if include:
+                    url += "".join(f"&include={item}" for item in include)
             else:
-                headers = {"Authorization": f"Bearer {self.api_key}"}
+                headers: Dict[str, str] = {
+                    "Authorization": f"Bearer {self.api_key}"
+                }
                 url = f"{self.base_url}/responses/{response_id}"
+                if include:
+                    url += "".join(
+                        ("&" if "?" in url else "?") + f"include={item}"
+                        for item in include
+                    )
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.json()
@@ -290,12 +387,14 @@ class OpenAIResponsesClient:
         """Cancel a background response"""
         async with httpx.AsyncClient() as client:
             if self.is_azure:
-                headers = {"api-key": self.api_key}
+                headers: Dict[str, str] = {"api-key": cast(str, self.api_key)}
                 base = f"{self.base_url}/responses/{response_id}/cancel"
                 sep = "?" if "?" not in base else "&"
                 url = f"{base}{sep}api-version={self.azure_api_version}"
             else:
-                headers = {"Authorization": f"Bearer {self.api_key}"}
+                headers: Dict[str, str] = {
+                    "Authorization": f"Bearer {self.api_key}"
+                }
                 url = f"{self.base_url}/responses/{response_id}/cancel"
             response = await client.post(url, headers=headers)
             response.raise_for_status()
@@ -308,15 +407,23 @@ class OpenAIResponsesClient:
         if self.is_azure:
             base = f"{self.base_url}/responses/{response_id}"
             sep = "?" if "?" not in base else "&"
-            url = f"{base}{sep}stream=true&api-version={self.azure_api_version}"
+            url = (
+                f"{base}{sep}stream=true&api-version={self.azure_api_version}"
+            )
             if starting_after is not None:
                 url += f"&starting_after={starting_after}"
-            headers = {"api-key": self.api_key, "Accept": "text/event-stream"}
+            headers: Dict[str, str] = {
+                "api-key": cast(str, self.api_key),
+                "Accept": "text/event-stream",
+            }
         else:
             url = f"{self.base_url}/responses/{response_id}?stream=true"
             if starting_after is not None:
                 url += f"&starting_after={starting_after}"
-            headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "text/event-stream"}
+            headers: Dict[str, str] = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "text/event-stream",
+            }
 
         async with httpx.AsyncClient() as client:
             async with client.stream("GET", url, headers=headers) as response:
@@ -327,6 +434,26 @@ class OpenAIResponsesClient:
                         if data == "[DONE]":
                             break
                         yield json.loads(data)
+
+    async def delete_response(self, response_id: str) -> Dict[str, Any]:
+        """Delete a stored response object."""
+        async with httpx.AsyncClient() as client:
+            if self.is_azure:
+                headers: Dict[str, str] = {"api-key": cast(str, self.api_key)}
+                base = f"{self.base_url}/responses/{response_id}"
+                sep = "?" if "?" not in base else "&"
+                url = f"{base}{sep}api-version={self.azure_api_version}"
+            else:
+                headers: Dict[str, str] = {
+                    "Authorization": f"Bearer {self.api_key}"
+                }
+                url = f"{self.base_url}/responses/{response_id}"
+            resp = await client.delete(url, headers=headers)
+            resp.raise_for_status()
+            try:
+                return resp.json()
+            except json.JSONDecodeError:
+                return {"deleted": True, "status_code": resp.status_code}
 
     # ─────────── Deep Research Methods ───────────
     async def deep_research(
@@ -382,14 +509,14 @@ class OpenAIResponsesClient:
             "content": [{"type": "input_text", "text": query}]
         })
 
-        return await self.create_response(
+        return cast(Dict[str, Any], await self.create_response(
             model="o3-deep-research",
             input=input_messages,
             tools=tools,
             background=background,
             reasoning={"summary": "auto"},
             max_tool_calls=max_tool_calls,
-        )
+        ))
 
     async def wait_for_response(
         self,
@@ -416,40 +543,67 @@ class OpenAIResponsesClient:
             if response["status"] not in ["queued", "in_progress"]:
                 return response
 
-            if timeout and (asyncio.get_event_loop().time() - start_time) > timeout:
-                raise TimeoutError(f"Response {response_id} did not complete within {timeout} seconds")
+            if timeout and (
+                asyncio.get_event_loop().time() - start_time
+            ) > timeout:
+                raise TimeoutError(
+                    (
+                        f"Response {response_id} did not complete "
+                        f"within {timeout} seconds"
+                    )
+                )
 
             await asyncio.sleep(poll_interval)
 
     # ─────────── Helper Methods ───────────
     def extract_final_text(self, response: Dict[str, Any]) -> Optional[str]:
         """Delegates to shared extractor in llm_client for consistency."""
-        from services.llm_client import extract_responses_final_text
+        from .llm_client import extract_responses_final_text
         return extract_responses_final_text(response)
 
     def extract_citations(self, response: Dict[str, Any]) -> List[Citation]:
-        """Extract citations using llm_client shared logic; return typed list."""
-        from services.llm_client import extract_responses_citations
+        """Extract citations via llm_client and return a typed list."""
+        from .llm_client import extract_responses_citations
         items = extract_responses_citations(response)
-        return [
-            Citation(
-                url=i.get("url"),
-                title=i.get("title"),
-                start_index=i.get("start_index"),
-                end_index=i.get("end_index"),
+        out: List[Citation] = []
+        for i in items:
+            url = str(i.get("url") or "")
+            title = str(i.get("title") or "")
+            try:
+                start_index = int(i.get("start_index") or 0)
+            except (TypeError, ValueError):
+                start_index = 0
+            try:
+                end_index = int(i.get("end_index") or 0)
+            except (TypeError, ValueError):
+                end_index = 0
+            out.append(
+                Citation(
+                    url=url,
+                    title=title,
+                    start_index=start_index,
+                    end_index=end_index,
+                )
             )
-            for i in items
-        ]
+        return out
 
-    def extract_web_search_calls(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
-        from services.llm_client import extract_responses_web_search_calls
+    def extract_web_search_calls(
+        self, response: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Return normalised web search tool calls from a response."""
+        from .llm_client import extract_responses_web_search_calls
         return extract_responses_web_search_calls(response)
 
-    def extract_tool_calls(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
-        from services.llm_client import extract_responses_tool_calls
+    def extract_tool_calls(
+        self, response: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Return normalised tool calls from a response."""
+        from .llm_client import extract_responses_tool_calls
         return extract_responses_tool_calls(response)
 
-    async def _stream_response(self, response: httpx.Response) -> AsyncIterator[Dict[str, Any]]:
+    async def _stream_response(
+        self, response: httpx.Response
+    ) -> AsyncIterator[Dict[str, Any]]:
         """Stream response events"""
         async for line in response.aiter_lines():
             if line.startswith("data: "):
@@ -462,12 +616,7 @@ class OpenAIResponsesClient:
 # ────────────────────────────────────────────────────────────
 #  Singleton Instance
 # ────────────────────────────────────────────────────────────
-responses_client: Optional[OpenAIResponsesClient] = None
-
-
+@lru_cache(maxsize=1)
 def get_responses_client() -> OpenAIResponsesClient:
-    """Get or create the OpenAI Responses client singleton"""
-    global responses_client
-    if responses_client is None:
-        responses_client = OpenAIResponsesClient()
-    return responses_client
+    """Return a cached singleton instance of the responses client."""
+    return OpenAIResponsesClient()

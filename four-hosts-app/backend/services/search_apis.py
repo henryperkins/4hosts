@@ -43,6 +43,9 @@ from tenacity import (
     wait_exponential,
 )
 
+# Circuit breaker for resilient external API calls
+from utils.circuit_breaker import with_circuit_breaker, CircuitOpenError
+
 
 # --------------------------------------------------------------------------- #
 #                        ENV / LOGGING / INITIALISATION                       #
@@ -859,6 +862,7 @@ class BraveSearchAPI(BaseSearchAPI):
         super().__init__(api_key, rate=100)
         self.base = "https://api.search.brave.com/res/v1/web/search"
 
+    @with_circuit_breaker("brave_search", failure_threshold=3, recovery_timeout=30)
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=4, max=10),
            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)))
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
@@ -909,6 +913,7 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         super().__init__(api_key, rate=60)
         self.cx = cx
 
+    @with_circuit_breaker("google_search", failure_threshold=3, recovery_timeout=30)
     @retry(stop=stop_after_attempt(3),
            wait=wait_exponential(min=2, max=10),
            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)))
@@ -984,6 +989,7 @@ class ArxivAPI(BaseSearchAPI):
     def __init__(self):
         super().__init__(rate=30)           # be polite: 30 calls/min
 
+    @with_circuit_breaker("arxiv_search", failure_threshold=5, recovery_timeout=60)
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         params = {
@@ -1084,6 +1090,7 @@ class PubMedAPI(BaseSearchAPI):
         async with self._sess().get(f"{self.BASE}/efetch.fcgi", params=params) as r:
             return await r.text() if r.status == 200 else ""
 
+    @with_circuit_breaker("pubmed_search", failure_threshold=5, recovery_timeout=60)
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         pmids = await self._esearch(query, cfg)
@@ -1158,6 +1165,7 @@ class SemanticScholarAPI(BaseSearchAPI):
             self._key_idx = (self._key_idx + 1) % len(self._keys)
             self.api_key = self._keys[self._key_idx]
 
+    @with_circuit_breaker("semantic_scholar", failure_threshold=5, recovery_timeout=60)
     @retry(stop=stop_after_attempt(3),
            wait=wait_exponential(min=2, max=10),
            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)))
@@ -1227,6 +1235,7 @@ class CrossRefAPI(BaseSearchAPI):
         super().__init__(rate=50)
         self.mailto = os.getenv("CROSSREF_EMAIL", "research@fourhosts.ai")
 
+    @with_circuit_breaker("crossref_search", failure_threshold=5, recovery_timeout=60)
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         params = {

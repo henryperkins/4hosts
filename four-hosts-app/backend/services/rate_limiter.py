@@ -8,8 +8,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, Tuple
 from collections import defaultdict, deque
 import redis
+import os
+import re
 
 from utils.async_utils import run_in_thread
+from utils.security import ip_validator, token_validator
 import json
 import logging
 from fastapi import HTTPException, Request, status
@@ -298,6 +301,8 @@ class RateLimitMiddleware:
 
     def __init__(self, rate_limiter: RateLimiter):
         self.rate_limiter = rate_limiter
+        self.enforce_identifier = os.getenv("RATE_LIMIT_ENFORCE_IDENTIFIER", "1").lower() in ("1", "true", "yes")
+        self.default_anon_limit = int(os.getenv("RATE_LIMIT_ANON_RPM", "10"))
 
     async def __call__(self, request: Request, call_next):
         """Process request with rate limiting"""
@@ -326,12 +331,24 @@ class RateLimitMiddleware:
         # Extract identifier (API key or user ID from auth)
         identifier = await self._extract_identifier(request)
         if not identifier:
-            return JSONResponse(
-                status_code=401, content={"error": "Authentication required"}
-            )
+            if self.enforce_identifier:
+                # Reject requests without valid identifier
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Authentication required for API access"}
+                )
+            else:
+                # Allow with strict anonymous limits
+                client_ip = self._get_client_ip(request)
+                if not client_ip:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "Unable to identify request source"}
+                    )
+                identifier = f"anon:{client_ip}"
 
         # Extract role from auth
-        role = await self._extract_role(request)
+        role = await self._extract_role(request) if identifier and not identifier.startswith("anon:") else UserRole.FREE
 
         # Check rate limit
         is_allowed, limit_info = await self.rate_limiter.check_rate_limit(
@@ -371,31 +388,73 @@ class RateLimitMiddleware:
 
     async def _extract_identifier(self, request: Request) -> Optional[str]:
         """Extract identifier from request (API key or user ID)"""
-        # Check for API key in header
-        api_key = request.headers.get("X-API-Key")
-        if api_key:
-            api_key_info = await get_api_key_info(api_key)
-            if api_key_info:
-                # Store API key info in request state for role extraction
-                request.state.api_key_info = api_key_info
-                return f"api_key:{api_key_info.user_id}"
+        try:
+            # Priority 1: Check request state for already authenticated user
+            if hasattr(request.state, "user") and request.state.user:
+                user_id = getattr(request.state.user, "id", None)
+                if user_id:
+                    return f"user:{user_id}"
+
+            # Priority 2: Check for API key in header
+            api_key = request.headers.get("X-API-Key", "").strip()
+            if api_key and len(api_key) < 256:  # Sanity check
+                try:
+                    api_key_info = await get_api_key_info(api_key)
+                    if api_key_info:
+                        # Store API key info in request state for role extraction
+                        request.state.api_key_info = api_key_info
+                        return f"api_key:{api_key_info.user_id}"
+                except Exception as e:
+                    logger.warning(f"API key validation error: {e}")
+
+            # Priority 3: Check for Bearer token
+            auth_header = request.headers.get("Authorization", "").strip()
+            token = token_validator.validate_bearer_header(auth_header)
+            if token:
+                try:
+                    from services.auth_service import decode_token
+                    payload = await decode_token(token)
+                    # Store token data in request state for role extraction
+                    request.state.token_data = payload
+                    user_id = payload.get("user_id")
+                    if user_id:
+                        return f"user:{user_id}"
+                except Exception as e:
+                    logger.debug(f"Bearer token validation error: {e}")
+
+            # No valid authentication found
             return None
 
-        # Check for Bearer token
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            try:
-                token = auth_header.split(" ")[1]
-                from services.auth_service import decode_token
+        except Exception as e:
+            logger.error(f"Error extracting identifier: {e}")
+            return None
 
-                payload = await decode_token(token)
-                # Store token data in request state for role extraction
-                request.state.token_data = payload
-                return f"user:{payload.get('user_id')}"
-            except Exception:
-                return None
+    def _get_client_ip(self, request: Request) -> Optional[str]:
+        """Extract client IP address from request"""
+        try:
+            # Check X-Forwarded-For header with validation
+            forwarded = request.headers.get("X-Forwarded-For", "").strip()
+            if forwarded:
+                extracted_ip = ip_validator.extract_from_forwarded(forwarded)
+                if extracted_ip:
+                    return extracted_ip
 
-        return None
+            # Check X-Real-IP header
+            real_ip = request.headers.get("X-Real-IP", "").strip()
+            if real_ip and ip_validator.validate_ip(real_ip):
+                return real_ip
+
+            # Fall back to direct client IP
+            if request.client and request.client.host:
+                client_host = str(request.client.host)
+                if ip_validator.validate_ip(client_host):
+                    return client_host
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error extracting client IP: {e}")
+            return None
 
     async def _extract_role(self, request: Request) -> UserRole:
         """Extract user role from request"""
