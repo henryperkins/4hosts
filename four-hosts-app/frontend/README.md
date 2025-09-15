@@ -159,10 +159,12 @@ Users can set default values for:
 
 ## Security
 
-- JWT tokens stored in localStorage
-- Automatic token refresh
-- Protected routes require authentication
-- CORS configured for API communication
+- Cookie-based auth: the backend issues httpOnly cookies for access/refresh tokens. The frontend never stores tokens in `localStorage`.
+- CSRF protection: all state-changing requests include an `X-CSRF-Token` header fetched from `/api/csrf-token`.
+- Credentials: all API requests use `credentials: 'include'` so cookies flow via the Vite dev proxy (`/v1`, `/auth`, `/api`, `/ws`).
+- Automatic refresh: the frontend refreshes cookies via `/auth/refresh` when a `401` occurs.
+- Protected routes require authentication.
+- CORS/CSP: in production the app is served behind Nginx with a strict Content Security Policy. For cross-origin APIs, adjust `connect-src` or serve API at the same origin.
 
 ## Browser Support
 

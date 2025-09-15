@@ -102,6 +102,10 @@ async def register(user_data: UserCreate, request: Request, response: Response):
 @router.post("/login")
 async def login(login_data: UserLogin, response: Response, request: Request):
     """Login with email and password"""
+    request_id = getattr(request.state, 'request_id', 'unknown')
+    logger.info(f"Login attempt for email: {login_data.email} "
+                f"[req_id: {request_id}]")
+
     # Convert to auth module's UserLogin model
     from services.auth_service import UserLogin as AuthUserLogin
 
@@ -109,9 +113,24 @@ async def login(login_data: UserLogin, response: Response, request: Request):
         email=login_data.email, password=login_data.password
     )
 
-    user = await real_auth_service.authenticate_user(auth_login_data)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Enhanced authentication with detailed failure logging
+    try:
+        user = await real_auth_service.authenticate_user(auth_login_data)
+        if not user:
+            logger.warning(
+                f"Login failed for {login_data.email}: "
+                f"user_not_found_or_invalid_password "
+                f"[req_id: {request_id}]"
+            )
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Login authentication error for {login_data.email}: "
+            f"{str(e)} [req_id: {request_id}]"
+        )
+        raise HTTPException(status_code=401, detail="Authentication failed")
 
     access_token = create_access_token(
         {"user_id": str(user.id), "email": user.email, "role": user.role.value}
@@ -275,7 +294,7 @@ async def get_current_user_info(current_user=Depends(get_current_user)):
         db_user = result.scalars().first()
         created_at = (
             db_user.created_at.isoformat()
-            if db_user and db_user.created_at
+            if db_user and db_user.created_at is not None
             else datetime.utcnow().isoformat()
         )
         is_active = db_user.is_active if db_user else True
@@ -372,3 +391,40 @@ async def get_user_preferences(response: Response, current_user=Depends(get_curr
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")
     return {"preferences": profile.get("preferences", {})}
+
+
+@router.get("/debug/status")
+async def auth_debug_status(request: Request):
+    """
+    Debug endpoint to check authentication state and CSRF tokens.
+    Only available in development mode.
+    """
+    if is_production():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Check cookies and headers
+    csrf_cookie = request.cookies.get("csrf_token")
+    csrf_header = request.headers.get("X-CSRF-Token")
+    access_token_cookie = request.cookies.get("access_token")
+    auth_header = request.headers.get("Authorization")
+
+    # Check HTTPS detection
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_https = forwarded_proto == "https" or request.url.scheme == "https"
+
+    return {
+        "cookies": {
+            "csrf_token": "present" if csrf_cookie else "missing",
+            "access_token": "present" if access_token_cookie else "missing",
+        },
+        "headers": {
+            "csrf_token": "present" if csrf_header else "missing",
+            "authorization": "present" if auth_header else "missing",
+        },
+        "csrf_match": csrf_cookie == csrf_header if csrf_cookie and csrf_header else False,
+        "https_detected": is_https,
+        "forwarded_proto": forwarded_proto,
+        "url_scheme": request.url.scheme,
+        "client_host": str(request.client.host) if request.client else "unknown",
+        "request_id": getattr(request.state, 'request_id', 'unknown')
+    }

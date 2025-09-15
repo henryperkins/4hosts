@@ -86,7 +86,7 @@ export const InputField = forwardRef<
         >
           {label}
           {props.required && (
-            <span className="text-red-500 ml-1" aria-label="required">*</span>
+            <span className="text-error ml-1" aria-label="required">*</span>
           )}
         </label>
       )}

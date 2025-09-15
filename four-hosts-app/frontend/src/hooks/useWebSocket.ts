@@ -16,7 +16,8 @@ export function useWebSocket({ researchId, onMessage, enabled = true }: UseWebSo
       return
     }
 
-    const apiUrl = new URL(import.meta.env.VITE_API_BASE_URL || window.location.origin)
+    // Keep naming consistent with the rest of the app (services/api.ts)
+    const apiUrl = new URL(import.meta.env.VITE_API_URL || window.location.origin)
     const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${wsProtocol}//${apiUrl.host}/ws/research/${researchId}`
     

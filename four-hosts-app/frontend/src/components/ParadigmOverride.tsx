@@ -28,7 +28,6 @@ const ParadigmOverride: React.FC<Props> = ({ researchId, currentParadigm, onOver
       await api.overrideParadigm(researchId, selected)
       onOverride?.(selected)
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(e)
       alert((e as Error).message)
     } finally {

@@ -12,6 +12,8 @@ FILES=(
   "$ROOT/src/components/Navigation.tsx"
   "$ROOT/src/components/MetricsDashboard.tsx"
   "$ROOT/src/components/ResearchProgress.tsx"
+  "$ROOT/src/components/ParadigmDisplay.tsx"
+  "$ROOT/src/components/ErrorBoundary.tsx"
 )
 
 # Patterns that must not appear (raw Tailwind palette usage)

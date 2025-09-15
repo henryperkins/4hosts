@@ -117,6 +117,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   // Track granular layer progress within Context-Engineering (Write/Rewrite/Select/Optimize/Compress/Isolate)
   const CE_LAYERS = ['Write', 'Rewrite', 'Select', 'Optimize', 'Compress', 'Isolate'] as const
   const [ceLayerProgress, setCeLayerProgress] = useState<{ done: number; total: number }>({ done: 0, total: 6 })
+  const CE_LEN = CE_LAYERS.length
   const [determinateProgress, setDeterminateProgress] = useState<{ done: number; total: number } | null>(null)
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null)
   const [currentPhase, setCurrentPhase] = useState<string>('initialization')
@@ -130,6 +131,8 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const currentStatusRef = useRef<ProgressUpdate['status']>('pending')
   const onCompleteRef = useRef<typeof onComplete>(onComplete)
   const onCancelRef = useRef<typeof onCancel>(onCancel)
+  const startTimeRef = useRef<number | null>(null)
+  useEffect(() => { startTimeRef.current = startTime }, [startTime])
 
   useEffect(() => {
     currentStatusRef.current = currentStatus
@@ -156,7 +159,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         window.addEventListener('resize', checkMobile)
         return () => window.removeEventListener('resize', checkMobile)
       }
-    } catch {}
+    } catch { /* noop */ }
   }, [])
 
   useEffect(() => {
@@ -171,7 +174,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
       let statusUpdate: WebSocketData | undefined
 
       switch (message.type) {
-        case 'research_progress':
+        case 'research_progress': {
           // Normalize status for UI
           const s = (data.status || '').toLowerCase()
           const normalized = s === 'in_progress' ? 'processing'
@@ -209,10 +212,11 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             setCurrentPhase(data.phase)
             if (data.phase !== 'context_engineering') {
               // Reset CE layer state when we leave context-engineering
-              setCeLayerProgress({ done: 0, total: CE_LAYERS.length })
+              setCeLayerProgress({ done: 0, total: CE_LEN })
             }
           }
           break
+        }
         case 'system.notification':
           // Handle MCP tool events and other notifications
           if (data.server && data.tool) {
@@ -289,7 +293,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             status: 'processing',
             message: `Research started for query: ${data.query}`
           }
-          if (!startTime) setStartTime(Date.now())
+          if (!startTimeRef.current) setStartTime(Date.now())
           break
         case 'search.started':
           statusUpdate = {
@@ -329,7 +333,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             duplicatesRemoved: (prev.duplicatesRemoved || 0) + (data.removed || 0)
           }))
           break
-        default:
+        default: {
           // Handle legacy message format
           const s2 = (data.status || '').toLowerCase()
           const normalized2 = s2 === 'in_progress' ? 'processing'
@@ -341,6 +345,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             progress: data.progress,
             message: data.message
           }
+        }
       }
 
       // Assign priority based on event type
@@ -400,7 +405,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     return () => {
       api.unsubscribeFromResearch(researchId)
     }
-  }, [researchId])
+  }, [researchId, CE_LEN])
 
   // Elapsed time ticker
   useEffect(() => {

@@ -121,7 +121,7 @@ export interface GeneratedAnswer {
   confidence_score?: number
   synthesis_quality?: number
   generation_time?: number
-  metadata?: Record<string, any>
+  metadata?: Record<string, unknown>
 }
 
 export interface AnswerSection {

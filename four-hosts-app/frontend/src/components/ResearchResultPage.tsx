@@ -61,7 +61,7 @@ export const ResearchResultPage = () => {
     // Poll every 2s until completion
     pollRef.current = setInterval(fetchOnce, 2000)
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // We intentionally do not include params.id to avoid re-fetching on same id
   }, [id])
 
   if (isLoading) {

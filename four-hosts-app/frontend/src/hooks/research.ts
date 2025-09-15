@@ -3,7 +3,7 @@ import { queryClient } from "../services/queryClient";
 
 const baseUrl = "/"; // Use Vite proxy with relative paths so cookies stay on 5173
 
-async function api(path: string, init: RequestInit = {}) {
+async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(new URL(path, window.location.origin).pathname.startsWith('/')
     ? path
     : new URL(path, baseUrl).toString(), {
@@ -18,9 +18,9 @@ async function api(path: string, init: RequestInit = {}) {
   // Parse JSON safely
   const text = await res.text();
   try {
-    return text ? JSON.parse(text) : {};
+    return (text ? JSON.parse(text) : {}) as T;
   } catch {
-    return {} as any;
+    return {} as T;
   }
 }
 
@@ -44,14 +44,15 @@ export function useResearchResults(researchId: string) {
 
 export function useSubmitResearch() {
   return useMutation({
-    mutationFn: (body: { query: string; options: any }) =>
+    mutationFn: (body: { query: string; options: import('../types').ResearchOptions }) =>
       api(`/research/query`, {
         method: "POST",
         body: JSON.stringify(body),
       }),
     onSuccess: (data) => {
-      if (data?.research_id) {
-        queryClient.invalidateQueries({ queryKey: ["research", "status", data.research_id] });
+      const d = data as { research_id?: string }
+      if (d?.research_id) {
+        queryClient.invalidateQueries({ queryKey: ["research", "status", d.research_id] });
       }
     },
   });

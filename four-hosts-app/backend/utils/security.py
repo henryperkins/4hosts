@@ -28,7 +28,7 @@ EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 # Dangerous pattern detection for ReDoS prevention
 REDOS_PATTERNS = [
     re.compile(r'(\+|\*|\{[0-9,]+\})\s*[^\)]*?(\+|\*|\{[0-9,]+\})'),  # Nested quantifiers
-    re.compile(r'\(\?\P<'),  # Named groups that can be exploited
+    re.compile(r'\(\?P<'),  # Named groups that can be exploited
     re.compile(r'\\[0-9]{4,}'),  # Excessive backreferences
 ]
 

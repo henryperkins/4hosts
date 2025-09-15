@@ -26,7 +26,6 @@ const WebhooksPage: React.FC = () => {
       const data = await api.listWebhooks()
       setWebhooks(data)
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(e)
       alert('Failed to load webhooks')
     } finally {
@@ -46,7 +45,6 @@ const WebhooksPage: React.FC = () => {
       setUrl('')
       await fetchWebhooks()
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(e)
       alert((e as Error).message)
     } finally {
@@ -61,7 +59,6 @@ const WebhooksPage: React.FC = () => {
       await api.deleteWebhook(id)
       await fetchWebhooks()
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(e)
       alert('Failed to delete')
     } finally {

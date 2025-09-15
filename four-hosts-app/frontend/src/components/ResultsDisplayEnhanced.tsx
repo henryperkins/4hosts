@@ -250,10 +250,20 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   const sections = answer.sections || []
   const actionItems = answer.action_items || []
   const summary = answer.summary || 'No summary available'
-  const answerMetadata: Record<string, any> | undefined = (answer as any)?.metadata
-  const evidenceQuotes: any[] = Array.isArray(answerMetadata?.evidence_quotes)
-    ? (answerMetadata!.evidence_quotes as any[])
-    : (Array.isArray((results as any)?.metadata?.evidence_quotes) ? (results as any).metadata.evidence_quotes : [])
+  const answerMetadata = (answer as { metadata?: Record<string, unknown> }).metadata
+  const rawEvidence = Array.isArray((answerMetadata as any)?.evidence_quotes)
+    ? ((answerMetadata as any).evidence_quotes as unknown[])
+    : (Array.isArray((results as any)?.metadata?.evidence_quotes) ? ((results as any).metadata.evidence_quotes as unknown[]) : [])
+  const evidenceQuotes = rawEvidence
+    .map((q) => {
+      if (typeof q === 'string') return { quote: q, url: '' }
+      if (q && typeof q === 'object' && 'quote' in q) {
+        const o = q as { quote: string; url?: string; domain?: string; title?: string; credibility_score?: number; published_date?: string; id?: string }
+        return { url: '', ...o, url: o.url ?? '' }
+      }
+      return null
+    })
+    .filter((q): q is { quote: string; url: string; domain?: string; title?: string; credibility_score?: number; published_date?: string; id?: string } => !!q)
   
   const displayedCitations = showAllCitations
     ? citations

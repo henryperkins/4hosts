@@ -28,22 +28,22 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return this.props.fallback || (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50">
-          <div className="max-w-md w-full bg-white shadow-lg rounded-lg p-8">
-            <h2 className="text-2xl font-bold text-red-600 mb-4">Something went wrong</h2>
-            <p className="text-gray-600 mb-4">
+        <div className="min-h-screen flex items-center justify-center bg-surface">
+          <div className="max-w-md w-full bg-surface shadow-lg rounded-lg p-8 border border-border">
+            <h2 className="text-2xl font-bold text-error mb-4">Something went wrong</h2>
+            <p className="text-text-muted mb-4">
               {this.state.error?.message || 'An unexpected error occurred'}
             </p>
             {this.state.error?.message?.includes('backend') && (
-              <div className="bg-yellow-50 border border-yellow-200 rounded p-4 mb-4">
-                <p className="text-sm text-yellow-800">
+              <div className="bg-surface-subtle border border-border rounded p-4 mb-4">
+                <p className="text-sm text-text">
                   The backend server appears to be offline. Please ensure it's running on http://localhost:8000
                 </p>
               </div>
             )}
             <button
               onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              className="btn-primary"
             >
               Reload Page
             </button>
