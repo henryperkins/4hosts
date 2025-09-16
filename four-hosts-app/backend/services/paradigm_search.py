@@ -51,10 +51,67 @@ class SearchContext:
     language: str = "en"
 
 
-class DoloresSearchStrategy:
+class BaseSearchStrategy:
+    """Base class with adaptive query generation"""
+
+    def get_adaptive_query_limit(self, query: str) -> int:
+        """Determine optimal number of queries based on complexity"""
+        import os
+
+        # Allow override via environment variable
+        override = os.getenv("ADAPTIVE_QUERY_LIMIT")
+        if override:
+            try:
+                return int(override)
+            except ValueError:
+                pass
+
+        word_count = len(query.split())
+
+        # Simple queries (1-3 words) need fewer variations
+        if word_count <= 3:
+            return 2
+        # Moderate complexity (4-7 words)
+        elif word_count <= 7:
+            return 4
+        # Complex queries (8-15 words)
+        elif word_count <= 15:
+            return 6
+        # Very complex queries (>15 words) - max variations
+        else:
+            return 8
+
+    def assess_query_specificity(self, query: str) -> str:
+        """Assess if query is specific or broad"""
+        # Check for specific indicators
+        specific_indicators = [
+            '"',  # Exact phrases
+            'site:',  # Site-specific
+            'filetype:',  # File type specific
+            'inurl:',  # URL specific
+            'intitle:',  # Title specific
+        ]
+
+        has_specific = any(ind in query.lower() for ind in specific_indicators)
+        word_count = len(query.split())
+
+        # Check for proper nouns (capitalized words)
+        words = query.split()
+        proper_nouns = sum(1 for w in words if w and w[0].isupper())
+
+        if has_specific or proper_nouns >= 2:
+            return "specific"
+        elif word_count <= 3:
+            return "broad"
+        else:
+            return "moderate"
+
+
+class DoloresSearchStrategy(BaseSearchStrategy):
     """Revolutionary paradigm - Focuses on investigative journalism and activism"""
 
     def __init__(self):
+        super().__init__()
         self.paradigm = "dolores"
 
         # Query modifiers that expose systemic issues
@@ -163,7 +220,9 @@ class DoloresSearchStrategy:
                 }
             )
 
-        return queries[:8]  # Limit to 8 queries
+        # Use adaptive limit based on query complexity
+        limit = self.get_adaptive_query_limit(base_query)
+        return queries[:limit]
     
     def _clean_query(self, query: str) -> str:
         """Remove common fluff words to improve search relevance"""
@@ -301,10 +360,11 @@ class DoloresSearchStrategy:
         return min(1.0, score)
 
 
-class TeddySearchStrategy:
+class TeddySearchStrategy(BaseSearchStrategy):
     """Devotion paradigm - Focuses on community support and care resources"""
 
     def __init__(self):
+        super().__init__()
         self.paradigm = "teddy"
 
         self.query_modifiers = [
@@ -401,7 +461,9 @@ class TeddySearchStrategy:
                 }
             )
 
-        return queries[:8]
+        # Adaptive query limit based on complexity
+        query_limit = self.get_adaptive_query_limit(base_query)
+        return queries[:query_limit]
     
     def _clean_query_for_support(self, query: str) -> str:
         """Clean query for support-focused searches"""
@@ -531,10 +593,11 @@ class TeddySearchStrategy:
         return min(1.0, score)
 
 
-class BernardSearchStrategy:
+class BernardSearchStrategy(BaseSearchStrategy):
     """Analytical paradigm - Focuses on academic research and data"""
 
     def __init__(self):
+        super().__init__()
         self.paradigm = "bernard"
 
         self.query_modifiers = [
@@ -639,7 +702,9 @@ class BernardSearchStrategy:
                 "source_filter": "academic",
             })
 
-        return queries[:10]  # More queries for comprehensive research
+        # Adaptive query limit for academic research (slightly higher base)
+        query_limit = min(10, self.get_adaptive_query_limit(base_query) + 2)
+        return queries[:query_limit]
     
     def _prepare_academic_query(self, query: str) -> str:
         """Prepare query for academic search by removing colloquialisms"""
@@ -779,10 +844,11 @@ class BernardSearchStrategy:
         return min(1.0, score)
 
 
-class MaeveSearchStrategy:
+class MaeveSearchStrategy(BaseSearchStrategy):
     """Strategic paradigm - Focuses on business intelligence and strategy"""
 
     def __init__(self):
+        super().__init__()
         self.paradigm = "maeve"
 
         self.query_modifiers = [
@@ -879,7 +945,9 @@ class MaeveSearchStrategy:
                 }
             )
 
-        return queries[:8]
+        # Adaptive query limit based on complexity
+        query_limit = self.get_adaptive_query_limit(base_query)
+        return queries[:query_limit]
     
     def _prepare_strategic_query(self, query: str) -> str:
         """Prepare query for strategic/business search"""

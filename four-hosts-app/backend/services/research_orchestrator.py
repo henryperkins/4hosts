@@ -217,8 +217,20 @@ class ResultDeduplicator:
                 is_dup = False
                 for sh2, kept in reps:
                     try:
-                        # Treat <=3 bits difference as duplicate; also fall back to title/snippet Jaccard
-                        if self._hamdist64(sh, sh2) <= 3:
+                        # Adaptive threshold based on result type and domain
+                        result_type = getattr(r, 'result_type', None) or (r.metadata or {}).get('result_type', 'web')
+                        domain = getattr(r, 'domain', None) or (r.metadata or {}).get('domain', '')
+
+                        # More lenient for academic and government sources
+                        if result_type == 'academic' or '.edu' in domain or '.gov' in domain or 'arxiv' in domain:
+                            hamming_threshold = 8  # Very lenient for academic papers
+                        elif result_type in ('news', 'blog'):
+                            hamming_threshold = 5  # Moderate for news/blogs
+                        else:
+                            hamming_threshold = 3  # Strict for general web content
+
+                        # Check SimHash with adaptive threshold
+                        if self._hamdist64(sh, sh2) <= hamming_threshold:
                             is_dup = True
                         else:
                             sim = self._calculate_content_similarity(r, kept)

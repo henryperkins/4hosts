@@ -107,32 +107,47 @@ def _domain_from(url: str) -> str:
 async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     import aiohttp  # local import to avoid hard dependency at import time
     import logging
+    import os
 
     logger = logging.getLogger(__name__)
 
     out: Dict[str, str] = {}
     fetch_failures = []
-    timeout = aiohttp.ClientTimeout(total=30)
+
+    # Use individual timeouts per URL for better success rate
+    per_url_timeout = float(os.getenv("EVIDENCE_PER_URL_TIMEOUT", "10"))
+
+    # Bounded concurrency to avoid overwhelming servers and improve stability
+    max_concurrent = int(os.getenv("EVIDENCE_FETCH_CONCURRENCY", "10"))
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    # Don't apply a session-wide timeout - let each URL have its own timeout
     headers = {"User-Agent": "FourHostsResearch/1.0 (+evidence-builder)"}
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        tasks = []
-        for u in urls:
-            async def run(u=u):
+    async with aiohttp.ClientSession(headers=headers) as session:
+        # Create individual fetch tasks with their own timeouts
+        async def fetch_single(url: str) -> None:
+            async with semaphore:  # Limit concurrent fetches
                 try:
-                    txt = await fetch_and_parse_url(session, u)
-                    out[u] = txt or ""
+                    # Apply timeout using asyncio.wait_for for per-URL control
+                    txt = await asyncio.wait_for(
+                        fetch_and_parse_url(session, url),
+                        timeout=per_url_timeout
+                    )
+                    out[url] = txt or ""
                     if not txt:
-                        fetch_failures.append(f"{u}: empty content")
+                        fetch_failures.append(f"{url}: empty content")
                 except asyncio.TimeoutError:
-                    out[u] = ""
-                    fetch_failures.append(f"{u}: timeout after 30s")
+                    out[url] = ""
+                    fetch_failures.append(f"{url}: timeout after {per_url_timeout}s")
                 except aiohttp.ClientError as e:
-                    out[u] = ""
-                    fetch_failures.append(f"{u}: network error - {type(e).__name__}")
+                    out[url] = ""
+                    fetch_failures.append(f"{url}: network error - {type(e).__name__}")
                 except Exception as e:
-                    out[u] = ""
-                    fetch_failures.append(f"{u}: {type(e).__name__}")
-            tasks.append(asyncio.create_task(run()))
+                    out[url] = ""
+                    fetch_failures.append(f"{url}: {type(e).__name__}")
+
+        # Run all fetches in parallel with bounded concurrency via semaphore
+        tasks = [asyncio.create_task(fetch_single(u)) for u in urls]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

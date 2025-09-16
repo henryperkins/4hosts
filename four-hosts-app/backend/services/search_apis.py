@@ -1928,6 +1928,8 @@ class CrossRefAPI(BaseSearchAPI):
 class SearchAPIManager:
     def __init__(self):
         self.apis: Dict[str, BaseSearchAPI] = {}
+        self.primary_api: Optional[str] = None  # Primary search provider (Brave)
+        self.fallback_apis: List[str] = []  # Fallback providers in priority order (Google, etc.)
         self.fetcher = RespectfulFetcher()
         self.rfilter = ContentRelevanceFilter()
         self._fetch_sem = asyncio.Semaphore(int(os.getenv("SEARCH_FETCH_CONCURRENCY", "8")))
@@ -1935,8 +1937,22 @@ class SearchAPIManager:
         # Quota exhaustion handling: provider -> unblock timestamp (epoch seconds)
         self.quota_blocked: Dict[str, float] = {}
 
-    def add_api(self, name: str, api: BaseSearchAPI):
+    def add_api(self, name: str, api: BaseSearchAPI, is_primary: bool = False, is_fallback: bool = False):
+        """Add a search API with optional priority designation.
+
+        Args:
+            name: API provider name
+            api: BaseSearchAPI instance
+            is_primary: If True, set as primary provider (Brave)
+            is_fallback: If True, add to fallback list (Google)
+        """
         self.apis[name] = api
+        if is_primary:
+            self.primary_api = name
+            logger.info(f"Set {name} as primary search provider")
+        elif is_fallback:
+            self.fallback_apis.append(name)
+            logger.info(f"Added {name} as fallback search provider")
 
     async def __aenter__(self):
         for api in self.apis.values():
@@ -1962,7 +1978,157 @@ class SearchAPIManager:
                 self._fallback_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
             return self._fallback_session
 
+    async def search_with_priority(self, query: str, cfg: SearchConfig, progress_callback: Optional[Any] = None, research_id: Optional[str] = None) -> List[SearchResult]:
+        """Search with priority: Try primary (Brave) first, then fallback (Google) if needed."""
+        all_results = []
+        now_ts = time.time()
+        min_results = int(os.getenv("SEARCH_MIN_RESULTS_THRESHOLD", "5"))
+
+        # Step 1: Try primary API (Brave) first
+        if self.primary_api and self.primary_api in self.apis:
+            if self.quota_blocked.get(self.primary_api, 0) <= now_ts:
+                logger.info(f"Searching with primary provider: {self.primary_api}")
+                try:
+                    results = await self._search_single_provider(
+                        self.primary_api, self.apis[self.primary_api], query, cfg,
+                        progress_callback, research_id
+                    )
+                    if results:
+                        all_results.extend(results)
+                        logger.info(f"Primary provider {self.primary_api} returned {len(results)} results")
+                except Exception as e:
+                    logger.warning(f"Primary provider {self.primary_api} failed: {e}")
+            else:
+                logger.warning(f"Primary provider {self.primary_api} is rate-limited")
+
+        # Step 2: If primary didn't return enough results, try fallbacks (Google)
+        if len(all_results) < min_results:
+            for fallback_name in self.fallback_apis:
+                if fallback_name in self.apis and self.quota_blocked.get(fallback_name, 0) <= now_ts:
+                    logger.info(f"Insufficient results ({len(all_results)}), trying fallback: {fallback_name}")
+                    try:
+                        fallback_results = await self._search_single_provider(
+                            fallback_name, self.apis[fallback_name], query, cfg,
+                            progress_callback, research_id
+                        )
+                        if fallback_results:
+                            all_results.extend(fallback_results)
+                            logger.info(f"Fallback {fallback_name} added {len(fallback_results)} results")
+                    except Exception as e:
+                        logger.warning(f"Fallback provider {fallback_name} failed: {e}")
+
+        # Step 3: Run academic providers in parallel (always)
+        academic_results = await self._search_academic_parallel(query, cfg, progress_callback, research_id)
+        all_results.extend(academic_results)
+
+        # Process and deduplicate results
+        return await self._process_results(all_results, cfg)
+
+    async def _search_single_provider(self, name: str, api: BaseSearchAPI, query: str, cfg: SearchConfig,
+                                     progress_callback: Optional[Any], research_id: Optional[str]) -> List[SearchResult]:
+        """Search using a single provider with timeout and error handling."""
+        if progress_callback and research_id:
+            try:
+                await progress_callback.report_search_started(research_id, query, name, 1, 1)
+            except Exception:
+                pass
+
+        timeout = float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
+        try:
+            results = await asyncio.wait_for(api.search_with_variations(query, cfg), timeout=timeout)
+
+            if progress_callback and research_id:
+                try:
+                    await progress_callback.report_search_completed(research_id, query, len(results) if results else 0)
+                except Exception:
+                    pass
+
+            return results if results else []
+        except asyncio.TimeoutError:
+            logger.warning(f"Provider timeout ({timeout:.1f}s): {name}")
+            raise
+        except RateLimitedError:
+            # Apply rate limit cooldown
+            cooldown = float(os.getenv("SEARCH_QUOTA_COOLDOWN_SEC", "3600"))
+            self.quota_blocked[name] = time.time() + cooldown
+            logger.warning(f"{name} rate limited - cooling down for {int(cooldown)}s")
+            raise
+        except CircuitOpenError as e:
+            logger.warning(f"{name} circuit breaker open: {e}")
+            raise
+
+    async def _search_academic_parallel(self, query: str, cfg: SearchConfig,
+                                       progress_callback: Optional[Any], research_id: Optional[str]) -> List[SearchResult]:
+        """Search academic providers in parallel."""
+        academic_providers = ['arxiv', 'crossref', 'semanticscholar', 'pubmed']
+        tasks = {}
+        now_ts = time.time()
+
+        for name in academic_providers:
+            if name in self.apis and self.quota_blocked.get(name, 0) <= now_ts:
+                api = self.apis[name]
+                tasks[name] = asyncio.create_task(self._search_provider_silent(name, api, query, cfg))
+
+        if not tasks:
+            return []
+
+        results = []
+        timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
+        done, pending = await asyncio.wait(tasks.values(), timeout=timeout, return_when=asyncio.ALL_COMPLETED)
+
+        for task in done:
+            try:
+                task_results = task.result()
+                if task_results:
+                    results.extend(task_results)
+            except Exception:
+                pass
+
+        for task in pending:
+            task.cancel()
+
+        return results
+
+    async def _search_provider_silent(self, name: str, api: BaseSearchAPI, query: str, cfg: SearchConfig) -> List[SearchResult]:
+        """Search without progress reporting (for parallel academic searches)."""
+        try:
+            timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
+            return await asyncio.wait_for(api.search_with_variations(query, cfg), timeout=timeout)
+        except Exception as e:
+            logger.debug(f"Academic provider {name} failed: {e}")
+            return []
+
+    async def _process_results(self, results: List[SearchResult], cfg: SearchConfig) -> List[SearchResult]:
+        """Deduplicate results and limit to max_results."""
+        # Deduplicate by URL
+        seen_urls = set()
+        unique_results = []
+        for res in results:
+            if res.url and res.url not in seen_urls:
+                seen_urls.add(res.url)
+                unique_results.append(res)
+
+        # Sort by relevance/credibility if available
+        unique_results.sort(key=lambda r: getattr(r, 'credibility_score', 0.5), reverse=True)
+
+        # Limit to max results
+        if cfg.max_results:
+            unique_results = unique_results[:cfg.max_results]
+
+        return unique_results
+
     async def search_all(self, query: str, cfg: SearchConfig, progress_callback: Optional[Any] = None, research_id: Optional[str] = None) -> List[SearchResult]:
+        """Main search method that uses priority-based search with Brave as primary and Google as fallback."""
+        # Use the new priority-based search method
+        use_priority = os.getenv("SEARCH_USE_PRIORITY_MODE", "1") not in {"0", "false", "no"}
+        if use_priority:
+            return await self.search_with_priority(query, cfg, progress_callback, research_id)
+
+        # Legacy parallel search mode (if priority mode is disabled)
+        return await self.search_all_parallel(query, cfg, progress_callback, research_id)
+
+    async def search_all_parallel(self, query: str, cfg: SearchConfig, progress_callback: Optional[Any] = None, research_id: Optional[str] = None) -> List[SearchResult]:
+        """Legacy parallel search method (all providers at once)."""
         # Provider-specific start events so UI shows "Searching Brave...", "Searching Google..."
         if progress_callback and research_id:
             try:
@@ -2162,9 +2328,19 @@ class SearchAPIManager:
                     prov_to = float(os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC", "25") or 25.0)
                 except Exception:
                     prov_to = 25.0
-                fetch_budget = max(2.0, task_to - prov_to - 2.0)
-            # Launch fetch tasks and enforce budget
-            fetch_tasks = [asyncio.create_task(_fetch(r)) for r in all_res]
+                # Dynamic content fetch budget based on result count
+                # Minimum 10s to give content fetching a real chance
+                # Scale with results: 0.5s per result up to 30s max
+                result_count = len(all_res)
+                fetch_budget = min(30.0, max(10.0, 0.5 * result_count))
+
+            # Sort results by relevance score to prioritize top results
+            sorted_results = sorted(all_res,
+                                  key=lambda r: getattr(r, 'relevance_score', 0.5),
+                                  reverse=True)
+
+            # Launch fetch tasks with prioritization
+            fetch_tasks = [asyncio.create_task(_fetch(r)) for r in sorted_results]
             done, pending = await asyncio.wait(set(fetch_tasks), timeout=fetch_budget)
             if pending:
                 for t in pending:
@@ -2210,14 +2386,16 @@ class SearchAPIManager:
 def create_search_manager() -> SearchAPIManager:
     mgr = SearchAPIManager()
 
+    # Brave as PRIMARY provider
     brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
     if brave_key and os.getenv("SEARCH_DISABLE_BRAVE", "0") not in {"1", "true", "yes"}:
-        mgr.add_api("brave", BraveSearchAPI(brave_key))
+        mgr.add_api("brave", BraveSearchAPI(brave_key), is_primary=True)
 
+    # Google as FALLBACK provider
     g_key = os.getenv("GOOGLE_CSE_API_KEY")
     g_cx = os.getenv("GOOGLE_CSE_CX")
     if g_key and g_cx and os.getenv("SEARCH_DISABLE_GOOGLE", "0") not in {"1", "true", "yes"}:
-        mgr.add_api("google_cse", GoogleCustomSearchAPI(g_key, g_cx))
+        mgr.add_api("google_cse", GoogleCustomSearchAPI(g_key, g_cx), is_fallback=True)
 
     # Academic/open providers
     if os.getenv("SEARCH_DISABLE_ARXIV", "0") not in {"1", "true", "yes"}:
