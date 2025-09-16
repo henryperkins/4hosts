@@ -69,6 +69,7 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
+
 def bernard_min_relevance() -> float:
     try:
         return float(os.getenv("SEARCH_MIN_RELEVANCE_BERNARD", "0.15"))
@@ -674,6 +675,18 @@ class UnifiedResearchOrchestrator:
         self.search_manager = create_search_manager()
         # SearchAPIManager uses context manager protocol
         await self.search_manager.__aenter__()
+        # Fail fast on empty provider set to avoid silent no-op searches
+        try:
+            if not getattr(self.search_manager, "apis", {}):
+                raise RuntimeError(
+                    "No search providers configured. Set BRAVE_SEARCH_API_KEY and/or GOOGLE_CSE_* env vars, "
+                    "or enable academic providers. You can disable this check by setting SEARCH_DISABLE_FAILFAST=1."
+                )
+        except RuntimeError:
+            # Allow opt-out via env (useful for deep-research-only scenarios)
+            import os as _os
+            if _os.getenv("SEARCH_DISABLE_FAILFAST", "0") not in {"1", "true", "yes"}:
+                raise
         await cache_manager.initialize()
         await initialize_deep_research()
         # SearchAPIManager only supports search_all, not per-API search
@@ -770,6 +783,27 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # Check for cancellation before executing searches
         if await check_cancelled():
             return {"status": "cancelled", "message": "Research was cancelled"}
+
+        # Fail fast if search manager is missing or empty (misconfiguration)
+        try:
+            mgr = getattr(self, "search_manager", None)
+            if not mgr or not getattr(mgr, "apis", {}):
+                if progress_callback and research_id:
+                    try:
+                        await progress_callback.update_progress(
+                            research_id,
+                            phase="initialization",
+                            message="No search providers available. Check API keys and provider flags.",
+                            custom_data={"event": "no_search_providers"},
+                        )
+                    except Exception:
+                        pass
+                return {
+                    "status": "error",
+                    "message": "No search providers configured. Set BRAVE_SEARCH_API_KEY and/or GOOGLE_CSE_*; enable academic providers as needed.",
+                }
+        except Exception:
+            pass
 
         # Execute searches with deterministic ordering
         search_results = await self._execute_searches_deterministic(
@@ -955,6 +989,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     evidence_quotes = []
                     evidence_bundle = None
                     evidence_quotes_payload = []
+                # Respect cancellation just before heavy LLM synthesis
+                try:
+                    if await check_cancelled():
+                        return {"status": "cancelled", "message": "Research was cancelled"}
+                except Exception:
+                    pass
+
                 synthesized_answer = await self._synthesize_answer(
                     classification=classification,
                     context_engineered=context_engineered,
@@ -964,6 +1005,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     evidence_quotes=evidence_quotes_payload,
                     evidence_bundle=evidence_bundle,
                 )
+                # Honour cancellation immediately after synthesis returns
+                try:
+                    if await check_cancelled():
+                        return {"status": "cancelled", "message": "Research was cancelled"}
+                except Exception:
+                    pass
                 # Attach contradiction summary to answer metadata if available
                 try:
                     contradictions = processed_results.get("contradictions", {})
@@ -1085,18 +1132,28 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         }
 
         if distribution_map:
-            cls_details = response["metadata"].setdefault(
-                "classification_details", {}
-            )
+            md = response.get("metadata")
+            if not isinstance(md, dict):
+                md = {}
+                response["metadata"] = md
+            cls_details = md.get("classification_details")
+            if not isinstance(cls_details, dict):
+                cls_details = {}
+                md["classification_details"] = cls_details
             cls_details["distribution"] = distribution_map
         try:
             reasoning_raw = getattr(classification, "reasoning", {}) or {}
-            cls_details = response["metadata"].setdefault(
-                "classification_details", {}
-            )
+            md = response.get("metadata")
+            if not isinstance(md, dict):
+                md = {}
+                response["metadata"] = md
+            cls_details = md.get("classification_details")
+            if not isinstance(cls_details, dict):
+                cls_details = {}
+                md["classification_details"] = cls_details
             cls_details["reasoning"] = {
                 normalize_to_internal_code(host): list((steps or [])[:4])
-                for host, steps in reasoning_raw.items()
+                for host, steps in (reasoning_raw.items() if isinstance(reasoning_raw, dict) else [])
             }
         except Exception:
             pass
@@ -1436,6 +1493,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             pass
 
+        # Cooperative cancellation just before the long LLM call
+        try:
+            if research_id:
+                rec = await self.research_store.get(research_id)
+                if rec and rec.get("status") == RuntimeResearchStatus.CANCELLED:
+                    raise asyncio.CancelledError()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
         # Call the generator using the legacy signature for broad compatibility
         assert answer_orchestrator is not None, "Answer generation not available"
         answer = await answer_orchestrator.generate_answer(
@@ -1450,6 +1518,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "evidence_bundle": eb if 'eb' in locals() else None,
             },
         )
+
+        # Cooperative cancellation checkpoint after LLM call returns
+        try:
+            if research_id:
+                rec = await self.research_store.get(research_id)
+                if rec and rec.get("status") == RuntimeResearchStatus.CANCELLED:
+                    raise asyncio.CancelledError()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
         # Attach evidence quotes and isolation findings summary to answer metadata
         # so the frontend can render dedicated panels without re-fetching.
@@ -1735,10 +1814,23 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     except Exception:
                         # Continue; will drop if still empty
                         pass
-                # Require content non-empty after repair/fetch; log drops
+                # Require content non-empty after repair/fetch; log and surface drops
                 if not str(getattr(r, "content", "") or "").strip():
                     try:
                         logger.debug("[process_results] Dropping empty-content result: %s", getattr(r, "url", ""))
+                        if progress_callback and research_id:
+                            try:
+                                await progress_callback.update_progress(
+                                    research_id,
+                                    phase="filtering",
+                                    message="Dropped result with empty content",
+                                    custom_data={
+                                        "event": "empty_content_drop",
+                                        "url": getattr(r, "url", ""),
+                                    },
+                                )
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                     continue
@@ -2052,12 +2144,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             e = int(getattr(citation, "end_index", s) or s)
             body = getattr(deep_result, "content", "") or ""
             snippet = body[s:e][:200] if isinstance(body, str) else ""
-            # Synthesize URL when missing for deep_research to avoid downstream drops
-            if not url:
-                safe_oid = "deep"
-                synthesized = f"about:blank#citation-{safe_oid}-{hash(((title or snippet) or '')[:64]) & 0xFFFFFFFF}"
-                url = synthesized
-            domain = url.split('/')[2] if ('/' in url and len(url.split('/')) > 2) else url
+
+            # Do not synthesize URLs for unlinked citations. These are preserved
+            # via the evidence bundle path and should not be emitted as results.
+            if not url or not isinstance(url, str) or not url.strip():
+                continue
+
+            try:
+                domain = url.split('/')[2] if ('/' in url and len(url.split('/')) > 2) else url
+            except Exception:
+                domain = ""
             deep_search_results.append({
                 "title": title or (url.split('/')[-1] if url else "(deep research)"),
                 "url": url,
@@ -2067,7 +2163,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "credibility_score": 0.9,
                 "origin_query": getattr(context_engineered, "original_query", ""),
                 "search_api": "deep_research",
-                "metadata": {"unlinked_citation": True} if url.startswith("about:blank#citation-") else {}
+                "metadata": {}
             })
 
         return deep_search_results

@@ -1430,6 +1430,9 @@ class BaseSearchAPI:
             async with sem:
                 try:
                     return await self.search(q, cfg)
+                except RateLimitedError:
+                    # Bubble up to manager so it can apply quota cooldowns
+                    raise
                 except Exception as e:
                     logger.warning(f"{self.__class__.__name__}:{vt} failed: {e}")
                     return []
@@ -1913,6 +1916,8 @@ class SearchAPIManager:
         self.rfilter = ContentRelevanceFilter()
         self._fetch_sem = asyncio.Semaphore(int(os.getenv("SEARCH_FETCH_CONCURRENCY", "8")))
         self._fallback_session: Optional[aiohttp.ClientSession] = None
+        # Quota exhaustion handling: provider -> unblock timestamp (epoch seconds)
+        self.quota_blocked: Dict[str, float] = {}
 
     def add_api(self, name: str, api: BaseSearchAPI):
         self.apis[name] = api
@@ -1951,24 +1956,56 @@ class SearchAPIManager:
             except Exception:
                 pass
 
-        tasks = {name: asyncio.create_task(api.search_with_variations(query, cfg))
-                 for name, api in self.apis.items()}
+        # Launch one task per provider with an individual timeout budget
+        # so a single slow provider cannot stall the overall search.
+        tasks: Dict[str, asyncio.Task] = {}
+        # Resolve per-provider timeout; prefer explicit env, then fall back to overall task timeout
+        import os as _os
+        try:
+            _per_provider_to = float(_os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC") or 0.0)
+            if not _per_provider_to:
+                _per_provider_to = float(_os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC") or 0.0)
+            if not _per_provider_to:
+                _per_provider_to = float(_os.getenv("SEARCH_TASK_TIMEOUT_SEC", "25") or 25)
+        except Exception:
+            _per_provider_to = 25.0
+        # Respect quota blocks
+        now_ts = time.time()
+        for name, api in self.apis.items():
+            if self.quota_blocked.get(name, 0) > now_ts:
+                # Provider is cooling down due to quota exhaustion
+                if progress_callback and research_id:
+                    try:
+                        from services.websocket_service import connection_manager, WSMessage, WSEventType
+                        await connection_manager.broadcast_to_research(
+                            research_id,
+                            WSMessage(
+                                type=WSEventType.RATE_LIMIT_WARNING,
+                                data={
+                                    "research_id": research_id,
+                                    "limit_type": "quota_exhausted",
+                                    "provider": name,
+                                    "message": f"Provider {name} temporarily disabled due to quota exhaustion",
+                                    "cooldown_until": datetime.fromtimestamp(self.quota_blocked[name], tz=timezone.utc).isoformat(),
+                                },
+                            ),
+                        )
+                    except Exception:
+                        pass
+                continue
+            async def _run_with_timeout(_api: BaseSearchAPI) -> List[SearchResult]:
+                try:
+                    return await asyncio.wait_for(_api.search_with_variations(query, cfg), timeout=_per_provider_to)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Provider timeout ({_per_provider_to:.1f}s): {getattr(_api, '__class__', type(_api)).__name__}")
+                    return []
+            tasks[name] = asyncio.create_task(_run_with_timeout(api))
         all_res: List[SearchResult] = []
 
         if tasks:
-            # Bound overall wait per provider set to avoid blocking on a single slow API
-            import os as _os
-            try:
-                # Prefer explicit provider timeout; fall back to overall task timeout if provided
-                _prov_to = float(_os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC") or 0.0)
-                if not _prov_to:
-                    # Increase default timeout to 25s to allow APIs to complete
-                    _prov_to = float(_os.getenv("SEARCH_TASK_TIMEOUT_SEC", "25") or 25)
-            except Exception:
-                _prov_to = 25.0
-
+            # Wait for all providers to finish within their individual budgets.
             name_by_task = {t: n for n, t in tasks.items()}
-            done, pending = await asyncio.wait(set(tasks.values()), timeout=_prov_to)
+            done, pending = await asyncio.wait(set(tasks.values()), timeout=max(_per_provider_to + 0.1, 0.1))
 
             # Collect finished results
             for t in done:
@@ -1983,17 +2020,43 @@ class SearchAPIManager:
                         except Exception:
                             pass
                     all_res.extend(res if isinstance(res, list) else [])
+                except RateLimitedError:
+                    # Quota exhausted for this provider – apply cooldown
+                    try:
+                        cooldown = float(_os.getenv("SEARCH_QUOTA_COOLDOWN_SEC", "3600") or 3600)
+                    except Exception:
+                        cooldown = 3600.0
+                    self.quota_blocked[name] = time.time() + cooldown
+                    logger.warning(f"{name} quota exhausted – cooling down for {int(cooldown)}s")
+                    if progress_callback and research_id:
+                        try:
+                            from services.websocket_service import connection_manager, WSMessage, WSEventType
+                            await connection_manager.broadcast_to_research(
+                                research_id,
+                                WSMessage(
+                                    type=WSEventType.RATE_LIMIT_WARNING,
+                                    data={
+                                        "research_id": research_id,
+                                        "limit_type": "quota_exhausted",
+                                        "provider": name,
+                                        "cooldown_sec": int(cooldown),
+                                        "message": f"Provider {name} disabled due to quota exhaustion",
+                                    },
+                                ),
+                            )
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.error(f"{name} failed: {e}")
 
-            # Cancel any stragglers
+            # Cancel any truly stuck tasks (defensive; they should have timed out individually)
             for t in pending:
                 name = name_by_task.get(t, "unknown")
                 try:
                     t.cancel()
                 except Exception:
                     pass
-                logger.warning(f"{name} timed out after {_prov_to:.1f}s; skipping")
+                logger.warning(f"{name} timed out; skipping")
         else:
             all_res = []
 

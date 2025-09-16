@@ -799,7 +799,7 @@ def convert_citations_to_evidence_quotes(
 ) -> List[EvidenceQuote]:
     """Convert deep research citations into EvidenceQuote entries.
 
-    When URL is missing, synthesize an about:blank anchor (marked by caller as unlinked).
+    When URL is missing, preserve as an unlinked citation (blank URL).
     Extract a short quote span from `content` using start/end indexes when provided.
     """
     out: List[EvidenceQuote] = []
@@ -812,10 +812,8 @@ def convert_citations_to_evidence_quotes(
             s = int(getattr(c, "start_index", 0) or 0)
             e = int(getattr(c, "end_index", s) or s)
             snippet = content[s:e][:240] if isinstance(content, str) else ""
-            if not url:
-                safe_oid = "deep"
-                url = f"about:blank#citation-{safe_oid}-{(hash((title or snippet)[:64]) & 0xFFFFFFFF)}"
-            domain = url.split('/')[2] if ('/' in url and len(url.split('/')) > 2) else url
+            # Keep URL empty for unlinked citations; do not synthesize anchors
+            domain = url.split('/')[2] if (url and '/' in url and len(url.split('/')) > 2) else (url or "")
             out.append(EvidenceQuote(
                 id=f"dq{idx+1:03d}",
                 url=url,

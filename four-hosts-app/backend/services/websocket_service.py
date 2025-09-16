@@ -8,7 +8,7 @@ import os
 import contextlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Set, Any, Optional, List
 from enum import Enum
 from typing import Any
@@ -100,9 +100,15 @@ class ConnectionManager:
         # Message history for reconnection
         self.message_history: Dict[str, List[WSMessage]] = {}
         self.history_limit = 100
+        # Bound history by time to avoid unbounded growth on long sessions
+        try:
+            self.history_ttl_sec: int = int(os.getenv("WS_HISTORY_TTL_SEC", "900") or 900)
+        except Exception:
+            self.history_ttl_sec = 900
         # Keepalive task for long-lived websockets behind proxies
         self._keepalive_task: Optional[asyncio.Task] = None
-        self._keepalive_interval_sec: int = int(os.getenv("WS_KEEPALIVE_INTERVAL_SEC", "30") or 30)
+        # Lower default keepalive to better survive strict proxies; override via env.
+        self._keepalive_interval_sec: int = int(os.getenv("WS_KEEPALIVE_INTERVAL_SEC", "20") or 20)
 
     def _all_live_websockets(self) -> Set[WebSocket]:
         conns: Set[WebSocket] = set()
@@ -276,6 +282,13 @@ class ConnectionManager:
             self.message_history[research_id] = self.message_history[research_id][
                 -self.history_limit :
             ]
+        # TTL-based eviction
+        try:
+            if self.history_ttl_sec > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.history_ttl_sec)
+                self.message_history[research_id] = [m for m in self.message_history[research_id] if getattr(m, "timestamp", cutoff) >= cutoff]
+        except Exception:
+            pass
 
         # Send to subscribers
         if research_id in self.research_subscriptions:

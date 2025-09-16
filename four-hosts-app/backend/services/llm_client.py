@@ -345,8 +345,12 @@ class LLMClient:
 
     # ─────────── core API methods ───────────
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(int(os.getenv("LLM_MAX_RETRIES", "2") or 2)),
+        wait=wait_exponential(
+            multiplier=1,
+            min=float(os.getenv("LLM_BACKOFF_MIN_SEC", "2") or 2),
+            max=float(os.getenv("LLM_BACKOFF_MAX_SEC", "8") or 8),
+        ),
         retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError)),
     )
     async def generate_completion(
@@ -514,7 +518,14 @@ class LLMClient:
                 return self._extract_content_safely(op_res)
             except Exception as exc:
                 logger.error(f"Azure OpenAI request failed • {exc}")
-                raise
+                # Optional fallback to OpenAI when both back-ends are configured
+                import os as _os
+                allow_fallback = _os.getenv("ENABLE_LLM_FALLBACK", "1") in {"1", "true", "yes"}
+                if self.openai_client and allow_fallback:
+                    logger.warning("Falling back to OpenAI after Azure failure")
+                    # Do not raise; proceed to OpenAI path below
+                else:
+                    raise
 
         # ─── OpenAI path ───
         if self.openai_client:

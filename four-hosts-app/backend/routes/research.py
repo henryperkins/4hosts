@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional, cast
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Response
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Response, Request
 
 from models.research import (
     ResearchQuery,
@@ -42,6 +42,7 @@ import re as _re
 from models.base import Paradigm
 from services.webhook_manager import WebhookEvent, WebhookManager
 from services.export_service import ExportOptions, ExportFormat, ExportService
+from services.rate_limiter import RateLimitExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ async def execute_real_research(
     research: ResearchQuery,
     user_id: str,
     user_role: UserRole | str = UserRole.PRO,
+    limiter=None,
+    limiter_identifier: str | None = None,
 ):
     """Execute the full research pipeline and persist results.
 
@@ -74,6 +77,13 @@ async def execute_real_research(
         """Check if research has been cancelled"""
         research_data = await research_store.get(research_id)
         return research_data and research_data.get("status") == ResearchStatus.CANCELLED
+
+    # Track concurrent usage if a limiter was provided (enforce U-014)
+    if limiter is not None and limiter_identifier:
+        try:
+            await limiter.increment_concurrent(limiter_identifier)
+        except Exception:
+            pass
 
     try:
         # Mark in-progress
@@ -749,12 +759,20 @@ async def execute_real_research(
         )
         if progress_tracker:
             await progress_tracker.fail_research(research_id, str(e))
+    finally:
+        # Always decrement concurrent counter when using limiter
+        if limiter is not None and limiter_identifier:
+            try:
+                await limiter.decrement_concurrent(limiter_identifier)
+            except Exception:
+                pass
 
 
 @router.post("/query")
 async def submit_research(
     research: ResearchQuery,
     background_tasks: BackgroundTasks,
+    request: Request,
     current_user=Depends(get_current_user),
     x_experiment: str | None = Header(None, alias="X-Experiment"),
 ):
@@ -768,6 +786,18 @@ async def submit_research(
             raise HTTPException(
                 status_code=403,
                 detail="Deep research requires PRO subscription or higher",
+            )
+
+    # Per-user API rate-limit and concurrency enforcement (U-014)
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    identifier = f"user:{current_user.user_id}"
+    if limiter is not None:
+        allowed, info = await limiter.check_rate_limit(identifier, current_user.role, "api")
+        if not allowed and info:
+            raise RateLimitExceeded(
+                retry_after=info.get("retry_after", 60),
+                limit_type=info.get("limit_type", "requests_per_minute"),
+                limit=info.get("limit", 0),
             )
 
     research_id = f"res_{uuid.uuid4().hex[:12]}"
@@ -825,6 +855,8 @@ async def submit_research(
             research,
             str(current_user.user_id),
             current_user.role,
+            limiter,
+            identifier,
         )
 
         # Track in WebSocket (if available)
