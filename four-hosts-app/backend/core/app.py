@@ -166,6 +166,13 @@ async def lifespan(app: FastAPI):
         }
         logger.info("✓ Monitoring systems initialized" if PROMETHEUS_AVAILABLE else "✓ Health service initialized (prometheus disabled)")
 
+        # Start WebSocket keepalive pings to prevent idle proxy drops
+        try:
+            connection_manager.start_keepalive()
+            logger.info("✓ WebSocket keepalive started")
+        except Exception as e:
+            logger.warning("WebSocket keepalive not started: %s", e)
+
         # Initialize production services
         from services.auth_service import auth_service
         from services.rate_limiter import RateLimiter
@@ -317,6 +324,12 @@ async def lifespan(app: FastAPI):
         if hasattr(app.state, 'search_manager'):
             await app.state.search_manager.__aexit__(None, None, None)
             logger.info("✓ Search manager cleaned up")
+
+        # Stop WebSocket keepalive
+        try:
+            await connection_manager.stop_keepalive()
+        except Exception:
+            pass
 
         # Cleanup background LLM manager
         from services.background_llm import background_llm_manager

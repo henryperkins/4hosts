@@ -4,6 +4,8 @@ Phase 5: Production-Ready Features
 """
 
 import asyncio
+import os
+import contextlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -98,6 +100,47 @@ class ConnectionManager:
         # Message history for reconnection
         self.message_history: Dict[str, List[WSMessage]] = {}
         self.history_limit = 100
+        # Keepalive task for long-lived websockets behind proxies
+        self._keepalive_task: Optional[asyncio.Task] = None
+        self._keepalive_interval_sec: int = int(os.getenv("WS_KEEPALIVE_INTERVAL_SEC", "30") or 30)
+
+    def _all_live_websockets(self) -> Set[WebSocket]:
+        conns: Set[WebSocket] = set()
+        for _uid, ws_set in self.active_connections.items():
+            conns |= set(ws_set)
+        return conns
+
+    async def _keepalive_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(max(10, self._keepalive_interval_sec))
+                # Emit a lightweight ping message to each connected client
+                payload = WSMessage(
+                    type=WSEventType.PING,
+                    data={"server_time": datetime.now(timezone.utc).isoformat()},
+                )
+                for ws in list(self._all_live_websockets()):
+                    try:
+                        await ws.send_json(self._transform_for_frontend(payload))
+                    except Exception:
+                        try:
+                            await self.disconnect(ws)
+                        except Exception:
+                            pass
+        except asyncio.CancelledError:
+            return
+
+    def start_keepalive(self):
+        if self._keepalive_task and not self._keepalive_task.done():
+            return
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+
+    async def stop_keepalive(self):
+        task = self._keepalive_task
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(Exception):
+                await task
 
     async def connect(
         self,

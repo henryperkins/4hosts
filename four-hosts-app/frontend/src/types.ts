@@ -39,14 +39,14 @@ export interface ResearchResult {
     primary: {
       paradigm: Paradigm
       confidence: number
-      approach: string
-      focus: string
+      approach?: string
+      focus?: string
     },
     secondary?: {
         paradigm: Paradigm
-        confidence: number
-        approach: string
-        focus: string
+        confidence?: number
+        approach?: string
+        focus?: string
     },
     context_engineering?: {
       compression_ratio: number
@@ -55,25 +55,38 @@ export interface ResearchResult {
       search_queries_count: number
     }
   },
-  answer: GeneratedAnswer
+  answer?: GeneratedAnswer
   integrated_synthesis?: IntegratedSynthesis
   sources: SourceResult[]
+  results?: SourceResult[]
+  export_formats?: Record<string, string>
   metadata: {
+    total_results?: number
     total_sources_analyzed: number
     high_quality_sources: number
-    search_queries_executed: number
+    search_queries_executed?: number
+    queries_executed?: number
+    sources_used?: string[]
     processing_time_seconds: number
     answer_generation_time?: number
     synthesis_quality?: number
-    paradigms_used: Paradigm[]
+    paradigms_used?: Paradigm[]
     deep_research_enabled?: boolean
     research_depth?: string
+    credibility_summary?: {
+      average_score?: number
+      high_credibility_count?: number
+      high_credibility_ratio?: number
+      score_distribution?: Record<string, number>
+    }
+    deduplication_stats?: Record<string, unknown>
+    search_metrics?: Record<string, unknown>
     context_layers?: {
-      write_focus: string
-      compression_ratio: number
-      token_budget: number
-      isolation_strategy: string
-      search_queries_count: number
+      write_focus?: string
+      compression_ratio?: number
+      token_budget?: number
+      isolation_strategy?: string
+      search_queries_count?: number
       layer_times?: Record<string, number>
       budget_plan?: Record<string, number>
       rewrite_primary?: string
@@ -81,6 +94,10 @@ export interface ResearchResult {
       optimize_primary?: string
       optimize_variations_count?: number
       refined_queries_count?: number
+      isolated_findings?: {
+        focus_areas?: string[]
+        patterns?: number
+      }
     }
     agent_trace?: AgentTraceEvent[]
     actionable_content_ratio?: number
@@ -91,12 +108,6 @@ export interface ResearchResult {
       dominant_share?: number
       unique_types?: number
     }
-    credibility_summary?: {
-      average_score?: number
-      high_credibility_count?: number
-      high_credibility_ratio?: number
-      score_distribution?: Record<string, number>
-    }
     category_distribution?: Record<string, number>
     bias_distribution?: Record<string, number>
     paradigm_fit?: {
@@ -104,6 +115,8 @@ export interface ResearchResult {
       confidence: number
       margin: number
     }
+    evidence_quotes?: Array<Record<string, unknown>>
+    paradigm?: Paradigm | string
   },
   cost_info?: {
     search_api_costs?: number
@@ -121,7 +134,7 @@ export interface GeneratedAnswer {
   confidence_score?: number
   synthesis_quality?: number
   generation_time?: number
-  metadata?: Record<string, unknown>
+  metadata: Record<string, unknown>
 }
 
 export interface AnswerSection {
@@ -228,8 +241,12 @@ export interface SourceResult {
   credibility_score: number
   published_date?: string
   source_type?: string
+  result_type?: string
   source_category?: string
   credibility_explanation?: string
+  content?: string
+  source_api?: string
+  metadata?: Record<string, unknown>
 }
 
 export interface AgentTraceEvent {

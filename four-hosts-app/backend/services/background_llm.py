@@ -311,8 +311,14 @@ class BackgroundLLMManager:
                 except Exception as e:
                     logger.error(f"Error polling task {task_id}: {e}")
 
-                # Wait before next poll
-                await asyncio.sleep(self.poll_interval)
+                # Wait before next poll (use simple backoff to reduce churn)
+                try:
+                    prev_wait = self.active_tasks[task_id].get("_wait", self.poll_interval)
+                    next_wait = min(15, max(self.poll_interval, int(prev_wait * 1.5)))
+                    self.active_tasks[task_id]["_wait"] = next_wait
+                    await asyncio.sleep(next_wait)
+                except Exception:
+                    await asyncio.sleep(self.poll_interval)
 
         except asyncio.CancelledError:
             logger.info(f"Polling cancelled for task {task_id}")

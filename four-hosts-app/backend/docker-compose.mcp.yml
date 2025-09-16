@@ -10,14 +10,14 @@ services:
       - BRAVE_MCP_HOST=0.0.0.0
       - BRAVE_MCP_LOG_LEVEL=${BRAVE_MCP_LOG_LEVEL:-info}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     stop_signal: SIGTERM
     stop_grace_period: 15s
     restart: unless-stopped
     networks:
       - fourhosts-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/ping"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/ping"]
       interval: 30s
       timeout: 10s
       retries: 3

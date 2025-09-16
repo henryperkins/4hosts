@@ -139,7 +139,7 @@ class OpenAIResponsesClient:
 
         azure_key = os.getenv("AZURE_OPENAI_API_KEY")
         azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        # Prefer Azure v1 preview by default for Responses API
+        # Prefer Azure preview by default for Responses API
         azure_api_version_env = os.getenv(
             "AZURE_OPENAI_API_VERSION", "preview"
         )
@@ -151,7 +151,7 @@ class OpenAIResponsesClient:
             endpoint = cast(str, azure_endpoint).rstrip("/")
             # Azure Responses API base path mirrors OpenAI's /openai/v1
             self.base_url = f"{endpoint}/openai/v1"
-            # Use configured API version (default to env or 2024-10-01-preview)
+            # Use configured API version (default to env or preview)
             self.azure_api_version = azure_api_version_env
             # SDK client configured to hit Azure base_url as well
             # (not strictly required here)
@@ -536,24 +536,25 @@ class OpenAIResponsesClient:
             Completed response object
         """
         start_time = asyncio.get_event_loop().time()
+        # Exponential backoff with jitter, capped to 15s
+        interval = max(1.0, float(poll_interval))
+        max_interval = 15.0
 
         while True:
             response = await self.retrieve_response(response_id)
 
-            if response["status"] not in ["queued", "in_progress"]:
+            status = str(response.get("status", "")).lower()
+            if status not in ["queued", "in_progress"]:
                 return response
 
-            if timeout and (
-                asyncio.get_event_loop().time() - start_time
-            ) > timeout:
+            if timeout and (asyncio.get_event_loop().time() - start_time) > timeout:
                 raise TimeoutError(
-                    (
-                        f"Response {response_id} did not complete "
-                        f"within {timeout} seconds"
-                    )
+                    f"Response {response_id} did not complete within {timeout} seconds"
                 )
 
-            await asyncio.sleep(poll_interval)
+            # Backoff with small jitter to reduce churn
+            await asyncio.sleep(interval)
+            interval = min(max_interval, interval * 1.5 + (0.25 if interval < 10 else 0.0))
 
     # ─────────── Helper Methods ───────────
     def extract_final_text(self, response: Dict[str, Any]) -> Optional[str]:

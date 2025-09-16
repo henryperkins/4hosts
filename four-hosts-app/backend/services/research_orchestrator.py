@@ -54,6 +54,7 @@ from services.agentic_process import (
     propose_queries_enriched,
 )
 from services.result_adapter import ResultAdapter
+from services.metrics import metrics
 # SearchContextSize import removed (unused)
 
 # Optional: answer generation integration
@@ -116,7 +117,7 @@ class ResearchExecutionResult:
         return self.filtered_results
 
 
- 
+
 
 
 class ResultDeduplicator:
@@ -599,16 +600,29 @@ class UnifiedResearchOrchestrator:
             "enforce_per_result_origin": True
         }
 
-        # Per-search task timeout (seconds) for external API calls
+        # Per-search task timeout (seconds) for external API calls.
+        # Ensure this exceeds the per-provider timeout so we don't cancel
+        # the overall search while individual providers are still running.
         try:
-            self.search_task_timeout = float(os.getenv("SEARCH_TASK_TIMEOUT_SEC", "20") or 20)
+            task_to = float(os.getenv("SEARCH_TASK_TIMEOUT_SEC", "30") or 30)
         except Exception:
-            self.search_task_timeout = 20.0
+            task_to = 30.0
+        try:
+            prov_to = float(os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC", "25") or 25)
+        except Exception:
+            prov_to = 25.0
+        # Add a small cushion above provider timeout
+        self.search_task_timeout = max(task_to, prov_to + 5.0)
 
     # ──────────────────────────────────────────────────────────────────────
     # Small error/logging helper (applied in a few hot spots)
     # ──────────────────────────────────────────────────────────────────────
-    def _log_and_continue(self, message: str, exc: Optional[Exception] = None, level: str = "warning") -> None:
+    def _log_and_continue(
+        self,
+        message: str,
+        exc: Optional[Exception] = None,
+        level: str = "warning",
+    ) -> None:
         try:
             if exc:
                 getattr(logger, level, logger.warning)(f"{message}: {exc}")
@@ -617,6 +631,43 @@ class UnifiedResearchOrchestrator:
         except Exception:
             # Never raise from logging – absolute last resort
             logger.warning(message)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Metric coercion helpers
+    # Ensure safe, typed extraction from heterogeneous _search_metrics dict
+    # ──────────────────────────────────────────────────────────────────────
+    def _safe_metric_int(self, key: str, default: int = 0) -> int:
+        """Safely coerce metric to int for type checkers and runtime safety."""
+        try:
+            val = self._search_metrics.get(key, default)
+            if isinstance(val, bool):
+                return int(val)
+            if isinstance(val, (int, float)):
+                return int(val)
+            if isinstance(val, str):
+                sval = val.strip()
+                if sval:
+                    # Allow floats encoded as strings
+                    return int(float(sval))
+            return default
+        except Exception:
+            return default
+
+    def _safe_metric_float(self, key: str, default: float = 0.0) -> float:
+        """Safely coerce metric to float for type checkers and runtime safety."""
+        try:
+            val = self._search_metrics.get(key, default)
+            if isinstance(val, bool):
+                return float(val)
+            if isinstance(val, (int, float)):
+                return float(val)
+            if isinstance(val, str):
+                sval = val.strip()
+                if sval:
+                    return float(sval)
+            return default
+        except Exception:
+            return default
 
     async def initialize(self):
         """Initialize the orchestrator"""
@@ -774,13 +825,108 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         processing_time = (end_time - start_time).total_seconds()
 
         processed_results["metadata"]["processing_time"] = processing_time
+        processed_results["metadata"]["processing_time_seconds"] = float(processing_time)
+
+        # Compute UI-facing metrics that depend on the final result set
+        credibility_summary = processed_results.setdefault("credibility_summary", {"average_score": 0.0})
+        score_distribution = {"high": 0, "medium": 0, "low": 0}
+        category_distribution: Dict[str, int] = {}
+        total_sources_analyzed = 0
+        high_quality_sources = 0
+
+        def _score_band(value: Any) -> str:
+            try:
+                score = float(value if value is not None else 0.0)
+            except Exception:
+                score = 0.0
+            if score >= 0.8:
+                return "high"
+            if score >= 0.6:
+                return "medium"
+            return "low"
+
+        final_results = list(processed_results.get("results", []) or [])
+        for result in final_results:
+            adapter = ResultAdapter(result)
+            score = adapter.credibility_score
+            if score is None:
+                try:
+                    score = float(getattr(result, "credibility_score", 0.0) or 0.0)
+                except Exception:
+                    score = 0.0
+            score = max(0.0, min(1.0, float(score or 0.0)))
+            band = _score_band(score)
+            score_distribution[band] += 1
+            if score >= 0.8:
+                high_quality_sources += 1
+            total_sources_analyzed += 1
+
+            raw_data = getattr(result, "raw_data", {}) or {}
+            source_category = None
+            if isinstance(raw_data, dict):
+                source_category = raw_data.get("source_category")
+            metadata = adapter.metadata or {}
+            if not source_category and isinstance(metadata, dict):
+                source_category = metadata.get("source_category")
+            source_category = (str(source_category).strip().lower() or "general") if source_category else "general"
+            category_distribution[source_category] = category_distribution.get(source_category, 0) + 1
+
+        credibility_summary["score_distribution"] = score_distribution
+        if total_sources_analyzed:
+            credibility_summary["high_credibility_count"] = score_distribution["high"]
+            credibility_summary["high_credibility_ratio"] = score_distribution["high"] / float(total_sources_analyzed)
+
+        processed_results["metadata"]["total_sources_analyzed"] = total_sources_analyzed
+        processed_results["metadata"]["high_quality_sources"] = high_quality_sources
+        processed_results["metadata"]["category_distribution"] = category_distribution
+        processed_results["metadata"].setdefault("bias_distribution", {})
+        processed_results["metadata"].setdefault("agent_trace", [])
 
         normalized_sources: List[Dict[str, Any]] = []
         try:
-            normalized_sources = [
-                ResultAdapter(r).to_dict()
-                for r in processed_results.get("results", [])
-            ]
+            for result in final_results:
+                adapter = ResultAdapter(result)
+                url = (adapter.url or "").strip()
+                if not url:
+                    continue
+                metadata = adapter.metadata or {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                raw_data = getattr(result, "raw_data", {}) or {}
+                if isinstance(raw_data, dict):
+                    extracted = raw_data.get("extracted_meta")
+                    if extracted and "extracted_meta" not in metadata:
+                        metadata["extracted_meta"] = extracted
+                    if "source_category" in raw_data and "source_category" not in metadata:
+                        metadata["source_category"] = raw_data["source_category"]
+                    if "credibility_explanation" in raw_data and "credibility_explanation" not in metadata:
+                        metadata["credibility_explanation"] = raw_data["credibility_explanation"]
+                credibility = adapter.credibility_score
+                if credibility is None:
+                    try:
+                        credibility = float(metadata.get("credibility_score", 0.0) or 0.0)
+                    except Exception:
+                        credibility = 0.0
+                credibility = max(0.0, min(1.0, float(credibility or 0.0)))
+                published_date = metadata.get("published_date")
+                if published_date is None:
+                    published_date = getattr(result, "published_date", None)
+                result_type = metadata.get("result_type") or getattr(result, "result_type", "web")
+                normalized_sources.append(
+                    {
+                        "title": adapter.title,
+                        "url": url,
+                        "snippet": adapter.snippet,
+                        "content": adapter.content,
+                        "domain": adapter.domain,
+                        "credibility_score": credibility,
+                        "published_date": published_date,
+                        "result_type": result_type or "web",
+                        "source_api": adapter.source_api,
+                        "source_category": metadata.get("source_category"),
+                        "metadata": metadata,
+                    }
+                )
         except Exception:
             normalized_sources = []
 
@@ -826,6 +972,19 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         synthesized_answer.metadata["signals"]["contradictions"] = contradictions
                 except Exception:
                     pass
+                try:
+                    if evidence_bundle is not None:
+                        metrics.record_o3_usage(
+                            paradigm=normalize_to_internal_code(classification.primary_paradigm),
+                            document_count=len(getattr(evidence_bundle, "documents", []) or []),
+                            document_tokens=int(getattr(evidence_bundle, "documents_token_count", 0) or 0),
+                            quote_count=len(evidence_quotes or []),
+                            source_count=len(normalized_sources),
+                            prompt_tokens=None,
+                            completion_tokens=None,
+                        )
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Answer synthesis failed: {e}")
                 # If synthesis is required, escalate to hard failure so the
@@ -833,9 +992,69 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 if getattr(self, "require_synthesis", True):
                     raise
 
-        # Assemble high-level response
+        # Assemble contract-aligned response payload
+        primary_paradigm = getattr(classification, "primary_paradigm", HostParadigm.BERNARD)
+        primary_code = normalize_to_internal_code(primary_paradigm)
+        secondary_paradigm = getattr(classification, "secondary_paradigm", None)
+        secondary_code = normalize_to_internal_code(secondary_paradigm) if secondary_paradigm else None
+
+        distribution_map: Dict[str, float] = {}
+        secondary_confidence: Optional[float] = None
+        raw_distribution = getattr(classification, "distribution", {}) or {}
+        try:
+            for host, value in raw_distribution.items():
+                key = normalize_to_internal_code(host) if host is not None else str(host)
+                distribution_map[key] = float(value or 0.0)
+                if secondary_paradigm is not None and host == secondary_paradigm:
+                    secondary_confidence = float(value or 0.0)
+        except Exception:
+            distribution_map = {}
+
+        margin = 0.0
+        if distribution_map:
+            sorted_scores = sorted(distribution_map.values(), reverse=True)
+            margin = float(sorted_scores[0] - (sorted_scores[1] if len(sorted_scores) > 1 else 0.0))
+
+        paradigm_analysis: Dict[str, Any] = {
+            "primary": {
+                "paradigm": primary_code,
+                "confidence": float(getattr(classification, "confidence", 0.0) or 0.0),
+            }
+        }
+        if secondary_code:
+            secondary_payload: Dict[str, Any] = {"paradigm": secondary_code}
+            if secondary_confidence is not None:
+                secondary_payload["confidence"] = secondary_confidence
+            paradigm_analysis["secondary"] = secondary_payload
+
+        integrated_synthesis: Optional[Dict[str, Any]] = None
+        if synthesized_answer is not None:
+            try:
+                integrated_synthesis = {
+                    "primary_answer": synthesized_answer,
+                    "integrated_summary": getattr(synthesized_answer, "summary", ""),
+                    "synergies": [],
+                    "conflicts_identified": [],
+                }
+            except Exception:
+                integrated_synthesis = None
+
+        apis_used_raw = self._search_metrics.get("apis_used", set())
+        if isinstance(apis_used_raw, set):
+            apis_used = list(apis_used_raw)
+        elif isinstance(apis_used_raw, list):
+            apis_used = apis_used_raw
+        else:
+            apis_used = []
+
         response = {
+            "research_id": research_id or f"research_{int(start_time.timestamp())}",
+            "query": getattr(context_engineered, "original_query", classification.query),
+            "status": "ok",
             "results": processed_results["results"],
+            "sources": normalized_sources,
+            "paradigm_analysis": paradigm_analysis,
+            "integrated_synthesis": integrated_synthesis,
             "metadata": {
                 **processed_results["metadata"],
                 "total_results": len(processed_results["results"]),
@@ -844,17 +1063,55 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "credibility_summary": processed_results["credibility_summary"],
                 "deduplication_stats": processed_results["dedup_stats"],
                 "contradictions": processed_results.get("contradictions", {"count": 0, "examples": []}),
-                "search_metrics": {
-                    "total_queries": int(self._search_metrics.get("total_queries", 0) if isinstance(self._search_metrics.get("total_queries"), int) else 0),
-                    "total_results": int(self._search_metrics.get("total_results", 0) if isinstance(self._search_metrics.get("total_results"), int) else 0),
-                    "apis_used": list(self._search_metrics.get("apis_used", set())) if isinstance(self._search_metrics.get("apis_used"), set) else [],
-                    "deduplication_rate": float(self._search_metrics.get("deduplication_rate", 0.0) if isinstance(self._search_metrics.get("deduplication_rate"), (int, float)) else 0.0),
+                "processing_time_seconds": float(processing_time),
+                "paradigm_fit": {
+                    "primary": primary_code,
+                    "confidence": float(getattr(classification, "confidence", 0.0) or 0.0),
+                    "margin": margin,
                 },
-                "paradigm": classification.primary_paradigm.value if hasattr(classification, "primary_paradigm") else "unknown",
+                "research_depth": "deep" if enable_deep_research else "standard",
+                # Prepare safe metric values for type checking
+                "search_metrics": {
+                    "total_queries": self._safe_metric_int("total_queries"),
+                    "total_results": self._safe_metric_int("total_results"),
+                    "apis_used": apis_used,
+                    "deduplication_rate": self._safe_metric_float("deduplication_rate"),
+                },
+                "paradigm": primary_code,
                 # Record LLM backend info so callers can verify model/endpoint used
                 "llm_backend": self._llm_backend_info(),
             },
+            "export_formats": {},
         }
+
+        if distribution_map:
+            cls_details = response["metadata"].setdefault(
+                "classification_details", {}
+            )
+            cls_details["distribution"] = distribution_map
+        try:
+            reasoning_raw = getattr(classification, "reasoning", {}) or {}
+            cls_details = response["metadata"].setdefault(
+                "classification_details", {}
+            )
+            cls_details["reasoning"] = {
+                normalize_to_internal_code(host): list((steps or [])[:4])
+                for host, steps in reasoning_raw.items()
+            }
+        except Exception:
+            pass
+
+        try:
+            rid = response["research_id"]
+            response["export_formats"] = {
+                "json": f"/v1/research/{rid}/export/json",
+                "csv": f"/v1/research/{rid}/export/csv",
+                "pdf": f"/v1/research/{rid}/export/pdf",
+                "markdown": f"/v1/research/{rid}/export/markdown",
+                "excel": f"/v1/research/{rid}/export/excel",
+            }
+        except Exception:
+            response["export_formats"] = {}
         # Cost info (search API costs currently tracked; LLM costs not yet integrated)
         try:
             search_cost = sum(float(v) for v in (cost_breakdown or {}).values())
@@ -870,6 +1127,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             response["cost_info"] = {"search_api_costs": 0.0, "llm_costs": 0.0, "total": 0.0, "total_cost": 0.0}
         if synthesized_answer is not None:
             response["answer"] = synthesized_answer
+            try:
+                metadata_obj = getattr(synthesized_answer, "metadata", {}) or {}
+                evidence_quotes_copy = metadata_obj.get("evidence_quotes")
+                if evidence_quotes_copy:
+                    response["metadata"].setdefault("evidence_quotes", evidence_quotes_copy)
+            except Exception:
+                pass
         return response
 
     def _llm_backend_info(self) -> Dict[str, Any]:
@@ -1571,7 +1835,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                                 items_done=idx + 1,
                                 items_total=len(topN),
                             )
-                        
+
                     except Exception:
                         pass
             except Exception:
@@ -1605,7 +1869,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             "contradictions": {"count": 0, "examples": []},
         }
 
-    
+
 
     async def _perform_search(
         self,

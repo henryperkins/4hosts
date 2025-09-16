@@ -3,7 +3,7 @@ Centralized rate-limit definitions for API and WebSocket channels.
 """
 
 from typing import Dict, Any
-from models.base import UserRole
+from models import UserRole
 
 
 # API rate limits by role

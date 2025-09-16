@@ -422,6 +422,34 @@ def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = N
         meta["http"] = http_info
     return meta
 
+
+def _derive_source_category(domain: str, content_type: Optional[str] = None) -> str:
+    """Best-effort categorisation for UI grouping."""
+    dom = (domain or "").lower()
+    if dom.endswith(".edu") or "arxiv" in dom or "pubmed" in dom or "semanticscholar" in dom or "crossref" in dom:
+        return "academic"
+    if dom.endswith(".gov") or dom.endswith(".mil"):
+        return "gov"
+    if "youtube.com" in dom or "vimeo.com" in dom:
+        return "video"
+    if content_type and "pdf" in content_type.lower():
+        return "pdf"
+    if any(news in dom for news in [
+        "nytimes.com",
+        "washingtonpost.com",
+        "theguardian.com",
+        "wsj.com",
+        "ft.com",
+        "bloomberg.com",
+        "bbc.co.uk",
+        "cnn.com",
+        "reuters.com",
+    ]):
+        return "news"
+    if dom.endswith(".io") or dom.endswith(".dev"):
+        return "blog"
+    return "other"
+
 def _clean_html_noise(soup: BeautifulSoup) -> None:
     """Strip noisy elements and obvious non-content blocks by id/class heuristics."""
     for s in soup(["script", "style", "noscript", "template", "iframe", "svg", "canvas"]):
@@ -1479,9 +1507,11 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         self.cx = cx
 
     @with_circuit_breaker("google_search", failure_threshold=3, recovery_timeout=30)
-    @retry(stop=stop_after_attempt(3),
-           wait=wait_exponential(min=2, max=10),
-           retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
+    )
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         params = {
@@ -1496,9 +1526,23 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         timeout = aiohttp.ClientTimeout(total=15)
         try:
             async with self._sess().get(self.BASE, params=params, timeout=timeout) as r:
+                if r.status == 429:
+                    # Honour rate limiting and let tenacity back off
+                    raise RateLimitedError()
+                if 500 <= r.status <= 599:
+                    # Server errors – retryable
+                    raise aiohttp.ClientError(f"Google CSE {r.status}")
                 if r.status != 200:
+                    # Non-OK without retry – return empty
                     return []
                 data = await r.json()
+                # Some Google CSE errors come back as 200 with an 'error' body
+                if isinstance(data, dict) and data.get("error"):
+                    err = data.get("error", {})
+                    reasons = ",".join([e.get("reason", "?") for e in err.get("errors", []) if isinstance(e, dict)])
+                    if "rateLimitExceeded" in reasons or "dailyLimitExceeded" in reasons:
+                        raise RateLimitedError()
+                    return []
         except asyncio.TimeoutError:
             logger.warning(f"Google Search timeout for query: {query[:50]}")
             return []
@@ -1634,7 +1678,9 @@ class PubMedAPI(BaseSearchAPI):
         }
         if self.api_key:
             params["api_key"] = self.api_key
-        async with self._sess().get(f"{self.BASE}/esearch.fcgi", params=params) as r:
+        # Shorter timeout for index query to avoid blocking
+        _to = aiohttp.ClientTimeout(total=float(os.getenv("PUBMED_ESEARCH_TIMEOUT_SEC", "12") or 12))
+        async with self._sess().get(f"{self.BASE}/esearch.fcgi", params=params, timeout=_to) as r:
             if r.status != 200:
                 return []
             data = await r.json()
@@ -1652,7 +1698,8 @@ class PubMedAPI(BaseSearchAPI):
         }
         if self.api_key:
             params["api_key"] = self.api_key
-        async with self._sess().get(f"{self.BASE}/efetch.fcgi", params=params) as r:
+        _to = aiohttp.ClientTimeout(total=float(os.getenv("PUBMED_EFETCH_TIMEOUT_SEC", "20") or 20))
+        async with self._sess().get(f"{self.BASE}/efetch.fcgi", params=params, timeout=_to) as r:
             return await r.text() if r.status == 200 else ""
 
     @with_circuit_breaker("pubmed_search", failure_threshold=5, recovery_timeout=60)
@@ -1983,6 +2030,16 @@ class SearchAPIManager:
                 # Stash structured metadata and opportunistically fill fields
                 try:
                     res.raw_data.setdefault("extracted_meta", meta)
+                    if isinstance(meta, dict):
+                        canonical_url = meta.get("canonical_url")
+                        if isinstance(canonical_url, str) and canonical_url.strip():
+                            try:
+                                normalized = URLNormalizer.normalize_url(canonical_url)
+                                if URLNormalizer.is_valid_url(normalized):
+                                    res.url = normalized
+                                    res.domain = urlparse(normalized).netloc.lower()
+                            except Exception:
+                                pass
                     pub = (meta.get("published_date") if isinstance(meta, dict) else None)
                     if pub and not getattr(res, "published_date", None):
                         dt = safe_parse_date(str(pub))
@@ -1994,6 +2051,17 @@ class SearchAPIManager:
                             res.author = ", ".join(authors)[:200]
                         elif isinstance(authors, str):
                             res.author = authors[:200]
+                    content_type = None
+                    try:
+                        http_meta = meta.get("http") if isinstance(meta, dict) else None
+                        if isinstance(http_meta, dict):
+                            content_type = http_meta.get("content_type")
+                    except Exception:
+                        content_type = None
+                    res.raw_data["source_category"] = _derive_source_category(
+                        getattr(res, "domain", ""),
+                        content_type,
+                    )
                 except Exception:
                     pass
 
@@ -2030,20 +2098,24 @@ def create_search_manager() -> SearchAPIManager:
     mgr = SearchAPIManager()
 
     brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
-    if brave_key:
+    if brave_key and os.getenv("SEARCH_DISABLE_BRAVE", "0") not in {"1", "true", "yes"}:
         mgr.add_api("brave", BraveSearchAPI(brave_key))
 
     g_key = os.getenv("GOOGLE_CSE_API_KEY")
     g_cx = os.getenv("GOOGLE_CSE_CX")
-    if g_key and g_cx:
+    if g_key and g_cx and os.getenv("SEARCH_DISABLE_GOOGLE", "0") not in {"1", "true", "yes"}:
         mgr.add_api("google_cse", GoogleCustomSearchAPI(g_key, g_cx))
 
     # Academic/open providers
-    mgr.add_api("arxiv", ArxivAPI())
-    mgr.add_api("crossref", CrossRefAPI())
-    mgr.add_api("semanticscholar", SemanticScholarAPI())
+    if os.getenv("SEARCH_DISABLE_ARXIV", "0") not in {"1", "true", "yes"}:
+        mgr.add_api("arxiv", ArxivAPI())
+    if os.getenv("SEARCH_DISABLE_CROSSREF", "0") not in {"1", "true", "yes"}:
+        mgr.add_api("crossref", CrossRefAPI())
+    if os.getenv("SEARCH_DISABLE_SEMANTICSCHOLAR", "0") not in {"1", "true", "yes"}:
+        mgr.add_api("semanticscholar", SemanticScholarAPI())
     pm_key = os.getenv("PUBMED_API_KEY")  # optional
-    mgr.add_api("pubmed", PubMedAPI(pm_key))
+    if os.getenv("SEARCH_DISABLE_PUBMED", "0") not in {"1", "true", "yes"}:
+        mgr.add_api("pubmed", PubMedAPI(pm_key))
 
     return mgr
 

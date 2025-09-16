@@ -1,13 +1,26 @@
-import type { ParadigmClassification, ResearchResult, ResearchHistoryItem, UserPreferences, Paradigm, ResearchOptions, User } from '../types'
+import type {
+  ParadigmClassification,
+  ResearchResult,
+  ResearchHistoryItem,
+  UserPreferences,
+  Paradigm,
+  ResearchOptions,
+  User,
+  GeneratedAnswer,
+  AnswerSection,
+  ActionItem,
+  Citation,
+} from '../types'
 import { CSRFProtection } from './csrf-protection'
 import type {
   AuthTokenResponse,
   LoginResponse,
   MetricsData,
-  WebSocketMessage
+  WebSocketMessage,
+  ResearchResponse
 } from '../types/api-types'
 import type { ExtendedStatsSnapshot } from '../types/api-types'
-import { isExtendedStatsSnapshot } from '../types/api-types'
+import { isExtendedStatsSnapshot, ResearchResponseSchema } from '../types/api-types'
 import {
   isErrorResponse
 } from '../types/api-types'
@@ -16,6 +29,7 @@ import {
   validateWebSocketMessage,
   validateMetricsData
 } from '../utils/validation'
+import { isValidParadigm } from '../constants/paradigm'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '' // keep empty to use Vite proxy-relative paths in dev
 const API_PREFIX = '/v1'
@@ -28,6 +42,60 @@ function normalizePath(url: string): string {
     return needsPrefix ? `${API_PREFIX}${url}` : url
   } catch {
     return url
+  }
+}
+
+const DEFAULT_PARADIGM: Paradigm = 'bernard'
+
+function coerceParadigm(value: unknown): Paradigm {
+  return typeof value === 'string' && isValidParadigm(value) ? value : DEFAULT_PARADIGM
+}
+
+function ensureStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+}
+
+function normalizeAnswerSection(section: unknown): AnswerSection {
+  const record = (section && typeof section === 'object') ? section as Record<string, unknown> : {}
+  return {
+    title: typeof record.title === 'string' ? record.title : '',
+    paradigm: coerceParadigm(record.paradigm),
+    content: typeof record.content === 'string' ? record.content : '',
+    confidence: typeof record.confidence === 'number' ? record.confidence : 0,
+    sources_count: typeof record.sources_count === 'number' ? record.sources_count : 0,
+    citations: ensureStringArray(record.citations),
+    key_insights: ensureStringArray(record.key_insights),
+  }
+}
+
+function normalizeActionItem(item: unknown): ActionItem {
+  const record = (item && typeof item === 'object') ? item as Record<string, unknown> : {}
+  return {
+    priority: typeof record.priority === 'string' && record.priority ? record.priority : 'low',
+    action: typeof record.action === 'string' ? record.action : '',
+    timeframe: typeof record.timeframe === 'string' ? record.timeframe : '',
+    paradigm: coerceParadigm(record.paradigm),
+    owner: typeof record.owner === 'string' && record.owner.trim() ? record.owner : undefined,
+    due_date: typeof record.due_date === 'string' && record.due_date.trim() ? record.due_date : undefined,
+  }
+}
+
+function normalizeCitation(item: unknown): Citation {
+  const record = (item && typeof item === 'object') ? item as Record<string, unknown> : {}
+  const url = typeof record.url === 'string' ? record.url : ''
+  const idSource = typeof record.id === 'string' && record.id
+    ? record.id
+    : typeof record.source === 'string' && record.source
+      ? `${record.source}-${Math.random().toString(36).slice(2, 10)}`
+      : `citation-${Math.random().toString(36).slice(2, 10)}`
+  return {
+    id: idSource,
+    source: typeof record.source === 'string' ? record.source : '',
+    title: typeof record.title === 'string' ? record.title : (url || 'Untitled source'),
+    url,
+    credibility_score: typeof record.credibility_score === 'number' ? record.credibility_score : 0,
+    paradigm_alignment: coerceParadigm(record.paradigm_alignment),
   }
 }
 
@@ -379,7 +447,8 @@ class APIService {
   }
 
   async getResearchStatus(researchId: string): Promise<ResearchStatusResponse> {
-    const response = await this.fetchWithAuth(`/research/status/${researchId}`)
+    const safeResearchId = encodeURIComponent(researchId)
+    const response = await this.fetchWithAuth(`/research/status/${safeResearchId}`)
 
     if (!response.ok) {
       const error = await response.json()
@@ -391,7 +460,8 @@ class APIService {
   }
 
   async getResearchResults(researchId: string): Promise<ResearchResult> {
-    const response = await this.fetchWithAuth(`/research/results/${researchId}`)
+    const safeResearchId = encodeURIComponent(researchId)
+    const response = await this.fetchWithAuth(`/research/results/${safeResearchId}`)
 
     if (!response.ok) {
       const error = await response.json()
@@ -400,39 +470,76 @@ class APIService {
 
     const data = await response.json()
 
-    // Runtime validation for dual-shape response (staged vs final)
-    // Lightweight inline guards (P2). If a zod validator exists, use it here instead.
     const isStaged =
       data && typeof data === 'object' &&
       typeof data.status === 'string' &&
       (!data.answer || !data.sources)
 
     if (isStaged) {
-      // Pass through as-is so callers can branch on status messages
       return data as ResearchResult
     }
 
-    // Final result minimal shape validation
-    if (!data.research_id || !data.answer || !Array.isArray(data.sources) || !data.paradigm_analysis) {
-      throw new Error('Invalid research result shape from server')
+    const parsed = ResearchResponseSchema.safeParse(data)
+    if (!parsed.success) {
+      throw new Error(`Invalid research result shape from server: ${parsed.error.message}`)
     }
 
-    // Normalize some optional fields to reduce undefined checks in UI
-    data.answer = {
-      summary: data.answer.summary ?? '',
-      sections: Array.isArray(data.answer.sections) ? data.answer.sections : [],
-      action_items: Array.isArray(data.answer.action_items) ? data.answer.action_items : [],
-      citations: Array.isArray(data.answer.citations) ? data.answer.citations : []
+    const normalized: ResearchResponse = parsed.data
+
+    if (!normalized.results.length && normalized.sources.length) {
+      normalized.results = normalized.sources
     }
 
-    data.metadata = data.metadata ?? {}
-    data.cost_info = data.cost_info ?? {}
+    if (normalized.answer) {
+      const sections: AnswerSection[] = Array.isArray(normalized.answer.sections)
+        ? normalized.answer.sections.map(normalizeAnswerSection)
+        : []
+      const actionItems: ActionItem[] = Array.isArray(normalized.answer.action_items)
+        ? normalized.answer.action_items.map(normalizeActionItem)
+        : []
+      const citations: Citation[] = Array.isArray(normalized.answer.citations)
+        ? normalized.answer.citations.map(normalizeCitation)
+        : []
 
-    return data as ResearchResult
+      normalized.answer = {
+        summary: typeof normalized.answer.summary === 'string' ? normalized.answer.summary : '',
+        sections,
+        action_items: actionItems,
+        citations,
+        confidence_score: typeof normalized.answer.confidence_score === 'number'
+          ? normalized.answer.confidence_score
+          : undefined,
+        metadata: normalized.answer.metadata ?? {},
+      }
+    } else {
+      const fallbackAnswer: GeneratedAnswer = {
+        summary: '',
+        sections: [],
+        action_items: [],
+        citations: [],
+        metadata: {},
+      }
+      normalized.answer = fallbackAnswer
+    }
+
+    if (normalized.integrated_synthesis && normalized.integrated_synthesis.secondary_perspective) {
+      normalized.integrated_synthesis.secondary_perspective = normalizeAnswerSection(
+        normalized.integrated_synthesis.secondary_perspective
+      )
+    }
+
+    const meta = normalized.metadata
+    meta.total_sources_analyzed = meta.total_sources_analyzed || normalized.sources.length
+    meta.high_quality_sources = meta.high_quality_sources || 0
+
+    normalized.cost_info = normalized.cost_info || {}
+
+    return normalized as unknown as ResearchResult
   }
 
   async cancelResearch(researchId: string): Promise<void> {
-    const response = await this.fetchWithAuth(`/research/cancel/${researchId}`, {
+    const safeResearchId = encodeURIComponent(researchId)
+    const response = await this.fetchWithAuth(`/research/cancel/${safeResearchId}`, {
       method: 'POST'
     })
 
@@ -512,7 +619,8 @@ class APIService {
   }
 
   async exportResearch(researchId: string, format: 'pdf' | 'json' | 'csv' | 'markdown' | 'excel' = 'pdf'): Promise<Blob> {
-    const response = await this.fetchWithAuth(`/research/export/${researchId}/${format}`)
+    const safeResearchId = encodeURIComponent(researchId)
+    const response = await this.fetchWithAuth(`/research/export/${safeResearchId}/${format}`)
 
     if (!response.ok) {
       const error = await response.json()
@@ -538,7 +646,7 @@ class APIService {
     const classification: ParadigmClassification = data.classification
     // Attach optional signals if present
     if (data.signals && typeof data.signals === 'object') {
-      (classification as any).signals = data.signals
+      classification.signals = data.signals as ParadigmClassification['signals']
     }
     return classification
   }
@@ -707,7 +815,8 @@ class APIService {
     // Use the API_BASE_URL and convert it to WebSocket URL
     const apiUrl = new URL(API_BASE_URL || window.location.origin)
     const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${wsProtocol}//${apiUrl.host}/ws/research/${researchId}`
+    const safeResearchId = encodeURIComponent(researchId)
+    const wsUrl = `${wsProtocol}//${apiUrl.host}/ws/research/${safeResearchId}`
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
@@ -808,7 +917,8 @@ class APIService {
 
   // Deep Research Management
   async resumeDeepResearch(researchId: string): Promise<void> {
-    const response = await this.fetchWithAuth(`/research/deep/${researchId}/resume`, {
+    const safeResearchId = encodeURIComponent(researchId)
+    const response = await this.fetchWithAuth(`/research/deep/${safeResearchId}/resume`, {
       method: 'POST'
     })
 

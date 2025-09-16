@@ -1,7 +1,8 @@
 import React from 'react'
-import { FiExternalLink, FiShield, FiAlertTriangle } from 'react-icons/fi'
+import { FiExternalLink, FiShield, FiAlertTriangle, FiAlertCircle } from 'react-icons/fi'
 import { Card, CardHeader, CardTitle, CardContent } from './ui/Card'
 import { Button } from './ui/Button'
+import { getCredibilityBand } from '../utils/credibility'
 
 interface EvidenceQuote {
   id?: string
@@ -26,9 +27,10 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
 
   const credibilityIcon = (score?: number) => {
     if (typeof score !== 'number') return null
-    if (score >= 0.8) return <FiShield className="h-3.5 w-3.5 text-success" aria-label="High credibility" />
-    if (score >= 0.6) return <FiAlertTriangle className="h-3.5 w-3.5 text-primary" aria-label="Moderate credibility" />
-    return <FiAlertTriangle className="h-3.5 w-3.5 text-error" aria-label="Low credibility" />
+    const band = getCredibilityBand(score)
+    if (band === 'high') return <FiShield className="h-3.5 w-3.5 text-success" aria-label="High credibility" />
+    if (band === 'medium') return <FiAlertTriangle className="h-3.5 w-3.5 text-primary" aria-label="Medium credibility" />
+    return <FiAlertCircle className="h-3.5 w-3.5 text-error" aria-label="Low credibility" />
   }
 
   return (
@@ -41,8 +43,11 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
       </CardHeader>
       <CardContent>
         <ul className="space-y-3">
-          {list.map((q, idx) => (
-            <li key={q.id || idx} className="rounded-md border border-border p-3 bg-surface">
+          {list.map((q, idx) => {
+            // Generate stable unique key based on quote content
+            const stableKey = q.id || `quote-${btoa((q.quote || '').slice(0, 30) + (q.url || '')).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10)}-${idx}`
+            return (
+            <li key={stableKey} className="rounded-md border border-border p-3 bg-surface">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1">
                   <p className="text-sm text-text">“{q.quote}”</p>
@@ -65,7 +70,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
                 )}
               </div>
             </li>
-          ))}
+          )})}
         </ul>
         {quotes.length > maxInitial && (
           <div className="mt-3">

@@ -17,7 +17,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Union, cast, TYPE_C
 
 import httpx
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -189,13 +189,15 @@ class LLMClient:
         api_version = os.getenv("AZURE_OPENAI_API_VERSION", "preview")
 
         if azure_key and endpoint and deployment:
-            # Use AsyncOpenAI with Azure endpoint for Responses API.
-            # For SDK calls we rely on the resource's v1 routing (no query string here).
+            # Record endpoint/api-version for HTTP calls that require it
             endpoint = endpoint.rstrip("/")
-            base_url = f"{endpoint}/openai/v1/"
+            self._azure_endpoint = endpoint
+            self._azure_api_version = api_version
 
-            self.azure_client = AsyncOpenAI(api_key=azure_key, base_url=base_url)
-            logger.info(f"✓ Azure OpenAI client initialised (endpoint: {base_url})")
+            # Keep an AsyncOpenAI for compatibility, but we'll prefer HTTP calls
+            # for Azure to attach the required api-version query param.
+            self.azure_client = AsyncOpenAI(api_key=azure_key, base_url=f"{endpoint}/openai")
+            logger.info(f"✓ Azure OpenAI client initialised (endpoint: {endpoint}/openai; api-version={api_version})")
         else:
             missing = []
             if not azure_key:
@@ -219,11 +221,42 @@ class LLMClient:
         if not self.azure_client and not self.openai_client:
             raise RuntimeError("Neither AZURE_OPENAI_* nor OPENAI_API_KEY environment variables are set")
 
+    async def _azure_chat_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Call Azure Chat Completions via HTTP with api-version per v1preview spec."""
+        endpoint = getattr(self, "_azure_endpoint", None)
+        api_ver = getattr(self, "_azure_api_version", os.getenv("AZURE_OPENAI_API_VERSION", "preview"))
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        if not (endpoint and api_key):
+            raise RuntimeError("Azure OpenAI endpoint/api-key not configured")
+        url = f"{endpoint}/openai/chat/completions?api-version={api_ver}"
+        headers = {"api-key": api_key, "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
     def _ensure_initialized(self) -> None:
         """Ensure client is initialized before use."""
         if not self._initialized:
             self._init_clients()
             self._initialized = True
+
+    # Public API wrappers to avoid accessing protected members externally
+    def initialize(self) -> None:
+        """Public initializer to ensure client is ready."""
+        self._ensure_initialized()
+
+    def is_initialized(self) -> bool:
+        """Public flag indicating if the client has finished initialization."""
+        return bool(self._initialized)
+
+    def azure_deployment_for(self, requested: str) -> str:
+        """Public wrapper to map model name to Azure deployment."""
+        return self._azure_model_for(requested)
+
+    def extract_content(self, response: Any) -> str:
+        """Public wrapper around internal content extraction."""
+        return self._extract_content_safely(response)
 
     # ─────────── utility helpers ───────────
     @staticmethod
@@ -298,12 +331,14 @@ class LLMClient:
             "use_responses_api": bool(self._azure_use_responses),
             "default_deployment": os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3"),
             # Report configured Azure API version (default used if unset)
-            "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-01-preview"),
+            "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "preview"),
         }
         try:
-            # AsyncOpenAI stores base_url on ._client.base_url
-            if self.azure_client and hasattr(self.azure_client, "_client"):
-                info["azure_base_url"] = str(self.azure_client._client.base_url)
+            # Prefer public attribute when available; avoid protected members to satisfy linting
+            if self.azure_client:
+                base_url = getattr(self.azure_client, "base_url", None)
+                if base_url:
+                    info["azure_base_url"] = str(base_url)
         except Exception:
             pass
         return info
@@ -611,18 +646,25 @@ class LLMClient:
             else:
                 azure_req["max_tokens"] = DEFAULT_MAX_TOKENS
 
-            create_fn = cast(Any, self.azure_client.chat.completions.create)
-            op = await create_fn(**azure_req)  # Ensure op is defined
-            if not hasattr(op, 'choices') or not op.choices:
+            # Use HTTP call to include api-version as per docs/v1preview.json
+            op = await self._azure_chat_create(azure_req)
+            # HTTP returns a JSON dict; extract choices/tool_calls safely
+            choices: List[Dict[str, Any]] = []
+            if isinstance(op, dict):
+                try:
+                    choices = cast(List[Dict[str, Any]], op.get("choices") or [])
+                except Exception:
+                    choices = []
+            if not choices:
                 result = {"content": "", "tool_calls": []}
             else:
-                choice = op.choices[0]
-                content = self._extract_content_safely(op) if not (choice.message and hasattr(choice.message, 'tool_calls')) else (choice.message.content or "")
-                tool_calls = choice.message.tool_calls if (choice.message and hasattr(choice.message, 'tool_calls')) else []
-                result = {
-                    "content": content,
-                    "tool_calls": tool_calls,
-                }
+                content = self._extract_content_safely(op)
+                try:
+                    first_msg = cast(Dict[str, Any], choices[0].get("message") or {})
+                    tool_calls = cast(List[Dict[str, Any]], first_msg.get("tool_calls") or [])
+                except Exception:
+                    tool_calls = []
+                result = {"content": content, "tool_calls": tool_calls}
         # Use OpenAI
         elif self.openai_client:
             op = await self.openai_client.chat.completions.create(
@@ -721,8 +763,8 @@ class LLMClient:
                 azure_req["max_tokens"] = max_tokens
                 azure_req["temperature"] = temperature
 
-            create_fn = cast(Any, self.azure_client.chat.completions.create)
-            op = await create_fn(**azure_req)  # Ensure op defined
+            # Use HTTP call so api-version is included per spec
+            op = await self._azure_chat_create(azure_req)
             text = self._extract_content_safely(op)
             pin, pout = self._extract_usage_tokens_from_chat(op)
             self._record_stage_metrics("llm_generate", model_name, _start, success=True, tokens_in=pin, tokens_out=pout)
@@ -776,8 +818,8 @@ class LLMClient:
         **kwargs
     ) -> str:
         """Submit a long-running task to background processing"""
-        if not self.azure_client or not hasattr(self.azure_client, 'responses'):
-            raise NotImplementedError("Background mode requires Azure OpenAI Responses API")
+        if not self.azure_client:
+            raise NotImplementedError("Background mode requires Azure OpenAI configuration (AZURE_OPENAI_* env vars)")
 
         from services.background_llm import background_llm_manager
         if not background_llm_manager:
@@ -802,9 +844,28 @@ class LLMClient:
         # Handle raw dict payloads from Responses API
         if isinstance(response, dict):
             try:
+                # If this is a Responses API payload that's not completed yet, don't warn.
+                status = str(response.get("status", "")).lower()
+                if status and status not in {"completed", "succeeded"}:
+                    return ""
+            except Exception:
+                pass
+            try:
                 text = extract_responses_final_text(cast(Dict[str, Any], response))  # Cast for type
                 if text:
                     return text.strip()
+            except Exception:
+                pass
+            # Some SDKs return ChatCompletion-like dicts directly
+            try:
+                ch = response.get("choices")
+                if isinstance(ch, list) and ch:
+                    msg = ch[0].get("message") or {}
+                    content = msg.get("content") or msg.get("refusal") or ""
+                    if isinstance(content, list):
+                        content = "".join([str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content])
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
             except Exception:
                 pass
 
@@ -928,9 +989,8 @@ async def initialise_llm_client() -> bool:
     """FastAPI startup hook convenience."""
     global llm_client
     try:
-        if not llm_client._initialized:
-            llm_client._init_clients()
-            llm_client._initialized = True
+        if not llm_client.is_initialized():
+            llm_client.initialize()
 
             # Initialize background LLM manager if Azure client is available
             if llm_client.azure_client:
@@ -961,7 +1021,7 @@ def extract_text_from_any(response: Any) -> str:
     consistent across modules.
     """
     try:
-        return llm_client._extract_content_safely(response)
+        return llm_client.extract_content(response)
     except Exception:
         return ""
 
@@ -1022,9 +1082,9 @@ def extract_responses_web_search_calls(payload: Dict[str, Any]) -> List[Dict[str
 class ResponsesNormalized(BaseModel):
     """Normalized view of Responses API content we care about."""
     text: Optional[str] = None
-    citations: List[Dict[str, Any]] = []
-    tool_calls: List[Dict[str, Any]] = []
-    web_search_calls: List[Dict[str, Any]] = []
+    citations: List[Dict[str, Any]] = Field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
+    web_search_calls: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 def normalize_responses_payload(payload: Dict[str, Any]) -> ResponsesNormalized:
@@ -1140,7 +1200,7 @@ async def responses_deep_research(
     if is_azure:
         try:
             # Map to Azure deployment name
-            deep_model = llm_client._azure_model_for(deep_model)
+            deep_model = llm_client.azure_deployment_for(deep_model)
         except Exception:
             deep_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", deep_model)
 

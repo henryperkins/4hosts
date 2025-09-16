@@ -12,6 +12,66 @@ import { CollapsibleEvent } from './ui/CollapsibleEvent'
 import api from '../services/api'
 import { stripHtml } from '../utils/sanitize'
 
+const MAX_UPDATES = 100
+const MAX_SOURCE_PREVIEWS = 10
+const MAX_API_BADGES = 12
+const RESEARCH_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+const toFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+const toNonNegativeInt = (value: unknown): number | null => {
+  const finite = toFiniteNumber(value)
+  if (finite === null) return null
+  const normalized = Math.max(0, Math.floor(finite))
+  return Number.isFinite(normalized) ? normalized : null
+}
+
+const clampPercentage = (value: number | null | undefined): number => {
+  if (value === null || value === undefined) return 0
+  if (!Number.isFinite(value)) return 0
+  if (value < 0) return 0
+  if (value > 100) return 100
+  return value
+}
+
+const normalizeStatus = (status: unknown): ProgressUpdate['status'] | undefined => {
+  if (typeof status !== 'string') return undefined
+  const lowered = status.toLowerCase()
+  if (lowered === 'in_progress') return 'processing'
+  if (lowered === 'pending' || lowered === 'processing' || lowered === 'completed' || lowered === 'failed' || lowered === 'cancelled') {
+    return lowered as ProgressUpdate['status']
+  }
+  return undefined
+}
+
+const areSetsEqual = (a: Set<string>, b: Set<string>): boolean => {
+  if (a.size !== b.size) return false
+  for (const value of a) {
+    if (!b.has(value)) {
+      return false
+    }
+  }
+  return true
+}
+
+const createInitialStats = (): ResearchStats => ({
+  sourcesFound: 0,
+  sourcesAnalyzed: 0,
+  searchesCompleted: 0,
+  totalSearches: 0,
+  highQualitySources: 0,
+  duplicatesRemoved: 0,
+  mcpToolsUsed: 0,
+  apisQueried: new Set<string>()
+})
+
 interface ResearchProgressProps {
   researchId: string
   onComplete?: () => void
@@ -25,7 +85,7 @@ interface ProgressUpdate {
   timestamp: string
   type?: string
   priority?: 'low' | 'medium' | 'high' | 'critical'
-  data?: any // Store original event data for expandable details
+  data?: Record<string, unknown> // Store original event data for expandable details
 }
 
 interface WebSocketData {
@@ -38,11 +98,27 @@ interface WebSocketData {
   index?: number
   total?: number
   results_count?: number
+  total_sources?: number
   domain?: string
   score?: number
   before_count?: number
   after_count?: number
   removed?: number
+  source_id?: string
+  analyzed_count?: number
+  source?: {
+    title?: string
+    domain?: string
+    snippet?: string
+    credibility_score?: number
+  }
+  sources_found?: number
+  sources_analyzed?: number
+  searches_completed?: number
+  total_searches?: number
+  high_quality_sources?: number
+  duplicates_removed?: number
+  apis?: string[]
   // Determinate progress fields
   items_done?: number
   items_total?: number
@@ -53,6 +129,8 @@ interface WebSocketData {
   // MCP + system notifications
   server?: string
   tool?: string
+  // Error field for research_failed events
+  error?: string
   limit_type?: string
   remaining?: number
   reset_time?: string
@@ -92,23 +170,12 @@ interface SourcePreview {
 }
 
 export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, onComplete, onCancel }) => {
-  // Limit the number of progress updates retained to prevent unbounded growth
-  const MAX_UPDATES = 100
   const [updates, setUpdates] = useState<ProgressUpdate[]>([])
   const [currentStatus, setCurrentStatus] = useState<ProgressUpdate['status']>('pending')
   const [progress, setProgress] = useState(0)
   const [isConnecting, setIsConnecting] = useState(true)
   const [isCancelling, setIsCancelling] = useState(false)
-  const [stats, setStats] = useState<ResearchStats>({
-    sourcesFound: 0,
-    sourcesAnalyzed: 0,
-    searchesCompleted: 0,
-    totalSearches: 0,
-    highQualitySources: 0,
-    duplicatesRemoved: 0,
-    mcpToolsUsed: 0,
-    apisQueried: new Set<string>()
-  })
+  const [stats, setStats] = useState<ResearchStats>(() => createInitialStats())
   const [sourcePreviews, setSourcePreviews] = useState<SourcePreview[]>([])
   const [showSourcePreviews, setShowSourcePreviews] = useState(true)
   const [sourcesCollapsed, setSourcesCollapsed] = useState(true)
@@ -126,6 +193,11 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [rateLimitWarning, setRateLimitWarning] = useState<RateLimitWarningData | null>(null)
   const [activeCategory, setActiveCategory] = useState<'all' | 'search' | 'sources' | 'analysis' | 'system' | 'errors'>('all')
   const [isMobile, setIsMobile] = useState(false)
+  const [validationError, setValidationError] = useState<string | null>(null)
+  const safeResearchId = React.useMemo(() => {
+    const trimmed = (researchId || '').trim()
+    return RESEARCH_ID_PATTERN.test(trimmed) ? trimmed : null
+  }, [researchId])
   const updatesContainerRef = useRef<HTMLDivElement>(null)
   // Refs to avoid re-subscribing WebSocket when these change
   const currentStatusRef = useRef<ProgressUpdate['status']>('pending')
@@ -146,6 +218,20 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     onCancelRef.current = onCancel
   }, [onCancel])
 
+  useEffect(() => {
+    setStats(() => createInitialStats())
+    setUpdates([])
+    setSourcePreviews([])
+    setDeterminateProgress(null)
+    setEtaSeconds(null)
+    setRateLimitWarning(null)
+    setCurrentPhase('initialization')
+    setAnalysisTotal(null)
+    setActiveCategory('all')
+    setStartTime(null)
+    setElapsedSec(0)
+  }, [safeResearchId])
+
   // Default collapse on small screens and detect mobile
   useEffect(() => {
     try {
@@ -163,192 +249,356 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   }, [])
 
   useEffect(() => {
-    // Establish a single WebSocket connection per researchId
+    if (!safeResearchId) {
+      setValidationError('Invalid research identifier – unable to subscribe to progress updates.')
+      setIsConnecting(false)
+      setCurrentStatus('failed')
+      return
+    }
+
+    setValidationError(null)
     setIsConnecting(true)
 
-    api.connectWebSocket(researchId, (message) => {
+    api.connectWebSocket(safeResearchId, (message) => {
       setIsConnecting(false)
-      const data = message.data
 
-      // Handle different message types
+      const rawData = message && typeof message.data === 'object' && message.data
+        ? (message.data as Record<string, unknown>)
+        : {}
+      const data = rawData as WebSocketData
+
       let statusUpdate: WebSocketData | undefined
+      const normalizedFromData = normalizeStatus(data.status)
+      const safePhase = typeof data.phase === 'string' ? data.phase : undefined
 
       switch (message.type) {
         case 'research_progress': {
-          // Normalize status for UI
-          const s = (data.status || '').toLowerCase()
-          const normalized = s === 'in_progress' ? 'processing'
-            : (s === 'pending' || s === 'processing' || s === 'completed' || s === 'failed' || s === 'cancelled')
-              ? (s as ProgressUpdate['status'])
+          const safeProgress = toFiniteNumber(data.progress)
+          const itemsDone = toNonNegativeInt(data.items_done)
+          const itemsTotal = toNonNegativeInt(data.items_total)
+          const eta = toNonNegativeInt(data.eta_seconds)
+          const messageText = typeof data.message === 'string' && data.message.trim()
+            ? stripHtml(data.message)
+            : safePhase
+              ? `Phase: ${safePhase}`
               : undefined
-          statusUpdate = {
-            status: normalized,
-            progress: data.progress,
-            message: data.message || `Phase: ${data.phase || 'processing'}`,
-            items_done: data.items_done,
-            items_total: data.items_total,
-            eta_seconds: data.eta_seconds,
-            phase: data.phase
-          }
-          // Update determinate progress if backend sends ratios
-          if (typeof data.items_done === 'number' && typeof data.items_total === 'number') {
-            setDeterminateProgress({ done: data.items_done, total: data.items_total })
 
-            // If we are in Context-Engineering phase, keep an internal copy so we can
-            // color W-R-S-O-C-I badges accurately.
-            if (data.phase === 'context_engineering') {
-              setCeLayerProgress({ done: data.items_done, total: data.items_total })
-            }
-            if (data.phase === 'analysis') {
-              setAnalysisTotal(data.items_total)
-            }
+          statusUpdate = {
+            status: normalizedFromData,
+            progress: safeProgress !== null ? clampPercentage(safeProgress) : undefined,
+            message: messageText,
+            items_done: itemsDone ?? undefined,
+            items_total: itemsTotal ?? undefined,
+            eta_seconds: eta ?? undefined,
+            phase: safePhase
           }
-          // Update ETA if available
-          if (typeof data.eta_seconds === 'number') {
-            setEtaSeconds(data.eta_seconds)
-          }
-          // Update phase if available
-          if (data.phase) {
-            setCurrentPhase(data.phase)
-            if (data.phase !== 'context_engineering') {
-              // Reset CE layer state when we leave context-engineering
+
+          if (itemsDone !== null && itemsTotal !== null && itemsTotal > 0) {
+            const boundedDone = Math.min(itemsDone, itemsTotal)
+            setDeterminateProgress({ done: boundedDone, total: itemsTotal })
+            if (safePhase === 'context_engineering') {
+              setCeLayerProgress({
+                done: Math.min(boundedDone, CE_LEN),
+                total: Math.max(itemsTotal, CE_LEN)
+              })
+            } else if (safePhase !== 'context_engineering') {
               setCeLayerProgress({ done: 0, total: CE_LEN })
             }
+            if (safePhase === 'analysis') {
+              setAnalysisTotal(itemsTotal)
+            }
+          } else {
+            setDeterminateProgress(null)
+          }
+
+          if (eta !== null) {
+            setEtaSeconds(eta)
+          }
+
+          if (safePhase) {
+            setCurrentPhase(safePhase)
+          }
+
+          const sourcesFound = toNonNegativeInt(data.sources_found ?? data.total_sources)
+          const sourcesAnalyzed = toNonNegativeInt(data.sources_analyzed)
+          const searchesCompleted = toNonNegativeInt(data.searches_completed)
+          const totalSearches = toNonNegativeInt(data.total_searches)
+          const highQuality = toNonNegativeInt(data.high_quality_sources)
+          const duplicates = toNonNegativeInt(data.duplicates_removed)
+          const mcpToolsUsed = toNonNegativeInt((rawData as Record<string, unknown>).mcp_tools_used)
+
+          if ([sourcesFound, sourcesAnalyzed, searchesCompleted, totalSearches, highQuality, duplicates, mcpToolsUsed].some(v => v !== null)) {
+            setStats(prev => {
+              const next = { ...prev, apisQueried: new Set(prev.apisQueried) }
+              let changed = false
+              if (sourcesFound !== null && sourcesFound !== prev.sourcesFound) {
+                next.sourcesFound = sourcesFound
+                changed = true
+              }
+              if (sourcesAnalyzed !== null && sourcesAnalyzed !== prev.sourcesAnalyzed) {
+                next.sourcesAnalyzed = sourcesAnalyzed
+                changed = true
+              }
+              if (searchesCompleted !== null && searchesCompleted !== prev.searchesCompleted) {
+                next.searchesCompleted = searchesCompleted
+                changed = true
+              }
+              if (totalSearches !== null && totalSearches !== prev.totalSearches) {
+                next.totalSearches = totalSearches
+                changed = true
+              }
+              if (highQuality !== null && highQuality !== prev.highQualitySources) {
+                next.highQualitySources = highQuality
+                changed = true
+              }
+              if (duplicates !== null && duplicates !== prev.duplicatesRemoved) {
+                next.duplicatesRemoved = duplicates
+                changed = true
+              }
+              if (mcpToolsUsed !== null && mcpToolsUsed !== prev.mcpToolsUsed) {
+                next.mcpToolsUsed = mcpToolsUsed
+                changed = true
+              }
+              return changed ? next : prev
+            })
           }
           break
         }
-        case 'system.notification':
-          // Handle MCP tool events and other notifications
-          if (data.server && data.tool) {
+        case 'system.notification': {
+          const server = typeof data.server === 'string' ? stripHtml(data.server) : ''
+          const tool = typeof data.tool === 'string' ? stripHtml(data.tool) : ''
+          if (server && tool) {
             const phase = data.status ? 'completed' : 'executing'
-            statusUpdate = {
-              message: `🔧 MCP ${data.server}.${data.tool} ${phase}`
-            }
-            // Count completed tool runs
-            if (data.status) {
-              setStats(prev => ({ ...prev, mcpToolsUsed: (prev.mcpToolsUsed || 0) + 1 }))
-            }
+            statusUpdate = { message: `🔧 MCP ${server}.${tool} ${phase}` }
           } else {
-            statusUpdate = { message: data.message }
+            const messageText = typeof data.message === 'string' ? stripHtml(data.message) : undefined
+            statusUpdate = { message: messageText }
           }
           break
-        case 'rate_limit.warning':
+        }
+        case 'rate_limit.warning': {
+          const warningMessage = typeof data.message === 'string' ? stripHtml(data.message) : undefined
+          const limitType = typeof data.limit_type === 'string' ? data.limit_type : undefined
           statusUpdate = {
-            message: `⚠️ Rate limit warning: ${data.message || data.limit_type}`
+            message: `⚠️ Rate limit warning: ${warningMessage || limitType || 'limit approaching'}`
           }
-          setRateLimitWarning(data)
+          setRateLimitWarning({
+            message: warningMessage,
+            limit_type: limitType,
+            remaining: toNonNegativeInt(data.remaining) ?? undefined,
+            reset_time: typeof data.reset_time === 'string' ? data.reset_time : undefined
+          })
           break
-        case 'research_phase_change':
+        }
+        case 'research_phase_change': {
+          const oldPhase = typeof data.old_phase === 'string' ? stripHtml(data.old_phase) : 'unknown'
+          const newPhase = typeof data.new_phase === 'string' ? stripHtml(data.new_phase) : 'unknown'
           statusUpdate = {
-            message: `Phase changed: ${data.old_phase} → ${data.new_phase}`,
-            phase: data.new_phase
+            message: `Phase changed: ${oldPhase} → ${newPhase}`,
+            phase: typeof data.new_phase === 'string' ? data.new_phase : undefined
           }
-          if (data.new_phase) {
+          if (typeof data.new_phase === 'string') {
             setCurrentPhase(data.new_phase)
           }
-          // Reset determinate progress when phase changes
           setDeterminateProgress(null)
           setEtaSeconds(null)
           break
-        case 'source_found':
+        }
+        case 'source_found': {
+          const sourceInfo = data.source && typeof data.source === 'object'
+            ? (data.source as Record<string, unknown>)
+            : undefined
+          const title = sourceInfo && typeof sourceInfo.title === 'string'
+            ? stripHtml(sourceInfo.title)
+            : 'New source'
+          const totalSources = toNonNegativeInt(data.total_sources)
           statusUpdate = {
-            message: `Found source: ${data.source?.title || 'New source'} (${data.total_sources} total)`
+            message: `Found source: ${title}${totalSources !== null ? ` (${totalSources} total)` : ''}`
           }
-          if (data.source) {
-            setSourcePreviews(prev => [...prev.slice(-4), {
-              title: data.source?.title || '',
-              domain: data.source?.domain || '',
-              snippet: data.source?.snippet || '',
-              credibility: data.source?.credibility_score || 0
-            }])
+          if (totalSources !== null) {
+            setStats(prev => {
+              if (prev.sourcesFound === totalSources) return prev
+              return { ...prev, apisQueried: new Set(prev.apisQueried), sourcesFound: totalSources }
+            })
+          }
+          if (sourceInfo) {
+            const domain = typeof sourceInfo.domain === 'string' ? stripHtml(sourceInfo.domain) : ''
+            const snippet = typeof sourceInfo.snippet === 'string' ? stripHtml(sourceInfo.snippet) : undefined
+            const credibilityScore = toFiniteNumber(sourceInfo.credibility_score)
+            const safeCredibility = credibilityScore !== null
+              ? Math.max(0, Math.min(1, credibilityScore))
+              : undefined
+            setSourcePreviews(prev => {
+              const trimmed = MAX_SOURCE_PREVIEWS > 1 ? prev.slice(-(MAX_SOURCE_PREVIEWS - 1)) : []
+              return [
+                ...trimmed,
+                {
+                  title,
+                  domain,
+                  snippet,
+                  credibility: safeCredibility
+                }
+              ]
+            })
           }
           break
-        case 'source_analyzed':
+        }
+        case 'source_analyzed': {
+          const analyzedCount = toNonNegativeInt(data.analyzed_count)
+          const sourceId = typeof data.source_id === 'string' ? stripHtml(data.source_id) : ''
           statusUpdate = {
-            message: `Analyzed source ${data.source_id} (${data.analyzed_count} analyzed)`
+            message: analyzedCount !== null
+              ? `Analyzed source ${sourceId || 'n/a'} (${analyzedCount} analyzed)`
+              : `Analyzed source ${sourceId || 'n/a'}`
           }
-          if (typeof data.analyzed_count === 'number') {
-            // Ensure we never set undefined which violates ResearchStats type
-            setStats(prev => ({
-              ...prev,
-              sourcesAnalyzed: data.analyzed_count ?? prev.sourcesAnalyzed,
-            }))
+          if (analyzedCount !== null) {
+            setStats(prev => {
+              if (prev.sourcesAnalyzed === analyzedCount) return prev
+              return { ...prev, apisQueried: new Set(prev.apisQueried), sourcesAnalyzed: analyzedCount }
+            })
           }
           break
-        case 'research_completed':
+        }
+        case 'research_completed': {
+          const duration = toNonNegativeInt((rawData as Record<string, unknown>).duration_seconds)
           statusUpdate = {
             status: 'completed',
             progress: 100,
-            message: `Research completed in ${data.duration_seconds}s`
+            message: duration !== null ? `Research completed in ${duration}s` : 'Research completed'
           }
           break
-        case 'research_failed':
+        }
+        case 'research_failed': {
+          const errorMsg = typeof data.error === 'string' ? stripHtml(data.error) : 'Research failed'
           statusUpdate = {
             status: 'failed',
-            message: `Research failed: ${data.error}`
+            message: errorMsg
           }
           break
-        case 'research_started':
+        }
+        case 'research_started': {
+          const query = typeof data.query === 'string' ? stripHtml(data.query) : ''
           statusUpdate = {
             status: 'processing',
-            message: `Research started for query: ${data.query}`
+            message: query ? `Research started for query: ${query}` : 'Research started'
           }
-          if (!startTimeRef.current) setStartTime(Date.now())
+          if (!startTimeRef.current) {
+            setStartTime(Date.now())
+          }
           break
-        case 'search.started':
+        }
+        case 'search.started': {
+          const index = toNonNegativeInt(data.index)
+          const total = toNonNegativeInt(data.total)
+          const query = typeof data.query === 'string' ? stripHtml(data.query) : ''
+          const prefixParts: string[] = ['Searching']
+          if (index !== null && total !== null && total > 0) {
+            const boundedIndex = Math.min(index + 1, total)
+            prefixParts.push(`(${boundedIndex}/${total})`)
+          }
+          if (query) {
+            prefixParts.push(`: ${query}`)
+          }
+          statusUpdate = { message: prefixParts.join(' ') }
+
+          const rawApi = typeof data.engine === 'string' && data.engine.trim()
+            ? data.engine
+            : typeof data.api === 'string'
+              ? data.api
+              : ''
+          const apiName = rawApi ? stripHtml(rawApi) : ''
+
+          if (apiName || (total !== null && total > 0)) {
+            setStats(prev => {
+              let changed = false
+              let nextTotal = prev.totalSearches
+              let nextApis = prev.apisQueried
+
+              if (apiName) {
+                const updatedApis = new Set(prev.apisQueried)
+                if (!updatedApis.has(apiName)) {
+                  changed = true
+                }
+                updatedApis.add(apiName)
+                if (updatedApis.size > MAX_API_BADGES) {
+                  const trimmed = new Set(Array.from(updatedApis).slice(-MAX_API_BADGES))
+                  if (!areSetsEqual(trimmed, updatedApis)) {
+                    changed = true
+                  }
+                  nextApis = trimmed
+                } else if (changed) {
+                  nextApis = updatedApis
+                } else {
+                  nextApis = updatedApis
+                }
+              }
+
+              if (total !== null && total > 0 && total !== prev.totalSearches) {
+                nextTotal = total
+                changed = true
+              }
+
+              if (!changed) {
+                return prev
+              }
+
+              return {
+                ...prev,
+                totalSearches: nextTotal,
+                apisQueried: nextApis instanceof Set ? nextApis : new Set(nextApis)
+              }
+            })
+          }
+          break
+        }
+        case 'search.completed': {
+          const results = toNonNegativeInt(data.results_count)
           statusUpdate = {
-            message: `Searching (${data.index}/${data.total}): ${data.query}`
+            message: results !== null ? `Found ${results} results` : 'Search completed'
           }
-          setStats(prev => {
-            const apiName = (data.engine || data.api || '').trim()
-            const nextSet = new Set(prev.apisQueried)
-            if (apiName) nextSet.add(apiName)
-            return { ...prev, totalSearches: data.total || prev.totalSearches, apisQueried: nextSet }
-          })
           break
-        case 'search.completed':
+        }
+        case 'credibility.check': {
+          const domain = typeof data.domain === 'string' ? stripHtml(data.domain) : 'source'
+          const score = toFiniteNumber(data.score)
+          const pct = score !== null ? `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%` : 'n/a'
           statusUpdate = {
-            message: `Found ${data.results_count} results`
+            message: `Checking credibility: ${domain} (${pct})`
           }
-          setStats(prev => ({
-            ...prev,
-            searchesCompleted: prev.searchesCompleted + 1,
-            sourcesFound: prev.sourcesFound + (data.results_count || 0)
-          }))
           break
-        case 'credibility.check':
+        }
+        case 'deduplication.progress': {
+          const removed = toNonNegativeInt(data.removed)
           statusUpdate = {
-            message: `Checking credibility: ${data.domain} (${((data.score || 0) * 100).toFixed(0)}%)`
+            message: removed !== null ? `Removed ${removed} duplicate results` : 'Deduplication in progress'
           }
-          if ((data.score || 0) > 0.7) {
-            setStats(prev => ({ ...prev, highQualitySources: prev.highQualitySources + 1 }))
+          const before = toNonNegativeInt(data.before_count)
+          const after = toNonNegativeInt(data.after_count)
+          const totalRemoved = before !== null && after !== null
+            ? Math.max(0, before - after)
+            : removed
+          if (totalRemoved !== null) {
+            setStats(prev => {
+              if (prev.duplicatesRemoved === totalRemoved) return prev
+              return {
+                ...prev,
+                apisQueried: new Set(prev.apisQueried),
+                duplicatesRemoved: totalRemoved
+              }
+            })
           }
           break
-        case 'deduplication.progress':
-          statusUpdate = {
-            message: `Removed ${data.removed} duplicate results`
-          }
-          setStats(prev => ({
-            ...prev,
-            duplicatesRemoved: (prev.duplicatesRemoved || 0) + (data.removed || 0)
-          }))
-          break
+        }
         default: {
-          // Handle legacy message format
-          const s2 = (data.status || '').toLowerCase()
-          const normalized2 = s2 === 'in_progress' ? 'processing'
-            : (s2 === 'pending' || s2 === 'processing' || s2 === 'completed' || s2 === 'failed' || s2 === 'cancelled')
-              ? (s2 as ProgressUpdate['status'])
-              : undefined
+          const safeMessage = typeof data.message === 'string' ? stripHtml(data.message) : undefined
           statusUpdate = {
-            status: normalized2,
-            progress: data.progress,
-            message: data.message
+            status: normalizedFromData,
+            progress: toFiniteNumber(data.progress) ?? undefined,
+            message: safeMessage
           }
         }
       }
 
-      // Assign priority based on event type
       const toPriority = (t?: string): ProgressUpdate['priority'] => {
         switch (t) {
           case 'research_failed':
@@ -362,50 +612,50 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           case 'source_found':
           case 'source_analyzed':
             return 'medium'
+          case 'rate_limit.warning':
+            return 'high'
           default:
             return 'low'
         }
       }
 
+      const progressValue = statusUpdate?.progress ?? toFiniteNumber(data.progress)
+      const normalizedStatus = statusUpdate?.status || normalizedFromData
+      const messageText = statusUpdate?.message || (normalizedStatus ? `Status: ${normalizedStatus}` : 'Status update')
+
       const update: ProgressUpdate = {
-        status: statusUpdate.status || currentStatusRef.current,
-        progress: statusUpdate.progress,
-        message: statusUpdate.message,
+        status: normalizedStatus || currentStatusRef.current,
+        progress: progressValue !== null ? clampPercentage(progressValue) : undefined,
+        message: messageText,
         timestamp: new Date().toISOString(),
         type: message.type,
         priority: toPriority(message.type),
-        data: data // Store original data for expandable details
+        data: rawData
       }
 
-      // Keep only a rolling window of updates to avoid memory leaks
       setUpdates(prev => [...prev.slice(-(MAX_UPDATES - 1)), update])
 
-      if (data.status) {
-        const s = (data.status || '').toLowerCase()
-        const normalized = s === 'in_progress' ? 'processing'
-          : (s === 'pending' || s === 'processing' || s === 'completed' || s === 'failed' || s === 'cancelled')
-            ? (s as ProgressUpdate['status'])
-            : undefined
-        if (normalized) setCurrentStatus(normalized)
+      if (normalizedStatus) {
+        setCurrentStatus(normalizedStatus)
       }
 
-      if (data.progress !== undefined) {
-        setProgress(data.progress)
+      if (progressValue !== null) {
+        setProgress(clampPercentage(progressValue))
       }
 
-      if (data.status === 'completed' && onCompleteRef.current) {
+      if (normalizedStatus === 'completed' && onCompleteRef.current) {
         onCompleteRef.current()
       }
 
-      if (data.status === 'cancelled' && onCancelRef.current) {
+      if (normalizedStatus === 'cancelled' && onCancelRef.current) {
         onCancelRef.current()
       }
     })
 
     return () => {
-      api.unsubscribeFromResearch(researchId)
+      api.unsubscribeFromResearch(safeResearchId)
     }
-  }, [researchId, CE_LEN])
+  }, [safeResearchId, CE_LEN])
 
   // Elapsed time ticker
   useEffect(() => {
@@ -426,11 +676,14 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const handleCancel = async () => {
     setIsCancelling(true)
     try {
-      await api.cancelResearch(researchId)
+      if (!safeResearchId) {
+        setValidationError('Cannot cancel research because the identifier is invalid.')
+        return
+      }
+      await api.cancelResearch(safeResearchId)
       // Status will be updated via WebSocket
     } catch {
-      // Failed to cancel research
-      // You might want to show a toast error here
+      setValidationError('Failed to cancel the research run. Please retry.')
     } finally {
       setIsCancelling(false)
     }
@@ -466,14 +719,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   }
 
   // Defensive cleanup for any provider HTML that might slip into messages
-  const cleanMessage = (msg?: string) => {
-    if (!msg) return ''
-    try {
-      return stripHtml(msg)
-    } catch {
-      return msg
-    }
-  }
+  const cleanMessage = (msg?: string) => (typeof msg === 'string' ? stripHtml(msg) : '')
 
   const isNoisy = (msg?: string) => {
     const m = (msg || '').toLowerCase()
@@ -572,6 +818,38 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     }
   })
 
+  const hasStarted = !validationError && (startTime !== null || updates.length > 0 || currentStatus !== 'pending')
+  const formatCount = (value: number): string => value.toLocaleString()
+  const boundedSearchesCompleted = stats.totalSearches > 0
+    ? Math.min(stats.searchesCompleted, stats.totalSearches)
+    : stats.searchesCompleted
+  const searchesDisplay = stats.totalSearches > 0
+    ? `${boundedSearchesCompleted}/${stats.totalSearches}`
+    : hasStarted
+      ? formatCount(stats.searchesCompleted)
+      : '-'
+  const analyzedDisplay = analysisTotal && analysisTotal > 0
+    ? `${Math.min(stats.sourcesAnalyzed, analysisTotal)}/${analysisTotal}`
+    : hasStarted
+      ? formatCount(stats.sourcesAnalyzed)
+      : '-'
+  const sourcesFoundDisplay = hasStarted ? formatCount(stats.sourcesFound) : '-'
+  const highQualityDisplay = hasStarted ? formatCount(stats.highQualitySources) : '-'
+  const duplicatesDisplay = hasStarted ? formatCount(stats.duplicatesRemoved) : '-'
+  const mcpToolsDisplay = hasStarted ? formatCount(stats.mcpToolsUsed) : '-'
+  const elapsedDisplay = hasStarted
+    ? `${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`
+    : '--:--'
+  const qualityRateDisplay = stats.sourcesFound > 0
+    ? `${Math.round((stats.highQualitySources / Math.max(1, stats.sourcesFound)) * 100)}%`
+    : hasStarted && stats.highQualitySources > 0
+      ? '100%'
+      : hasStarted
+        ? '0%'
+        : '-'
+  const showSearchMeta = currentPhase === 'search' && stats.totalSearches > 0
+  const showAnalysisMeta = currentPhase === 'analysis' && !!analysisTotal && analysisTotal > 0
+
   return (
     <Card className="mt-6 animate-slide-up">
       <div className="flex items-center justify-between mb-4">
@@ -605,118 +883,101 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           />
         </div>
       </div>
+      {validationError && (
+        <div className="mb-3 p-3 rounded-lg border border-error/40 bg-error/10 text-error text-sm">
+          {validationError}
+        </div>
+      )}
       {rateLimitWarning && (
         <div className="mb-3 p-3 rounded-lg border border-error/30 bg-error/10 text-error text-sm">
           <div className="font-medium">Rate limit warning</div>
           <div className="text-xs">
-            {rateLimitWarning.message || `Approaching ${rateLimitWarning.limit_type} limit. ${rateLimitWarning.remaining ?? ''} remaining.`}
+            {rateLimitWarning.message || (rateLimitWarning.limit_type ? `Approaching ${rateLimitWarning.limit_type} limit.` : 'Approaching a rate limit.')}
+            {typeof rateLimitWarning.remaining === 'number' ? ` ${rateLimitWarning.remaining} remaining.` : ''}
           </div>
         </div>
       )}
-
-      {/* Persistent Session Summary (compact) */}
-      <div className="mb-3 p-3 bg-surface-subtle rounded-lg">
-        <h4 className="text-sm font-medium mb-2">Session Summary</h4>
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div>✅ {stats.searchesCompleted} searches completed</div>
-          <div>📊 {stats.sourcesAnalyzed} sources analyzed</div>
-          <div>🔍 {stats.highQualitySources} high-quality sources</div>
-          <div>🗑️ {stats.duplicatesRemoved} duplicates removed</div>
-          <div>🔧 {stats.mcpToolsUsed} tools executed</div>
-          <div>⚡ {stats.apisQueried.size} APIs queried</div>
-        </div>
-      </div>
 
       {/* API status indicators */}
       {stats.apisQueried.size > 0 && (
-        <div className="flex gap-2 mb-2">
-          {Array.from(stats.apisQueried).map(apiName => (
-            <Badge
-              key={apiName}
-              variant={currentPhase === 'search' ? 'info' : 'default'}
-              size="sm"
-              className={currentPhase === 'search' ? 'animate-pulse' : ''}
-            >
-              {apiName}
-            </Badge>
-          ))}
+        <div className="mb-3 space-y-1">
+          <div className="flex gap-2 flex-wrap">
+            {Array.from(stats.apisQueried).map(apiName => (
+              <Badge
+                key={apiName}
+                variant={currentPhase === 'search' ? 'info' : 'default'}
+                size="sm"
+                className={currentPhase === 'search' ? 'animate-pulse' : ''}
+              >
+                {apiName}
+              </Badge>
+            ))}
+          </div>
+          <p className="text-xs text-text-muted">{stats.apisQueried.size} API{stats.apisQueried.size === 1 ? '' : 's'} queried</p>
         </div>
       )}
 
-      {progress > 0 && (currentStatus === 'processing' || currentStatus === 'in_progress') && (
-        <>
-          {/* Multi-layer progress: overall + sub-phase */}
-          <div className="mb-4 space-y-2">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm text-text-muted">
-                {determinateProgress ? `${determinateProgress.done} / ${determinateProgress.total} items` : 'Progress'}
+      {(currentStatus === 'processing' || currentStatus === 'in_progress') && (
+        <div className="mb-4 space-y-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm text-text-muted">
+              {determinateProgress ? `${determinateProgress.done} / ${determinateProgress.total} items` : 'Progress'}
+            </span>
+            {etaSeconds !== null && etaSeconds > 0 && (
+              <span className="text-xs text-text-muted">
+                ~{Math.floor(etaSeconds / 60).toString().padStart(2, '0')}:{(etaSeconds % 60).toString().padStart(2, '0')} remaining
               </span>
-              {etaSeconds !== null && etaSeconds > 0 && (
-                <span className="text-xs text-text-muted">
-                  ~{Math.floor(etaSeconds / 60).toString().padStart(2, '0')}:{(etaSeconds % 60).toString().padStart(2, '0')} remaining
-                </span>
+            )}
+          </div>
+          <ProgressBar
+            value={determinateProgress ? (determinateProgress.done / Math.max(1, determinateProgress.total)) * 100 : progress}
+            max={100}
+            variant="default"
+            label="Overall"
+            showLabel={false}
+            shimmer
+          />
+          {(currentPhase || showSearchMeta || showAnalysisMeta) && (
+            <div className="text-xs text-text-muted flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+              {currentPhase && (
+                <span>Current phase: {currentPhase.replace(/_/g, ' ')}</span>
+              )}
+              {showSearchMeta && (
+                <span>Search progress: {boundedSearchesCompleted} of {stats.totalSearches}</span>
+              )}
+              {showAnalysisMeta && analysisTotal && (
+                <span>Analysis progress: {Math.min(stats.sourcesAnalyzed, analysisTotal)} of {analysisTotal}</span>
               )}
             </div>
-            <ProgressBar
-              value={determinateProgress ? (determinateProgress.done / Math.max(1, determinateProgress.total)) * 100 : progress}
-              max={100}
-              variant="default"
-              label="Overall"
-              showLabel={false}
-              shimmer
-            />
-            {currentPhase === 'search' && stats.totalSearches > 0 && (
-              <ProgressBar
-                value={(Math.min(stats.searchesCompleted, stats.totalSearches) / Math.max(1, stats.totalSearches)) * 100}
-                max={100}
-                variant="info"
-                size="sm"
-                label={`Search ${Math.min(stats.searchesCompleted, stats.totalSearches)}/${stats.totalSearches}`}
-                showLabel={false}
-              />
-            )}
-            {currentPhase === 'analysis' && analysisTotal && analysisTotal > 0 && (
-              <ProgressBar
-                value={(Math.min(stats.sourcesAnalyzed, analysisTotal) / Math.max(1, analysisTotal)) * 100}
-                max={100}
-                variant="info"
-                size="sm"
-                label={`Analyzing ${Math.min(stats.sourcesAnalyzed, analysisTotal)}/${analysisTotal}`}
-                showLabel={false}
-              />
-            )}
-            {currentPhase && (
-              <div className="pt-1">
-                <Badge variant="info" size="sm" className="capitalize">
-                  {currentPhase.replace(/_/g, ' ')}
-                </Badge>
-              </div>
-            )}
-          </div>
+          )}
+        </div>
+      )}
 
-          {/* Context-Engineering Layer Badges (Write → Isolate) */}
-          <div className="mb-3 flex items-center gap-2">
-            {CE_LAYERS.map((label, idx) => {
-              const completed = ceLayerProgress.done > idx
-              const isActiveLayer = ceLayerProgress.done === idx
-              const badgeStyle = completed
+      {currentPhase === 'context_engineering' && (currentStatus === 'processing' || currentStatus === 'in_progress') && (
+        <div className="mb-3 flex items-center gap-2">
+          {CE_LAYERS.map((label, idx) => {
+            const completed = ceLayerProgress.done > idx
+            const isActiveLayer = ceLayerProgress.done === idx
+            const badgeStyle = completed
+              ? 'bg-primary/10 border-primary/30 text-primary'
+              : isActiveLayer
                 ? 'bg-primary/10 border-primary/30 text-primary'
-                : isActiveLayer
-                  ? 'bg-primary/10 border-primary/30 text-primary'
-                  : 'bg-surface-subtle border-border text-text-muted'
+                : 'bg-surface-subtle border-border text-text-muted'
 
-              return (
-                <span
-                  key={label}
-                  className={`text-[11px] px-2 py-1 rounded-full border ${badgeStyle}`}
-                >
-                  {label}
-                </span>
-              )
-            })}
-          </div>
-          
-          {/* Research Phases */}
+            return (
+              <span
+                key={label}
+                className={`text-[11px] px-2 py-1 rounded-full border ${badgeStyle}`}
+              >
+                {label}
+              </span>
+            )
+          })}
+        </div>
+      )}
+
+      {hasStarted && (
+        <>
           <div className="mb-4 bg-surface-subtle rounded-lg p-4">
             <div className="flex justify-between items-center gap-2">
               {researchPhases.map((phase, index) => (
@@ -743,53 +1004,41 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               ))}
             </div>
           </div>
-          
-          {/* Statistics */}
+
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-8 gap-3 mb-4">
             <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">{stats.sourcesFound}</div>
+              <div className="text-2xl font-bold text-text">{sourcesFoundDisplay}</div>
               <div className="text-xs text-text-muted">Sources Found</div>
             </div>
             <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">
-                {stats.totalSearches > 0 ? `${stats.searchesCompleted}/${stats.totalSearches}` : '-'}
-              </div>
+              <div className="text-2xl font-bold text-text">{searchesDisplay}</div>
               <div className="text-xs text-text-muted">Searches</div>
             </div>
             <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">
-                {analysisTotal ? `${Math.min(stats.sourcesAnalyzed, analysisTotal)}/${analysisTotal}` : '-'}
-              </div>
+              <div className="text-2xl font-bold text-text">{analyzedDisplay}</div>
               <div className="text-xs text-text-muted">Analyzed</div>
             </div>
             <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-success">
-                {stats.highQualitySources}
-              </div>
+              <div className="text-2xl font-bold text-success">{highQualityDisplay}</div>
               <div className="text-xs text-text-muted">High Quality</div>
             </div>
             <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">
-                {stats.sourcesFound > 0 ? `${Math.round((stats.highQualitySources / stats.sourcesFound) * 100)}%` : '-'}
-              </div>
+              <div className="text-2xl font-bold text-text">{qualityRateDisplay}</div>
               <div className="text-xs text-text-muted">Quality Rate</div>
             </div>
             <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-error">{stats.duplicatesRemoved || 0}</div>
+              <div className="text-2xl font-bold text-error">{duplicatesDisplay}</div>
               <div className="text-xs text-text-muted">Duplicates Removed</div>
             </div>
             <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-primary">{stats.apisQueried.size || 0}</div>
-              <div className="text-xs text-text-muted">APIs Used</div>
+              <div className="text-2xl font-bold text-primary">{mcpToolsDisplay}</div>
+              <div className="text-xs text-text-muted">Tools Executed</div>
             </div>
             <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">
-                {`${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`}
-              </div>
+              <div className="text-2xl font-bold text-text">{elapsedDisplay}</div>
               <div className="text-xs text-text-muted">Elapsed</div>
             </div>
           </div>
-
         </>
       )}
 

@@ -1,7 +1,7 @@
 """
 Feedback routes for Four Hosts backend.
 
-Exposes two endpoints:
+Exposes two endpoints (mounted under /v1 by the app):
 
     POST /v1/feedback/classification
     POST /v1/feedback/answer
@@ -46,7 +46,11 @@ from backend.services.rate_limiter import RateLimitExceeded
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/feedback", tags=["feedback"])
+# NOTE:
+# Routers in this project are mounted under "/v1" in core.app.setup_routes.
+# Therefore, router prefixes here should NOT include the "/v1" segment.
+# Using "/v1/feedback" here would result in paths like "/v1/v1/feedback/*".
+router = APIRouter(prefix="/feedback", tags=["feedback"])
 
 # --------------------------------------------------------------------------- #
 # Constants

@@ -227,3 +227,99 @@ class ContextEngineeredQuerySSOTA(BaseModel):
 
 # Re-export canonical EvidenceBundle from models.evidence to avoid drift
 from .evidence import EvidenceBundle  # noqa: F401
+
+
+# --------------------------------------------------------------------------- #
+#        Unified Research Response Contract (documentation / validation)      #
+# --------------------------------------------------------------------------- #
+
+
+class SourceItemSchema(BaseModel):
+    title: str
+    url: str
+    domain: str = ""
+    snippet: Optional[str] = None
+    content: Optional[str] = None
+    credibility_score: float = 0.0
+    published_date: Optional[str] = None
+    result_type: Optional[str] = "web"
+    source_api: Optional[str] = None
+    source_category: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ParadigmRoleSchema(BaseModel):
+    paradigm: str
+    confidence: Optional[float] = None
+
+
+class ParadigmAnalysisSchema(BaseModel):
+    primary: ParadigmRoleSchema
+    secondary: Optional[ParadigmRoleSchema] = None
+
+
+class CredibilitySummarySchema(BaseModel):
+    average_score: float = 0.0
+    score_distribution: Dict[str, int] = Field(default_factory=dict)
+    high_credibility_count: Optional[int] = None
+    high_credibility_ratio: Optional[float] = None
+
+
+class ResearchMetadataSchema(BaseModel):
+    processing_time_seconds: Optional[float] = None
+    total_results: int = 0
+    total_sources_analyzed: int = 0
+    high_quality_sources: int = 0
+    credibility_summary: CredibilitySummarySchema = Field(default_factory=CredibilitySummarySchema)
+    category_distribution: Dict[str, int] = Field(default_factory=dict)
+    bias_distribution: Dict[str, int] = Field(default_factory=dict)
+    paradigm_fit: Optional[Dict[str, Any]] = None
+    research_depth: Optional[str] = None
+    agent_trace: Optional[List[Any]] = None
+    queries_executed: int = 0
+    sources_used: List[str] = Field(default_factory=list)
+    deduplication_stats: Dict[str, Any] = Field(default_factory=dict)
+    search_metrics: Dict[str, Any] = Field(default_factory=dict)
+    paradigm: Optional[str] = None
+    context_layers: Optional[Dict[str, Any]] = None
+    evidence_quotes: Optional[List[Dict[str, Any]]] = None
+    classification_details: Optional[Dict[str, Any]] = None
+
+
+class ResearchResponseSchema(BaseModel):
+    research_id: str
+    query: str
+    status: str = "ok"
+    paradigm_analysis: ParadigmAnalysisSchema
+    sources: List[SourceItemSchema] = Field(default_factory=list)
+    results: List[Any] = Field(default_factory=list)
+    answer: Optional[Dict[str, Any]] = None
+    integrated_synthesis: Optional[Dict[str, Any]] = None
+    metadata: ResearchMetadataSchema = Field(default_factory=ResearchMetadataSchema)
+    cost_info: Dict[str, Any] = Field(default_factory=dict)
+    export_formats: Dict[str, str] = Field(default_factory=dict)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "research_id": "r_123",
+                "query": "ai governance",
+                "status": "ok",
+                "paradigm_analysis": {
+                    "primary": {"paradigm": "bernard", "confidence": 0.82}
+                },
+                "sources": [],
+                "results": [],
+                "metadata": {
+                    "total_results": 12,
+                    "processing_time_seconds": 5.4,
+                    "credibility_summary": {
+                        "average_score": 0.71,
+                        "score_distribution": {"high": 6, "medium": 4, "low": 2},
+                    },
+                    "search_metrics": {"total_queries": 4, "apis_used": ["google"]},
+                },
+                "cost_info": {"total": 0.02},
+                "export_formats": {"json": "/v1/research/r_123/export/json"},
+            }
+        }

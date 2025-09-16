@@ -7,9 +7,31 @@ import { getParadigmClass, getParadigmDescription } from '../constants/paradigm'
 import { ContextMetricsPanel } from './ContextMetricsPanel'
 import { EvidencePanel } from './EvidencePanel'
 import { AnswerFeedback } from './feedback/AnswerFeedback'
+import { getCredibilityBand, getCredibilityLabel, getCredibilityColor } from '../utils/credibility'
 
 interface ResultsDisplayEnhancedProps {
   results: ResearchResult
+}
+
+type ContextIsolationDetails = {
+  focus_areas?: string[]
+  patterns?: number
+}
+
+type ContextLayersInfo = {
+  write_focus?: string
+  compression_ratio?: number
+  token_budget?: number
+  isolation_strategy?: string
+  search_queries_count?: number
+  layer_times?: Record<string, number>
+  budget_plan?: Record<string, number>
+  rewrite_primary?: string
+  rewrite_alternatives?: number
+  optimize_primary?: string
+  optimize_variations_count?: number
+  refined_queries_count?: number
+  isolated_findings?: ContextIsolationDetails
 }
 
 
@@ -36,9 +58,24 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     : results.answer;
   const { integrated_synthesis } = results;
   // Prefer SSOTA `metadata.context_layers`, fall back to legacy `paradigm_analysis.context_engineering`
-  const contextLayers = (results as any)?.metadata?.context_layers || (results as any)?.paradigm_analysis?.context_engineering;
+  const contextLayers = React.useMemo<ContextLayersInfo | null>(() => {
+    const legacy = results.paradigm_analysis?.context_engineering as ContextLayersInfo | undefined
+    const enriched = results.metadata?.context_layers as ContextLayersInfo | undefined
+    if (!legacy && !enriched) {
+      return null
+    }
+    return {
+      ...legacy,
+      ...enriched,
+    }
+  }, [results.metadata?.context_layers, results.paradigm_analysis?.context_engineering])
   const actionableRatio = Number(results.metadata?.actionable_content_ratio || 0)
-  const bias = (results.metadata as any)?.bias_check as (ResearchResult['metadata'] & { bias_check?: any })['bias_check']
+  const bias = results.metadata?.bias_check
+
+  const metadata = results.metadata
+  const categoryDistribution = metadata?.category_distribution || {}
+  const biasDistribution = metadata?.bias_distribution || {}
+  const credibilityDistribution = metadata?.credibility_summary?.score_distribution || {}
 
   // Build domain info map for citation credibility mini-cards
   const domainInfo = React.useMemo(() => {
@@ -52,13 +89,8 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     return map
   }, [results.sources])
 
-  // Helper: map credibility score to quality band
-  const qualityLabel = (score?: number) => {
-    if (typeof score !== 'number') return 'Unknown'
-    if (score >= 0.8) return 'Strong'
-    if (score >= 0.6) return 'Moderate'
-    return 'Weak'
-  }
+  // Use standardized credibility utilities
+  const qualityLabel = getCredibilityLabel
 
   // Compute evidence snapshot and timeframe window
   const evidenceSnapshot = React.useMemo(() => {
@@ -69,8 +101,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     for (const s of results.sources || []) {
       const sc = s.credibility_score
       if (typeof sc === 'number') {
-        if (sc >= 0.8) strong++
-        else if (sc >= 0.6) moderate++
+        const band = getCredibilityBand(sc)
+        if (band === 'high') strong++
+        else if (band === 'medium') moderate++
         else weak++
       }
       if (s.published_date) {
@@ -118,7 +151,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   // Parse bias/factual from explanation like "bias=left, fact=high, cat=academic"
   function parseExplanation(expl?: string): { bias?: string; fact?: string; cat?: string } {
     if (!expl) return {}
-    const out: any = {}
+    const out: { bias?: string; fact?: string; cat?: string } = {}
     const pairs = expl.split(',')
     for (const p of pairs) {
       const [k, v] = p.split('=').map(s => (s || '').trim())
@@ -221,17 +254,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     }
   }
 
-  const getCredibilityColor = (score: number) => {
-    if (score >= 0.8) return 'text-green-600 dark:text-green-400'
-    if (score >= 0.6) return 'text-yellow-600 dark:text-yellow-400'
-    if (score >= 0.4) return 'text-orange-600 dark:text-orange-400'
-    return 'text-red-600 dark:text-red-400'
-  }
 
   const getCredibilityIcon = (score: number) => {
-    if (score >= 0.8) return <FiShield className="h-4 w-4" aria-label="High credibility" />
-    if (score >= 0.4) return <FiAlertTriangle className="h-4 w-4" aria-label="Medium credibility" />
-    return <FiAlertTriangle className="h-4 w-4" aria-label="Low credibility" />
+    const band = getCredibilityBand(score)
+    if (band === 'high') return <FiShield className="h-4 w-4" aria-label="High credibility" />
+    if (band === 'medium') return <FiAlertTriangle className="h-4 w-4" aria-label="Medium credibility" />
+    return <FiAlertCircle className="h-4 w-4" aria-label="Low credibility" />
   }
 
   const getPriorityIcon = (priority: string) => {
@@ -250,21 +278,24 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   const sections = answer.sections || []
   const actionItems = answer.action_items || []
   const summary = answer.summary || 'No summary available'
-  const answerMetadata = (answer as { metadata?: Record<string, unknown> }).metadata
-  const rawEvidence = Array.isArray((answerMetadata as any)?.evidence_quotes)
-    ? ((answerMetadata as any).evidence_quotes as unknown[])
-    : (Array.isArray((results as any)?.metadata?.evidence_quotes) ? ((results as any).metadata.evidence_quotes as unknown[]) : [])
+  type AnswerMetadata = { evidence_quotes?: unknown[] } & Record<string, unknown>
+  const answerMetadata = (answer.metadata as AnswerMetadata | undefined)
+  const answerEvidence = Array.isArray(answerMetadata?.evidence_quotes) ? answerMetadata?.evidence_quotes : undefined
+  const metadataEvidence = Array.isArray(metadata?.evidence_quotes) ? metadata.evidence_quotes : undefined
+  const rawEvidence = answerEvidence ?? metadataEvidence ?? []
   const evidenceQuotes = rawEvidence
-    .map((q) => {
-      if (typeof q === 'string') return { quote: q, url: '' }
+    .map((q, index) => {
+      if (typeof q === 'string') return { quote: q, url: '', id: `quote-${index}` }
       if (q && typeof q === 'object' && 'quote' in q) {
         const o = q as { quote: string; url?: string; domain?: string; title?: string; credibility_score?: number; published_date?: string; id?: string }
-        // Avoid duplicate keys; ensure `url` always exists as a string
-        return { ...o, url: o.url ?? '' }
+        // Ensure unique id and url always exists as a string
+        // Generate stable unique ID based on quote content and URL
+        const stableId = o.id || `quote-${btoa((o.quote || '').slice(0, 20) + (o.url || '')).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10)}-${index}`
+        return { ...o, url: o.url ?? '', id: stableId }
       }
       return null
     })
-    .filter((q): q is { quote: string; url: string; domain?: string; title?: string; credibility_score?: number; published_date?: string; id?: string } => !!q)
+    .filter((q): q is { quote: string; url: string; domain?: string; title?: string; credibility_score?: number; published_date?: string; id: string } => !!q)
   
   const displayedCitations = showAllCitations
     ? citations
@@ -286,18 +317,22 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
 
           <div className="flex items-center gap-2">
-            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${
-              getParadigmClass(results.paradigm_analysis.primary.paradigm)
-            }`}>
-              {getParadigmDescription(results.paradigm_analysis.primary.paradigm)}
-            </span>
-            {results.paradigm_analysis.secondary && (
-                <span className={`px-3 py-1 rounded-full text-sm font-medium border ${
-                    getParadigmClass(results.paradigm_analysis.secondary.paradigm)
-                }`}>
-                    + {getParadigmDescription(results.paradigm_analysis.secondary.paradigm)}
+            {(() => {
+              const pri = results.paradigm_analysis?.primary?.paradigm || (metadata?.paradigm as string | undefined) || 'bernard'
+              return (
+                <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getParadigmClass(pri)}`}>
+                  {getParadigmDescription(pri)}
                 </span>
-            )}
+              )
+            })()}
+            {(() => {
+              const sec = results.paradigm_analysis?.secondary?.paradigm
+              return sec ? (
+                <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getParadigmClass(sec)}`}>
+                  + {getParadigmDescription(sec)}
+                </span>
+              ) : null
+            })()}
 
             <div className="relative" ref={dropdownRef}>
               <button
@@ -325,7 +360,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   (() => {
                     // backend may provide export_formats mapping; fall back to defaults
                     const allowed = ['json', 'csv', 'pdf', 'markdown', 'excel'] as const
-                    const map: Record<string, string> = (results as any).export_formats || {}
+                    const map: Record<string, string> = { ...(results.export_formats || {}) }
                     if (Object.keys(map).length === 0) {
                       allowed.forEach((f) => {
                         map[f] = `/v1/research/${results.research_id}/export/${f}`
@@ -429,7 +464,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
           <div className="bg-surface-subtle rounded-lg p-3 transition-colors duration-200">
             <p className="text-text-muted">Paradigms Used</p>
-            <p className="font-semibold text-lg text-text">{results.metadata.paradigms_used.length}</p>
+            <p className="font-semibold text-lg text-text">{metadata.paradigms_used?.length ?? 0}</p>
           </div>
         </div>
 
@@ -438,12 +473,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           <div className="bg-surface-subtle rounded-lg p-3">
             <p className="text-text mb-2">Source categories</p>
             <div className="flex flex-wrap gap-2">
-              {Object.entries((results as any)?.metadata?.category_distribution || {}).map(([cat, count]) => (
+              {Object.entries(categoryDistribution).map(([cat, count]) => (
                 <span key={cat} className="px-2 py-1 rounded bg-surface border border-border text-xs text-text">
                   {cat}: <span className="font-semibold">{String(count)}</span>
                 </span>
               ))}
-              {Object.keys((results as any)?.metadata?.category_distribution || {}).length === 0 && (
+              {Object.keys(categoryDistribution).length === 0 && (
                 <span className="text-text-subtle">No category data</span>
               )}
             </div>
@@ -451,20 +486,20 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           <div className="bg-surface-subtle rounded-lg p-3">
             <p className="text-text mb-2">Credibility Distribution</p>
             {(() => {
-              const dist = ((results as any)?.metadata?.credibility_summary?.score_distribution) || {}
-              const total: number = (Object.values(dist) as any[]).reduce((a:number,b:any)=>a+Number(b||0),0) || 1
-              const pct = (k: string) => Math.round(((Number((dist as any)[k]||0))/total)*100)
+              const totals = Object.values(credibilityDistribution).map((value) => Number(value || 0))
+              const sum = totals.reduce((acc, cur) => acc + cur, 0) || 1
+              const pct = (key: keyof typeof credibilityDistribution) => Math.round(((credibilityDistribution[key] ?? 0) / sum) * 100)
               return (
                 <div>
                   <div className="h-2 w-full rounded bg-surface-muted overflow-hidden">
-                    <div className="h-2 bg-green-600" style={{width:`${pct('high')}%`}} />
-                    <div className="h-2 bg-yellow-500" style={{width:`${pct('medium')}%`}} />
-                    <div className="h-2 bg-red-500" style={{width:`${pct('low')}%`}} />
+                    <div className="h-2 bg-green-600" style={{width:`${pct('high') || 0}%`}} />
+                    <div className="h-2 bg-yellow-500" style={{width:`${pct('medium') || 0}%`}} />
+                    <div className="h-2 bg-red-500" style={{width:`${pct('low') || 0}%`}} />
                   </div>
                   <div className="mt-2 flex gap-2 text-xs text-text">
-                    <span className="px-2 py-0.5 rounded bg-green-600 text-white">High {pct('high')}%</span>
-                    <span className="px-2 py-0.5 rounded bg-yellow-500 text-white">Medium {pct('medium')}%</span>
-                    <span className="px-2 py-0.5 rounded bg-red-500 text-white">Low {pct('low')}%</span>
+                    <span className="px-2 py-0.5 rounded bg-green-600 text-white">High {pct('high') || 0}%</span>
+                    <span className="px-2 py-0.5 rounded bg-yellow-500 text-white">Medium {pct('medium') || 0}%</span>
+                    <span className="px-2 py-0.5 rounded bg-red-500 text-white">Low {pct('low') || 0}%</span>
                   </div>
                 </div>
               )
@@ -476,12 +511,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         <div className="mt-4 bg-surface-subtle rounded-lg p-3">
           <p className="text-text mb-2">Bias Distribution</p>
           <div className="flex flex-wrap gap-2 text-xs">
-            {Object.entries((results as any)?.metadata?.bias_distribution || {}).map(([k,v]) => (
+            {Object.entries(biasDistribution).map(([k,v]) => (
               <span key={k} className="px-2 py-0.5 rounded bg-surface border border-border text-text">
                 {k}: <span className="font-semibold">{String(v)}</span>
               </span>
             ))}
-            {Object.keys((results as any)?.metadata?.bias_distribution || {}).length === 0 && (
+            {Object.keys(biasDistribution).length === 0 && (
               <span className="text-text-subtle">No bias data</span>
             )}
           </div>
@@ -505,12 +540,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
         {/* Executive Summary (Maeve focus) */}
         <div className="mt-4 p-4 bg-surface-subtle rounded-lg border border-border transition-colors duration-200">
-          <h4 className="text-sm font-semibold text-text mb-2">Executive Summary</h4>
-          <ul className="list-disc list-inside text-sm text-text space-y-1">
-            {((integrated_synthesis?.primary_answer?.action_items || results.answer?.action_items || []) as any[]).slice(0,3).map((a, i) => (
+         <h4 className="text-sm font-semibold text-text mb-2">Executive Summary</h4>
+         <ul className="list-disc list-inside text-sm text-text space-y-1">
+            {(integrated_synthesis?.primary_answer?.action_items || results.answer?.action_items || []).slice(0,3).map((a, i) => (
               <li key={i}>{a.action || ''}{a.timeframe ? ` (${a.timeframe})` : ''}</li>
             ))}
-            {((integrated_synthesis?.primary_answer?.action_items || results.answer?.action_items || []) as any[]).length === 0 && (
+            {(integrated_synthesis?.primary_answer?.action_items || results.answer?.action_items || []).length === 0 && (
               <li>No immediate actions extracted.</li>
             )}
           </ul>
@@ -529,7 +564,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 </div>
                 {Array.isArray(integrated_synthesis.primary_answer?.action_items) && integrated_synthesis.primary_answer.action_items.length > 0 ? (
                   <ul className="list-disc list-inside text-sm text-text space-y-1">
-                    {integrated_synthesis.primary_answer.action_items.map((it: any, idx: number) => (
+                    {integrated_synthesis.primary_answer.action_items.map((it, idx) => (
                       <li key={idx}><span className="font-medium capitalize">{it.priority}</span>: {it.action} {it.timeframe ? (<em className="text-xs text-text-subtle">({it.timeframe})</em>) : null}</li>
                     ))}
                   </ul>
@@ -560,7 +595,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
           {actionItems.length > 0 ? (
             <ul className="divide-y divide-yellow-200 dark:divide-yellow-800">
-              {actionItems.map((it: any, idx: number) => (
+              {actionItems.map((it, idx) => (
                 <li key={idx} className="py-2 flex items-start gap-3">
                   <div className="mt-0.5" aria-hidden>
                     {getPriorityIcon(String(it.priority || 'low'))}
@@ -587,93 +622,124 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
 
         {/* Context Engineering Info (unified view) */}
-        {contextLayers && (
+        {contextLayers ? (
           <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors duration-200">
             <h4 className="text-sm font-semibold text-text mb-2">Context engineering pipeline</h4>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-              {('write_focus' in contextLayers) && (
+              {contextLayers.write_focus ? (
                 <div>
                   <p className="text-text-muted">Write Focus</p>
-                  <p className="font-semibold text-text">{contextLayers.write_focus || '—'}</p>
+                  <p className="font-semibold text-text">{contextLayers.write_focus}</p>
                 </div>
-              )}
+              ) : null}
               <div>
                 <p className="text-text-muted">Compression Ratio</p>
-                <p className="font-semibold text-text">{(contextLayers.compression_ratio * 100).toFixed(0)}%</p>
+                <p className="font-semibold text-text">
+                  {typeof contextLayers.compression_ratio === 'number'
+                    ? `${(contextLayers.compression_ratio * 100).toFixed(0)}%`
+                    : '—'}
+                </p>
               </div>
               <div>
                 <p className="text-text-muted">Token Budget</p>
-                <p className="font-semibold text-text">{Number(contextLayers.token_budget).toLocaleString()}</p>
+                <p className="font-semibold text-text">
+                  {typeof contextLayers.token_budget === 'number'
+                    ? contextLayers.token_budget.toLocaleString()
+                    : '—'}
+                </p>
               </div>
               <div>
                 <p className="text-text-muted">Search Queries</p>
-                <p className="font-semibold text-text">{contextLayers.search_queries_count}</p>
+                <p className="font-semibold text-text">
+                  {typeof contextLayers.search_queries_count === 'number'
+                    ? contextLayers.search_queries_count
+                    : '—'}
+                </p>
               </div>
               <div>
                 <p className="text-text-muted">Isolation Strategy</p>
-                <p className="font-semibold capitalize text-text">{contextLayers.isolation_strategy}</p>
+                <p className="font-semibold capitalize text-text">{contextLayers.isolation_strategy || '—'}</p>
               </div>
             </div>
-            {contextLayers.layer_times && (
+            {contextLayers.layer_times ? (
               <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                {Object.entries(contextLayers.layer_times).map(([k, v]) => (
-                  <div key={k} className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
-                    <p className="text-text">{k.charAt(0).toUpperCase() + k.slice(1)} Time</p>
-                    <p className="font-semibold text-text">{Number(v).toFixed(2)}s</p>
-                  </div>
-                ))}
+                {Object.entries(contextLayers.layer_times).map(([k, v]) => {
+                  const label = k.charAt(0).toUpperCase() + k.slice(1)
+                  const value = typeof v === 'number' ? v : Number(v)
+                  return (
+                    <div key={k} className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
+                      <p className="text-text">{label} Time</p>
+                      <p className="font-semibold text-text">{Number.isFinite(value) ? `${value.toFixed(2)}s` : '—'}</p>
+                    </div>
+                  )
+                })}
               </div>
-            )}
-            {contextLayers.budget_plan && Object.keys(contextLayers.budget_plan).length > 0 && (
+            ) : null}
+            {contextLayers.budget_plan && Object.keys(contextLayers.budget_plan).length > 0 ? (
               <div className="mt-3">
                 <p className="text-xs text-text mb-1">Token Budget Plan</p>
                 <div className="flex items-center gap-1">
-                  {Object.entries(contextLayers.budget_plan).map(([k,v]) => (
-                    <div key={k} className="flex-1">
-                      <div className="h-2 rounded" style={{ width: '100%', background: 'rgba(59,130,246,0.15)' }}>
-                        <div className="h-2 rounded bg-blue-600" style={{ width: `${Math.min(100, (Number(v) / Math.max(1, Number(contextLayers.token_budget))) * 100)}%` }} />
+                  {Object.entries(contextLayers.budget_plan).map(([k, v]) => {
+                    const totalBudget = typeof contextLayers.token_budget === 'number' ? contextLayers.token_budget : 0
+                    const numericValue = typeof v === 'number' ? v : Number(v)
+                    const widthPercent = totalBudget > 0 ? Math.min(100, (numericValue / totalBudget) * 100) : 0
+                    return (
+                      <div key={k} className="flex-1">
+                        <div className="h-2 rounded" style={{ width: '100%', background: 'rgba(59,130,246,0.15)' }}>
+                          <div className="h-2 rounded bg-blue-600" style={{ width: `${widthPercent}%` }} />
+                        </div>
+                        <div className="text-[10px] text-text mt-0.5">{k} · {Number.isFinite(numericValue) ? numericValue.toLocaleString() : '0'}t</div>
                       </div>
-                      <div className="text-[10px] text-text mt-0.5">{k} · {Number(v).toLocaleString()}t</div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
-            )}
-            {(contextLayers.rewrite_primary || contextLayers.optimize_primary) && (
+            ) : null}
+            {(contextLayers.rewrite_primary || contextLayers.optimize_primary) ? (
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                {contextLayers.rewrite_primary && (
+                {contextLayers.rewrite_primary ? (
                   <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
-                    <p className="text-text mb-1">Rewritten Query {typeof contextLayers.rewrite_alternatives === 'number' ? `(${contextLayers.rewrite_alternatives} alts)` : ''}</p>
+                    <p className="text-text mb-1">
+                      Rewritten Query
+                      {typeof contextLayers.rewrite_alternatives === 'number' ? ` (${contextLayers.rewrite_alternatives} alts)` : ''}
+                    </p>
                     <p className="font-mono text-[11px] break-words text-text">{contextLayers.rewrite_primary}</p>
                   </div>
-                )}
-                {contextLayers.optimize_primary && (
+                ) : null}
+                {contextLayers.optimize_primary ? (
                   <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
-                    <p className="text-text mb-1">Optimized Primary {typeof contextLayers.optimize_variations_count === 'number' ? `(${contextLayers.optimize_variations_count} vars)` : ''}</p>
+                    <p className="text-text mb-1">
+                      Optimized Primary
+                      {typeof contextLayers.optimize_variations_count === 'number' ? ` (${contextLayers.optimize_variations_count} vars)` : ''}
+                    </p>
                     <p className="font-mono text-[11px] break-words text-text">{contextLayers.optimize_primary}</p>
                   </div>
-                )}
+                ) : null}
               </div>
-            )}
-            {typeof contextLayers.refined_queries_count === 'number' && (
+            ) : null}
+            {typeof contextLayers.refined_queries_count === 'number' ? (
               <p className="mt-2 text-[11px] text-text">Refined queries: {contextLayers.refined_queries_count}</p>
-            )}
-            {contextLayers.isolated_findings && (
+            ) : null}
+            {contextLayers.isolated_findings ? (
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
                   <p className="text-text">Isolation Focus Areas</p>
                   <p className="font-semibold text-text truncate">
-                    {(contextLayers.isolated_findings.focus_areas || []).join(', ') || '—'}
+                    {(contextLayers.isolated_findings.focus_areas ?? []).join(', ') || '—'}
                   </p>
                 </div>
                 <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
                   <p className="text-text">Extraction Patterns</p>
-                  <p className="font-semibold text-text">{Number(contextLayers.isolated_findings.patterns || 0)}</p>
+                  <p className="font-semibold text-text">
+                    {typeof contextLayers.isolated_findings.patterns === 'number'
+                      ? contextLayers.isolated_findings.patterns
+                      : '—'}
+                  </p>
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
-        )}
+        ) : null}
 
         {/* Analytical Signals (Bernard) */}
         {results.paradigm_analysis?.primary?.paradigm === 'bernard' && typeof (answerMetadata?.statistical_insights) === 'number' && (
@@ -731,7 +797,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </button>
           {traceOpen && (
             <div className="mt-3 space-y-2 text-sm text-text">
-              {results.metadata.agent_trace.map((entry: any, idx: number) => (
+              {results.metadata.agent_trace.map((entry, idx) => (
                 <div key={idx} className="border border-border rounded p-3 bg-surface">
                   <div className="flex items-center gap-2 text-text-muted">
                     <FiClock className="h-4 w-4" />
@@ -747,7 +813,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     <div className="mt-2">
                       <p className="text-xs text-text-subtle">Proposed Queries</p>
                       <ul className="list-disc list-inside space-y-1">
-                        {entry.proposed_queries.map((q: string, i: number) => (
+                        {entry.proposed_queries.map((q, i) => (
                           <li key={i} className="break-all">{q}</li>
                         ))}
                       </ul>
@@ -871,7 +937,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               <div className="flex items-center gap-2">
                 <FiFilter className="h-4 w-4 text-text-subtle" />
                 <div className="flex flex-wrap gap-2">
-                  {['all', ...Object.keys((results as any)?.metadata?.category_distribution || {})].map((cat) => (
+                  {['all', ...Object.keys(categoryDistribution)].map((cat) => (
                     <button
                       key={cat}
                       className={`px-2 py-1 rounded text-xs ${selectedCategories.has(cat) ? 'bg-primary text-white' : 'bg-surface-subtle text-text'}`}
@@ -907,16 +973,31 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
 
           {(() => {
-            const byCat = selectedCategories.has('all') ? results.sources : results.sources.filter(s => selectedCategories.has(s.source_category || 'general'))
-            const credBand = (score:number) => score >= 0.7 ? 'high' : score >= 0.4 ? 'medium' : 'low'
-            const filtered = byCat.filter(s => selectedCredBands.has(credBand(s.credibility_score)))
-            const total = filtered.length
-            const pageSize = Math.max(1, Math.min(sourcesPageSize || 20, total || 20))
+            const rawSources = Array.isArray(results.sources) ? results.sources : []
+            const byCat = selectedCategories.has('all')
+              ? rawSources
+              : rawSources.filter(s => selectedCategories.has((s.source_category || 'general')))
+            const filtered = byCat.filter(s => selectedCredBands.has(getCredibilityBand(Number(s.credibility_score || 0))))
+            const sorted = [...filtered].sort((a, b) => {
+              const as = Number(a.credibility_score || 0)
+              const bs = Number(b.credibility_score || 0)
+              if (bs !== as) return bs - as
+              const ad = a.published_date ? Date.parse(a.published_date) : 0
+              const bd = b.published_date ? Date.parse(b.published_date) : 0
+              if (bd !== ad) return bd - ad
+              const at = (a.title || '').localeCompare(b.title || '')
+              if (at !== 0) return at
+              const adom = (a.domain || '').localeCompare(b.domain || '')
+              if (adom !== 0) return adom
+              return (a.url || '').localeCompare(b.url || '')
+            })
+            const total = sorted.length
+            const pageSize = Math.max(1, Math.min(Number(sourcesPageSize || 20), total || 20))
             const pages = Math.max(1, Math.ceil(total / pageSize))
             const current = Math.min(sourcesPage, pages)
             const start = (current - 1) * pageSize
             const end = Math.min(start + pageSize, total)
-            const view = filtered.slice(start, end)
+            const view = sorted.slice(start, end)
             return (
               <>
                 <div className="flex items-center justify-between mb-3 text-sm text-text-muted">
@@ -938,7 +1019,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                       <option value={20}>20</option>
                       <option value={50}>50</option>
                       <option value={100}>100</option>
-                      <option value={'all' as any}>All</option>
+                      <option value="all">All</option>
                     </select>
                     <div className="flex items-center gap-1 ml-2">
                       <button
@@ -966,16 +1047,18 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     const quote = (source.snippet || '').trim()
                     const words = quote.split(/\s+/).filter(Boolean)
                     const shortQuote = words.slice(0, 20).join(' ') + (words.length > 20 ? '…' : '')
-                    const qual = qualityLabel(source.credibility_score)
-                    const whyByCategory: Record<string, string> = {
-                      academic: 'Peer‑reviewed evidence; higher methodological rigor.',
-                      government: 'Official guidance or data with legal/operational relevance.',
-                      news: 'Current reporting; useful for recent developments.',
-                      industry: 'Practical insights; may carry vendor bias.',
-                    }
-                    const why = whyByCategory[(source.source_category || '').toLowerCase()] || 'Adds perspective relevant to the decision.'
+                    const score = Number(source.credibility_score || 0)
+                    const qual = qualityLabel(score)
+                    // Use actual credibility explanation from source if available
+                    const why = source.credibility_explanation ||
+                      `Credibility: ${qual} (${(score * 100).toFixed(0)}%)`
                     return (
-                      <div key={index} className="border border-border rounded-lg p-4 hover:border-border transition-all duration-200 hover:shadow-md bg-surface">
+                      <div
+                        key={source.url || `${source.domain || 'domain'}-${index}`}
+                        className="border border-border rounded-lg p-4 hover:border-border transition-all duration-200 hover:shadow-md bg-surface"
+                        role="article"
+                        aria-label={source.title}
+                      >
                         <h4 className="font-medium text-text">{source.title}</h4>
                         <div className="mt-2 grid md:grid-cols-3 gap-3 text-sm">
                           <div>
@@ -1003,9 +1086,6 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                             <span className="text-text-subtle">Published {new Date(source.published_date).toLocaleDateString()}</span>
                           )}
                           <span className="text-text-subtle">Indexed {new Date(fetchedAtRef.current).toLocaleDateString()}</span>
-                          {source.credibility_explanation && (
-                            <span className="text-text-subtle">{source.credibility_explanation}</span>
-                          )}
                           <a
                             href={source.url}
                             target="_blank"

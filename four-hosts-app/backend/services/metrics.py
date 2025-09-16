@@ -45,6 +45,19 @@ class StageEvent:
     prompt_version: Optional[str] = None
 
 
+@dataclass
+class O3UsageEvent:
+    ts: float
+    paradigm: Optional[str]
+    document_count: int
+    document_tokens: int
+    quote_count: int
+    source_count: int
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+
+
+
 class MetricsFacade:
     def __init__(self):
         self._events: Deque[StageEvent] = deque(maxlen=MAX_EVENTS)
@@ -52,6 +65,7 @@ class MetricsFacade:
             lambda: defaultdict(int)
         )
         self._label_values: Dict[str, set] = defaultdict(set)
+        self._o3_usage: Deque[O3UsageEvent] = deque(maxlen=MAX_EVENTS)
 
     def record_stage(
         self,
@@ -105,6 +119,34 @@ class MetricsFacade:
                             return
                 key = tuple(label_values) if label_values else tuple()
                 self._counters[name][key] += amount
+        except Exception:
+            pass
+
+    def record_o3_usage(
+        self,
+        *,
+        paradigm: Optional[str],
+        document_count: int,
+        document_tokens: int,
+        quote_count: int,
+        source_count: int,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+    ) -> None:
+        try:
+            with _lock:
+                self._o3_usage.append(
+                    O3UsageEvent(
+                        ts=time.time(),
+                        paradigm=paradigm,
+                        document_count=max(0, int(document_count)),
+                        document_tokens=max(0, int(document_tokens)),
+                        quote_count=max(0, int(quote_count)),
+                        source_count=max(0, int(source_count)),
+                        prompt_tokens=prompt_tokens if prompt_tokens is None else max(0, int(prompt_tokens)),
+                        completion_tokens=completion_tokens if completion_tokens is None else max(0, int(completion_tokens)),
+                    )
+                )
         except Exception:
             pass
 
@@ -169,6 +211,44 @@ class MetricsFacade:
                         u["tokens_out"] += ev.tokens_out
         return usage
 
+    def get_o3_usage_summary(self) -> Dict[str, Any]:
+        with _lock:
+            events = list(self._o3_usage)
+        if not events:
+            return {}
+
+        total_docs = sum(ev.document_count for ev in events)
+        total_doc_tokens = sum(ev.document_tokens for ev in events)
+        total_quotes = sum(ev.quote_count for ev in events)
+        total_sources = sum(ev.source_count for ev in events)
+        total_prompt_tokens = sum(ev.prompt_tokens or 0 for ev in events)
+        total_completion_tokens = sum(ev.completion_tokens or 0 for ev in events)
+
+        paradigms = defaultdict(int)
+        for ev in events:
+            if ev.paradigm:
+                paradigms[ev.paradigm] += 1
+
+        count = len(events)
+
+        def _avg(value: int) -> float:
+            return round((value / count), 2) if count else 0.0
+
+        last_ts = events[-1].ts if events else time.time()
+
+        return {
+            "events": count,
+            "avg_documents": _avg(total_docs),
+            "avg_document_tokens": _avg(total_doc_tokens),
+            "avg_quotes": _avg(total_quotes),
+            "avg_sources": _avg(total_sources),
+            "total_document_tokens": total_doc_tokens,
+            "total_prompt_tokens": total_prompt_tokens or None,
+            "total_completion_tokens": total_completion_tokens or None,
+            "paradigm_counts": dict(paradigms),
+            "last_updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(last_ts)),
+        }
+
     def get_paradigm_distribution(self) -> Dict[str, int]:
         dist: Dict[str, int] = defaultdict(int)
         with _lock:
@@ -199,6 +279,7 @@ class MetricsFacade:
             "paradigm_distribution": self.get_paradigm_distribution(),
             "quality": self.get_quality_metrics(),
             "counters": self.get_counters(),
+            "o3_usage": self.get_o3_usage_summary(),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 

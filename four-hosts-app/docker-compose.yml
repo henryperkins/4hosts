@@ -116,8 +116,8 @@ services:
         condition: service_healthy
     # Allow host port override via BACKEND_PORT env (defaults to 8001)
     ports:
-      # Expose on all interfaces for remote access
-      - "${BACKEND_PORT:-8001}:8000"  # host:container
+      # Bind to localhost to avoid internet exposure; set BACKEND_PORT to override host port
+      - "127.0.0.1:${BACKEND_PORT:-8001}:8000"  # host:container (loopback-only)
     restart: unless-stopped
     networks:
       - fourhosts-network
@@ -145,7 +145,7 @@ services:
       backend:
         condition: service_started  # Frontend can start once backend is running
     ports:
-      - "5173:80"  # Expose on all interfaces for remote access
+      - "127.0.0.1:5173:80"  # Bind to loopback to avoid internet exposure
     restart: unless-stopped
     networks:
       - fourhosts-network

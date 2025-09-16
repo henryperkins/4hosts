@@ -137,25 +137,33 @@ export const ResearchPage = () => {
           if (resultsData.paradigm_analysis && resultsData.paradigm_analysis.primary) {
             const primary = resultsData.paradigm_analysis.primary
             const secondary = resultsData.paradigm_analysis.secondary
-            const distribution: Record<string, number> = { [primary.paradigm]: primary.confidence }
 
-            if (secondary) {
-              distribution[secondary.paradigm] = secondary.confidence
+            const distribution: Record<string, number> = {}
+            distribution[primary.paradigm] = typeof primary.confidence === 'number' ? primary.confidence : 0
+
+            if (secondary?.paradigm) {
+              distribution[secondary.paradigm] = typeof secondary.confidence === 'number' ? secondary.confidence : 0
             }
 
             const allParadigms = ['dolores', 'teddy', 'bernard', 'maeve']
             allParadigms.forEach(p => {
-              if (!distribution[p]) distribution[p] = 0
+              if (!(p in distribution)) distribution[p] = 0
             })
+
+            const explanation: Record<string, string> = {
+              [primary.paradigm]: primary.approach ?? ''
+            }
+
+            if (secondary?.paradigm) {
+              explanation[secondary.paradigm] = secondary.approach ?? ''
+            }
 
             setParadigmClassification({
               primary: primary.paradigm,
               secondary: secondary?.paradigm || null,
               distribution,
-              confidence: primary.confidence,
-              explanation: {
-                [primary.paradigm]: primary.approach
-              }
+              confidence: typeof primary.confidence === 'number' ? primary.confidence : 0,
+              explanation
             })
           }
           setIsLoading(false)
