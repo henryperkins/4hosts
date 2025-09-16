@@ -106,8 +106,12 @@ def _domain_from(url: str) -> str:
 
 async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     import aiohttp  # local import to avoid hard dependency at import time
+    import logging
+
+    logger = logging.getLogger(__name__)
 
     out: Dict[str, str] = {}
+    fetch_failures = []
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {"User-Agent": "FourHostsResearch/1.0 (+evidence-builder)"}
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -117,11 +121,30 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
                 try:
                     txt = await fetch_and_parse_url(session, u)
                     out[u] = txt or ""
-                except Exception:
+                    if not txt:
+                        fetch_failures.append(f"{u}: empty content")
+                except asyncio.TimeoutError:
                     out[u] = ""
+                    fetch_failures.append(f"{u}: timeout after 30s")
+                except aiohttp.ClientError as e:
+                    out[u] = ""
+                    fetch_failures.append(f"{u}: network error - {type(e).__name__}")
+                except Exception as e:
+                    out[u] = ""
+                    fetch_failures.append(f"{u}: {type(e).__name__}")
             tasks.append(asyncio.create_task(run()))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Log fetch failures summary
+    if fetch_failures:
+        logger.warning(
+            f"Evidence fetch failures for {len(fetch_failures)}/{len(urls)} URLs. "
+            f"First 3 failures: {fetch_failures[:3]}"
+        )
+    elif urls:
+        logger.debug(f"Successfully fetched content from {len([v for v in out.values() if v])}/{len(urls)} URLs")
+
     return out
 
 
@@ -159,11 +182,27 @@ def _best_quotes_for_text(
     max_len: int = EVIDENCE_QUOTE_MAX_CHARS,
     use_semantic: bool = EVIDENCE_SEMANTIC_SCORING,
 ) -> List[Tuple[str, int, int]]:
+    import logging
+    logger = logging.getLogger(__name__)
+
     if not text:
         return []
-    qtoks = set(_tokens(query))
+    if not query:
+        logger.debug("No query provided for quote extraction")
+        return []
+
+    try:
+        qtoks = set(_tokens(query))
+    except Exception as e:
+        logger.debug(f"Failed to tokenize query: {e}")
+        qtoks = set()
+
     # Break into sentences / list items
-    parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p and len(p.strip()) > 20]
+    try:
+        parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p and len(p.strip()) > 20]
+    except Exception as e:
+        logger.debug(f"Failed to split text into sentences: {e}")
+        parts = []
     scored = []
     sem = _semantic_scores(query, parts) if use_semantic else [0.0] * len(parts)
     for idx, p in enumerate(parts):
@@ -247,13 +286,22 @@ async def build_evidence_bundle(
     full_text_budget: int = EVIDENCE_BUDGET_TOKENS_DEFAULT,
 ) -> EvidenceBundle:
     """Build comprehensive evidence bundle including quotes and (optionally) full documents."""
+    import logging
+    logger = logging.getLogger(__name__)
 
     if not results:
+        logger.debug("Evidence builder: No input results provided")
         return EvidenceBundle()
+
+    if not query:
+        logger.warning("Evidence builder: No query provided for evidence extraction")
 
     docs = _pick_docs(results, max_docs=max_docs)
     if not docs:
+        logger.warning(f"Evidence builder: No valid documents selected from {len(results)} results")
         return EvidenceBundle()
+
+    logger.debug(f"Evidence builder: Processing {len(docs)} documents from {len(results)} search results")
 
     urls = [(_item_get(d, "url", "") or "").strip() for d in docs if (_item_get(d, "url", "") or "").strip()]
     texts = await _fetch_texts(urls)

@@ -265,6 +265,36 @@ class CredibilitySummarySchema(BaseModel):
     high_credibility_ratio: Optional[float] = None
 
 
+class ClassificationDetailsSchema(BaseModel):
+    """Schema for classification details in research metadata
+
+    Provides strong typing for classification details to prevent type mismatches
+    and ensure consistent serialization.
+    """
+    # paradigm code (str) -> probability [0..1]
+    distribution: Dict[str, float] = Field(default_factory=dict)
+    # paradigm code (str) -> list of short reasons
+    reasoning: Dict[str, List[str]] = Field(default_factory=dict)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "distribution": {
+                    "dolores": 0.7,
+                    "bernard": 0.2,
+                    "maeve": 0.08,
+                    "teddy": 0.02
+                },
+                "reasoning": {
+                    "dolores": ["Contains 'expose' keyword", "Focus on revealing corruption"],
+                    "bernard": ["Seeks investigative approach"],
+                    "maeve": ["Implies need for methodology"],
+                    "teddy": ["No community care signals"]
+                }
+            }
+        }
+
+
 class ResearchMetadataSchema(BaseModel):
     processing_time_seconds: Optional[float] = None
     total_results: int = 0
@@ -283,7 +313,7 @@ class ResearchMetadataSchema(BaseModel):
     paradigm: Optional[str] = None
     context_layers: Optional[Dict[str, Any]] = None
     evidence_quotes: Optional[List[Dict[str, Any]]] = None
-    classification_details: Optional[Dict[str, Any]] = None
+    classification_details: Optional[ClassificationDetailsSchema] = None
 
 
 class ResearchResponseSchema(BaseModel):

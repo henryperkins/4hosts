@@ -5,7 +5,7 @@ Research routes for the Four Hosts Research API
 import logging
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Optional, cast
+from typing import Any, Optional, cast, Dict
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Response, Request
 
@@ -41,6 +41,7 @@ from services.mesh_network import mesh_negotiator
 import html as _html
 import re as _re
 from models.base import Paradigm
+from models.context_models import ClassificationDetailsSchema
 from services.webhook_manager import WebhookEvent, WebhookManager
 from services.export_service import ExportOptions, ExportFormat, ExportService
 from services.rate_limiter import RateLimitExceeded
@@ -54,6 +55,45 @@ router = APIRouter(prefix="/research", tags=["research"])
 # Mock services for now - these will be injected
 progress_tracker = _ws_progress_tracker
 webhook_manager: WebhookManager | None = None
+
+
+def _build_classification_details_for_ui(cls: Any) -> Dict[str, Any]:
+    """
+    Normalize a classification object into the UI-facing classification_details
+    payload using the explicit ClassificationDetailsSchema to guarantee a
+    mapping-like shape and JSON-serializable values.
+    """
+    try:
+        dist_raw = getattr(cls, "distribution", {}) or {}
+        rn_raw = getattr(cls, "reasoning", {}) or {}
+
+        # Guard against unexpected shapes
+        if not isinstance(dist_raw, dict):
+            dist_raw = {}
+        if not isinstance(rn_raw, dict):
+            rn_raw = {}
+
+        # Build distribution mapping without long lines
+        distribution: Dict[str, float] = {}
+        for p, v in dist_raw.items():
+            key = HOST_TO_MAIN_PARADIGM[p].value  # type: ignore[index]
+            distribution[key] = float(v or 0.0)
+
+        # Build reasoning mapping (limit to 4 items per paradigm)
+        reasoning: Dict[str, list[str]] = {}
+        for p, r in rn_raw.items():
+            key = HOST_TO_MAIN_PARADIGM[p].value  # type: ignore[index]
+            steps = list((r or [])[:4])
+            reasoning[key] = steps
+
+        schema = ClassificationDetailsSchema(
+            distribution=distribution,
+            reasoning=reasoning,
+        )
+        return schema.model_dump()
+    except Exception:
+        # Best effort – fall back to empty schema-compatible object
+        return ClassificationDetailsSchema().model_dump()
 
 
 async def execute_real_research(
@@ -538,11 +578,7 @@ async def execute_real_research(
 
         # Add detailed classification breakdown for UI/analytics
         try:
-            classification_details = {
-                "distribution": {HOST_TO_MAIN_PARADIGM[p].value: float(v or 0.0) for p, v in (getattr(cls, "distribution", {}) or {}).items()},
-                "reasoning": {HOST_TO_MAIN_PARADIGM[p].value: list((r or [])[:4]) for p, r in (getattr(cls, "reasoning", {}) or {}).items()},
-            }
-            metadata["classification_details"] = classification_details
+            metadata["classification_details"] = _build_classification_details_for_ui(cls)
         except Exception:
             pass
 

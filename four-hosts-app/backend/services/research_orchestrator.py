@@ -6,7 +6,7 @@ Combines all the best features from multiple orchestrator implementations
 import asyncio
 import logging
 import os
-from typing import List, Dict, Any, Optional, Tuple, Set
+from typing import List, Dict, Any, Optional, Tuple, Set, cast, TypedDict
 from datetime import datetime
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -287,6 +287,15 @@ class EarlyRelevanceFilter:
             'singles in your area', 'hot deals', 'limited time offer'
         }
 
+        # Allow custom spam indicators via environment
+        try:
+            custom_spam = os.getenv("EARLY_FILTER_SPAM_INDICATORS")
+            if custom_spam:
+                additional_spam = [s.strip().lower() for s in custom_spam.split(",") if s.strip()]
+                self.spam_indicators.update(additional_spam)
+        except Exception:
+            pass
+
         # Domain blocklist can be disabled via EARLY_FILTER_BLOCK_DOMAINS=0
         try:
             if os.getenv("EARLY_FILTER_BLOCK_DOMAINS", "1").lower() in {"1", "true", "yes", "on"}:
@@ -319,17 +328,55 @@ class EarlyRelevanceFilter:
         if not isinstance(snippet_val, str) or len(snippet_val.strip()) < 20:
             return False
 
-        # Language detection (basic check for non-English)
+        # Language detection (basic check for non-English) - configurable by context
+        # Allow override via user context language or environment variable
+        language = getattr(result, 'language', 'en') or 'en'  # some APIs provide language hint
+        ascii_threshold = 0.3  # default 30%
+
+        # Adjust threshold for non-English queries or when explicitly allowed
+        if language != 'en':
+            ascii_threshold = 0.8  # be more permissive for non-English content
+
+        # Allow environment override
+        try:
+            ascii_threshold = float(os.getenv("EARLY_FILTER_ASCII_THRESHOLD", str(ascii_threshold)))
+        except Exception:
+            pass
+
         non_ascii_count = sum(1 for c in combined_text if ord(c) > 127)
-        if non_ascii_count > len(combined_text) * 0.3:
+        if len(combined_text) > 0 and non_ascii_count > len(combined_text) * ascii_threshold:
             return False
 
-        # Query relevance check
-        query_terms = [term.lower() for term in query.split() if len(term) > 3]
-        if query_terms:
-            has_query_term = any(term in combined_text for term in query_terms)
-            if not has_query_term:
-                return False
+        # Query relevance check - use query_compressor for better keyword extraction
+        try:
+            query_terms = set(query_compressor.extract_keywords(query))
+            if query_terms:
+                # Use regex tokenization for more flexible matching
+                import re as _re
+                def _toks(text: str) -> set:
+                    return set([t for t in _re.findall(r"[A-Za-z0-9]+", (text or "").lower()) if len(t) > 2])
+
+                result_terms = _toks(combined_text)
+                if result_terms:
+                    # Check for direct term matches
+                    has_query_term = bool(query_terms & result_terms)
+
+                    # If no direct matches, check for partial matches with shorter keywords
+                    if not has_query_term:
+                        # Try with 2-character minimum for short keywords
+                        short_query_terms = set([t for t in query_terms if len(t) >= 2])
+                        short_result_terms = set([t for t in _re.findall(r"[A-Za-z0-9]+", (combined_text or "").lower()) if len(t) >= 2])
+                        has_query_term = bool(short_query_terms & short_result_terms)
+
+                    if not has_query_term:
+                        return False
+        except Exception:
+            # Fallback to simple split if query_compressor fails
+            query_terms = [term.lower() for term in query.split() if len(term) > 2]
+            if query_terms:
+                has_query_term = any(term in combined_text for term in query_terms)
+                if not has_query_term:
+                    return False
 
         # Check for duplicate/mirror sites
         if self._is_likely_duplicate_site((getattr(result, "domain", "") or "")):
@@ -352,7 +399,7 @@ class EarlyRelevanceFilter:
                 if not any(term in combined_text for term in academic_terms):
                     return False
 
-        # Folded-in theme overlap (Jaccard) filter
+        # Folded-in theme overlap (Jaccard) filter - with domain whitelisting
         try:
             thr = float(os.getenv("EARLY_THEME_OVERLAP_MIN", "0.08") or 0.08)
             q_terms = set(query_compressor.extract_keywords(query))
@@ -365,7 +412,17 @@ class EarlyRelevanceFilter:
                     inter = len(q_terms & rtoks)
                     union = len(q_terms | rtoks)
                     jac = (inter / float(union)) if union else 0.0
-                    if jac < thr:
+
+                    # Whitelist well-known domains even with low overlap
+                    domain = (getattr(result, "domain", "") or "").lower()
+                    whitelist_domains = {
+                        'arxiv.org', 'scholar.google.com', 'pubmed.ncbi.nlm.nih.gov',
+                        'nature.com', 'science.org', 'ieee.org', 'acm.org',
+                        'springer.com', 'wiley.com', 'tandfonline.com', 'researchgate.net'
+                    }
+
+                    # Only apply threshold if not in whitelist
+                    if domain not in whitelist_domains and jac < thr:
                         return False
         except Exception:
             pass
@@ -510,6 +567,21 @@ class BudgetAwarePlanner:
         return True
 
 
+class SearchMetrics(TypedDict, total=False):
+    total_queries: int
+    total_results: int
+    apis_used: List[str]
+    deduplication_rate: float
+    retries_attempted: int
+    task_timeouts: int
+    exceptions_by_api: Dict[str, int]
+    api_call_counts: Dict[str, int]
+    dropped_no_url: int
+    dropped_invalid_shape: int
+    compression_plural_used: int
+    compression_singular_used: int
+
+
 class UnifiedResearchOrchestrator:
     """Unified Research Orchestrator combining all features"""
 
@@ -569,10 +641,10 @@ class UnifiedResearchOrchestrator:
             pass
 
         # Metrics
-        self._search_metrics = {
+        self._search_metrics: SearchMetrics = {
             "total_queries": 0,
             "total_results": 0,
-            "apis_used": set(),
+            "apis_used": [],
             "deduplication_rate": 0.0,
             # diagnostics
             "retries_attempted": 0,
@@ -678,14 +750,22 @@ class UnifiedResearchOrchestrator:
         # Fail fast on empty provider set to avoid silent no-op searches
         try:
             if not getattr(self.search_manager, "apis", {}):
-                raise RuntimeError(
-                    "No search providers configured. Set BRAVE_SEARCH_API_KEY and/or GOOGLE_CSE_* env vars, "
-                    "or enable academic providers. You can disable this check by setting SEARCH_DISABLE_FAILFAST=1."
+                error_msg = (
+                    "CRITICAL: No search providers configured - Research pipeline initialization failed. "
+                    "Required API keys are missing or invalid. "
+                    "Please configure at least one of: "
+                    "1) BRAVE_API_KEY for Brave Search "
+                    "2) GOOGLE_API_KEY + GOOGLE_SEARCH_ENGINE_ID for Google Search "
+                    "3) Academic providers (ArXiv, PubMed, Semantic Scholar). "
+                    "You can disable this check by setting SEARCH_DISABLE_FAILFAST=1 if using deep-research-only mode."
                 )
+                logger.critical(error_msg)
+                raise RuntimeError(error_msg)
         except RuntimeError:
             # Allow opt-out via env (useful for deep-research-only scenarios)
             import os as _os
             if _os.getenv("SEARCH_DISABLE_FAILFAST", "0") not in {"1", "true", "yes"}:
+                logger.critical("Search provider initialization failed - exiting. Set SEARCH_DISABLE_FAILFAST=1 to bypass.")
                 raise
         await cache_manager.initialize()
         await initialize_deep_research()
@@ -760,6 +840,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         start_time = datetime.now()
         cost_breakdown: Dict[str, float] = {}
 
+        # Initialize cost tracking for this research session
+        self._current_cost_breakdown = cost_breakdown
+
         # Pure V2 query planning
         limited = self._get_query_limit(user_context)
         source_queries = list(getattr(context_engineered, "refined_queries", []) or [])
@@ -779,6 +862,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         logger.info(
             f"Optimized queries to {len(optimized_queries)} for {classification.primary_paradigm.value}"
         )
+
+        # Update metrics for total queries
+        self._search_metrics["total_queries"] = self._safe_metric_int("total_queries") + len(optimized_queries)
 
         # Check for cancellation before executing searches
         if await check_cancelled():
@@ -973,28 +1059,99 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 evidence_bundle = None
                 try:
                     from services.evidence_builder import build_evidence_bundle, quotes_to_plain_dicts
-                    evidence_bundle = await build_evidence_bundle(
-                        getattr(context_engineered, "original_query", ""),
-                        normalized_sources,
-                        max_docs=min(
+
+                    # Check if we have any sources to build evidence from
+                    if not normalized_sources:
+                        logger.warning(
+                            f"Evidence builder skipped - No search results to process. "
+                            f"Research ID: {research_id or 'N/A'}"
+                        )
+                        evidence_quotes = []
+                        evidence_bundle = None
+                        evidence_quotes_payload = []
+                    else:
+                        max_docs = min(
                             EVIDENCE_MAX_DOCS_DEFAULT,
                             int(getattr(user_context, "source_limit", default_source_limit())),
-                        ),
-                        quotes_per_doc=EVIDENCE_QUOTES_PER_DOC_DEFAULT,
-                        include_full_content=True,
+                        )
+
+                        logger.info(
+                            f"Building evidence bundle from {len(normalized_sources)} sources, "
+                            f"max_docs={max_docs}, quotes_per_doc={EVIDENCE_QUOTES_PER_DOC_DEFAULT}"
+                        )
+
+                        evidence_bundle = await build_evidence_bundle(
+                            getattr(context_engineered, "original_query", ""),
+                            normalized_sources,
+                            max_docs=max_docs,
+                            quotes_per_doc=EVIDENCE_QUOTES_PER_DOC_DEFAULT,
+                            include_full_content=True,
+                        )
+
+                        evidence_quotes = list(getattr(evidence_bundle, "quotes", []) or [])
+                        evidence_quotes_payload = quotes_to_plain_dicts(evidence_quotes) if evidence_quotes else []
+
+                        # Log warning if evidence building produced no quotes
+                        if not evidence_quotes and normalized_sources:
+                            logger.warning(
+                                f"Evidence builder produced no quotes from {len(normalized_sources)} sources. "
+                                f"Possible causes: "
+                                f"1) URL fetching failures (network issues, timeouts) "
+                                f"2) Content extraction failures (JavaScript-rendered pages, PDFs) "
+                                f"3) No relevant quotes found in fetched content. "
+                                f"Research ID: {research_id or 'N/A'}"
+                            )
+                        else:
+                            logger.info(
+                                f"Evidence builder succeeded: {len(evidence_quotes)} quotes from "
+                                f"{len(getattr(evidence_bundle, 'documents', []))} documents"
+                            )
+
+                except ImportError as e:
+                    error_msg = (
+                        f"CRITICAL: Evidence builder import failed - Cannot build evidence bundle. "
+                        f"Error: {str(e)}. "
+                        f"Missing dependencies or module not found. "
+                        f"Research ID: {research_id or 'N/A'}"
                     )
-                    evidence_quotes = list(getattr(evidence_bundle, "quotes", []) or [])
-                    evidence_quotes_payload = quotes_to_plain_dicts(evidence_quotes) if evidence_quotes else []
-                except Exception:
+                    logger.critical(error_msg)
                     evidence_quotes = []
                     evidence_bundle = None
                     evidence_quotes_payload = []
+                    # Don't raise - allow synthesis to proceed without evidence
+
+                except Exception as e:
+                    error_msg = (
+                        f"ERROR: Evidence builder failed - Evidence extraction unsuccessful. "
+                        f"Error: {str(e)}. "
+                        f"Possible causes: "
+                        f"1) Network issues fetching URLs "
+                        f"2) Invalid URL formats in search results "
+                        f"3) Memory issues with large documents "
+                        f"4) Timeout during content fetching. "
+                        f"Research ID: {research_id or 'N/A'}, "
+                        f"Sources attempted: {len(normalized_sources)}"
+                    )
+                    logger.error(error_msg)
+                    logger.debug("Evidence builder traceback:", exc_info=True)
+                    evidence_quotes = []
+                    evidence_bundle = None
+                    evidence_quotes_payload = []
+                    # Don't raise - allow synthesis to proceed without evidence
                 # Respect cancellation just before heavy LLM synthesis
                 try:
                     if await check_cancelled():
                         return {"status": "cancelled", "message": "Research was cancelled"}
                 except Exception:
                     pass
+
+                # Attempt synthesis even if evidence building failed
+                if evidence_bundle is None and processed_results.get("results"):
+                    logger.warning(
+                        f"Proceeding with answer synthesis without evidence bundle. "
+                        f"Using {len(processed_results.get('results', []))} raw search results. "
+                        f"Research ID: {research_id or 'N/A'}"
+                    )
 
                 synthesized_answer = await self._synthesize_answer(
                     classification=classification,
@@ -1003,7 +1160,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     research_id=research_id or f"research_{int(start_time.timestamp())}",
                     options=answer_options or {},
                     evidence_quotes=evidence_quotes_payload,
-                    evidence_bundle=evidence_bundle,
+                    evidence_bundle=evidence_bundle,  # Can be None - synthesis should handle
                 )
                 # Honour cancellation immediately after synthesis returns
                 try:
@@ -1033,11 +1190,29 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 except Exception:
                     pass
             except Exception as e:
-                logger.error(f"Answer synthesis failed: {e}")
+                error_msg = (
+                    f"CRITICAL: LLM Answer synthesis failed - Cannot generate response. "
+                    f"Error: {str(e)}. "
+                    f"This typically indicates Azure OpenAI issues: "
+                    f"1) Missing/invalid AZURE_OPENAI_API_KEY "
+                    f"2) Incorrect AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_DEPLOYMENT "
+                    f"3) Azure OpenAI service down/quota exceeded. "
+                    f"Research ID: {research_id or 'N/A'}, Query: '{context_engineered.original_query[:100]}...' "
+                    f"Search results collected: {len(normalized_sources)} sources"
+                )
+                logger.critical(error_msg)
                 # If synthesis is required, escalate to hard failure so the
                 # request never returns a partial result without an LLM answer.
                 if getattr(self, "require_synthesis", True):
-                    raise
+                    logger.critical(
+                        f"Synthesis is required (require_synthesis=True) - Discarding {len(normalized_sources)} search results. "
+                        f"Set LLM_REQUIRED=false to allow partial results without synthesis."
+                    )
+                    raise RuntimeError(error_msg) from e
+                else:
+                    logger.warning(
+                        f"Continuing without synthesis (require_synthesis=False) - Returning {len(normalized_sources)} search results only."
+                    )
 
         # Assemble contract-aligned response payload
         primary_paradigm = getattr(classification, "primary_paradigm", HostParadigm.BERNARD)
@@ -1086,13 +1261,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 integrated_synthesis = None
 
-        apis_used_raw = self._search_metrics.get("apis_used", set())
-        if isinstance(apis_used_raw, set):
-            apis_used = list(apis_used_raw)
-        elif isinstance(apis_used_raw, list):
-            apis_used = apis_used_raw
-        else:
-            apis_used = []
+        apis_used = list(self._search_metrics.get("apis_used", []))
 
         response = {
             "research_id": research_id or f"research_{int(start_time.timestamp())}",
@@ -1131,31 +1300,42 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             "export_formats": {},
         }
 
-        if distribution_map:
-            md = response.get("metadata")
-            if not isinstance(md, dict):
-                md = {}
-                response["metadata"] = md
-            cls_details = md.get("classification_details")
-            if not isinstance(cls_details, dict):
-                cls_details = {}
-                md["classification_details"] = cls_details
-            cls_details["distribution"] = distribution_map
+        # Ensure "classification_details" is properly typed using ClassificationDetailsSchema
         try:
+            md_obj = response.get("metadata")
+            if not isinstance(md_obj, dict):
+                md_obj = {}
+                response["metadata"] = md_obj
+
+            # Build ClassificationDetailsSchema for type safety
+            from models.context_models import ClassificationDetailsSchema
+
+            # Build distribution data with explicit typing
+            distribution_data: Dict[str, float] = {}
+            if distribution_map:
+                for key, value in distribution_map.items():
+                    distribution_data[key] = float(value)
+
+            # Build reasoning data properly
+            reasoning_data: Dict[str, List[str]] = {}
             reasoning_raw = getattr(classification, "reasoning", {}) or {}
-            md = response.get("metadata")
-            if not isinstance(md, dict):
-                md = {}
-                response["metadata"] = md
-            cls_details = md.get("classification_details")
-            if not isinstance(cls_details, dict):
-                cls_details = {}
-                md["classification_details"] = cls_details
-            cls_details["reasoning"] = {
-                normalize_to_internal_code(host): list((steps or [])[:4])
-                for host, steps in (reasoning_raw.items() if isinstance(reasoning_raw, dict) else [])
-            }
+            if isinstance(reasoning_raw, dict):
+                for host, steps in reasoning_raw.items():
+                    normalized_key = normalize_to_internal_code(host)
+                    if steps:
+                        steps_list = [str(s) for s in (list(steps) or [])[:4]]
+                    else:
+                        steps_list = []
+                    reasoning_data[normalized_key] = steps_list
+
+            # Create the schema object and convert to dict for storage
+            classification_details = ClassificationDetailsSchema(
+                distribution=distribution_data,
+                reasoning=reasoning_data
+            )
+            md_obj["classification_details"] = classification_details.model_dump()
         except Exception:
+            # Best-effort enrichment; skip on any unexpected shape issues
             pass
 
         try:
@@ -1214,7 +1394,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
     ) -> Any:
         """Build a SynthesisContext from research outputs and invoke answer generator."""
         if not _ANSWER_GEN_AVAILABLE:
-            raise RuntimeError("Answer generation not available")
+            error_msg = (
+                "CRITICAL: Answer generation module not available - Cannot synthesize response. "
+                "This indicates a system configuration issue: "
+                "1) Missing answer_generator module or dependencies "
+                "2) Import failure during module initialization "
+                "3) Azure OpenAI client initialization failed. "
+                f"Research ID: {research_id}, Query: '{context_engineered.original_query[:100]}...' "
+                f"Available search results: {len(results)} that will be discarded"
+            )
+            logger.critical(error_msg)
+            raise RuntimeError(error_msg)
 
         # Prepare minimal list[dict] for generator consumption.  We normalize all
         # result objects through ResultAdapter so downstream helpers receive a
@@ -1730,7 +1920,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
             # Cost track
             try:
-                _ = await self.cost_monitor.track_search_cost("google", 1)
+                cost = await self.cost_monitor.track_search_cost("aggregate", 1)
+                # Accumulate cost for this research session
+                if hasattr(self, '_current_cost_breakdown'):
+                    self._current_cost_breakdown["aggregate"] = self._current_cost_breakdown.get("aggregate", 0.0) + cost
             except Exception:
                 pass
 
@@ -1839,6 +2032,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # 2) Dedup
         dedup = await self.deduplicator.deduplicate_results(combined)
         deduped: List[SearchResult] = list(dedup["unique_results"])
+
+        # Update metrics
+        self._search_metrics["total_results"] = len(combined)
+        if combined:
+            self._search_metrics["deduplication_rate"] = 1.0 - (len(deduped) / len(combined))
         # Report deduplication stats to UI
         try:
             if progress_callback and research_id:
@@ -1880,6 +2078,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         user_cap = int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())
         topN = ranked[: min(max(20, user_cap), len(ranked))]
 
+        # Deduplicate credibility calls by domain
+        seen_domains = {}
+
         # Announce analysis phase with total for UI microbar/ETA
         if progress_callback and research_id:
             try:
@@ -1894,10 +2095,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 pass
         for idx, r in enumerate(topN):
+            dom = getattr(r, "domain", "")
+            if dom in seen_domains:
+                r.credibility_score = seen_domains[dom]
+                creds[dom] = seen_domains[dom]
+                continue
             try:
-                score, _, _ = await self.get_source_credibility_safe(getattr(r, "domain", ""), paradigm_code)
+                score, _, _ = await self.get_source_credibility_safe(dom, paradigm_code)
                 r.credibility_score = score
-                creds[getattr(r, "domain", "")] = score
+                seen_domains[dom] = score
+                creds[dom] = score
                 # Stream credibility checks + analyzed counter to UI
                 if progress_callback and research_id:
                     try:
@@ -1942,6 +2149,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # 6) Final limit by user context
         final_results: List[SearchResult] = ranked[: int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())]
 
+        # Update apis_used from final results
+        apis = set()
+        for r in final_results:
+            api = getattr(r, "source_api", getattr(r, "source", "unknown"))
+            if api:
+                apis.add(api)
+        if apis:
+            # Normalize to list for type stability (search_metrics is serialized later)
+            self._search_metrics["apis_used"] = list(apis)
+
         meta = {
             "processing_time": None,  # caller fills
             "paradigm": getattr(classification.primary_paradigm, "value", paradigm_code),
@@ -1978,7 +2195,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         """
         sm = self.search_manager
         if sm is None:
-            raise RuntimeError("search_manager is not initialized")
+            error_msg = (
+                "CRITICAL: Search Manager not initialized - Research pipeline cannot proceed. "
+                "This typically means required API keys are missing. "
+                "Please ensure at least one of the following is configured: "
+                "BRAVE_API_KEY, GOOGLE_API_KEY + GOOGLE_SEARCH_ENGINE_ID, "
+                "or academic search providers. "
+                f"Research ID: {research_id or 'N/A'}, Query: '{query[:100]}...'"
+            )
+            logger.critical(error_msg)
+            raise RuntimeError(error_msg)
 
         # Metric: count intended API invocation
         api_counts = self._search_metrics.get("api_call_counts", {})
@@ -2092,7 +2318,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         """Execute deep research and convert to search results format"""
 
         if progress_callback and research_id:
-            await progress_callback("Starting deep research analysis")
+            try:
+                if hasattr(progress_callback, "update_progress"):
+                    await progress_callback.update_progress(
+                        research_id,
+                        phase="deep_research",
+                        message="Starting deep research analysis"
+                    )
+                elif callable(progress_callback):
+                    await progress_callback("Starting deep research analysis")
+            except Exception:
+                pass
 
         deep_config = DeepResearchConfig(
             mode=mode,
@@ -2112,16 +2348,38 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             pass
 
-        deep_result = await deep_research_service.execute_deep_research(
-            query=context_engineered.original_query,
-            classification=classification,           # type: ignore[arg-type]
-            context_engineering=context_engineered,   # type: ignore[arg-type]
-            config=deep_config,
-            progress_tracker=progress_callback,
-            research_id=research_id,
-        )
+        try:
+            deep_result = await deep_research_service.execute_deep_research(
+                query=context_engineered.original_query,
+                classification=classification,           # type: ignore[arg-type]
+                context_engineering=context_engineered,   # type: ignore[arg-type]
+                config=deep_config,
+                progress_tracker=progress_callback,
+                research_id=research_id,
+            )
+        except Exception as e:
+            error_msg = (
+                f"CRITICAL: Deep Research failed - Enhanced research not available. "
+                f"Error: {str(e)}. "
+                f"This may indicate: "
+                f"1) Azure OpenAI issues (missing API key, wrong endpoint/deployment) "
+                f"2) Deep research service initialization failure "
+                f"3) Token limit exceeded or rate limiting. "
+                f"Research ID: {research_id or 'N/A'}, "
+                f"Query: '{context_engineered.original_query[:100]}...' "
+                f"Mode: {mode.value if mode else 'default'}"
+            )
+            logger.critical(error_msg)
+            logger.critical(f"Deep Research traceback: ", exc_info=True)
+            # Return empty list to allow fallback to standard search
+            logger.warning("Falling back to standard search results without deep research enhancement")
+            return []
 
         if not getattr(deep_result, "content", None):
+            logger.warning(
+                f"Deep Research returned no content - Empty result. "
+                f"Research ID: {research_id or 'N/A'}, Query: '{context_engineered.original_query[:100]}...'"
+            )
             return []
 
         deep_search_results = []
