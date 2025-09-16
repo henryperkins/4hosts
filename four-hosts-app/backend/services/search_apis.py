@@ -859,29 +859,45 @@ class URLNormalizer:
 
 
 class CircuitBreaker:
-    def __init__(self, threshold: int = 5, timeout_sec: int = 300):
-        self.threshold, self.timeout = threshold, timeout_sec
+    def __init__(self, threshold: int = 5, timeout_sec: int = 300, max_timeout_sec: int | None = None, backoff_factor: float = 2.0):
+        self.threshold = threshold
+        self.timeout = timeout_sec
+        self.max_timeout = max_timeout_sec or int(os.getenv("CB_MAX_TIMEOUT_SEC", "1800") or 1800)
+        self.backoff_factor = backoff_factor
         self.failures: Dict[str, int] = {}
         self.last_fail: Dict[str, float] = {}
         self.blocked: Set[str] = set()
+        self.block_until: Dict[str, float] = {}
 
     def ok(self, domain: str) -> bool:
         if domain not in self.blocked:
             return True
-        if time.time() - self.last_fail.get(domain, 0) > self.timeout:
+        now = time.time()
+        until = self.block_until.get(domain) or (self.last_fail.get(domain, 0) + self.timeout)
+        if now >= until:
+            # Auto-reset on expiry
             self.blocked.discard(domain)
             self.failures[domain] = 0
+            self.block_until.pop(domain, None)
             return True
         return False
 
     def fail(self, domain: str):
         self.failures[domain] = self.failures.get(domain, 0) + 1
+        self.last_fail[domain] = time.time()
         if self.failures[domain] >= self.threshold:
             self.blocked.add(domain)
-        self.last_fail[domain] = time.time()
+            # Exponential backoff window increases with consecutive failures above threshold
+            over = max(0, self.failures[domain] - self.threshold + 1)
+            wait = min(self.timeout * (self.backoff_factor ** (over - 1)) if over > 0 else self.timeout, self.max_timeout)
+            self.block_until[domain] = self.last_fail[domain] + wait
 
     def success(self, domain: str):
         self.failures[domain] = max(0, self.failures.get(domain, 0) - 1)
+        # Gradually recover: when we succeed, allow requests and clear block state
+        if domain in self.blocked:
+            self.blocked.discard(domain)
+            self.block_until.pop(domain, None)
 
 
 class RespectfulFetcher:

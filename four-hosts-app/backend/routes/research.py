@@ -34,6 +34,7 @@ from services.enhanced_integration import (
 )
 from services.context_engineering import context_pipeline
 from services.research_orchestrator import research_orchestrator
+from services.background_llm import background_llm_manager
 from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT, ENABLE_MESH_NETWORK
 from services.result_adapter import ResultAdapter
 from services.mesh_network import mesh_negotiator
@@ -1216,6 +1217,32 @@ async def resume_deep_research(
         rq = ResearchQuery(query=q, options=options)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid stored request: {e}")
+
+    # Attempt to resume an existing background LLM task first (U-007 resumability)
+    try:
+        bg_task_id = research.get("llm_bg_task_id")
+        if bg_task_id and background_llm_manager is not None:
+            resumed = await background_llm_manager.resume_background_task(bg_task_id, research_id)
+            if resumed:
+                if progress_tracker:
+                    try:
+                        await progress_tracker.update_progress(
+                            research_id,
+                            phase="synthesis",
+                            message="Resumed background LLM task",
+                            custom_data={"bg_task_id": bg_task_id, "resumed": True},
+                        )
+                    except Exception:
+                        pass
+                return {
+                    "research_id": research_id,
+                    "status": ResearchStatus.PROCESSING,
+                    "message": "Resumed ongoing background LLM task",
+                    "websocket_url": f"/ws/research/{research_id}",
+                }
+    except Exception:
+        # Fall back to full rerun if resume isn't possible
+        pass
 
     # Update state and launch background execution
     await research_store.update_field(research_id, "status", ResearchStatus.PROCESSING)

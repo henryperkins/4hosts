@@ -12,6 +12,7 @@ import os
 from services.progress import progress as _pt
 
 from services.cache import cache_manager
+from services.research_store import research_store
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,14 @@ class BackgroundLLMManager:
                 "callback": callback,
                 "metadata": metadata,
             }
+
+            # Persist resume token for this research
+            try:
+                if research_id:
+                    await research_store.update_field(research_id, "llm_bg_task_id", task_id)
+                    await research_store.update_field(research_id, "llm_bg_task_status", BackgroundTaskStatus.PENDING.value)
+            except Exception:
+                pass
 
             # Emit initial progress event so UI shows activity
             try:
@@ -210,6 +219,13 @@ class BackgroundLLMManager:
                     logger.warning(f"Background task {task_id} timed out")
                     self.active_tasks[task_id]["status"] = BackgroundTaskStatus.FAILED
                     self.active_tasks[task_id]["error"] = "Task timed out"
+                    # Mark resumable in store
+                    try:
+                        if research_id:
+                            await research_store.update_field(research_id, "llm_bg_task_status", BackgroundTaskStatus.FAILED.value)
+                            await research_store.update_field(research_id, "llm_bg_task_resumable", True)
+                    except Exception:
+                        pass
                     # Notify failure
                     try:
                         if research_id and _pt:
@@ -240,6 +256,12 @@ class BackgroundLLMManager:
 
                             # Cache result
                             await cache_manager.set(f"llm_response:{task_id}", result)
+                            # Persist in store for traceability
+                            try:
+                                if research_id:
+                                    await research_store.update_field(research_id, "llm_bg_task_status", BackgroundTaskStatus.COMPLETED.value)
+                            except Exception:
+                                pass
 
                             # Execute callback if provided
                             callback = self.active_tasks[task_id].get("callback")
@@ -265,6 +287,12 @@ class BackgroundLLMManager:
                         elif status == "failed":
                             self.active_tasks[task_id]["status"] = BackgroundTaskStatus.FAILED
                             self.active_tasks[task_id]["error"] = response.get("error", "Unknown error")
+                            try:
+                                if research_id:
+                                    await research_store.update_field(research_id, "llm_bg_task_status", BackgroundTaskStatus.FAILED.value)
+                                    await research_store.update_field(research_id, "llm_bg_task_error", self.active_tasks[task_id]["error"])
+                            except Exception:
+                                pass
                             # Notify failure
                             try:
                                 if research_id and _pt:
@@ -284,6 +312,11 @@ class BackgroundLLMManager:
                             prev = self.active_tasks[task_id].get("last_state")
                             self.active_tasks[task_id]["status"] = BackgroundTaskStatus.RUNNING
                             self.active_tasks[task_id]["last_state"] = BackgroundTaskStatus.RUNNING
+                            try:
+                                if research_id:
+                                    await research_store.update_field(research_id, "llm_bg_task_status", BackgroundTaskStatus.RUNNING.value)
+                            except Exception:
+                                pass
                             # Transition notification
                             if research_id and prev != BackgroundTaskStatus.RUNNING:
                                 try:
@@ -326,6 +359,49 @@ class BackgroundLLMManager:
             # Cleanup
             if task_id in self._polling_tasks:
                 del self._polling_tasks[task_id]
+
+    async def resume_background_task(self, task_id: str, research_id: Optional[str] = None) -> bool:
+        """Reattach to an existing background task and resume polling.
+
+        Returns True if polling has been (re)started; False when task is unknown
+        or already completed/cancelled.
+        """
+        # If result is already cached, treat as completed
+        try:
+            cached = await cache_manager.get(f"llm_response:{task_id}")
+            if cached:
+                return False
+        except Exception:
+            pass
+
+        # If we already have a polling task, nothing to do
+        if task_id in self._polling_tasks and not self._polling_tasks[task_id].done():
+            return True
+
+        # Ensure an active task record exists
+        self.active_tasks.setdefault(task_id, {
+            "status": BackgroundTaskStatus.PENDING,
+            "created_at": datetime.utcnow(),
+            "callback": None,
+            "metadata": {"research_id": research_id} if research_id else {},
+        })
+        if research_id:
+            self.active_tasks[task_id]["metadata"]["research_id"] = research_id
+        # Start polling
+        polling_task = asyncio.create_task(self._poll_task_status(task_id))
+        self._polling_tasks[task_id] = polling_task
+        # UX status
+        try:
+            if research_id and _pt:
+                await _pt.update_progress(
+                    research_id,
+                    phase="synthesis",
+                    message="Resumed background LLM task",
+                    custom_data={"bg_task_id": task_id, "status": "resumed"},
+                )
+        except Exception:
+            pass
+        return True
 
     def _extract_result(self, response) -> Any:
         """Extract result from completed response using shared helper."""
