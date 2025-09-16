@@ -229,6 +229,18 @@ async def lifespan(app: FastAPI):
                 return {"loaded": True}
 
             health_service.register_check("auth_service", _auth_check)
+            
+            # LLM readiness check: only report ready when Azure/OpenAI clients are initialized
+            try:
+                def _llm_check():
+                    try:
+                        ready = bool(getattr(app.state, "llm_initialized", False))
+                    except Exception:
+                        ready = False
+                    return {"initialized": ready}
+                health_service.register_check("llm", _llm_check)
+            except Exception:
+                pass
             logger.info("✓ Readiness health checks registered")
         except Exception as e:
             logger.warning("Health check registration failed: %s", e)

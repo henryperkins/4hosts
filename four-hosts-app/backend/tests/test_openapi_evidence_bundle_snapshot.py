@@ -11,4 +11,4 @@ def test_openapi_contains_evidence_bundle_schema():
     assert "properties" in eb_schema
     props = eb_schema["properties"]
     assert "quotes" in props and "matches" in props and "focus_areas" in props
-
+    assert "documents" in props and "documents_token_count" in props

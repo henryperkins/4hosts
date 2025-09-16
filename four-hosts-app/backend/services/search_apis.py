@@ -201,8 +201,11 @@ def _strip_tags(text: str) -> str:
         return ""
     try:
         import re as _re
+        # Decode HTML entities first
         t = _html.unescape(str(text))
+        # Remove tags
         t = _re.sub(r"<[^>]+>", " ", t)
+        # Normalize whitespace
         t = _re.sub(r"\s+", " ", t).strip()
         return t
     except Exception:
@@ -216,13 +219,35 @@ def normalize_result_text_fields(result: "SearchResult") -> None:
     leak into progress logs or the UI (e.g. <jats:p>, Word <span data-...>).
     """
     try:
-        result.title = _strip_tags(result.title)[:300]
+        max_title = int(os.getenv("SEARCH_TITLE_MAX_LEN", "300"))
+        result.title = _strip_tags(result.title)[:max_title]
     except Exception:
         pass
     try:
-        result.snippet = _strip_tags(result.snippet)[:800]
+        max_snippet = int(os.getenv("SEARCH_SNIPPET_MAX_LEN", "800"))
+        result.snippet = _strip_tags(result.snippet)[:max_snippet]
     except Exception:
         pass
+
+def _safe_truncate_query(q: str, limit: int) -> str:
+    """Truncate without cutting mid-token or leaving unmatched quotes.
+
+    - Prefer last whitespace within limit
+    - If a quote is opened but not closed, drop the dangling part
+    """
+    if len(q) <= limit:
+        return q
+    cut = q[:limit]
+    # Backtrack to last whitespace to avoid mid-token cut
+    ws = max(cut.rfind(" "), cut.rfind("\t"), cut.rfind("\n"))
+    if ws > limit * 0.6:  # only backtrack if reasonably close
+        cut = cut[: ws].rstrip()
+    # Balance quotes – if odd number of quotes, drop trailing unmatched fragment
+    if cut.count('"') % 2 == 1:
+        last_q = cut.rfind('"')
+        if last_q >= 0:
+            cut = cut[: last_q].rstrip()
+    return cut
 
 
 # --------------------------------------------------------------------------- #
@@ -250,6 +275,326 @@ async def response_body_snippet(
     wait=wait_exponential(multiplier=2, min=4, max=30),
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
 )
+def _retry_after_to_seconds(val: str) -> float:
+    """Parse Retry-After which may be seconds or HTTP-date."""
+    try:
+        if val.isdigit():
+            return float(val)
+    except Exception:
+        pass
+    # Try HTTP-date
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(val)
+        if dt:
+            return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+    except Exception:
+        return 0.0
+    return 0.0
+
+def _first_non_empty(*vals: Optional[str]) -> Optional[str]:
+    for v in vals:
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Extract structured metadata from HTML head (OG tags, JSON-LD, citation_*, canonical).
+
+    Returns a dict with keys like: title, description, canonical_url, site_name, published_date,
+    authors (List[str]), language, http (headers subset), and raw maps for debugging (og, meta, ld_json).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    meta: Dict[str, Any] = {"og": {}, "meta": {}, "ld": {}}
+    # Title / lang
+    try:
+        meta["title"] = (soup.title.get_text(strip=True) if soup.title else None)
+    except Exception:
+        pass
+    try:
+        html_tag = soup.find("html")
+        if html_tag and html_tag.has_attr("lang"):
+            meta["language"] = (html_tag.get("lang") or "").strip() or None
+    except Exception:
+        pass
+    # Canonical
+    try:
+        link_canon = soup.find("link", rel=lambda v: v and "canonical" in str(v).lower())
+        if link_canon and link_canon.get("href"):
+            meta["canonical_url"] = link_canon.get("href")
+    except Exception:
+        pass
+    # OG / Twitter / generic meta
+    try:
+        for m in soup.find_all("meta"):
+            k = (m.get("property") or m.get("name") or "").strip().lower()
+            v = m.get("content")
+            if not k or v is None:
+                continue
+            if k.startswith("og:") or k.startswith("article:"):
+                meta["og"][k] = v
+            else:
+                meta["meta"][k] = v
+    except Exception:
+        pass
+    # JSON-LD Article
+    ld_main = {}
+    try:
+        import json as _json
+        for s in soup.find_all("script", type=lambda t: t and "ld+json" in t):
+            try:
+                data = _json.loads(s.get_text() or "{}")
+            except Exception:
+                continue
+            items = data if isinstance(data, list) else [data]
+            for it in items:
+                t = (it.get("@type") if isinstance(it, dict) else None)
+                if isinstance(t, list):
+                    t = t[0] if t else None
+                if str(t).lower() in {"article", "newsarticle", "blogposting", "scholarlyarticle"}:
+                    ld_main = it
+                    break
+            if ld_main:
+                break
+    except Exception:
+        pass
+    if ld_main:
+        meta["ld"] = ld_main
+
+    # Authors extraction
+    authors: list[str] = []
+    # citation_author may appear multiple times
+    try:
+        for m in soup.find_all("meta", attrs={"name": "citation_author"}):
+            val = (m.get("content") or "").strip()
+            if val:
+                authors.append(val)
+    except Exception:
+        pass
+    # Generic author fields
+    for key in ("author", "article:author", "parsely-author"):
+        v = meta["meta"].get(key) or meta["og"].get(key)
+        if isinstance(v, str) and v.strip():
+            authors.append(v.strip())
+    # JSON-LD authors
+    try:
+        a = ld_main.get("author") if isinstance(ld_main, dict) else None
+        if isinstance(a, list):
+            for ai in a:
+                if isinstance(ai, dict) and ai.get("name"):
+                    authors.append(str(ai["name"]))
+                elif isinstance(ai, str):
+                    authors.append(ai)
+        elif isinstance(a, dict) and a.get("name"):
+            authors.append(str(a["name"]))
+        elif isinstance(a, str):
+            authors.append(a)
+    except Exception:
+        pass
+    if authors:
+        meta["authors"] = list(dict.fromkeys([a for a in authors if a]))
+
+    # Title/description selection
+    meta["title"] = _first_non_empty(meta.get("og", {}).get("og:title"), meta.get("ld", {}).get("headline") if isinstance(meta.get("ld"), dict) else None, meta.get("meta", {}).get("twitter:title"), meta.get("title"))
+    meta["description"] = _first_non_empty(meta.get("og", {}).get("og:description"), meta.get("meta", {}).get("description"), meta.get("meta", {}).get("twitter:description"))
+    meta["site_name"] = _first_non_empty(meta.get("og", {}).get("og:site_name"), meta.get("meta", {}).get("application-name"))
+    # Published date
+    pub = _first_non_empty(
+        (meta.get("ld", {}) or {}).get("datePublished") if isinstance(meta.get("ld"), dict) else None,
+        meta.get("og", {}).get("article:published_time"),
+        meta.get("meta", {}).get("date"),
+        meta.get("meta", {}).get("citation_publication_date"),
+        meta.get("meta", {}).get("dc.date"),
+        meta.get("meta", {}).get("dcterms.date"),
+        meta.get("og", {}).get("og:updated_time"),
+    )
+    if pub:
+        meta["published_date"] = pub
+
+    # HTTP headers subset
+    h = {k.lower(): v for k, v in (headers or {}).items()}
+    http_info: Dict[str, Any] = {}
+    if h:
+        http_info["content_type"] = h.get("content-type")
+        http_info["last_modified"] = h.get("last-modified")
+        http_info["content_length"] = h.get("content-length")
+    if http_info:
+        meta["http"] = http_info
+    return meta
+
+def _clean_html_noise(soup: BeautifulSoup) -> None:
+    """Strip noisy elements and obvious non-content blocks by id/class heuristics."""
+    for s in soup(["script", "style", "noscript", "template", "iframe", "svg", "canvas"]):
+        s.decompose()
+    # Remove common boilerplate containers
+    noise_keys = (
+        "nav", "header", "footer", "aside", "form", "button", "input", "select", "label",
+        "figure", "figcaption", "video", "audio"
+    )
+    for tag in noise_keys:
+        for el in soup.find_all(tag):
+            try:
+                el.decompose()
+            except Exception:
+                continue
+    # Class/id based heuristics
+    negative = (
+        "nav", "menu", "breadcrumb", "footer", "header", "sidebar", "widget", "subscribe",
+        "newsletter", "social", "share", "modal", "overlay", "banner", "cookie", "consent",
+        "promo", "advert", "ad-", "ads", "related", "recommend", "comment", "pagination",
+    )
+    for el in soup.find_all(True):
+        try:
+            ident = (" ".join([el.get("id") or "", " ".join(el.get("class") or [])])).lower()
+            if any(k in ident for k in negative):
+                el.decompose()
+        except Exception:
+            continue
+
+def _node_text_len(el) -> int:
+    try:
+        return len(el.get_text(" ", strip=True))
+    except Exception:
+        return 0
+
+def _link_text_len(el) -> int:
+    try:
+        return sum(len(a.get_text(" ", strip=True) or "") for a in el.find_all("a"))
+    except Exception:
+        return 0
+
+def _punct_count(el) -> int:
+    try:
+        import re as _re
+        txt = el.get_text(" ", strip=True)
+        return len(_re.findall(r"[\.!?,;:]", txt))
+    except Exception:
+        return 0
+
+def _score_block(el) -> float:
+    # Core readability-esque scoring: text mass, low link density, punctuation density, headings bonus
+    tlen = _node_text_len(el)
+    if tlen == 0:
+        return 0.0
+    lden = (_link_text_len(el) / max(1.0, float(tlen)))
+    pden = (_punct_count(el) / max(1.0, float(tlen)))
+    bonus = 0.0
+    try:
+        if el.find(["h1", "h2", "h3"]):
+            bonus += 0.15
+    except Exception:
+        pass
+    return (tlen * (1.0 - min(0.9, lden)) * (1.0 + min(0.5, pden))) * (1.0 + bonus)
+
+def _assemble_text_from_block(el, max_chars: int | None = None) -> str:
+    parts: list[str] = []
+    for node in el.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre"], recursive=True):
+        try:
+            tag = node.name.lower()
+            txt = node.get_text(" ", strip=True)
+            if not txt:
+                continue
+            if tag.startswith("h") and len(tag) == 2:
+                parts.append(txt)
+            elif tag == "li":
+                parts.append(f"- {txt}")
+            else:
+                parts.append(txt)
+            if max_chars and sum(len(p) + 1 for p in parts) >= max_chars:
+                break
+        except Exception:
+            continue
+    out = "\n".join(parts).strip()
+    return out[:max_chars] if max_chars else out
+
+def _extract_main_text(html: str, base_url: str | None = None, max_chars: int | None = None) -> str:
+    """Heuristic main-content extractor with graceful fallbacks.
+
+    Strategy:
+    - Strip obvious boilerplate (nav/header/footer/aside/forms, cookie banners, promos)
+    - Score candidate blocks (<article>, <main>, <section>, <div>) for text mass vs link density
+    - Choose top block and include high-scoring siblings
+    - Preserve headings, lists, paragraphs with newlines
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    _clean_html_noise(soup)
+
+    # Prefer <article> / <main> quickly if present and non-trivial
+    candidates = []
+    for sel in ("article", "main", "section", "div"):
+        candidates.extend(list(soup.find_all(sel)))
+    scored = []
+    for el in candidates:
+        sc = _score_block(el)
+        if sc > 0:
+            scored.append((sc, el))
+    if not scored:
+        # fallback to structured text of whole page
+        return _html_to_structured_text_legacy(soup, max_chars)
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_score, top_el = scored[0]
+
+    # Pull in meaningful siblings from the same parent for continuity
+    assembled = [top_el]
+    try:
+        parent = top_el.parent
+        if parent:
+            for sib in parent.find_all(recursive=False):
+                if sib is top_el:
+                    continue
+                sc = _score_block(sib)
+                if sc >= 0.35 * top_score:
+                    assembled.append(sib)
+    except Exception:
+        pass
+
+    # Assemble text
+    pieces: list[str] = []
+    # Optional: prepend <title>
+    try:
+        t = (soup.title.get_text(strip=True) if soup.title else "").strip()
+        if t:
+            pieces.append(t)
+    except Exception:
+        pass
+    for el in assembled:
+        txt = _assemble_text_from_block(el, max_chars)
+        if txt:
+            pieces.append(txt)
+        if max_chars and sum(len(p) + 1 for p in pieces) >= max_chars:
+            break
+    out = "\n".join(pieces).strip()
+    if not out:
+        return _html_to_structured_text_legacy(soup, max_chars)
+    return out[:max_chars] if max_chars else out
+
+def _html_to_structured_text_legacy(soup: BeautifulSoup, max_chars: int | None) -> str:
+    pieces: list[str] = []
+    try:
+        title = soup.title.get_text(strip=True) if soup.title else ""
+        if title:
+            pieces.append(title)
+    except Exception:
+        pass
+    for el in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre"]):
+        try:
+            tag = el.name.lower()
+            text = el.get_text(" ", strip=True)
+            if not text:
+                continue
+            if tag.startswith("h") and len(tag) == 2:
+                pieces.append(text)
+            elif tag == "li":
+                pieces.append(f"- {text}")
+            else:
+                pieces.append(text)
+            if max_chars and sum(len(p) + 1 for p in pieces) >= max_chars:
+                break
+        except Exception:
+            continue
+    out = "\n".join(pieces).strip() or soup.get_text(" ", strip=True)
+    return out[:max_chars] if max_chars else out
+
 async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
     """GET `url`, honour 429 back-off, return plaintext (PDF or HTML)."""
     headers = {
@@ -260,21 +605,21 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
         "DNT": "1",
     }
 
-    # Use shorter timeout for DOI/SSRN to avoid long delays
+    # Timeouts – allow tuning and avoid penalising academic gateways
     timeout_sec = float(os.getenv("SEARCH_FETCH_TIMEOUT_SEC", "25"))
     if "doi.org" in url or "ssrn.com" in url:
-        timeout_sec = min(timeout_sec, 10.0)
+        acad_min = float(os.getenv("SEARCH_ACADEMIC_MIN_TIMEOUT", "20"))
+        timeout_sec = max(timeout_sec, acad_min)
     timeout = aiohttp.ClientTimeout(total=timeout_sec)
 
     async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as r:
         if r.status == 429:
-            retry_hdr = r.headers.get("retry-after")
-            # Respect the retry-after header if present
-            if retry_hdr and retry_hdr.isdigit():
-                delay = min(float(retry_hdr), 30)  # Cap at 30 seconds
-            else:
-                delay = random.uniform(5, 10)  # Default longer backoff
-            _structured_log("warning", "rate_limited_fetch", {"url": url, "delay": delay})
+            retry_hdr = r.headers.get("retry-after", "")
+            delay = _retry_after_to_seconds(retry_hdr) or random.uniform(5, 10)
+            # Add jittered exponential floor via env knobs
+            floor = float(os.getenv("SEARCH_429_MIN_DELAY", "3.0"))
+            delay = max(delay, floor) * random.uniform(0.9, 1.2)
+            _structured_log("warning", "rate_limited_fetch", {"url": url, "delay": round(delay,2)})
             await asyncio.sleep(delay)
             raise RateLimitedError()  # let tenacity retry
         if r.status != 200:
@@ -288,23 +633,177 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                 with fitz.open(stream=data, filetype="pdf") as pdf:
                     max_pages = int(os.getenv("SEARCH_PDF_MAX_PAGES", "15"))
                     max_chars = int(os.getenv("SEARCH_PDF_MAX_CHARS", "200000"))
-                    pages = []
+                    structured = os.getenv("SEARCH_PDF_STRUCTURED", "1") in {"1", "true", "yes"}
+                    stop_at_refs = os.getenv("SEARCH_PDF_STOP_AT_REFERENCES", "1") in {"1", "true", "yes"}
+                    parts: list[str] = []
+                    font_sizes: list[float] = []
                     for i, p in enumerate(pdf):
                         if i >= max_pages:
                             break
-                        pages.append(p.get_text())
-                    text = "".join(pages)
-                    return text[:max_chars]
+                        if structured:
+                            try:
+                                # Prefer dict to detect span sizes
+                                d = p.get_text("dict")
+                                for block in d.get("blocks", []):
+                                    for line in block.get("lines", []):
+                                        for span in line.get("spans", []):
+                                            txt = (span.get("text") or "").strip()
+                                            if not txt:
+                                                continue
+                                            sz = float(span.get("size") or 0.0)
+                                            font_sizes.append(sz)
+                                            parts.append(txt)
+                                # Column order is handled by underlying extraction; fall back on blocks
+                                if not parts:
+                                    blocks = p.get_text("blocks")
+                                    blocks = sorted(blocks, key=lambda b: (round(b[1], 1), round(b[0], 1)))
+                                    for b in blocks:
+                                        txt = (b[4] or "").strip()
+                                        if txt:
+                                            parts.append(txt)
+                            except Exception:
+                                parts.append(p.get_text())
+                        else:
+                            parts.append(p.get_text())
+                        if sum(len(x) + 1 for x in parts) >= max_chars:
+                            break
+                    # Heuristic: stop at References section for academic PDFs
+                    joined = "\n".join(parts)
+                    if stop_at_refs:
+                        import re as _re
+                        m = _re.search(r"\n\s*(References|Bibliography|Acknowledg(e)?ments)\s*\n", joined, _re.I)
+                        if m:
+                            joined = joined[:m.start()].strip()
+                    return joined[:max_chars]
             except Exception:
                 # Fall back to HTML parse if PDF parse fails
                 pass
 
-        # HTML/text fallback parse
+        # HTML/text parse – prefer readability/main-content extractor with fallback
         html = await r.text()
-        soup = BeautifulSoup(html, "html.parser")
-        for s in soup(["script", "style", "noscript"]):
-            s.decompose()
-        return soup.get_text(" ", strip=True)
+        max_chars = int(os.getenv("SEARCH_HTML_MAX_CHARS", "250000"))
+        mode = (os.getenv("SEARCH_HTML_MODE", "main") or "main").lower()
+        # Optional: use readability-lxml if available and requested
+        if mode in {"readability", "auto"}:
+            try:
+                from readability import Document  # type: ignore
+                doc = Document(html)
+                content_html = doc.summary() or ""
+                if content_html:
+                    soup = BeautifulSoup(content_html, "html.parser")
+                    return _assemble_text_from_block(soup, max_chars)
+            except Exception:
+                # Fall through to main extractor
+                pass
+        # Heuristic main extractor
+        if mode in {"main", "auto"}:
+            try:
+                return _extract_main_text(html, url, max_chars=max_chars)
+            except Exception:
+                pass
+        # Legacy structured extractor
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            return _html_to_structured_text_legacy(soup, max_chars)
+        except Exception:
+            return _strip_tags(html)[:max_chars]
+
+
+async def fetch_and_parse_url_with_meta(session: aiohttp.ClientSession, url: str) -> Tuple[str, Dict[str, Any]]:
+    """Like fetch_and_parse_url but also returns extracted metadata as a dict."""
+    headers = {
+        "User-Agent": "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate",
+        "DNT": "1",
+    }
+    timeout_sec = float(os.getenv("SEARCH_FETCH_TIMEOUT_SEC", "25"))
+    if "doi.org" in url or "ssrn.com" in url:
+        acad_min = float(os.getenv("SEARCH_ACADEMIC_MIN_TIMEOUT", "20"))
+        timeout_sec = max(timeout_sec, acad_min)
+    timeout = aiohttp.ClientTimeout(total=timeout_sec)
+
+    async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as r:
+        if r.status == 429:
+            retry_hdr = r.headers.get("retry-after", "")
+            delay = _retry_after_to_seconds(retry_hdr) or random.uniform(5, 10)
+            floor = float(os.getenv("SEARCH_429_MIN_DELAY", "3.0"))
+            delay = max(delay, floor) * random.uniform(0.9, 1.2)
+            _structured_log("warning", "rate_limited_fetch", {"url": url, "delay": round(delay,2)})
+            await asyncio.sleep(delay)
+            raise RateLimitedError()
+        if r.status != 200:
+            return "", {}
+
+        ctype = (r.headers.get("Content-Type") or "").lower()
+        is_pdf = "application/pdf" in ctype or url.lower().endswith(".pdf")
+        if is_pdf and fitz is not None:
+            data = await r.read()
+            text = ""
+            try:
+                with fitz.open(stream=data, filetype="pdf") as pdf:
+                    max_pages = int(os.getenv("SEARCH_PDF_MAX_PAGES", "15"))
+                    max_chars = int(os.getenv("SEARCH_PDF_MAX_CHARS", "200000"))
+                    stop_at_refs = os.getenv("SEARCH_PDF_STOP_AT_REFERENCES", "1") in {"1", "true", "yes"}
+                    parts: list[str] = []
+                    for i, p in enumerate(pdf):
+                        if i >= max_pages:
+                            break
+                        try:
+                            d = p.get_text("dict")
+                            for block in d.get("blocks", []):
+                                for line in block.get("lines", []):
+                                    for span in line.get("spans", []):
+                                        txt = (span.get("text") or "").strip()
+                                        if txt:
+                                            parts.append(txt)
+                        except Exception:
+                            parts.append(p.get_text())
+                        if sum(len(x) + 1 for x in parts) >= max_chars:
+                            break
+                    joined = "\n".join(parts)
+                    if stop_at_refs:
+                        import re as _re
+                        m = _re.search(r"\n\s*(References|Bibliography|Acknowledg(e)?ments)\s*\n", joined, _re.I)
+                        if m:
+                            joined = joined[:m.start()].strip()
+                    text = joined[:max_chars]
+            except Exception:
+                text = ""
+            meta = {"http": {"content_type": ctype, "last_modified": r.headers.get("Last-Modified")}}
+            return text, meta
+
+        # HTML path
+        html = await r.text()
+        max_chars = int(os.getenv("SEARCH_HTML_MAX_CHARS", "250000"))
+        mode = (os.getenv("SEARCH_HTML_MODE", "main") or "main").lower()
+        # Content
+        try:
+            if mode in {"readability", "auto"}:
+                try:
+                    from readability import Document  # type: ignore
+                    doc = Document(html)
+                    content_html = doc.summary() or ""
+                    if content_html:
+                        soup = BeautifulSoup(content_html, "html.parser")
+                        text = _assemble_text_from_block(soup, max_chars)
+                    else:
+                        raise RuntimeError("no readability content")
+                except Exception:
+                    text = _extract_main_text(html, url, max_chars=max_chars)
+            else:
+                text = _extract_main_text(html, url, max_chars=max_chars)
+        except Exception:
+            try:
+                soup = BeautifulSoup(html, "html.parser")
+                text = _html_to_structured_text_legacy(soup, max_chars)
+            except Exception:
+                text = _strip_tags(html)[:max_chars]
+
+        # Metadata
+        meta = _extract_metadata_from_html(html, headers=dict(r.headers)) if os.getenv("SEARCH_EXTRACT_METADATA", "1") in {"1", "true", "yes"} else {}
+        return text, meta
 
 
 # --------------------------------------------------------------------------- #
@@ -428,6 +927,43 @@ class RespectfulFetcher:
             self.circuit.fail(domain)
             return None
 
+    async def fetch_with_meta(self, session: aiohttp.ClientSession, url: str, on_rate_limit: Optional[Callable[[str], Awaitable[None]]] = None) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        url = URLNormalizer.normalize_url(url)
+        if not URLNormalizer.is_valid_url(url):
+            return None, None
+        domain = urlparse(url).netloc
+
+        if domain in self.blocked_domains or any(domain.endswith("." + d) for d in self.blocked_domains):
+            return None, None
+        if not self.circuit.ok(domain):
+            if on_rate_limit:
+                try:
+                    await on_rate_limit(domain)
+                except Exception:
+                    pass
+            return None, None
+        if not await self._can_fetch(url):
+            return None, None
+
+        elapsed = time.time() - self.last_fetch.get(domain, 0)
+        if elapsed < 1.0:
+            await asyncio.sleep(1 - elapsed)
+        self.last_fetch[domain] = time.time()
+
+        try:
+            text, meta = await fetch_and_parse_url_with_meta(session, url)
+            if text:
+                self.circuit.success(domain)
+            return text, meta
+        except Exception as e:
+            if isinstance(e, RateLimitedError) and on_rate_limit:
+                try:
+                    await on_rate_limit(domain)
+                except Exception:
+                    pass
+            self.circuit.fail(domain)
+            return None, None
+
 
 # --------------------------------------------------------------------------- #
 #                          DATA MODELS                                        #
@@ -462,12 +998,17 @@ class SearchResult:
                 self.domain = urlparse(self.url).netloc.lower()
             except Exception:
                 self.domain = ""
-        if self.title and self.snippet:
-            sig = f"{self.title.lower().strip()}{self.snippet.lower().strip()}"
-            try:
-                self.content_hash = hashlib.md5(sig.encode()).hexdigest()
-            except Exception:
-                self.content_hash = None
+        # Prefer hashing substantive content; fall back to title+snippet signature
+        try:
+            if isinstance(self.content, str) and self.content.strip():
+                base = (self.url or "") + "\n" + self.content.strip()
+                self.content_hash = hashlib.md5(base.encode("utf-8", errors="ignore")).hexdigest()
+            elif self.title or self.snippet:
+                sig = f"{(self.title or '').lower().strip()}\n{(self.snippet or '').lower().strip()}"
+                self.content_hash = hashlib.md5(sig.encode("utf-8", errors="ignore")).hexdigest()
+        except Exception:
+            # Leave unset if hashing fails
+            pass
 
 
 @dataclass
@@ -837,18 +1378,41 @@ class BaseSearchAPI:
     async def search_with_variations(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         """Unified variation search; providers themselves handle rate limiting."""
         variations = self.qopt.generate_query_variations(query)
+        # Prioritise variants for better recall/precision balance
+        priority = [
+            "primary",
+            "domain_specific",
+            "exact_phrase",
+            "synonym",
+            "related",
+            "broad",
+            "question",
+        ]
+        ordered = sorted(variations.items(), key=lambda kv: priority.index(kv[0]) if kv[0] in priority else 999)
+        limit = int(os.getenv("SEARCH_QUERY_VARIATIONS_LIMIT", "5"))
+        ordered = ordered[:limit]
+
         seen: Set[str] = set()
         out: List[SearchResult] = []
-        for var_type, q in list(variations.items())[:3]:
-            try:
-                res = await self.search(q, cfg)
-            except Exception as e:
-                logger.warning(f"{self.__class__.__name__}:{var_type} failed: {e}")
-                continue
+
+        # Execute variant searches with light concurrency while respecting provider rate limiter
+        sem = asyncio.Semaphore(int(os.getenv("SEARCH_VARIANT_CONCURRENCY", "3")))
+
+        async def _run_variant(vt: str, q: str) -> List[SearchResult]:
+            async with sem:
+                try:
+                    return await self.search(q, cfg)
+                except Exception as e:
+                    logger.warning(f"{self.__class__.__name__}:{vt} failed: {e}")
+                    return []
+
+        tasks = [asyncio.create_task(_run_variant(vt, q)) for vt, q in ordered]
+        results_by_variant = await asyncio.gather(*tasks, return_exceptions=False)
+        for (vt, _), res in zip(ordered, results_by_variant):
             for r in res:
                 if r.url and r.url not in seen:
                     seen.add(r.url)
-                    r.raw_data["query_variant"] = var_type
+                    r.raw_data["query_variant"] = vt
                     out.append(r)
         return out
 
@@ -867,8 +1431,9 @@ class BraveSearchAPI(BaseSearchAPI):
            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)))
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
+        q_limit = int(os.getenv("SEARCH_PROVIDER_Q_LIMIT", "400"))
         params = {
-            "q": self.qopt.optimize_query(query)[:400],
+            "q": _safe_truncate_query(self.qopt.optimize_query(query), q_limit),
             "count": min(cfg.max_results, 20),
             "search_lang": cfg.language,
         }
@@ -1411,9 +1976,26 @@ class SearchAPIManager:
                             )
                         except Exception:
                             pass
-                fetched = await self.fetcher.fetch(session, res.url, on_rate_limit=lambda domain: _emit_rate_limit(domain, res.source))
-            if fetched:
-                res.content = fetched
+                text, meta = await self.fetcher.fetch_with_meta(session, res.url, on_rate_limit=lambda domain: _emit_rate_limit(domain, res.source))
+            if text:
+                res.content = text
+            if meta:
+                # Stash structured metadata and opportunistically fill fields
+                try:
+                    res.raw_data.setdefault("extracted_meta", meta)
+                    pub = (meta.get("published_date") if isinstance(meta, dict) else None)
+                    if pub and not getattr(res, "published_date", None):
+                        dt = safe_parse_date(str(pub))
+                        if dt:
+                            res.published_date = dt
+                    authors = meta.get("authors") if isinstance(meta, dict) else None
+                    if authors and not getattr(res, "author", None):
+                        if isinstance(authors, list):
+                            res.author = ", ".join(authors)[:200]
+                        elif isinstance(authors, str):
+                            res.author = authors[:200]
+                except Exception:
+                    pass
 
         await asyncio.gather(*(_fetch(r) for r in all_res))
         for r in all_res:

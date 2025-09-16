@@ -27,7 +27,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: fourhosts
     ports:
-      - "5433:5432"  # Expose PostgreSQL on port 5433 to avoid conflicts
+      - "127.0.0.1:5433:5432"  # Bind to loopback to avoid internet exposure
     volumes:
       # Persistent volume for database data (survives container restarts)
       - postgres_data:/var/lib/postgresql/data
@@ -95,6 +95,17 @@ services:
       # JWT signing key (development default; override via .env in real use)
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-dev-token-change-me}
 
+      # Search orchestration tuning (safer defaults)
+      SEARCH_TASK_TIMEOUT_SEC: ${SEARCH_TASK_TIMEOUT_SEC:-30}
+      SEARCH_PROVIDER_TIMEOUT_SEC: ${SEARCH_PROVIDER_TIMEOUT_SEC:-25}
+      SEARCH_QUERY_CONCURRENCY: ${SEARCH_QUERY_CONCURRENCY:-3}
+      SEARCH_FETCH_CONCURRENCY: ${SEARCH_FETCH_CONCURRENCY:-6}
+
+      # Optional provider keys (populate via .env)
+      GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
+      GOOGLE_CSE_CX: ${GOOGLE_CSE_CX:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+
     # NOTE: API keys for external services should be set via .env file or secrets
     # Required keys: AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, BRAVE_API_KEY, etc.
     depends_on:
@@ -105,7 +116,7 @@ services:
         condition: service_healthy
     # Allow host port override via BACKEND_PORT env (defaults to 8001)
     ports:
-      # Bind to 8001 by default to avoid conflicts with Portainer/local dev
+      # Expose on all interfaces for remote access
       - "${BACKEND_PORT:-8001}:8000"  # host:container
     restart: unless-stopped
     networks:
@@ -134,7 +145,7 @@ services:
       backend:
         condition: service_started  # Frontend can start once backend is running
     ports:
-      - "5173:80"  # Nginx serves React app on port 80, exposed as 5173 locally
+      - "5173:80"  # Expose on all interfaces for remote access
     restart: unless-stopped
     networks:
       - fourhosts-network

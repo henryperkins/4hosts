@@ -38,6 +38,8 @@ from services.cache import (
 from services.text_compression import query_compressor
 from core.config import (
     EVIDENCE_MAX_DOCS_DEFAULT,
+    EVIDENCE_QUOTES_PER_DOC_DEFAULT,
+    EVIDENCE_BUDGET_TOKENS_DEFAULT,
     SYNTHESIS_MAX_LENGTH_DEFAULT,
 )
 from services.deep_research_service import (
@@ -51,6 +53,7 @@ from services.agentic_process import (
     summarize_domain_gaps,
     propose_queries_enriched,
 )
+from services.result_adapter import ResultAdapter
 # SearchContextSize import removed (unused)
 
 # Optional: answer generation integration
@@ -73,14 +76,16 @@ def bernard_min_relevance() -> float:
 
 
 def default_source_limit() -> int:
-    """Resolve the default source limit from env or use a sensible default (50).
+    """Resolve the default source limit from env or use a sensible default.
+    UPDATED FOR O3: Increased from 50 to 200 to analyze 4x more sources.
     This value is used anywhere a `source_limit` is missing from user context.
     """
     try:
-        v = int(os.getenv("DEFAULT_SOURCE_LIMIT", "50") or 50)
+        # UPDATED FOR O3: Changed default from 50 to 200
+        v = int(os.getenv("DEFAULT_SOURCE_LIMIT", "200") or 200)
         return max(1, v)
     except Exception:
-        return 50
+        return 200  # UPDATED FOR O3: Changed from 50 to 200
 
 
 @dataclass
@@ -246,11 +251,25 @@ class ResultDeduplicator:
             union = len(snippet1_words.union(snippet2_words))
             snippet_similarity = intersection / union if union > 0 else 0.0
 
-        # Weighted combination
+        # Weighted combination (configurable + adaptive)
+        try:
+            w_title = float(os.getenv("DEDUP_TITLE_WEIGHT", "0.5"))
+            w_domain = float(os.getenv("DEDUP_DOMAIN_WEIGHT", "0.3"))
+            w_snippet = float(os.getenv("DEDUP_SNIPPET_WEIGHT", "0.2"))
+        except Exception:
+            w_title, w_domain, w_snippet = 0.5, 0.3, 0.2
+        # Adapt weights for academic results: titles are often standardized; rely more on domain + snippet
+        try:
+            if (getattr(result1, "result_type", "") == "academic" or getattr(result2, "result_type", "") == "academic"):
+                w_title, w_domain, w_snippet = 0.4, max(w_domain, 0.35), 0.25
+        except Exception:
+            pass
+        total_w = max(1e-9, w_title + w_domain + w_snippet)
+        w_title, w_domain, w_snippet = w_title/total_w, w_domain/total_w, w_snippet/total_w
         overall_similarity = (
-            title_similarity * 0.5
-            + domain_similarity * 0.2
-            + snippet_similarity * 0.3
+            title_similarity * w_title
+            + domain_similarity * w_domain
+            + snippet_similarity * w_snippet
         )
 
         return overall_similarity
@@ -683,7 +702,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         if not source_queries:
             source_queries = [getattr(context_engineered, "original_query", "")]
         try:
-            optimized_queries = self._compress_and_dedup_queries(source_queries)[:limited]
+            optimized_all = self._compress_and_dedup_queries(source_queries)
+            optimized_queries = self._prioritize_queries(
+                optimized_all,
+                limited,
+                getattr(classification, "primary_paradigm", None),
+            )
         except Exception as e:
             logger.warning(f"Query compression failed; using fallback. {e}")
             optimized_queries = [getattr(context_engineered, "original_query", "")][:limited]
@@ -751,29 +775,48 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         processed_results["metadata"]["processing_time"] = processing_time
 
+        normalized_sources: List[Dict[str, Any]] = []
+        try:
+            normalized_sources = [
+                ResultAdapter(r).to_dict()
+                for r in processed_results.get("results", [])
+            ]
+        except Exception:
+            normalized_sources = []
+
         # Optional answer synthesis (P2)
         synthesized_answer = None
         if synthesize_answer:
             try:
                 # Build evidence quotes from processed results (typed EvidenceQuote)
-                evidence_quotes = []
+                evidence_quotes: List[Any] = []
+                evidence_bundle = None
                 try:
-                    from services.evidence_builder import build_evidence_quotes, quotes_to_plain_dicts
-                    evidence_quotes = await build_evidence_quotes(
+                    from services.evidence_builder import build_evidence_bundle, quotes_to_plain_dicts
+                    evidence_bundle = await build_evidence_bundle(
                         getattr(context_engineered, "original_query", ""),
-                        processed_results["results"],
-                        max_docs=min(EVIDENCE_MAX_DOCS_DEFAULT, int(getattr(user_context, "source_limit", default_source_limit()))),
-                        quotes_per_doc=3,
+                        normalized_sources,
+                        max_docs=min(
+                            EVIDENCE_MAX_DOCS_DEFAULT,
+                            int(getattr(user_context, "source_limit", default_source_limit())),
+                        ),
+                        quotes_per_doc=EVIDENCE_QUOTES_PER_DOC_DEFAULT,
+                        include_full_content=True,
                     )
+                    evidence_quotes = list(getattr(evidence_bundle, "quotes", []) or [])
+                    evidence_quotes_payload = quotes_to_plain_dicts(evidence_quotes) if evidence_quotes else []
                 except Exception:
                     evidence_quotes = []
+                    evidence_bundle = None
+                    evidence_quotes_payload = []
                 synthesized_answer = await self._synthesize_answer(
                     classification=classification,
                     context_engineered=context_engineered,
                     results=processed_results["results"],
                     research_id=research_id or f"research_{int(start_time.timestamp())}",
                     options=answer_options or {},
-                    evidence_quotes=(quotes_to_plain_dicts(evidence_quotes) if evidence_quotes else []),
+                    evidence_quotes=evidence_quotes_payload,
+                    evidence_bundle=evidence_bundle,
                 )
                 # Attach contradiction summary to answer metadata if available
                 try:
@@ -846,37 +889,77 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         research_id: str,
         options: Dict[str, Any],
         evidence_quotes: Optional[List[Dict[str, Any]]] = None,
+        evidence_bundle: Any | None = None,
     ) -> Any:
         """Build a SynthesisContext from research outputs and invoke answer generator."""
         if not _ANSWER_GEN_AVAILABLE:
             raise RuntimeError("Answer generation not available")
 
-        # Prepare minimal list[dict] for generator consumption
-        sources: List[Dict[str, Any]] = []
-        for r in results:
+        # Prepare minimal list[dict] for generator consumption.  We normalize all
+        # result objects through ResultAdapter so downstream helpers receive a
+        # consistent, dict-friendly payload (the evidence builder expects
+        # `.get(...)` access and previously crashed when handed dataclasses).
+        normalized_sources: List[Dict[str, Any]] = []
+        for result in results or []:
             try:
-                if isinstance(r, dict):
-                    sources.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("url", ""),
-                        "snippet": r.get("snippet", ""),
-                        "domain": r.get("domain", "") or r.get("host", ""),
-                        "credibility_score": float(r.get("credibility_score", 0.0) or 0.0),
-                        "published_date": r.get("published_date"),
-                        "result_type": r.get("result_type", "web"),
-                    })
-                else:
-                    sources.append({
-                        "title": getattr(r, "title", ""),
-                        "url": getattr(r, "url", ""),
-                        "snippet": getattr(r, "snippet", ""),
-                        "domain": getattr(r, "domain", ""),
-                        "credibility_score": float(getattr(r, "credibility_score", 0.0) or 0.0),
-                        "published_date": getattr(r, "published_date", None),
-                        "result_type": getattr(r, "result_type", "web"),
-                    })
+                adapter = ResultAdapter(result)
+                url = (adapter.url or "").strip()
+                if not url:
+                    continue
+
+                metadata: Dict[str, Any] = adapter.metadata or {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+
+                is_dict_result = isinstance(result, dict)
+
+                if not is_dict_result:
+                    try:
+                        raw_data = getattr(result, "raw_data", {}) or {}
+                        if isinstance(raw_data, dict):
+                            extracted = raw_data.get("extracted_meta")
+                            if extracted and "extracted_meta" not in metadata:
+                                metadata["extracted_meta"] = extracted
+                            for key in ("source_category", "credibility_explanation"):
+                                if key in raw_data and key not in metadata:
+                                    metadata[key] = raw_data[key]
+                    except Exception:
+                        pass
+
+                credibility = adapter.credibility_score
+                if credibility is None:
+                    try:
+                        credibility = float(metadata.get("credibility_score", 0.0) or 0.0)
+                    except Exception:
+                        credibility = 0.0
+
+                published_date = metadata.get("published_date")
+                if published_date is None and not is_dict_result:
+                    published_date = getattr(result, "published_date", None)
+
+                result_type = metadata.get("result_type")
+                if not result_type and not is_dict_result:
+                    result_type = getattr(result, "result_type", "web")
+
+                normalized_sources.append(
+                    {
+                        "title": adapter.title,
+                        "url": url,
+                        "snippet": adapter.snippet,
+                        "content": adapter.content,
+                        "domain": adapter.domain,
+                        "credibility_score": float(credibility or 0.0),
+                        "published_date": published_date,
+                        "result_type": result_type or "web",
+                        "source_api": adapter.source_api,
+                        "metadata": metadata,
+                    }
+                )
             except Exception:
+                logger.debug("[synthesis] Failed to normalize result", exc_info=True)
                 continue
+
+        sources: List[Dict[str, Any]] = normalized_sources
 
         # Best effort context_engineering dict
         try:
@@ -897,13 +980,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     except Exception:
                         continue
             findings: Dict[str, Any] = {"matches": [], "by_domain": {}, "focus_areas": getattr(getattr(context_engineered, "isolate_output", None), "focus_areas", [])}
-            for r in results:
+            for r in sources:
                 try:
                     text = " ".join([
-                        (r.get("title") if isinstance(r, dict) else getattr(r, "title", "")) or "",
-                        (r.get("snippet") if isinstance(r, dict) else getattr(r, "snippet", "")) or "",
+                        (r.get("title") or ""),
+                        (r.get("snippet") or ""),
                     ])
-                    dom = (r.get("domain") if isinstance(r, dict) else getattr(r, "domain", "")) or ""
+                    dom = (r.get("domain") or "").strip()
                 except Exception:
                     continue
                 matched = []
@@ -934,16 +1017,25 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 # Normalize isolation findings into typed matches
                 iso = (ce.get("isolated_findings", {}) or {}) if isinstance(ce, dict) else {}
                 raw_matches = list(iso.get("matches", []) or [])
+
+                def _ensure_match(val: Any) -> EvidenceMatch | None:
+                    try:
+                        if isinstance(val, EvidenceMatch):
+                            return val
+                        return EvidenceMatch.model_validate(val)
+                    except Exception:
+                        if isinstance(val, dict) and val.get("domain"):
+                            fragments = val.get("fragments") or []
+                            if isinstance(fragments, list):
+                                return EvidenceMatch(domain=val.get("domain"), fragments=fragments)
+                        return None
+
                 matches_typed = []
                 for m in raw_matches:
-                    try:
-                        matches_typed.append(EvidenceMatch.model_validate(m))
-                    except Exception:
-                        # best-effort: shape possibly {domain:str, fragments:list}
-                        if isinstance(m, dict) and m.get("domain"):
-                            fragments = m.get("fragments") or []
-                            if isinstance(fragments, list):
-                                matches_typed.append(EvidenceMatch(domain=m.get("domain"), fragments=fragments))
+                    hm = _ensure_match(m)
+                    if hm is not None:
+                        matches_typed.append(hm)
+
                 # Merge quotes from evidence_builder and optional deep research
                 deep_q: List[Any] = []
                 try:
@@ -954,35 +1046,99 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                             self._deep_citations_map.pop(research_id, None)
                 except Exception:
                     deep_q = []
-                quotes_typed: List[EvidenceQuote] = []
-                for q in list(evidence_quotes or []) + list(deep_q or []):
+
+                if evidence_bundle is not None:
                     try:
-                        if isinstance(q, EvidenceQuote):
-                            quotes_typed.append(q)
-                        else:
-                            quotes_typed.append(EvidenceQuote.model_validate(q))
+                        base_bundle = evidence_bundle if isinstance(evidence_bundle, EvidenceBundle) else EvidenceBundle.model_validate(evidence_bundle)
                     except Exception:
-                        # tolerate partial records
-                        if isinstance(q, dict) and q.get("quote"):
-                            quotes_typed.append(EvidenceQuote(
-                                id=str(q.get("id", f"q{len(quotes_typed)+1:03d}")),
-                                url=q.get("url", ""),
-                                title=q.get("title", ""),
-                                domain=q.get("domain", ""),
-                                quote=q.get("quote", ""),
-                                start=q.get("start"),
-                                end=q.get("end"),
-                                published_date=q.get("published_date"),
-                                credibility_score=q.get("credibility_score"),
-                                suspicious=q.get("suspicious"),
-                                doc_summary=q.get("doc_summary"),
-                                source_type=q.get("source_type"),
-                            ))
+                        base_bundle = EvidenceBundle()
+                else:
+                    base_bundle = EvidenceBundle()
+
+                existing_quotes = list(getattr(base_bundle, "quotes", []) or [])
+                quotes_typed: List[EvidenceQuote] = []
+
+                def _ensure_quote(val: Any) -> EvidenceQuote | None:
+                    try:
+                        if isinstance(val, EvidenceQuote):
+                            return val
+                        return EvidenceQuote.model_validate(val)
+                    except Exception:
+                        if isinstance(val, dict) and val.get("quote"):
+                            return EvidenceQuote(
+                                id=str(val.get("id", f"q{len(quotes_typed)+len(existing_quotes)+1:03d}")),
+                                url=val.get("url", ""),
+                                title=val.get("title", ""),
+                                domain=val.get("domain", ""),
+                                quote=val.get("quote", ""),
+                                start=val.get("start"),
+                                end=val.get("end"),
+                                published_date=val.get("published_date"),
+                                credibility_score=val.get("credibility_score"),
+                                suspicious=val.get("suspicious"),
+                                doc_summary=val.get("doc_summary"),
+                                source_type=val.get("source_type"),
+                            )
+                        return None
+
+                for item in existing_quotes:
+                    q = _ensure_quote(item)
+                    if q is not None:
+                        quotes_typed.append(q)
+                for item in evidence_quotes or []:
+                    q = _ensure_quote(item)
+                    if q is not None:
+                        quotes_typed.append(q)
+                for item in deep_q or []:
+                    q = _ensure_quote(item)
+                    if q is not None:
+                        quotes_typed.append(q)
+
+                dedup_quotes: Dict[str, EvidenceQuote] = {}
+                for q in quotes_typed:
+                    key = getattr(q, "id", None) or getattr(q, "url", None) or f"idx-{len(dedup_quotes)}"
+                    key = str(key)
+                    if key not in dedup_quotes:
+                        dedup_quotes[key] = q
+                quotes_typed = list(dedup_quotes.values())
+
+                base_matches = list(getattr(base_bundle, "matches", []) or [])
+                combined_matches: List[EvidenceMatch] = []
+                for item in base_matches + matches_typed:
+                    hm = _ensure_match(item)
+                    if hm is not None:
+                        combined_matches.append(hm)
+                if combined_matches:
+                    seen_match: set[tuple[str, tuple[str, ...]]] = set()
+                    unique_matches: List[EvidenceMatch] = []
+                    for m in combined_matches:
+                        dom = getattr(m, "domain", "") or ""
+                        fragments = tuple(getattr(m, "fragments", []) or [])
+                        key = (dom, fragments)
+                        if key in seen_match:
+                            continue
+                        seen_match.add(key)
+                        unique_matches.append(m)
+                    combined_matches = unique_matches
+
+                base_by_domain = dict(getattr(base_bundle, "by_domain", {}) or {})
+                for dom, count in (iso.get("by_domain", {}) or {}).items():
+                    try:
+                        base_by_domain[dom] = base_by_domain.get(dom, 0) + int(count)
+                    except Exception:
+                        continue
+
+                focus_combined = list(dict.fromkeys((getattr(base_bundle, "focus_areas", []) or []) + list(iso.get("focus_areas", []) or [])))
+                documents_combined = list(getattr(base_bundle, "documents", []) or [])
+                documents_token_count = int(getattr(base_bundle, "documents_token_count", 0) or 0)
+
                 eb = EvidenceBundle(
-                    matches=matches_typed,
-                    by_domain=dict(iso.get("by_domain", {}) or {}),
-                    focus_areas=list(iso.get("focus_areas", []) or []),
                     quotes=quotes_typed,
+                    matches=combined_matches,
+                    by_domain=base_by_domain,
+                    focus_areas=focus_combined,
+                    documents=documents_combined,
+                    documents_token_count=documents_token_count,
                 )
             except Exception:
                 eb = None  # type: ignore
@@ -1116,6 +1272,53 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 optimized_list.append(val)
         return optimized_list
 
+    def _prioritize_queries(self, queries: List[str], limit: int, paradigm: HostParadigm | None) -> List[str]:
+        """Sort queries using simple heuristics; return top `limit` without arbitrary slice bias.
+
+        Heuristics:
+        - Prefer quoted phrases (exact intent)
+        - Prefer moderate length (20–140 chars)
+        - Paradigm nudges (Bernard: academic terms; Dolores: accountability keywords)
+        """
+        if not queries:
+            return []
+        def score(q: str) -> float:
+            s = 0.0
+            ql = len(q or "")
+            if '"' in q:
+                s += 2.0
+            if 20 <= ql <= 140:
+                s += 1.0
+            low = (q or "").lower()
+            try:
+                code = normalize_to_internal_code(paradigm) if paradigm else ""
+            except Exception:
+                code = ""
+            if code == "bernard":
+                for kw in ("site:edu", "doi", "arxiv", "journal", "study", "evidence"):
+                    if kw in low:
+                        s += 0.5
+            elif code == "dolores":
+                for kw in ("systemic", "accountability", "investigation", "whistleblower", "lawsuit"):
+                    if kw in low:
+                        s += 0.5
+            elif code == "maeve":
+                for kw in ("roi", "market", "kpi", "growth", "benchmark"):
+                    if kw in low:
+                        s += 0.4
+            elif code == "teddy":
+                for kw in ("support", "resources", "mental health", "community"):
+                    if kw in low:
+                        s += 0.4
+            # Penalise very long (>220) or very short (<10)
+            if ql > 220:
+                s -= 0.5
+            if ql < 10:
+                s -= 0.5
+            return s
+        ordered = sorted(queries, key=score, reverse=True)
+        return ordered[: max(1, limit)]
+
     async def _execute_searches_deterministic(
         self,
         optimized_queries: List[str],
@@ -1133,22 +1336,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         paradigm_code = normalize_to_internal_code(primary_paradigm)
         min_rel = bernard_min_relevance() if paradigm_code == "bernard" else 0.25
 
-        for idx, q in enumerate(optimized_queries):
+        # Run per-query searches concurrently with a cap to avoid API bursts
+        concurrency = int(os.getenv("SEARCH_QUERY_CONCURRENCY", "4"))
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _run_query(idx: int, q: str) -> Tuple[str, List[SearchResult]]:
             if check_cancelled and await check_cancelled():
                 logger.info("Research cancelled before executing query #%d", idx + 1)
-                break
-
-            # Progress
+                return q, []
+            # Progress (started)
             if progress_callback and research_id:
                 try:
-                    # Emit explicit search.started so UI can show total planned searches
                     try:
                         await progress_callback.report_search_started(
-                            research_id,
-                            q,
-                            "aggregate",
-                            idx + 1,
-                            len(optimized_queries),
+                            research_id, q, "aggregate", idx + 1, len(optimized_queries)
                         )
                     except Exception:
                         pass
@@ -1163,7 +1364,6 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 except Exception:
                     pass
 
-            # Basic search config for V2 path
             config = SearchConfig(
                 max_results=max_results,
                 language="en",
@@ -1171,42 +1371,57 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 min_relevance_score=min_rel,
             )
 
-            try:
-                # Prefer google for determinism; fall back is inside _perform_search()
-                results = await self._perform_search(
-                    q, "google", config, check_cancelled=check_cancelled, progress_callback=progress_callback, research_id=research_id
-                )
-                all_results[q] = results
-                # Cost track
+            async with sem:
                 try:
-                    _ = await self.cost_monitor.track_search_cost("google", 1)
+                    results = await self._perform_search(
+                        q,
+                        "google",
+                        config,
+                        check_cancelled=check_cancelled,
+                        progress_callback=progress_callback,
+                        research_id=research_id,
+                    )
+                except Exception as e:
+                    logger.error("Search failed for '%s': %s", q, e)
+                    results = []
+
+            # Cost track
+            try:
+                _ = await self.cost_monitor.track_search_cost("google", 1)
+            except Exception:
+                pass
+
+            # Progress (completed + sample sources)
+            if progress_callback and research_id:
+                try:
+                    await progress_callback.report_search_completed(research_id, q, len(results))
+                    for r in results[:3]:
+                        try:
+                            await progress_callback.report_source_found(
+                                research_id,
+                                {
+                                    "title": getattr(r, "title", ""),
+                                    "url": getattr(r, "url", ""),
+                                    "domain": getattr(r, "domain", ""),
+                                    "snippet": (getattr(r, "snippet", "") or "")[:200],
+                                    "credibility_score": float(getattr(r, "credibility_score", 0.5) or 0.5),
+                                },
+                            )
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
-                if progress_callback and research_id:
-                    try:
-                        await progress_callback.report_search_completed(
-                            research_id, q, len(results)
-                        )
-                        for r in results[:3]:
-                            try:
-                                await progress_callback.report_source_found(
-                                    research_id,
-                                    {
-                                        "title": getattr(r, "title", ""),
-                                        "url": getattr(r, "url", ""),
-                                        "domain": getattr(r, "domain", ""),
-                                        "snippet": (getattr(r, "snippet", "") or "")[:200],
-                                        "credibility_score": float(getattr(r, "credibility_score", 0.5) or 0.5),
-                                    },
-                                )
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.error("Search failed for '%s': %s", q, e)
-                all_results[q] = []
+            return q, results
+
+        tasks = [asyncio.create_task(_run_query(idx, q)) for idx, q in enumerate(optimized_queries)]
+        for fut in asyncio.as_completed(tasks):
+            try:
+                q, res = await fut
+                all_results[q] = res
+            except Exception:
+                # Ensure a failed task does not block others
+                continue
 
         return all_results
 
@@ -1243,8 +1458,25 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                             r.content = tt.strip()
                     except Exception:
                         pass
-                # Require content non-empty after repair
+                # Second‑chance fetch for empty content (slow path, limited concurrency)
+                if not str(getattr(r, "content", "") or "").strip() and getattr(r, "url", None):
+                    try:
+                        sm = getattr(self, "search_manager", None)
+                        if sm is not None:
+                            # Fetch in-line using manager's respectful fetcher
+                            session = sm._any_session()
+                            fetched = await sm.fetcher.fetch(session, getattr(r, "url"))
+                            if fetched:
+                                r.content = fetched
+                    except Exception:
+                        # Continue; will drop if still empty
+                        pass
+                # Require content non-empty after repair/fetch; log drops
                 if not str(getattr(r, "content", "") or "").strip():
+                    try:
+                        logger.debug("[process_results] Dropping empty-content result: %s", getattr(r, "url", ""))
+                    except Exception:
+                        pass
                     continue
                 combined.append(r)
 

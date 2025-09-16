@@ -87,21 +87,28 @@ def _env_int(name: str, default: int) -> int:
 
 
 # Baseline words per entire answer (allocated per section by weight)
-SYNTHESIS_BASE_WORDS: int = _env_int("SYNTHESIS_BASE_WORDS", 5000)
+# UPDATED FOR O3: Increased from 5000 to 50000 to utilize o3's 100k output capacity
+SYNTHESIS_BASE_WORDS: int = _env_int("SYNTHESIS_BASE_WORDS", 50000)
 
 # Baseline max output tokens per entire answer (allocated per section)
-SYNTHESIS_BASE_TOKENS: int = _env_int("SYNTHESIS_BASE_TOKENS", 8000)
+# UPDATED FOR O3: Increased from 8000 to 80000 to utilize o3's 100k output capacity
+SYNTHESIS_BASE_TOKENS: int = _env_int("SYNTHESIS_BASE_TOKENS", 80000)
 
 # Default max_length for SynthesisContext when callers omit it
-SYNTHESIS_MAX_LENGTH_DEFAULT: int = _env_int("SYNTHESIS_MAX_LENGTH_DEFAULT", 5000)
+# UPDATED FOR O3: Increased from 5000 to 50000 for comprehensive synthesis
+SYNTHESIS_MAX_LENGTH_DEFAULT: int = _env_int("SYNTHESIS_MAX_LENGTH_DEFAULT", 50000)
 
 # Evidence block budgets in prompts
-EVIDENCE_MAX_QUOTES_DEFAULT: int = _env_int("EVIDENCE_MAX_QUOTES_DEFAULT", 30)
-EVIDENCE_BUDGET_TOKENS_DEFAULT: int = _env_int("EVIDENCE_BUDGET_TOKENS_DEFAULT", 2000)
+# UPDATED FOR O3: Increased from 30 to 200 to include more evidence
+EVIDENCE_MAX_QUOTES_DEFAULT: int = _env_int("EVIDENCE_MAX_QUOTES_DEFAULT", 200)
+# UPDATED FOR O3: Increased from 2000 to 95000 to utilize o3's 100k input capacity
+EVIDENCE_BUDGET_TOKENS_DEFAULT: int = _env_int("EVIDENCE_BUDGET_TOKENS_DEFAULT", 95000)
 
 # Evidence extraction limits
-EVIDENCE_MAX_DOCS_DEFAULT: int = _env_int("EVIDENCE_MAX_DOCS_DEFAULT", 20)
-EVIDENCE_QUOTES_PER_DOC_DEFAULT: int = _env_int("EVIDENCE_QUOTES_PER_DOC_DEFAULT", 3)
+# UPDATED FOR O3: Increased from 20 to 100 to analyze 5x more documents
+EVIDENCE_MAX_DOCS_DEFAULT: int = _env_int("EVIDENCE_MAX_DOCS_DEFAULT", 100)
+# UPDATED FOR O3: Increased from 3 to 10 for richer evidence extraction
+EVIDENCE_QUOTES_PER_DOC_DEFAULT: int = _env_int("EVIDENCE_QUOTES_PER_DOC_DEFAULT", 10)
 EVIDENCE_QUOTE_MAX_CHARS: int = _env_int("EVIDENCE_QUOTE_MAX_CHARS", 360)
 
 # Enable lightweight semantic scoring for quote selection
@@ -109,6 +116,7 @@ EVIDENCE_SEMANTIC_SCORING: bool = (os.getenv("EVIDENCE_SEMANTIC_SCORING", "1").l
 
 # Include short per‑source summaries alongside quotes in prompts
 EVIDENCE_INCLUDE_SUMMARIES: bool = (os.getenv("EVIDENCE_INCLUDE_SUMMARIES", "1").lower() in {"1", "true", "yes"})
+
 
 # ────────────────────────────────────────────────────────────
 #  Feature Flags

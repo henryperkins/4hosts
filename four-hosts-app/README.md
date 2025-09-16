@@ -67,6 +67,36 @@ npm run dev
 
 The application will be available at `http://localhost:5173`
 
+### Docker Compose Deployment
+
+Use the bundled Docker setup when you want the full stack (PostgreSQL, Redis, backend, frontend) running with one command.
+
+1. Ensure the shared Docker network exists (required because several compose files join the same network):
+   ```bash
+   cd four-hosts-app
+   ./scripts/setup-docker-network.sh
+   ```
+
+2. Start the full stack from the repository root:
+   ```bash
+   docker compose up -d --build
+   ```
+
+   - Backend API: http://localhost:8001
+   - API docs:    http://localhost:8001/docs
+   - Frontend UI: http://localhost:5173
+   - PostgreSQL:  localhost:5433 (user/password/fourhosts)
+
+3. To tear the stack down:
+   ```bash
+   docker compose down
+   ```
+
+Optional compose files:
+
+- `backend/docker-compose.yml` starts only PostgreSQL and Redis for local backend development.
+- `backend/docker-compose.mcp.yml` runs the Brave MCP server; run the network script above first so it can attach to `fourhosts-network`.
+
 ## Documentation
 
 - Technical flow and implementation map: `docs/agentic-research-technical-flow.md`

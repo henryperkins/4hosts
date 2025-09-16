@@ -25,18 +25,37 @@ from tenacity import (
     wait_exponential,
 )
 
-# Import HostParadigm explicitly (assuming from models.paradigms; adjust if needed)
-from models.paradigms import HostParadigm  # Resolves reportUndefinedVariable for HostParadigm
-
 # Type checking imports to avoid circular imports
 if TYPE_CHECKING:
-    from services.openai_responses_client import WebSearchTool, CodeInterpreterTool, MCPTool
+    from services.classification_engine import HostParadigm  # noqa: F401
+    from services.openai_responses_client import (
+        WebSearchTool,
+        CodeInterpreterTool,
+        MCPTool,
+    )
 
 # ────────────────────────────────────────────────────────────
 #  Logging
 # ────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Throttle repetitive extraction warnings
+_EXTRACT_WARN_LAST_TS: float = 0.0
+_EXTRACT_WARN_COUNT: int = 0
+
+def _warn_extract_throttled(obj_type: type) -> None:
+    global _EXTRACT_WARN_LAST_TS, _EXTRACT_WARN_COUNT
+    now = time.perf_counter()
+    # Always log the first occurrence, then at most once per 60s
+    if _EXTRACT_WARN_COUNT == 0 or (now - _EXTRACT_WARN_LAST_TS) > 60.0:
+        try:
+            logger.warning(f"Could not extract text from response type: {obj_type}")
+        except Exception:
+            # Never fail on logging
+            pass
+        _EXTRACT_WARN_LAST_TS = now
+        _EXTRACT_WARN_COUNT += 1
 
 # Central default for output tokens
 try:
@@ -867,8 +886,11 @@ class LLMClient:
         if hasattr(response, 'text') and getattr(response, 'text', None):
             return str(getattr(response, 'text')).strip()
 
-        # Default fallback
-        logger.warning(f"Could not extract text from response type: {type(response)}")
+        # Default fallback (rate-limited warning)
+        try:
+            _warn_extract_throttled(type(response))
+        except Exception:
+            pass
         return ""
 
     # ─────────── streaming iterators ───────────
@@ -1071,8 +1093,19 @@ async def responses_deep_research(
     max_tool_calls: Optional[int] = None,
     background: bool = True,
 ) -> Dict[str, Any]:
-    from services.openai_responses_client import get_responses_client, WebSearchTool, CodeInterpreterTool, MCPTool
-    tools: List[Union[WebSearchTool, CodeInterpreterTool, MCPTool, Dict[str, Any]]] = []  # Expanded type to match arg
+    from services.openai_responses_client import (
+        get_responses_client,
+        WebSearchTool,
+        CodeInterpreterTool,
+    )
+    tools: List[
+        Union[
+        "WebSearchTool",
+        "CodeInterpreterTool",
+        "MCPTool",
+        Dict[str, Any],
+    ]
+    ] = []
     if use_web_search:
         tools.append(web_search_config or WebSearchTool())
     if use_code_interpreter:

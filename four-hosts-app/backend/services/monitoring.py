@@ -517,7 +517,7 @@ class HealthCheckService:
 
     async def get_readiness(self) -> Dict[str, Any]:
         """Check if service is ready to accept traffic"""
-        critical_checks = ["database", "redis", "auth_service"]
+        critical_checks = ["database", "redis", "auth_service", "llm"]
         health_results = await self.run_health_checks()
 
         # Check critical services

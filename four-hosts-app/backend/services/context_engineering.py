@@ -647,10 +647,23 @@ class CompressLayer(ContextLayer):
         paradigm = classification.primary_paradigm
         strategy = self.compression_strategies[paradigm]
 
-        # Calculate token budget based on query complexity
-        base_tokens = 2000  # Base token budget
-        complexity_multiplier = 1 + classification.features.complexity_score
-        token_budget = int(base_tokens * complexity_multiplier * strategy["ratio"])
+        # Calculate token budget based on query complexity and env knobs
+        try:
+            base_tokens = int(os.getenv("CE_BASE_TOKENS", "2000"))
+        except Exception:
+            base_tokens = 2000
+        complexity_multiplier = 1.0 + float(getattr(classification.features, "complexity_score", 0.0) or 0.0)
+        # Optional urgency nudge (e.g., investigative may need more)
+        urgency = float(getattr(classification.features, "urgency_score", 0.0) or 0.0)
+        urgency_multiplier = 1.0 + (0.25 * urgency)
+        raw_budget = base_tokens * complexity_multiplier * urgency_multiplier * float(strategy["ratio"])
+        # Clamp to sane bounds; allow env overrides per paradigm
+        try:
+            max_cap = int(os.getenv("CE_MAX_TOKENS", "6000"))
+            min_cap = int(os.getenv("CE_MIN_TOKENS", "800"))
+        except Exception:
+            max_cap, min_cap = 6000, 800
+        token_budget = int(max(min_cap, min(max_cap, raw_budget)))
 
         # Derive a simple budget plan for instructions/knowledge/tools/scratch
         try:

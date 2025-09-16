@@ -52,21 +52,20 @@ async def test_e2e_smoke_evidence_bundle(monkeypatch):
     monkeypatch.setattr(research_orchestrator, "_process_results", fake_process_results)
 
     # 3) Return one typed quote from evidence_builder
-    from models.evidence import EvidenceQuote
+    from models.evidence import EvidenceQuote, EvidenceBundle
     import services.evidence_builder as eb
 
-    async def fake_build_evidence_quotes(query, results, max_docs=5, quotes_per_doc=1):
-        return [
-            EvidenceQuote(
-                id="q001",
-                url="https://example.com/a",
-                title="Example A",
-                domain="example.com",
-                quote="Example quote",
-            )
-        ]
+    async def fake_build_evidence_bundle(query, results, max_docs=5, quotes_per_doc=1, include_full_content=True, **_):
+        quote = EvidenceQuote(
+            id="q001",
+            url="https://example.com/a",
+            title="Example A",
+            domain="example.com",
+            quote="Example quote",
+        )
+        return EvidenceBundle(quotes=[quote], matches=[], by_domain={"example.com": 1}, focus_areas=["theme"], documents=[], documents_token_count=0)
 
-    monkeypatch.setattr(eb, "build_evidence_quotes", fake_build_evidence_quotes)
+    monkeypatch.setattr(eb, "build_evidence_bundle", fake_build_evidence_bundle)
 
     # 4) Minimal generator returning an object with metadata to be populated by orchestrator
     from services.answer_generator import answer_orchestrator
@@ -110,4 +109,3 @@ async def test_e2e_smoke_evidence_bundle(monkeypatch):
     assert any((q.get("source_type") == "deep_research") for q in ebundle["quotes"]) or any(
         (q.get("domain") or "").startswith("deep.") for q in ebundle["quotes"] if isinstance(q, dict)
     )
-

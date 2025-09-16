@@ -259,7 +259,8 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       if (typeof q === 'string') return { quote: q, url: '' }
       if (q && typeof q === 'object' && 'quote' in q) {
         const o = q as { quote: string; url?: string; domain?: string; title?: string; credibility_score?: number; published_date?: string; id?: string }
-        return { url: '', ...o, url: o.url ?? '' }
+        // Avoid duplicate keys; ensure `url` always exists as a string
+        return { ...o, url: o.url ?? '' }
       }
       return null
     })

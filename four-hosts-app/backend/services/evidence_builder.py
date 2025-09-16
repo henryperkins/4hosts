@@ -5,7 +5,9 @@ Select high-salience, quoted evidence from top web results to ground
 the model's synthesis. Lightweight and dependency‑minimal.
 
 Exports helpers:
-    - build_evidence_quotes(query, results, max_docs=20, quotes_per_doc=3) -> List[EvidenceQuote]
+    - build_evidence_bundle(query, results, max_docs=100, quotes_per_doc=10, include_full_content=True)
+      -> EvidenceBundle
+    - build_evidence_quotes(query, results, max_docs=100, quotes_per_doc=10) -> List[EvidenceQuote]
     - convert_quote_dicts_to_typed(quotes_raw) -> List[EvidenceQuote]
     - quotes_to_plain_dicts(quotes_typed) -> List[Dict]
 
@@ -28,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any, Dict, List, Tuple
-from models.evidence import EvidenceQuote
+from models.evidence import EvidenceQuote, EvidenceBundle, EvidenceDocument
 
 from utils.injection_hygiene import sanitize_snippet, flag_suspicious_snippet
 from core.config import (
@@ -36,10 +38,19 @@ from core.config import (
     EVIDENCE_QUOTES_PER_DOC_DEFAULT,
     EVIDENCE_QUOTE_MAX_CHARS,
     EVIDENCE_SEMANTIC_SCORING,
+    EVIDENCE_BUDGET_TOKENS_DEFAULT,
 )
 
 # Reuse existing fetcher that handles HTML and PDFs
 from services.search_apis import fetch_and_parse_url  # type: ignore
+from utils.token_budget import estimate_tokens, trim_text_to_tokens
+
+
+def _item_get(data: Any, key: str, default: Any = None) -> Any:
+    """Helper to read dict-like or attribute-based search result fields."""
+    if isinstance(data, dict):
+        return data.get(key, default)
+    return getattr(data, key, default)
 
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[\.!?])\s+(?=[A-Z0-9])|"
@@ -118,16 +129,19 @@ def _pick_docs(results: List[Dict[str, Any]], max_docs: int) -> List[Dict[str, A
     # Prefer high credibility and diversify by domain
     sorted_results = sorted(
         results or [],
-        key=lambda r: float(r.get("credibility_score", 0.0) or 0.0),
+        key=lambda r: float(_item_get(r, "credibility_score", 0.0) or 0.0),
         reverse=True,
     )
     picked: List[Dict[str, Any]] = []
     seen_domains: set[str] = set()
     for r in sorted_results:
-        u = (r.get("url") or "").strip()
+        u = (_item_get(r, "url", "") or "").strip()
         if not u:
             continue
-        dom = (r.get("metadata", {}) or {}).get("domain") or _domain_from(u)
+        metadata = _item_get(r, "metadata", {}) or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        dom = metadata.get("domain") or _domain_from(u)
         if dom in seen_domains and len(picked) < max_docs // 2:
             # Early rounds: prioritize new domains
             continue
@@ -174,6 +188,33 @@ def _best_quotes_for_text(
     top = [(q, s, e) for (q, s, e, _sc) in scored[:max_quotes]]
     return top
 
+def _context_window_around(text: str, start: int, end: int, max_chars: int = 320) -> str:
+    """Return a short context window (prev/next sentences) around a span.
+
+    If sentence bounds are ambiguous, fall back to a fixed +/- window. Sanitized.
+    """
+    if not text or start is None or end is None or start < 0 or end < 0 or start >= len(text):
+        return ""
+    try:
+        # Search nearest sentence boundaries
+        left = max(text.rfind('.', 0, start), text.rfind('!', 0, start), text.rfind('?', 0, start))
+    except Exception:
+        left = -1
+    try:
+        right_candidates = [text.find('.', end), text.find('!', end), text.find('?', end)]
+        right_candidates = [c for c in right_candidates if c != -1]
+        right = min(right_candidates) if right_candidates else -1
+    except Exception:
+        right = -1
+    if left == -1:
+        left = max(0, start - max_chars // 2)
+    if right == -1:
+        right = min(len(text), end + max_chars // 2)
+    window = text[left:right].strip()
+    if len(window) > max_chars:
+        window = window[: max_chars - 1] + '…'
+    return sanitize_snippet(window, max_len=max_chars)
+
 
 def _summarize_text(query: str, text: str, max_sentences: int = 3, max_len: int = 500) -> str:
     """Lightweight extractive summary using TF‑IDF similarity to the query.
@@ -196,6 +237,153 @@ def _summarize_text(query: str, text: str, max_sentences: int = 3, max_len: int 
     return sanitize_snippet(out, max_len=max_len)
 
 
+async def build_evidence_bundle(
+    query: str,
+    results: List[Dict[str, Any]],
+    *,
+    max_docs: int = EVIDENCE_MAX_DOCS_DEFAULT,
+    quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
+    include_full_content: bool = True,
+    full_text_budget: int = EVIDENCE_BUDGET_TOKENS_DEFAULT,
+) -> EvidenceBundle:
+    """Build comprehensive evidence bundle including quotes and (optionally) full documents."""
+
+    if not results:
+        return EvidenceBundle()
+
+    docs = _pick_docs(results, max_docs=max_docs)
+    if not docs:
+        return EvidenceBundle()
+
+    urls = [(_item_get(d, "url", "") or "").strip() for d in docs if (_item_get(d, "url", "") or "").strip()]
+    texts = await _fetch_texts(urls)
+
+    quotes: List[EvidenceQuote] = []
+    doc_entries: List[EvidenceDocument] = []
+    total_doc_tokens = 0
+
+    qid = 1
+    doc_id = 1
+    remaining_tokens = max(int(full_text_budget or 0), 0)
+
+    for idx, raw_doc in enumerate(docs):
+        url = (_item_get(raw_doc, "url", "") or "").strip()
+        if not url:
+            continue
+        title = _item_get(raw_doc, "title", "") or ""
+        metadata_raw = _item_get(raw_doc, "metadata", {}) or {}
+        metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
+        domain = metadata.get("domain") or (_item_get(raw_doc, "domain", "") or _domain_from(url))
+        snippet = _item_get(raw_doc, "snippet", "") or ""
+        text = texts.get(url, "")
+        doc_summary = _summarize_text(query, text) if text else (sanitize_snippet(snippet, max_len=300) if snippet else "")
+        triples = _best_quotes_for_text(query, text, max_quotes=quotes_per_doc)
+        if not triples:
+            if snippet:
+                triples = [(sanitize_snippet(snippet, 200), -1, -1)]
+
+        credibility_val = _item_get(raw_doc, "credibility_score", None)
+        try:
+            credibility_score = float(credibility_val) if credibility_val is not None else None
+        except Exception:
+            credibility_score = None
+
+        source_type = metadata.get("result_type") or _item_get(raw_doc, "result_type", "web") or "web"
+
+        for quote, start, end in triples:
+            ctx = _context_window_around(
+                text,
+                start,
+                end,
+                max_chars=min(380, EVIDENCE_QUOTE_MAX_CHARS * 2),
+            ) if text and isinstance(start, int) and start >= 0 else ""
+            quotes.append(
+                EvidenceQuote(
+                    id=f"q{qid:03d}",
+                    url=url,
+                    title=title,
+                    domain=domain or "",
+                    quote=quote,
+                    start=int(start) if isinstance(start, int) else None,
+                    end=int(end) if isinstance(end, int) else None,
+                    published_date=metadata.get("published_date"),
+                    credibility_score=credibility_score,
+                    suspicious=bool(flag_suspicious_snippet(quote)),
+                    doc_summary=doc_summary or None,
+                    source_type=source_type,
+                    context_window=ctx or None,
+                )
+            )
+            qid += 1
+
+        if include_full_content:
+            base_content = text or _item_get(raw_doc, "content", "") or ""
+            docs_left = max(1, len(docs) - idx)
+            allocation = 0
+            if remaining_tokens > 0 and base_content:
+                allocation = min(
+                    remaining_tokens,
+                    max(200, (remaining_tokens // docs_left) or remaining_tokens),
+                )
+
+            if allocation > 0 and base_content:
+                content_for_doc = trim_text_to_tokens(base_content, allocation)
+                truncated = len(content_for_doc) < len(base_content)
+            else:
+                fallback_candidates = [doc_summary, snippet, base_content, title, url]
+                content_for_doc = next((c for c in fallback_candidates if c), "")
+                truncated = False
+
+            token_count = estimate_tokens(content_for_doc) if content_for_doc else 0
+            if remaining_tokens > 0 and token_count:
+                remaining_tokens = max(0, remaining_tokens - token_count)
+            total_doc_tokens += token_count
+
+            doc_metadata = dict(metadata)
+            if doc_summary and "summary" not in doc_metadata:
+                doc_metadata["summary"] = doc_summary
+
+            doc_entries.append(
+                EvidenceDocument(
+                    id=f"d{doc_id:03d}",
+                    url=url,
+                    title=title,
+                    domain=domain or "",
+                    content=content_for_doc or "",
+                    token_count=token_count,
+                    word_count=len((content_for_doc or "").split()),
+                    truncated=truncated,
+                    credibility_score=credibility_score,
+                    published_date=doc_metadata.get("published_date"),
+                    source_type=source_type,
+                    metadata=doc_metadata,
+                )
+            )
+            doc_id += 1
+
+    # Balance quotes by domain: keep at most 4 per domain overall
+    by_domain: Dict[str, int] = {}
+    balanced: List[EvidenceQuote] = []
+    for q in quotes:
+        dom = (getattr(q, "domain", "") or "").lower()
+        count = by_domain.get(dom, 0)
+        if count >= 4:
+            continue
+        balanced.append(q)
+        by_domain[dom] = count + 1
+
+    balanced = balanced[: max_docs * quotes_per_doc]
+
+    return EvidenceBundle(
+        quotes=balanced,
+        matches=[],
+        by_domain=by_domain,
+        focus_areas=[],
+        documents=doc_entries,
+        documents_token_count=total_doc_tokens,
+    )
+
+
 async def build_evidence_quotes(
     query: str,
     results: List[Dict[str, Any]],
@@ -203,65 +391,16 @@ async def build_evidence_quotes(
     max_docs: int = EVIDENCE_MAX_DOCS_DEFAULT,
     quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
 ) -> List[EvidenceQuote]:
-    """Return prioritized quotes across high-credibility, diverse sources.
+    """Retained wrapper for legacy callers returning only evidence quotes."""
 
-    The return type is a list of `EvidenceQuote` models. Use
-    `quotes_to_plain_dicts(...)` if a plain-JSON shape is needed.
-    """
-    if not results:
-        return []
-
-    docs = _pick_docs(results, max_docs=max_docs)
-    urls = [d.get("url", "") for d in docs if d.get("url")]
-    texts = await _fetch_texts(urls)
-
-    quotes: List[EvidenceQuote] = []
-    qid = 1
-    for d in docs:
-        url = d.get("url", "")
-        title = d.get("title", "")
-        md = d.get("metadata", {}) or {}
-        domain = md.get("domain") or _domain_from(url)
-        text = texts.get(url, "")
-        triples = _best_quotes_for_text(query, text, max_quotes=quotes_per_doc)
-        doc_summary = _summarize_text(query, text) if text else (sanitize_snippet(d.get("snippet", ""), max_len=300) if d.get("snippet") else "")
-        if not triples:
-            # fallback to snippet
-            snip = d.get("snippet", "")
-            if snip:
-                triples = [(sanitize_snippet(snip, 200), -1, -1)]
-        for quote, start, end in triples:
-            quotes.append(
-                EvidenceQuote(
-                    id=f"q{qid:03d}",
-                    url=url,
-                    title=title or "",
-                    domain=domain or "",
-                    quote=quote,
-                    start=int(start) if isinstance(start, int) else None,
-                    end=int(end) if isinstance(end, int) else None,
-                    published_date=md.get("published_date"),
-                    credibility_score=d.get("credibility_score"),
-                    suspicious=bool(flag_suspicious_snippet(quote)),
-                    doc_summary=doc_summary or None,
-                    source_type=md.get("result_type", "web"),
-                )
-            )
-            qid += 1
-
-    # Balance by domain: keep at most 4 per domain overall
-    by_domain: Dict[str, int] = {}
-    balanced: List[EvidenceQuote] = []
-    for q in quotes:
-        dom = (getattr(q, "domain", "") or "").lower()
-        c = by_domain.get(dom, 0)
-        if c >= 4:
-            continue
-        balanced.append(q)
-        by_domain[dom] = c + 1
-
-    # Cap hard limit to protect prompt
-    return balanced[: max_docs * quotes_per_doc]
+    bundle = await build_evidence_bundle(
+        query,
+        results,
+        max_docs=max_docs,
+        quotes_per_doc=quotes_per_doc,
+        include_full_content=False,
+    )
+    return list(bundle.quotes)
 
 
 def convert_quote_dicts_to_typed(quotes_raw: List[Dict[str, Any]]) -> List[EvidenceQuote]:

@@ -27,6 +27,7 @@ from core.config import (
     SYNTHESIS_BASE_WORDS,
     SYNTHESIS_BASE_TOKENS,
     EVIDENCE_MAX_QUOTES_DEFAULT,
+    EVIDENCE_MAX_DOCS_DEFAULT,
     EVIDENCE_BUDGET_TOKENS_DEFAULT,
     EVIDENCE_INCLUDE_SUMMARIES,
 )
@@ -243,12 +244,69 @@ class BaseAnswerGenerator:
         return ""
 
     def _top_relevant_results(self, context: SynthesisContext, k: int = 5) -> List[Dict[str, Any]]:
-        """Select top-k results by credibility, ensuring domain diversity."""
+        """Select top-k sources using credibility, evidence density, and recency with domain diversity.
+
+        Score = 0.6*credibility + 0.25*evidence_density + 0.15*recency, then diversify by domain.
+        """
         results = list(context.search_results or [])
-        results.sort(key=lambda r: float(r.get("credibility_score", 0.0) or 0.0), reverse=True)
+        # Evidence density from evidence bundle
+        ev_counts_by_url: Dict[str, int] = {}
+        ev_counts_by_domain: Dict[str, int] = {}
+        try:
+            eb = getattr(context, "evidence_bundle", None)
+            if eb is not None and getattr(eb, "quotes", None):
+                quotes = list(getattr(eb, "quotes", []) or [])
+                def _qval(q, name, default=""):
+                    try:
+                        if isinstance(q, dict):
+                            return q.get(name, default)
+                        if hasattr(q, name):
+                            return getattr(q, name)
+                        if hasattr(q, "model_dump"):
+                            return q.model_dump().get(name, default)
+                        if hasattr(q, "dict"):
+                            return q.dict().get(name, default)
+                    except Exception:
+                        return default
+                    return default
+                for q in quotes:
+                    u = (_qval(q, "url", "") or "").strip()
+                    d = (_qval(q, "domain", "") or "").lower()
+                    if u:
+                        ev_counts_by_url[u] = ev_counts_by_url.get(u, 0) + 1
+                    if d:
+                        ev_counts_by_domain[d] = ev_counts_by_domain.get(d, 0) + 1
+        except Exception:
+            pass
+
+        from datetime import datetime
+        def _recency_score(v) -> float:
+            try:
+                dt = v
+                if isinstance(v, str):
+                    dt = datetime.fromisoformat(v.replace('Z', '+00:00'))
+                if not dt:
+                    return 0.0
+                # 0..1 over ~5 years
+                age_days = max(0.0, (datetime.utcnow() - dt).days)
+                return max(0.0, 1.0 - min(1.0, age_days / (365.0 * 5)))
+            except Exception:
+                return 0.0
+
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for r in results:
+            cred = float(r.get("credibility_score", 0.0) or 0.0)
+            u = (r.get("url") or "").strip()
+            d = (r.get("domain") or r.get("source") or "").lower()
+            evid = ev_counts_by_url.get(u, 0) or ev_counts_by_domain.get(d, 0)
+            evid_norm = min(1.0, evid / 3.0)  # 0..1 for 0..3+ quotes
+            rec = _recency_score(r.get("published_date"))
+            score = 0.6 * cred + 0.25 * evid_norm + 0.15 * rec
+            scored.append((score, r))
+        scored.sort(key=lambda x: x[0], reverse=True)
         picked: List[Dict[str, Any]] = []
         seen: set[str] = set()
-        for r in results:
+        for _score, r in scored:
             dom = (r.get("domain") or r.get("source") or "").lower()
             if dom in seen and len(picked) < k // 2:
                 continue
@@ -288,9 +346,19 @@ class BaseAnswerGenerator:
             lines.append(f"- [{qid}][{dom}] {qt}")
         return "\n".join(lines) if lines else "(no evidence quotes)"
 
-    def _safe_evidence_block(self, context: SynthesisContext, max_quotes: int = EVIDENCE_MAX_QUOTES_DEFAULT, budget_tokens: int = EVIDENCE_BUDGET_TOKENS_DEFAULT) -> str:
-        """Injection-safe, token-budgeted evidence list for prompts."""
-        # Gather quotes
+    def _safe_evidence_block(
+        self,
+        context: SynthesisContext,
+        max_quotes: int = EVIDENCE_MAX_QUOTES_DEFAULT,
+        budget_tokens: int = EVIDENCE_BUDGET_TOKENS_DEFAULT,
+        inline_ctx: bool = False,
+    ) -> str:
+        """Injection-safe, token-budgeted evidence list for prompts.
+
+        When inline_ctx is True, appends a short context window after each quote.
+        """
+        # Gather quotes (ensure local is always defined to avoid UnboundLocalError)
+        quotes: List[Any] = []
         try:
             eb = getattr(context, "evidence_bundle", None)
             if eb is not None and getattr(eb, "quotes", None):
@@ -314,13 +382,15 @@ class BaseAnswerGenerator:
             except Exception:
                 return default
             return default
+        include_ctx = inline_ctx and (os.getenv("EVIDENCE_INCLUDE_CONTEXT", "1") in {"1", "true", "yes"})
+        ctx_max = int(os.getenv("EVIDENCE_CONTEXT_MAX_CHARS", "220"))
         for q in quotes:
             items_for_budget.append({
                 "id": _qval(q, "id", ""),
                 "domain": _qval(q, "domain", ""),
                 "title": "",           # no title for quotes
                 "snippet": "",         # no snippet for quotes
-                "content": _qval(q, "quote", "") or "",
+                "content": (_qval(q, "quote", "") or "") + (f" | ctx: {sanitize_snippet(_qval(q, 'context_window', '') or '', max_len=ctx_max)}" if include_ctx and _qval(q, 'context_window', '') else ""),
             })
         selected, _used, _dropped = select_items_within_budget(items_for_budget, max_tokens=budget_tokens)
         selected = selected[:max_quotes]
@@ -333,13 +403,167 @@ class BaseAnswerGenerator:
             lines.append(f"- [{qid}][{dom}] {qt}")
         return "\n".join(lines) if lines else "(no evidence quotes)"
 
-    def _source_summaries_block(self, context: SynthesisContext, max_items: int = 12, budget_tokens: int = 600) -> str:
+    def _context_windows_block(self, context: SynthesisContext, max_quotes: int = EVIDENCE_MAX_QUOTES_DEFAULT) -> str:
+        """Emit a separate block of short windows around evidence quotes.
+
+        Uses EvidenceQuote.context_window built by the evidence builder.
+        """
+        quotes = []
+        try:
+            eb = getattr(context, "evidence_bundle", None)
+            if eb is not None and getattr(eb, "quotes", None):
+                quotes = list(getattr(eb, "quotes", []) or [])[:max_quotes]
+        except Exception:
+            quotes = []
+        if not quotes:
+            return "(no context windows)"
+        ctx_max = int(os.getenv("EVIDENCE_CONTEXT_MAX_CHARS", "220"))
+        lines: List[str] = []
+        def _qval(q, name, default=""):
+            try:
+                if isinstance(q, dict):
+                    return q.get(name, default)
+                if hasattr(q, name):
+                    return getattr(q, name)
+                if hasattr(q, "model_dump"):
+                    return q.model_dump().get(name, default)
+                if hasattr(q, "dict"):
+                    return q.dict().get(name, default)
+            except Exception:
+                return default
+            return default
+        for q in quotes:
+            qid = _qval(q, "id", "")
+            dom = (_qval(q, "domain", "") or "").lower()
+            ctx = _qval(q, "context_window", "") or ""
+            if not ctx:
+                continue
+            ctx = sanitize_snippet(ctx, max_len=ctx_max)
+            lines.append(f"- [{qid}][{dom}] {ctx}")
+        return "\n".join(lines) if lines else "(no context windows)"
+
+    def _source_cards_block(self, context: SynthesisContext, k: int = 5) -> str:
+        """Compact source cards: title | domain | date | author (context only)."""
+        try:
+            results = self._top_relevant_results(context, k)
+        except Exception:
+            results = list(context.search_results or [])[:k]
+        lines: List[str] = []
+        from datetime import datetime
+        def _fmt_date(v) -> str:
+            try:
+                if isinstance(v, str):
+                    # Trim to date component when iso
+                    if 'T' in v:
+                        return v.split('T', 1)[0]
+                    return v
+                if isinstance(v, datetime):
+                    return v.date().isoformat()
+            except Exception:
+                return ""
+            return ""
+        for r in results:
+            md = r.get("metadata", {}) or {}
+            ext = (md.get("extracted_meta") or {}) if isinstance(md, dict) else {}
+            title = (r.get("title") or ext.get("title") or "").strip()
+            domain = (r.get("domain") or r.get("source") or "").strip()
+            date = (r.get("published_date") or ext.get("published_date") or "")
+            date_s = _fmt_date(date)
+            authors = ext.get("authors") if isinstance(ext, dict) else None
+            if isinstance(authors, list):
+                author_s = ", ".join([a for a in authors if a])[:120]
+            else:
+                author_s = (authors or "")[:120]
+            parts = [p for p in [title, domain, date_s, author_s] if p]
+            if not parts:
+                continue
+            lines.append(f"- {' | '.join(parts)}")
+        return "\n".join(lines) if lines else "(no source cards)"
+
+    def _source_summaries_block(
+        self,
+        context: SynthesisContext,
+        max_items: int = EVIDENCE_MAX_DOCS_DEFAULT,
+        budget_tokens: int = EVIDENCE_BUDGET_TOKENS_DEFAULT,
+    ) -> str:
         """Optional block of per‑source summaries (deduped by URL/domain).
 
         Summaries can be attached by the evidence builder on each quote as
         "doc_summary". We dedupe by URL, falling back to domain, and then
         select within a token budget to avoid overflow.
         """
+        try:
+            eb = getattr(context, "evidence_bundle", None)
+            documents = list(getattr(eb, "documents", []) or []) if eb is not None else []
+        except Exception:
+            documents = []
+
+        def _dval(doc: Any, name: str, default: Any = "") -> Any:
+            try:
+                if isinstance(doc, dict):
+                    return doc.get(name, default)
+                if hasattr(doc, name):
+                    return getattr(doc, name)
+                if hasattr(doc, "model_dump"):
+                    return doc.model_dump().get(name, default)
+            except Exception:
+                return default
+            return default
+
+        if documents:
+            items_for_budget: List[Dict[str, Any]] = []
+            for doc in documents:
+                doc_id = _dval(doc, "id", "") or f"d{len(items_for_budget)+1:03d}"
+                title = _dval(doc, "title", "")
+                domain = _dval(doc, "domain", "")
+                token_count = int(_dval(doc, "token_count", 0) or 0)
+                content = _dval(doc, "content", "")
+                if not content:
+                    continue
+                header_bits = [f"[{doc_id}]"]
+                if title:
+                    header_bits.append(title)
+                if domain:
+                    header_bits.append(f"({domain})")
+                if token_count:
+                    header_bits.append(f"≈{token_count} tokens")
+                header = " ".join(header_bits)
+                items_for_budget.append({
+                    "title": header,
+                    "snippet": content,
+                    "_meta": {
+                        "id": doc_id,
+                        "header": header,
+                        "token_count": token_count,
+                    },
+                })
+
+            if items_for_budget:
+                try:
+                    env_budget = os.getenv("EVIDENCE_DOCUMENT_BUDGET_TOKENS")
+                    if env_budget is not None:
+                        budget_tokens = int(env_budget or budget_tokens)
+                except Exception:
+                    pass
+                selected, _used, _dropped = select_items_within_budget(
+                    items_for_budget,
+                    max_tokens=budget_tokens,
+                    per_item_min_tokens=200,
+                )
+                selected = selected[:max_items]
+                blocks: List[str] = []
+                for it in selected:
+                    meta = it.get("_meta", {})
+                    header = meta.get("header") or it.get("title") or ""
+                    content = it.get("snippet") or ""
+                    if not content:
+                        continue
+                    blocks.append(f"{header}\n{content}")
+                if blocks:
+                    return "\n---\n".join(blocks)
+
+        # Fallback to legacy summary mode using quote-attached summaries
+        quotes = []
         try:
             eb = getattr(context, "evidence_bundle", None)
             quotes = list(getattr(eb, "quotes", []) or []) if eb is not None else []
@@ -384,11 +608,18 @@ class BaseAnswerGenerator:
 
         if not items_for_budget:
             return "(no source summaries)"
+        # Allow env override for budget tokens
+        try:
+            budget_tokens = int(os.getenv("EVIDENCE_SUMMARY_BUDGET_TOKENS", str(budget_tokens)))
+        except Exception:
+            pass
         selected, _u, _d = select_items_within_budget(items_for_budget, max_tokens=budget_tokens)
         selected = selected[:max_items]
         lines: List[str] = []
         for it in selected:
-            lines.append(f"- {sanitize_snippet(it.get('content','') or '')}")
+            # Format as: - domain (YYYY-MM-DD): summary
+            content = it.get('content','') or ''
+            lines.append(f"- {sanitize_snippet(content)}")
         return "\n".join(lines) if lines else "(no source summaries)"
 
     def _coverage_table(self, context: SynthesisContext, max_rows: int = 6) -> str:
@@ -753,24 +984,47 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._safe_evidence_block(context)
+            # Decide evidence context mode (inline vs window vs auto)
+            section_tokens = int(SYNTHESIS_BASE_TOKENS * section_def['weight'])
+            mode = (os.getenv("EVIDENCE_CONTEXT_MODE", "auto") or "auto").lower()
+            threshold = int(os.getenv("EVIDENCE_CONTEXT_SECTION_TOKENS_MIN", "1500"))
+            inline_ctx = True if mode == "inline" else False
+            use_windows = False
+            if mode == "window":
+                use_windows = True
+                inline_ctx = False
+            elif mode == "auto":
+                if section_tokens >= threshold:
+                    use_windows = True
+                    inline_ctx = False
+                else:
+                    inline_ctx = True
+            evidence_block = self._safe_evidence_block(context, inline_ctx=inline_ctx)
+            ctx_windows_block = self._context_windows_block(context) if use_windows else "(context windows disabled)"
             summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
+            # Optional source cards
+            source_cards = self._source_cards_block(context) if os.getenv("SOURCE_CARDS_ENABLE", "1") in {"1", "true", "yes"} else "(source cards disabled)"
 
             guard = guardrail_instruction
             variant_extra = self._variant_addendum(context, "dolores")
+            newline = "\n"
+            ctx_windows_line = f"Context Windows (for quotes):{newline}{ctx_windows_block}" if use_windows else ""
             prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
             Use passionate, urgent language that exposes injustice and calls for change.
+            Source Cards (context only):
+            {source_cards}
             Evidence Quotes (primary evidence; cite by [qid]):
             {evidence_block}
+            {ctx_windows_line}
             Isolated Findings (secondary evidence):
             {iso_block}
             Coverage Table (Theme | Covered? | Best Domain):
             {coverage_tbl}
             STRICT: Do not invent facts; ground claims in the Evidence Quotes above.
-            Source Summaries (context only):
+            Full Document Context (cite using [d###]):
             {summaries_block}
             {variant_extra}
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
@@ -1077,21 +1331,43 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._safe_evidence_block(context)
+            section_tokens = int(SYNTHESIS_BASE_TOKENS * section_def['weight'])
+            mode = (os.getenv("EVIDENCE_CONTEXT_MODE", "auto") or "auto").lower()
+            threshold = int(os.getenv("EVIDENCE_CONTEXT_SECTION_TOKENS_MIN", "1500"))
+            inline_ctx = True if mode == "inline" else False
+            use_windows = False
+            if mode == "window":
+                use_windows = True
+                inline_ctx = False
+            elif mode == "auto":
+                if section_tokens >= threshold:
+                    use_windows = True
+                    inline_ctx = False
+                else:
+                    inline_ctx = True
+            evidence_block = self._safe_evidence_block(context, inline_ctx=inline_ctx)
+            ctx_windows_block = self._context_windows_block(context) if use_windows else "(context windows disabled)"
             summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
+            source_cards = self._source_cards_block(context) if os.getenv("SOURCE_CARDS_ENABLE", "1") in {"1", "true", "yes"} else "(source cards disabled)"
 
             guard = guardrail_instruction
             variant_extra = self._variant_addendum(context, "bernard")
+            newline = "\n"
+            ctx_windows_line = f"Context Windows (for quotes):{newline}{ctx_windows_block}" if use_windows else ""
             prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
+
+            Source Cards (context only):
+            {source_cards}
 
             Statistical insights available:
             {insights_summary}
 
             Evidence Quotes (primary evidence; cite by [qid]):
             {evidence_block}
+            {ctx_windows_line}
 
             Isolated Findings (SSOTA Isolate Layer - secondary evidence):
             {iso_block}
@@ -1107,7 +1383,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             - Distinguish correlation from causation
             - Acknowledge limitations
             - STRICT: Do not introduce claims not supported by the Evidence Quotes above
-            Source Summaries (context only):
+            Full Document Context (cite using [d###]):
             {summaries_block}
             {variant_extra}
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
@@ -1502,21 +1778,43 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
-            evidence_block = self._safe_evidence_block(context)
+            section_tokens = int(SYNTHESIS_BASE_TOKENS * section_def['weight'])
+            mode = (os.getenv("EVIDENCE_CONTEXT_MODE", "auto") or "auto").lower()
+            threshold = int(os.getenv("EVIDENCE_CONTEXT_SECTION_TOKENS_MIN", "1500"))
+            inline_ctx = True if mode == "inline" else False
+            use_windows = False
+            if mode == "window":
+                use_windows = True
+                inline_ctx = False
+            elif mode == "auto":
+                if section_tokens >= threshold:
+                    use_windows = True
+                    inline_ctx = False
+                else:
+                    inline_ctx = True
+            evidence_block = self._safe_evidence_block(context, inline_ctx=inline_ctx)
+            ctx_windows_block = self._context_windows_block(context) if use_windows else "(context windows disabled)"
             summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
+            source_cards = self._source_cards_block(context) if os.getenv("SOURCE_CARDS_ENABLE", "1") in {"1", "true", "yes"} else "(source cards disabled)"
 
             guard = guardrail_instruction
             variant_extra = self._variant_addendum(context, "maeve")
+            newline = "\n"
+            ctx_windows_line = f"Context Windows (for quotes):{newline}{ctx_windows_block}" if use_windows else ""
             prompt = f"""{guard}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
             Query: {context.query}
+
+            Source Cards (context only):
+            {source_cards}
 
             SWOT Analysis:
             {swot_summary}
 
             Evidence Quotes (primary evidence; cite by [qid]):
             {evidence_block}
+            {ctx_windows_line}
             Isolated Findings (secondary evidence):
             {iso_block}
 
@@ -1528,7 +1826,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             - Include ROI considerations and resource implications
             - Emphasize competitive advantages and market opportunities
 
-            Source Summaries (context only):
+            Full Document Context (cite using [d###]):
             {summaries_block}
             {variant_extra}
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
