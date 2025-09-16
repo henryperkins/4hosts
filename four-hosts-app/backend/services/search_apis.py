@@ -2144,7 +2144,41 @@ class SearchAPIManager:
                 except Exception:
                     pass
 
-        await asyncio.gather(*(_fetch(r) for r in all_res))
+        # Optional budgeted content fetch phase to avoid exceeding orchestrator timeouts
+        enable_fetch = os.getenv("SEARCH_ENABLE_CONTENT_FETCH", "1").lower() in {"1", "true", "yes", "on"}
+        if enable_fetch and all_res:
+            # Determine total time budget for this fetch stage
+            try:
+                fetch_budget = float(os.getenv("SEARCH_FETCH_TOTAL_BUDGET_SEC", "0") or 0.0)
+            except Exception:
+                fetch_budget = 0.0
+            if fetch_budget <= 0.0:
+                # Derive a sensible default from overall and per-provider timeouts with a small cushion
+                try:
+                    task_to = float(os.getenv("SEARCH_TASK_TIMEOUT_SEC", "30") or 30.0)
+                except Exception:
+                    task_to = 30.0
+                try:
+                    prov_to = float(os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC", "25") or 25.0)
+                except Exception:
+                    prov_to = 25.0
+                fetch_budget = max(2.0, task_to - prov_to - 2.0)
+            # Launch fetch tasks and enforce budget
+            fetch_tasks = [asyncio.create_task(_fetch(r)) for r in all_res]
+            done, pending = await asyncio.wait(set(fetch_tasks), timeout=fetch_budget)
+            if pending:
+                for t in pending:
+                    try:
+                        t.cancel()
+                    except Exception:
+                        pass
+                # Drain cancellations
+                try:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                except Exception:
+                    pass
+                logger.warning("Content fetch budget exhausted after %.1fs; %d fetches cancelled", fetch_budget, len(pending))
+        # Final normalization regardless of fetch
         for r in all_res:
             ensure_snippet_content(r)
             normalize_result_text_fields(r)

@@ -135,9 +135,34 @@ class ResultDeduplicator:
             pass
         self.similarity_threshold = similarity_threshold
 
-    async def deduplicate_results(
-        self, results: List[SearchResult]
-    ) -> Dict[str, Any]:
+    def _simhash64(self, text: str) -> int:
+        import hashlib
+        if not text:
+            return 0
+        # Tokenize lightly and hash tokens; simple 64-bit simhash
+        toks = re.findall(r"[A-Za-z0-9]+", text.lower())
+        v = [0] * 64
+        for t in toks[:200]:  # cap tokens for speed
+            h = int(hashlib.blake2b(t.encode('utf-8'), digest_size=8).hexdigest(), 16)
+            for i in range(64):
+                v[i] += 1 if (h >> i) & 1 else -1
+        out = 0
+        for i in range(64):
+            if v[i] >= 0:
+                out |= (1 << i)
+        return out
+
+    @staticmethod
+    def _hamdist64(a: int, b: int) -> int:
+        x = a ^ b
+        # Kernighan bit count
+        c = 0
+        while x:
+            x &= x - 1
+            c += 1
+        return c
+
+    async def deduplicate_results(self, results: List[SearchResult]) -> Dict[str, Any]:
         """Remove duplicate results using URL and content similarity"""
         # Defensive guard – empty input
         if not results:
@@ -174,27 +199,38 @@ class ResultDeduplicator:
             else:
                 duplicates_removed += 1
 
-        # Second pass: content-similarity deduplication.  Again, guard
-        # against malformed results to prevent crashes.
-        for result in url_deduplicated:
-            is_duplicate = False
+        # Second pass: content-similarity via simhash bucketing to avoid O(n^2)
+        # Build buckets on leading bits; compare only within bucket
+        buckets: Dict[int, List[Tuple[int, SearchResult]]] = {}
+        for r in url_deduplicated:
+            try:
+                basis = f"{getattr(r,'title','')} {getattr(r,'snippet','')}"
+                sh = self._simhash64(basis)
+                key = (sh >> 52)  # top 12 bits as bucket key
+                buckets.setdefault(key, []).append((sh, r))
+            except Exception:
+                buckets.setdefault(0, []).append((0, r))
 
-            for existing in unique_results:
-                try:
-                    similarity = self._calculate_content_similarity(result, existing)
-                except Exception as e:
-                    # Log and treat as non-duplicate so the pipeline can
-                    # continue gracefully.
-                    logger.debug("[dedup] Similarity calc failed: %s", e, exc_info=True)
-                    similarity = 0.0
-
-                if similarity > self.similarity_threshold:
-                    is_duplicate = True
-                    duplicates_removed += 1
-                    break
-
-            if not is_duplicate:
-                unique_results.append(result)
+        for key, items in buckets.items():
+            reps: List[Tuple[int, SearchResult]] = []
+            for sh, r in items:
+                is_dup = False
+                for sh2, kept in reps:
+                    try:
+                        # Treat <=3 bits difference as duplicate; also fall back to title/snippet Jaccard
+                        if self._hamdist64(sh, sh2) <= 3:
+                            is_dup = True
+                        else:
+                            sim = self._calculate_content_similarity(r, kept)
+                            is_dup = sim > self.similarity_threshold
+                    except Exception:
+                        is_dup = False
+                    if is_dup:
+                        duplicates_removed += 1
+                        break
+                if not is_dup:
+                    reps.append((sh, r))
+                    unique_results.append(r)
 
         logger.info(
             "Deduplication: %s -> %s (%s duplicates removed)",
@@ -349,12 +385,12 @@ class EarlyRelevanceFilter:
 
         # Query relevance check - use query_compressor for better keyword extraction
         try:
+            import re as _re
             query_terms = set(query_compressor.extract_keywords(query))
             if query_terms:
                 # Use regex tokenization for more flexible matching
-                import re as _re
-                def _toks(text: str) -> set:
-                    return set([t for t in _re.findall(r"[A-Za-z0-9]+", (text or "").lower()) if len(t) > 2])
+                def _toks(text: str) -> set[str]:
+                    return {t for t in _re.findall(r"[A-Za-z0-9]+", (text or "").lower()) if len(t) > 2}
 
                 result_terms = _toks(combined_text)
                 if result_terms:
@@ -364,8 +400,8 @@ class EarlyRelevanceFilter:
                     # If no direct matches, check for partial matches with shorter keywords
                     if not has_query_term:
                         # Try with 2-character minimum for short keywords
-                        short_query_terms = set([t for t in query_terms if len(t) >= 2])
-                        short_result_terms = set([t for t in _re.findall(r"[A-Za-z0-9]+", (combined_text or "").lower()) if len(t) >= 2])
+                        short_query_terms = {t for t in query_terms if len(t) >= 2}
+                        short_result_terms = {t for t in _re.findall(r"[A-Za-z0-9]+", (combined_text or "").lower()) if len(t) >= 2}
                         has_query_term = bool(short_query_terms & short_result_terms)
 
                     if not has_query_term:
@@ -393,7 +429,16 @@ class EarlyRelevanceFilter:
             has_authority = any(indicator in (getattr(result, "domain", "") or "").lower() or indicator in combined_text for indicator in authoritative_indicators)
             has_tech_content = any(indicator in combined_text for indicator in tech_indicators)
 
-            if not (has_authority or has_tech_content):
+            # Be permissive when there is direct query overlap – do not penalize generic but relevant snippets
+            has_direct_overlap = True
+            try:
+                q_terms = set(query_compressor.extract_keywords(query))
+            except Exception:
+                q_terms = {t for t in (query or "").lower().split() if len(t) > 2}
+            if q_terms:
+                has_direct_overlap = any(t in combined_text for t in q_terms)
+
+            if not (has_authority or has_tech_content) and not has_direct_overlap:
                 academic_terms = ['methodology', 'hypothesis', 'conclusion', 'abstract', 'citation',
                                 'analysis', 'framework', 'approach', 'technique', 'evaluation']
                 if not any(term in combined_text for term in academic_terms):
@@ -434,7 +479,7 @@ class EarlyRelevanceFilter:
         duplicate_patterns = [
             r'.*-mirror\.', r'.*-cache\.', r'.*-proxy\.',
             r'.*\.mirror\.', r'.*\.cache\.', r'.*\.proxy\.',
-            r'webcache\.', r'cached\.', r'.*\.cc$'
+            r'webcache\.', r'cached\.'
         ]
 
         for pattern in duplicate_patterns:
@@ -460,6 +505,21 @@ class CostMonitor:
         cost = self.cost_per_call.get(api_name, 0.0) * queries_count
         await cache_manager.track_api_cost(api_name, cost, queries_count)
         return cost
+
+    async def estimate_and_track_aggregate(self, providers: List[str], queries_count: int) -> Dict[str, float]:
+        """Estimate and record per‑provider costs for an aggregate search.
+
+        Returns a mapping of provider -> cost for this batch. Unknown providers are
+        treated as zero-cost (defensive default).
+        """
+        breakdown: Dict[str, float] = {}
+        for name in providers:
+            try:
+                # Record per‑provider (not "aggregate") so daily roll‑ups stay accurate
+                breakdown[name] = await self.track_search_cost(name, queries_count)
+            except Exception:
+                breakdown[name] = 0.0
+        return breakdown
 
     async def get_daily_costs(self, date: Optional[str] = None) -> Dict[str, Dict[str, float]]:
         """Get daily API costs"""
@@ -754,8 +814,8 @@ class UnifiedResearchOrchestrator:
                     "CRITICAL: No search providers configured - Research pipeline initialization failed. "
                     "Required API keys are missing or invalid. "
                     "Please configure at least one of: "
-                    "1) BRAVE_API_KEY for Brave Search "
-                    "2) GOOGLE_API_KEY + GOOGLE_SEARCH_ENGINE_ID for Google Search "
+                    "1) BRAVE_SEARCH_API_KEY for Brave Search "
+                    "2) GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX for Google CSE "
                     "3) Academic providers (ArXiv, PubMed, Semantic Scholar). "
                     "You can disable this check by setting SEARCH_DISABLE_FAILFAST=1 if using deep-research-only mode."
                 )
@@ -799,7 +859,9 @@ class UnifiedResearchOrchestrator:
         return {
             "version": "2.0",
             "features": {
-                "deterministic_results": True,
+                # Multiple providers + concurrency imply non-determinism in ordering
+                # and provider availability; report this accurately.
+                "deterministic_results": False,
                 "origin_tracking": True,
                 "dynamic_compression": True,
                 "full_context_preservation": True,
@@ -838,10 +900,22 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             return bool(research_data and research_data.get("status") == RuntimeResearchStatus.CANCELLED)
 
         start_time = datetime.now()
+        # Use request‑scoped holders to avoid cross‑talk under concurrency
         cost_breakdown: Dict[str, float] = {}
-
-        # Initialize cost tracking for this research session
-        self._current_cost_breakdown = cost_breakdown
+        search_metrics_local: SearchMetrics = {
+            "total_queries": 0,
+            "total_results": 0,
+            "apis_used": [],
+            "deduplication_rate": 0.0,
+            "retries_attempted": 0,
+            "task_timeouts": 0,
+            "exceptions_by_api": {},
+            "api_call_counts": {},
+            "dropped_no_url": 0,
+            "dropped_invalid_shape": 0,
+            "compression_plural_used": 0,
+            "compression_singular_used": 0,
+        }
 
         # Pure V2 query planning
         limited = self._get_query_limit(user_context)
@@ -864,7 +938,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         )
 
         # Update metrics for total queries
-        self._search_metrics["total_queries"] = self._safe_metric_int("total_queries") + len(optimized_queries)
+        # Update request-scoped metrics
+        search_metrics_local["total_queries"] = int(search_metrics_local.get("total_queries", 0)) + len(optimized_queries)
 
         # Check for cancellation before executing searches
         if await check_cancelled():
@@ -898,7 +973,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             user_context,
             progress_callback,
             research_id,
-            check_cancelled  # Pass cancellation check function
+            check_cancelled,  # Pass cancellation check function
+            cost_accumulator=cost_breakdown,
+            metrics=search_metrics_local,
         )
 
         # Check for cancellation before processing results
@@ -912,7 +989,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             context_engineered,
             user_context,
             progress_callback,
-            research_id
+            research_id,
+            metrics=search_metrics_local,
         )
 
         # Check for cancellation before deep research
@@ -938,8 +1016,46 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 self.diagnostics["allow_unlinked_citations"] = prev_allow_unlinked
 
             if deep_results:
-                processed_results["results"].extend(deep_results)
+                # Avoid duplicates by URL against ranked results before appending deep results
+                seen_urls = {
+                    getattr(r, "url", None)
+                    for r in processed_results.get("results", [])
+                    if getattr(r, "url", None)
+                }
+                unique_deep: List[dict] = []
+                for d in deep_results:
+                    try:
+                        u = (d.get("url") or "").strip()
+                    except Exception:
+                        u = ""
+                    if u and u not in seen_urls:
+                        unique_deep.append(d)
+                processed_results["results"].extend(unique_deep)
                 processed_results["metadata"]["deep_research_enabled"] = True
+                # Update apis_used/sources_used to reflect deep results appended post‑processing
+                try:
+                    apis = set(processed_results.get("metadata", {}).get("apis_used", []) or [])
+                except Exception:
+                    apis = set()
+                for d in deep_results:
+                    try:
+                        api = getattr(d, "source", None) or getattr(d, "source_api", None) or getattr(d, "search_api", None) or "deep_research"
+                        if api:
+                            apis.add(str(api))
+                    except Exception:
+                        continue
+                if apis:
+                    processed_results.setdefault("metadata", {})["apis_used"] = list(apis)
+                try:
+                    used = set(processed_results.get("sources_used", []) or [])
+                except Exception:
+                    used = set()
+                for d in deep_results:
+                    try:
+                        used.add(getattr(d, "source", None) or getattr(d, "source_api", None) or getattr(d, "search_api", None) or "deep_research")
+                    except Exception:
+                        continue
+                processed_results["sources_used"] = list(used)
 
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
@@ -1031,6 +1147,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 published_date = metadata.get("published_date")
                 if published_date is None:
                     published_date = getattr(result, "published_date", None)
+                # Ensure JSON-serializable date
+                try:
+                    from datetime import date, datetime as _dt
+                    if isinstance(published_date, (_dt, date)):
+                        published_date = published_date.isoformat()
+                except Exception:
+                    pass
                 result_type = metadata.get("result_type") or getattr(result, "result_type", "web")
                 normalized_sources.append(
                     {
@@ -1086,6 +1209,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                             max_docs=max_docs,
                             quotes_per_doc=EVIDENCE_QUOTES_PER_DOC_DEFAULT,
                             include_full_content=True,
+                            full_text_budget=EVIDENCE_BUDGET_TOKENS_DEFAULT,
                         )
 
                         evidence_quotes = list(getattr(evidence_bundle, "quotes", []) or [])
@@ -1106,6 +1230,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                                 f"Evidence builder succeeded: {len(evidence_quotes)} quotes from "
                                 f"{len(getattr(evidence_bundle, 'documents', []))} documents"
                             )
+
+                        # Signal evidence phase completion to UI
+                        if progress_callback and research_id:
+                            try:
+                                await progress_callback.update_progress(
+                                    research_id,
+                                    phase="evidence",
+                                    progress=75,
+                                )
+                            except Exception:
+                                pass
 
                 except ImportError as e:
                     error_msg = (
@@ -1189,6 +1324,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         )
                 except Exception:
                     pass
+            except asyncio.CancelledError:
+                # Preserve cancellation semantics; do not misreport as LLM failure
+                raise
             except Exception as e:
                 error_msg = (
                     f"CRITICAL: LLM Answer synthesis failed - Cannot generate response. "
@@ -1227,8 +1365,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             for host, value in raw_distribution.items():
                 key = normalize_to_internal_code(host) if host is not None else str(host)
                 distribution_map[key] = float(value or 0.0)
-                if secondary_paradigm is not None and host == secondary_paradigm:
-                    secondary_confidence = float(value or 0.0)
+            if secondary_code and secondary_code in distribution_map:
+                secondary_confidence = float(distribution_map.get(secondary_code, 0.0))
         except Exception:
             distribution_map = {}
 
@@ -1261,7 +1399,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 integrated_synthesis = None
 
-        apis_used = list(self._search_metrics.get("apis_used", []))
+        apis_used = list(search_metrics_local.get("apis_used", []))
 
         response = {
             "research_id": research_id or f"research_{int(start_time.timestamp())}",
@@ -1287,11 +1425,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 },
                 "research_depth": "deep" if enable_deep_research else "standard",
                 # Prepare safe metric values for type checking
+                # Report request‑scoped metrics, not global cumulative values
                 "search_metrics": {
-                    "total_queries": self._safe_metric_int("total_queries"),
-                    "total_results": self._safe_metric_int("total_results"),
+                    "total_queries": int(search_metrics_local.get("total_queries", 0)),
+                    "total_results": int(search_metrics_local.get("total_results", 0)),
                     "apis_used": apis_used,
-                    "deduplication_rate": self._safe_metric_float("deduplication_rate"),
+                    "deduplication_rate": float(search_metrics_local.get("deduplication_rate", 0.0)),
                 },
                 "paradigm": primary_code,
                 # Record LLM backend info so callers can verify model/endpoint used
@@ -1363,6 +1502,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             response["cost_info"] = {"search_api_costs": 0.0, "llm_costs": 0.0, "total": 0.0, "total_cost": 0.0}
         if synthesized_answer is not None:
+            # Preserve object for downstream normalizers (routes/research.py)
             response["answer"] = synthesized_answer
             try:
                 metadata_obj = getattr(synthesized_answer, "metadata", {}) or {}
@@ -1371,6 +1511,37 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     response["metadata"].setdefault("evidence_quotes", evidence_quotes_copy)
             except Exception:
                 pass
+        # Append execution record for stats (best-effort)
+        try:
+            # Build a minimal per-execution record
+            cred_map: Dict[str, float] = {}
+            try:
+                for r in processed_results.get("results", []) or []:
+                    dom = getattr(r, "domain", None)
+                    sc = getattr(r, "credibility_score", None)
+                    if dom and isinstance(sc, (int, float)):
+                        cred_map[str(dom)] = float(sc)
+            except Exception:
+                cred_map = {}
+            exec_rec = ResearchExecutionResult(
+                original_query=getattr(context_engineered, "original_query", ""),
+                paradigm=primary_code,
+                secondary_paradigm=secondary_code,
+                search_queries_executed=[{"query": q} for q in (optimized_queries or [])],
+                raw_results=search_results if isinstance(search_results, dict) else {},
+                filtered_results=processed_results.get("results", []) or [],
+                credibility_scores=cred_map,
+                execution_metrics={
+                    "processing_time_seconds": float(processing_time),
+                    "final_results_count": len(processed_results.get("results", []) or []),
+                    "queries_executed": len(optimized_queries),
+                },
+                cost_breakdown=cost_breakdown,
+                status=ContractResearchStatus.OK,
+            )
+            self.execution_history.append(exec_rec)
+        except Exception:
+            pass
         return response
 
     def _llm_backend_info(self) -> Dict[str, Any]:
@@ -1447,6 +1618,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 published_date = metadata.get("published_date")
                 if published_date is None and not is_dict_result:
                     published_date = getattr(result, "published_date", None)
+                # Ensure JSON-serializable date
+                try:
+                    from datetime import date, datetime as _dt
+                    if isinstance(published_date, (_dt, date)):
+                        published_date = published_date.isoformat()
+                except Exception:
+                    pass
 
                 result_type = metadata.get("result_type")
                 if not result_type and not is_dict_result:
@@ -1653,18 +1831,23 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 )
             except Exception:
                 eb = None  # type: ignore
-            _ = SynthesisContextModel(
-                query=context_engineered.original_query,
-                paradigm=paradigm_code,
-                search_results=sources,
-                context_engineering=ce,
-                max_length=int(options.get("max_length", SYNTHESIS_MAX_LENGTH_DEFAULT)),
-                include_citations=bool(options.get("include_citations", True)),
-                tone=str(options.get("tone", "professional")),
-                metadata={"research_id": research_id},
-                evidence_quotes=[],  # legacy field suppressed by unified bundle
-                evidence_bundle=eb,
-            )
+            # Validate only for diagnostics; guard to avoid crashing synthesis on validation errors
+            try:
+                _ = SynthesisContextModel(
+                    query=context_engineered.original_query,
+                    paradigm=paradigm_code,
+                    search_results=sources,
+                    context_engineering=ce,
+                    max_length=int(options.get("max_length", SYNTHESIS_MAX_LENGTH_DEFAULT)),
+                    include_citations=bool(options.get("include_citations", True)),
+                    tone=str(options.get("tone", "professional")),
+                    metadata={"research_id": research_id},
+                    evidence_quotes=[],  # legacy field suppressed by unified bundle
+                    evidence_bundle=eb,
+                )
+            except Exception:
+                # Continue with untyped payload; downstream generator accepts dict-based context
+                pass
 
         # Emit synthesis started (mirrored as research_progress by tracker)
         try:
@@ -1734,11 +1917,23 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 if "evidence_quotes" not in answer.metadata and (evidence_quotes or []):
                     # Temporary back-compat for frontends expecting raw quotes
                     try:
-                        from services.evidence_builder import quotes_to_plain_dicts
-                        answer.metadata["evidence_quotes"] = quotes_to_plain_dicts(evidence_quotes)  # type: ignore[arg-type]
+                        if all(isinstance(q, dict) for q in (evidence_quotes or [])):
+                            answer.metadata["evidence_quotes"] = list(evidence_quotes)  # already plain
+                        else:
+                            from services.evidence_builder import quotes_to_plain_dicts
+                            answer.metadata["evidence_quotes"] = quotes_to_plain_dicts(evidence_quotes)  # type: ignore[arg-type]
                     except Exception:
-                        # Best-effort fallback
-                        answer.metadata["evidence_quotes"] = [getattr(q, "model_dump", lambda: getattr(q, "__dict__", {}))() for q in (evidence_quotes or [])]
+                        # Best-effort fallback: preserve dicts as-is, coerce objects via model_dump/__dict__
+                        safe_quotes = []
+                        for q in (evidence_quotes or []):
+                            if isinstance(q, dict):
+                                safe_quotes.append(q)
+                            else:
+                                try:
+                                    safe_quotes.append(q.model_dump())  # type: ignore[attr-defined]
+                                except Exception:
+                                    safe_quotes.append(getattr(q, "__dict__", {}))
+                        answer.metadata["evidence_quotes"] = safe_quotes
                 # Summarize isolation findings if available in CE dict
                 try:
                     if isinstance(ce, dict) and isinstance(ce.get("isolated_findings"), dict):
@@ -1860,6 +2055,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         progress_callback: Optional[Any],
         research_id: Optional[str],
         check_cancelled: Optional[Any],
+        *,
+        cost_accumulator: Optional[Dict[str, float]] = None,
+        metrics: Optional[SearchMetrics] = None,
     ) -> Dict[str, List[SearchResult]]:
         """
         Deterministically execute searches for V2 path. Returns {query_key: [SearchResult, ...]}.
@@ -1882,7 +2080,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 try:
                     try:
                         await progress_callback.report_search_started(
-                            research_id, q, "aggregate", idx + 1, len(optimized_queries)
+                            research_id, q, "multi", idx + 1, len(optimized_queries)
                         )
                     except Exception:
                         pass
@@ -1890,7 +2088,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         research_id,
                         phase="search",
                         message=f"Searching: {q[:40]}...",
-                        progress=30 + int((idx / max(1, len(optimized_queries))) * 20),
+                        progress=20 + int(((idx + 1) / max(1, len(optimized_queries))) * 35),
                         items_done=idx + 1,
                         items_total=len(optimized_queries),
                     )
@@ -1908,24 +2106,33 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 try:
                     results = await self._perform_search(
                         q,
-                        "google",
+                        "aggregate",
                         config,
                         check_cancelled=check_cancelled,
                         progress_callback=progress_callback,
                         research_id=research_id,
+                        metrics=metrics,
                     )
                 except Exception as e:
                     logger.error("Search failed for '%s': %s", q, e)
                     results = []
 
-            # Cost track
+            # Attribute cost only to providers observed in results (fallback: configured list)
             try:
-                cost = await self.cost_monitor.track_search_cost("aggregate", 1)
-                # Accumulate cost for this research session
-                if hasattr(self, '_current_cost_breakdown'):
-                    self._current_cost_breakdown["aggregate"] = self._current_cost_breakdown.get("aggregate", 0.0) + cost
+                seen = {
+                    (str(getattr(r, "source_api", None) or getattr(r, "source", "")).strip().lower())
+                    for r in results
+                }
+                seen.discard("")
+                if not seen:
+                    mgr = getattr(self, "search_manager", None)
+                    seen = set(getattr(mgr, "apis", {}).keys()) if mgr else set()
+                for name in seen:
+                    c = await self.cost_monitor.track_search_cost(name, 1)
+                    if cost_accumulator is not None:
+                        cost_accumulator[name] = float(cost_accumulator.get(name, 0.0)) + float(c)
             except Exception:
-                pass
+                logger.debug("Cost attribution failed for query '%s'", q, exc_info=True)
 
             # Progress (completed + sample sources)
             if progress_callback and research_id:
@@ -1951,13 +2158,30 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             return q, results
 
         tasks = [asyncio.create_task(_run_query(idx, q)) for idx, q in enumerate(optimized_queries)]
-        for fut in asyncio.as_completed(tasks):
-            try:
-                q, res = await fut
-                all_results[q] = res
-            except Exception:
-                # Ensure a failed task does not block others
-                continue
+        try:
+            for fut in asyncio.as_completed(tasks):
+                # Cooperative cancellation
+                if check_cancelled and await check_cancelled():
+                    pending = [t for t in tasks if not t.done()]
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    break
+                try:
+                    q, res = await fut
+                    all_results[q] = res
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Ensure a failed task does not block others
+                    continue
+        finally:
+            pending = [t for t in tasks if not t.done()]
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
         return all_results
 
@@ -1969,6 +2193,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         user_context: Any,
         progress_callback: Optional[Any] = None,
         research_id: Optional[str] = None,
+        *,
+        metrics: Optional[SearchMetrics] = None,
     ) -> Dict[str, Any]:
         """
         Combine, validate, dedup, early-filter, rank, and score credibility.
@@ -1976,12 +2202,25 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         """
         # 1) Combine & basic validation/repairs (mirror legacy path)
         combined: List[SearchResult] = []
+        to_backfill: List[Tuple[SearchResult, str]] = []
         for qkey, batch in (search_results or {}).items():
             if not batch:
                 continue
             for r in batch:
                 if r is None:
                     continue
+                # Enforce URL presence when enabled; count drops separately
+                url_val = getattr(r, "url", None)
+                if not url_val or not isinstance(url_val, str) or not url_val.strip():
+                    try:
+                        if self.diagnostics.get("enforce_url_presence", True):
+                            if metrics is not None:
+                                metrics["dropped_no_url"] = int(metrics.get("dropped_no_url", 0)) + 1
+                            if self._diag_samples is not None:
+                                self._diag_samples.setdefault("no_url", []).append(getattr(r, "title", "") or "")
+                            continue
+                    except Exception:
+                        pass
                 # Minimal repair mirroring legacy behavior
                 content = getattr(r, "content", "") or ""
                 if not str(content).strip():
@@ -1994,19 +2233,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                             r.content = tt.strip()
                     except Exception:
                         pass
-                # Second‑chance fetch for empty content (slow path, limited concurrency)
+                # Stage a second‑chance fetch for empty content; perform concurrently later
                 if not str(getattr(r, "content", "") or "").strip() and getattr(r, "url", None):
-                    try:
-                        sm = getattr(self, "search_manager", None)
-                        if sm is not None:
-                            # Fetch in-line using manager's respectful fetcher
-                            session = sm._any_session()
-                            fetched = await sm.fetcher.fetch(session, getattr(r, "url"))
-                            if fetched:
-                                r.content = fetched
-                    except Exception:
-                        # Continue; will drop if still empty
-                        pass
+                    to_backfill.append((r, getattr(r, "url")))
                 # Require content non-empty after repair/fetch; log and surface drops
                 if not str(getattr(r, "content", "") or "").strip():
                     try:
@@ -2029,14 +2258,41 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     continue
                 combined.append(r)
 
+        # Concurrent backfill for staged empty-content items (bounded concurrency)
+        if to_backfill:
+            try:
+                sm = getattr(self, "search_manager", None)
+                if sm is not None:
+                    session = sm._any_session()
+                    limit = int(os.getenv("SEARCH_BACKFILL_CONCURRENCY", "8") or 8)
+                    sem_fetch = asyncio.Semaphore(max(1, limit))
+
+                    async def _fetch_and_set(item: Tuple[SearchResult, str]):
+                        res, url = item
+                        async with sem_fetch:
+                            try:
+                                fetched = await sm.fetcher.fetch(session, url)
+                                if fetched and not str(getattr(res, "content", "") or "").strip():
+                                    res.content = fetched
+                            except Exception:
+                                return
+
+                    await asyncio.gather(*[_fetch_and_set(it) for it in to_backfill])
+            except Exception:
+                pass
+
         # 2) Dedup
         dedup = await self.deduplicator.deduplicate_results(combined)
         deduped: List[SearchResult] = list(dedup["unique_results"])
 
-        # Update metrics
-        self._search_metrics["total_results"] = len(combined)
-        if combined:
-            self._search_metrics["deduplication_rate"] = 1.0 - (len(deduped) / len(combined))
+        # Update metrics (request-scoped when provided)
+        if metrics is not None:
+            metrics["total_results"] = len(combined)
+            if combined:
+                try:
+                    metrics["deduplication_rate"] = 1.0 - (len(deduped) / len(combined))
+                except Exception:
+                    metrics["deduplication_rate"] = 0.0
         # Report deduplication stats to UI
         try:
             if progress_callback and research_id:
@@ -2072,16 +2328,19 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         )
         ranked: List[SearchResult] = await strategy.filter_and_rank_results(early, search_ctx)
 
-        # 5) Credibility on top-N
+        # 5) Credibility on top-N (batched with concurrency)
         cred_summary = {"average_score": 0.0}
         creds: Dict[str, float] = {}
         user_cap = int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())
         topN = ranked[: min(max(20, user_cap), len(ranked))]
 
-        # Deduplicate credibility calls by domain
-        seen_domains = {}
+        # Deduplicate by domain, then fetch concurrently
+        unique_domains: List[str] = []
+        for r in topN:
+            d = getattr(r, "domain", "")
+            if d and d not in unique_domains:
+                unique_domains.append(d)
 
-        # Announce analysis phase with total for UI microbar/ETA
         if progress_callback and research_id:
             try:
                 await progress_callback.update_progress(
@@ -2090,55 +2349,49 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     message="Evaluating source credibility",
                     progress=55,
                     items_done=0,
-                    items_total=len(topN),
+                    items_total=len(unique_domains),
                 )
             except Exception:
                 pass
-        for idx, r in enumerate(topN):
-            dom = getattr(r, "domain", "")
-            if dom in seen_domains:
-                r.credibility_score = seen_domains[dom]
-                creds[dom] = seen_domains[dom]
-                continue
-            try:
-                score, _, _ = await self.get_source_credibility_safe(dom, paradigm_code)
-                r.credibility_score = score
-                seen_domains[dom] = score
-                creds[dom] = score
-                # Stream credibility checks + analyzed counter to UI
-                if progress_callback and research_id:
-                    try:
-                        await progress_callback.report_credibility_check(
-                            research_id,
-                            getattr(r, "domain", ""),
-                            float(score or 0.0),
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        await progress_callback.report_source_analyzed(
-                            research_id,
-                            f"src-{idx}",
-                            {"credibility": float(score or 0.0)},
-                        )
-                    except Exception:
-                        pass
-                    # Occasionally push determinate analysis progress
-                    try:
-                        if (idx + 1) == len(topN) or ((idx + 1) % 2 == 0):
-                            pct = 55 + int(((idx + 1) / max(1, len(topN))) * 15)  # 55→70 during analysis
-                            await progress_callback.update_progress(
-                                research_id,
-                                phase="analysis",
-                                progress=pct,
-                                items_done=idx + 1,
-                                items_total=len(topN),
-                            )
 
-                    except Exception:
-                        pass
+        conc = 8
+        try:
+            conc = int(os.getenv("CREDIBILITY_CONCURRENCY", "8") or 8)
+        except Exception:
+            pass
+        semc = asyncio.Semaphore(max(1, conc))
+
+        async def _fetch_dom(dom: str) -> Tuple[str, float]:
+            async with semc:
+                try:
+                    score, _, _ = await self.get_source_credibility_safe(dom, paradigm_code)
+                    return dom, float(score)
+                except Exception:
+                    return dom, 0.5
+
+        domain_scores: Dict[str, float] = {}
+        for idx, (dom, score) in enumerate(await asyncio.gather(*[_fetch_dom(d) for d in unique_domains])):
+            domain_scores[dom] = score
+            try:
+                if progress_callback and research_id:
+                    pct = 55 + int(((idx + 1) / max(1, len(unique_domains))) * 20)
+                    await progress_callback.update_progress(
+                        research_id,
+                        phase="analysis",
+                        progress=pct,
+                        items_done=idx + 1,
+                        items_total=len(unique_domains),
+                    )
             except Exception:
                 pass
+
+        # Assign scores to results (preserve mapping)
+        for r in topN:
+            dom = getattr(r, "domain", "")
+            sc = domain_scores.get(dom, None)
+            if sc is not None:
+                r.credibility_score = sc
+                creds[dom] = sc
 
         if creds:
             try:
@@ -2156,8 +2409,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             if api:
                 apis.add(api)
         if apis:
-            # Normalize to list for type stability (search_metrics is serialized later)
-            self._search_metrics["apis_used"] = list(apis)
+            # Normalize to list for type stability (request‑scoped when provided)
+            if metrics is not None:
+                metrics["apis_used"] = list(apis)
 
         meta = {
             "processing_time": None,  # caller fills
@@ -2188,6 +2442,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         check_cancelled: Optional[Any] = None,
         progress_callback: Optional[Any] = None,
         research_id: Optional[str] = None,
+        *,
+        metrics: Optional[SearchMetrics] = None,
     ) -> List[SearchResult]:
         """
         Unified single-search with retries/backoff and per-attempt timeout.
@@ -2199,17 +2455,25 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "CRITICAL: Search Manager not initialized - Research pipeline cannot proceed. "
                 "This typically means required API keys are missing. "
                 "Please ensure at least one of the following is configured: "
-                "BRAVE_API_KEY, GOOGLE_API_KEY + GOOGLE_SEARCH_ENGINE_ID, "
+                "BRAVE_SEARCH_API_KEY, GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX, "
                 "or academic search providers. "
                 f"Research ID: {research_id or 'N/A'}, Query: '{query[:100]}...'"
             )
             logger.critical(error_msg)
             raise RuntimeError(error_msg)
 
-        # Metric: count intended API invocation
-        api_counts = self._search_metrics.get("api_call_counts", {})
-        api_counts[api] = int(api_counts.get(api, 0)) + 1
-        self._search_metrics["api_call_counts"] = api_counts
+        # Request-scoped metrics only (avoid shared-state mutation)
+        if metrics is not None:
+            mcounts = dict(metrics.get("api_call_counts", {}))
+            try:
+                if api == "aggregate" and self.search_manager is not None:
+                    for name in getattr(self.search_manager, "apis", {}).keys():
+                        mcounts[name] = int(mcounts.get(name, 0)) + 1
+                else:
+                    mcounts[api] = int(mcounts.get(api, 0)) + 1
+            except Exception:
+                mcounts[api] = int(mcounts.get(api, 0)) + 1
+            metrics["api_call_counts"] = mcounts
 
         attempt = 0
         delay = self.retry_policy.base_delay_sec
@@ -2232,21 +2496,35 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     results = []
                 break  # success
             except asyncio.TimeoutError:
-                self._search_metrics["task_timeouts"] = int(self._search_metrics.get("task_timeouts", 0)) + 1
+                if metrics is not None:
+                    metrics["task_timeouts"] = int(metrics.get("task_timeouts", 0)) + 1
                 if attempt < self.retry_policy.max_attempts:
-                    self._search_metrics["retries_attempted"] = int(self._search_metrics.get("retries_attempted", 0)) + 1
+                    if metrics is not None:
+                        metrics["retries_attempted"] = int(metrics.get("retries_attempted", 0)) + 1
                     await asyncio.sleep(min(delay, self.retry_policy.max_delay_sec))
                     delay = min(delay * 2.0, self.retry_policy.max_delay_sec)
                     continue
                 else:
                     logger.error("Search task timeout api=%s q='%s'", api, query[:120])
+            except asyncio.CancelledError:
+                # Preserve cooperative cancellation semantics
+                raise
             except Exception as e:
-                # Track exceptions by api
-                ex_map = self._search_metrics.get("exceptions_by_api", {})
-                ex_map[api] = int(ex_map.get(api, 0)) + 1
-                self._search_metrics["exceptions_by_api"] = ex_map
+                # Track exceptions by api (request-scoped)
+                if metrics is not None:
+                    mex = dict(metrics.get("exceptions_by_api", {}))
+                    try:
+                        if api == "aggregate" and self.search_manager is not None:
+                            for name in getattr(self.search_manager, "apis", {}).keys():
+                                mex[name] = int(mex.get(name, 0)) + 1
+                        else:
+                            mex[api] = int(mex.get(api, 0)) + 1
+                    except Exception:
+                        mex[api] = int(mex.get(api, 0)) + 1
+                    metrics["exceptions_by_api"] = mex
                 if attempt < self.retry_policy.max_attempts:
-                    self._search_metrics["retries_attempted"] = int(self._search_metrics.get("retries_attempted", 0)) + 1
+                    if metrics is not None:
+                        metrics["retries_attempted"] = int(metrics.get("retries_attempted", 0)) + 1
                     await asyncio.sleep(min(delay, self.retry_policy.max_delay_sec))
                     delay = min(delay * 2.0, self.retry_policy.max_delay_sec)
                     continue
@@ -2421,6 +2699,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "credibility_score": 0.9,
                 "origin_query": getattr(context_engineered, "original_query", ""),
                 "search_api": "deep_research",
+                "source_api": "deep_research",
+                "source": "deep_research",
                 "metadata": {}
             })
 

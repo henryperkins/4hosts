@@ -8,8 +8,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Set
 from collections import defaultdict
+import os
 
-from fastapi import WebSocket, WebSocketDisconnect, Header, Query, HTTPException
+from fastapi import WebSocket
+from fastapi import Header
+from fastapi import HTTPException
 from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 
@@ -31,6 +34,22 @@ ALLOWED_ORIGINS = [
     "https://www.fourhosts.com",
     "https://app.fourhosts.com",
 ]
+
+# Dynamically extend allowed origins via env (comma-separated) to avoid
+# code edits per host/IP.
+_extra = [
+    o.strip() for o in os.getenv(
+        "ADDITIONAL_ALLOWED_ORIGINS", ""
+    ).split(",") if o.strip()
+]
+if _extra:
+    seen = set()
+    merged = []
+    for o in ALLOWED_ORIGINS + _extra:  # ALLOWED_ORIGINS defined earlier
+        if o not in seen:
+            merged.append(o)
+            seen.add(o)
+    ALLOWED_ORIGINS = merged
 
 
 class WebSocketRateLimiter:
@@ -54,7 +73,10 @@ class WebSocketRateLimiter:
         current_connections = len(self.user_connections[user_id])
         if current_connections >= max_connections:
             logger.warning(
-                f"User {user_id} exceeded max WebSocket connections: {current_connections}/{max_connections}"
+                "User %s exceeded max WebSocket connections: %s/%s",
+                user_id,
+                current_connections,
+                max_connections,
             )
             return False
 
@@ -90,7 +112,9 @@ class WebSocketRateLimiter:
 
         current_subscriptions = self.connection_subscriptions[connection_id]
         if current_subscriptions >= max_subscriptions:
-            logger.warning(f"Connection {connection_id} exceeded subscription limit")
+            logger.warning(
+                "Connection %s exceeded subscription limit", connection_id
+            )
             return False
 
         self.connection_subscriptions[connection_id] += 1
@@ -104,6 +128,18 @@ class WebSocketRateLimiter:
 
         if connection_id in self.connection_subscriptions:
             del self.connection_subscriptions[connection_id]
+
+
+# Helper to safely obtain limits regardless of enum origin mismatch
+def _get_limits(role):  # type: ignore[no-untyped-def]
+    try:
+        return WS_RATE_LIMITS[role]  # type: ignore[index]
+    except Exception:  # noqa: BLE001
+        name = getattr(role, "name", None)
+        if name and name in WS_RATE_LIMITS:  # type: ignore[operator]
+            return WS_RATE_LIMITS[name]  # type: ignore[index]
+        # Fallback: first value
+        return list(WS_RATE_LIMITS.values())[0]
 
 
 # Global rate limiter instance
@@ -136,7 +172,8 @@ async def authenticate_websocket(
             )
             if not allowed:
                 logger.warning(
-                    f"WebSocket connection rejected from unauthorized origin: {origin}"
+                    "WebSocket connection rejected from unauthorized origin: %s",
+                    origin,
                 )
                 await websocket.close(code=1008, reason="Unauthorized origin")
                 return None
@@ -153,7 +190,8 @@ async def authenticate_websocket(
         if scheme.lower() == "bearer":
             token = credentials
 
-    # Try Sec-WebSocket-Protocol header (for browsers that don't support custom headers)
+    # Try Sec-WebSocket-Protocol header (for browsers that don't support
+    # custom headers)
     if not token and sec_websocket_protocol:
         # Format: "access_token, <actual_token>"
         protocols = sec_websocket_protocol.split(",")
@@ -166,7 +204,10 @@ async def authenticate_websocket(
     # Fallback: try to read JWT from cookies (set by /auth/login)
     if not token:
         try:
-            cookie_header = websocket.headers.get("cookie") or websocket.headers.get("Cookie")
+            cookie_header = (
+                websocket.headers.get("cookie")
+                or websocket.headers.get("Cookie")
+            )
             if cookie_header:
                 # Minimal cookie parsing to avoid extra deps
                 cookies = {}
@@ -180,7 +221,6 @@ async def authenticate_websocket(
         except Exception:
             token = None
 
-
     if not token:
         await websocket.close(code=1008, reason="Missing authentication token")
         return None
@@ -189,14 +229,21 @@ async def authenticate_websocket(
         # Decode and validate token
         payload = await decode_token(token)
 
-        # Create TokenData
+        # Token payload validation (avoid None fields)
+        required = ["user_id", "email", "exp", "iat", "jti"]
+        if not all(k in payload and payload[k] for k in required):  # type: ignore[index]
+            raise HTTPException(status_code=400, detail="Invalid token payload")
         user_data = TokenData(
-            user_id=payload.get("user_id"),
-            email=payload.get("email"),
-            role=UserRole(payload.get("role")),
-            exp=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc),
-            iat=datetime.fromtimestamp(payload.get("iat"), tz=timezone.utc),
-            jti=payload.get("jti"),
+            user_id=str(payload.get("user_id")),
+            email=str(payload.get("email")),
+            role=payload.get("role", UserRole.FREE),  # type: ignore[index]
+            exp=datetime.fromtimestamp(
+                float(payload.get("exp")), tz=timezone.utc
+            ),
+            iat=datetime.fromtimestamp(
+                float(payload.get("iat")), tz=timezone.utc
+            ),
+            jti=str(payload.get("jti")),
         )
 
         return user_data
@@ -214,10 +261,17 @@ async def verify_websocket_rate_limit(
     user_id: str, connection_id: str, role: UserRole, websocket: WebSocket
 ) -> bool:
     """Verify WebSocket connection is within rate limits"""
-    if not await ws_rate_limiter.check_connection_limit(user_id, connection_id, role):
+    limits = _get_limits(role)
+    if not await ws_rate_limiter.check_connection_limit(
+        user_id, connection_id, role
+    ):
+        max_conn = limits.get("connections_per_user")
         await websocket.close(
-            code=1008,
-            reason=f"Connection limit exceeded. Maximum {WS_RATE_LIMITS[role]['connections_per_user']} connections allowed.",
+            code=4001,
+            reason=(
+                "Connection limit exceeded. Maximum "
+                f"{max_conn} connections allowed."
+            ),
         )
         return False
     return True
@@ -232,7 +286,15 @@ async def check_websocket_subscription_limit(
     connection_id: str, role: UserRole
 ) -> bool:
     """Check if connection can add more subscriptions"""
-    return await ws_rate_limiter.check_subscription_limit(connection_id, role)
+    limits = _get_limits(role)
+    if not await ws_rate_limiter.check_subscription_limit(
+        user_id, connection_id, role
+    ):
+        logger.warning(
+            "Subscription limit exceeded for user=%s conn=%s", user_id, connection_id
+        )
+        return False
+    return True
 
 
 async def cleanup_websocket_connection(user_id: str, connection_id: str):
@@ -271,7 +333,9 @@ async def secure_websocket_endpoint(
     if not user_data:
         return
 
-    connection_id = f"ws_{user_data.user_id}_{datetime.now(timezone.utc).timestamp()}"
+    connection_id = (
+        f"ws_{user_data.user_id}_{datetime.now(timezone.utc).timestamp()}"
+    )
 
     # Check rate limits
     if not await verify_websocket_rate_limit(
@@ -287,7 +351,10 @@ async def secure_websocket_endpoint(
             await websocket.accept()
 
         logger.info(
-            f"WebSocket connected: user={user_data.user_id}, ip={client_ip}, origin={origin}"
+            "WebSocket connected: user=%s, ip=%s, origin=%s",
+            user_data.user_id,
+            client_ip,
+            origin,
         )
 
         # Return connection info for further processing

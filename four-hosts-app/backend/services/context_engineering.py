@@ -2,19 +2,21 @@
 Four Hosts Context Engineering Pipeline
 W-S-C-I (Write-Select-Compress-Isolate) implementation
 """
+# flake8: noqa: E501
 
-import asyncio
-import json
 import logging
+import os
 from typing import Dict, List, Any, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 import re
 from abc import ABC, abstractmethod
 
 # Import from classification engine
-from .classification_engine import HostParadigm, ClassificationResult, QueryFeatures
+from .classification_engine import (
+    HostParadigm,
+    ClassificationResult,
+)
 from . import paradigm_search
 from services.search_apis import QueryOptimizer  # type: ignore
 from services.llm_client import llm_client  # type: ignore
@@ -352,10 +354,10 @@ class RewriteLayer(ContextLayer):
                 )
             txt = await llm_client.generate_completion(prompt, paradigm=paradigm, temperature=0.3, max_tokens=160)
             if isinstance(txt, str) and txt.strip():
-                lines = [l.strip("- ") for l in str(txt).splitlines() if l.strip()]
-                for l in lines:
-                    m = re.match(r"^(?:\d+\.|\(\d+\))\s*(.*)$", l)
-                    rewrites.append(m.group(1) if m else l)
+                lines_out = [s.strip("- ") for s in str(txt).splitlines() if s.strip()]
+                for s in lines_out:
+                    m = re.match(r"^(?:\d+\.|\(\d+\))\s*(.*)$", s)
+                    rewrites.append(m.group(1) if m else s)
                 rewrites = [r for r in rewrites if len(r) >= 6][:3]
                 if rewrites:
                     method = "llm"

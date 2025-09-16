@@ -9,15 +9,11 @@ import re
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
-from collections import Counter, defaultdict
+# (no collections needed)
 
 import os
 from models.context_models import (
-    ClassificationResultSchema,
-    ContextEngineeredQuerySchema,
-    UserContextSchema,
     HostParadigm,
-    SearchResultSchema,
 )
 from models.synthesis_models import SynthesisContext
 from models.paradigms import PARADIGM_KEYWORDS as CANON_PARADIGM_KEYWORDS
@@ -279,7 +275,7 @@ class BaseAnswerGenerator:
         except Exception:
             pass
 
-        from datetime import datetime
+        from datetime import datetime, timezone
         def _recency_score(v) -> float:
             try:
                 dt = v
@@ -287,17 +283,32 @@ class BaseAnswerGenerator:
                     dt = datetime.fromisoformat(v.replace('Z', '+00:00'))
                 if not dt:
                     return 0.0
+                # Normalize to tz-aware before subtracting
+                if isinstance(dt, datetime) and dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
                 # 0..1 over ~5 years
-                age_days = max(0.0, (datetime.utcnow() - dt).days)
+                age_days = max(0.0, (now - dt).days)
                 return max(0.0, 1.0 - min(1.0, age_days / (365.0 * 5)))
             except Exception:
                 return 0.0
+
+        from urllib.parse import urlparse
+        def _domain_of(row: Dict[str, Any]) -> str:
+            dom = (row.get("domain") or "").strip().lower()
+            if dom:
+                return dom
+            u2 = (row.get("url") or "").strip()
+            try:
+                return urlparse(u2).netloc.lower()
+            except Exception:
+                return ""
 
         scored: List[Tuple[float, Dict[str, Any]]] = []
         for r in results:
             cred = float(r.get("credibility_score", 0.0) or 0.0)
             u = (r.get("url") or "").strip()
-            d = (r.get("domain") or r.get("source") or "").lower()
+            d = _domain_of(r)
             evid = ev_counts_by_url.get(u, 0) or ev_counts_by_domain.get(d, 0)
             evid_norm = min(1.0, evid / 3.0)  # 0..1 for 0..3+ quotes
             rec = _recency_score(r.get("published_date"))
@@ -307,7 +318,7 @@ class BaseAnswerGenerator:
         picked: List[Dict[str, Any]] = []
         seen: set[str] = set()
         for _score, r in scored:
-            dom = (r.get("domain") or r.get("source") or "").lower()
+            dom = _domain_of(r)
             if dom in seen and len(picked) < k // 2:
                 continue
             picked.append(r)
@@ -322,7 +333,8 @@ class BaseAnswerGenerator:
             eb = getattr(context, "evidence_bundle", None)
             if eb is not None and getattr(eb, "quotes", None):
                 quotes = list(getattr(eb, "quotes", []) or [])[:max_quotes]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"_format_evidence_block: evidence access failed: {e}")
             quotes = []
         def _qval(q, name, default=""):
             try:
@@ -363,7 +375,8 @@ class BaseAnswerGenerator:
             eb = getattr(context, "evidence_bundle", None)
             if eb is not None and getattr(eb, "quotes", None):
                 quotes = list(getattr(eb, "quotes", []) or [])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"_safe_evidence_block: evidence access failed: {e}")
             quotes = []
         if not quotes:
             return "(no evidence quotes)"
@@ -466,7 +479,14 @@ class BaseAnswerGenerator:
             md = r.get("metadata", {}) or {}
             ext = (md.get("extracted_meta") or {}) if isinstance(md, dict) else {}
             title = (r.get("title") or ext.get("title") or "").strip()
-            domain = (r.get("domain") or r.get("source") or "").strip()
+            # Prefer explicit domain, else derive from URL; avoid provider name
+            domain = (r.get("domain") or "").strip()
+            if not domain:
+                try:
+                    from urllib.parse import urlparse as _up
+                    domain = _up((r.get("url") or "").strip()).netloc
+                except Exception:
+                    domain = ""
             date = (r.get("published_date") or ext.get("published_date") or "")
             date_s = _fmt_date(date)
             authors = ext.get("authors") if isinstance(ext, dict) else None
@@ -495,7 +515,8 @@ class BaseAnswerGenerator:
         try:
             eb = getattr(context, "evidence_bundle", None)
             documents = list(getattr(eb, "documents", []) or []) if eb is not None else []
-        except Exception:
+        except Exception as e:
+            logger.debug(f"_source_summaries_block: documents access failed: {e}")
             documents = []
 
         def _dval(doc: Any, name: str, default: Any = "") -> Any:
@@ -639,6 +660,7 @@ class BaseAnswerGenerator:
         def _tok(t: str) -> set:
             import re
             return set([w for w in re.findall(r"[A-Za-z0-9]+", (t or "").lower()) if len(w) > 2])
+        from urllib.parse import urlparse as _up
         results_for_scan = list(context.search_results or [])
         for theme in focus:
             tt = _tok(theme)
@@ -656,7 +678,12 @@ class BaseAnswerGenerator:
             covered = "yes" if best_score >= 0.5 else ("partial" if best_score >= 0.25 else "no")
             dom = ""
             if isinstance(best, dict) and best:
-                dom = (best.get("domain") or best.get("source") or "")  # type: ignore[assignment]
+                dom = (best.get("domain") or "")
+                if not dom:
+                    try:
+                        dom = _up((best.get("url") or "").strip()).netloc
+                    except Exception:
+                        dom = ""
             rows.append(f"{theme} | {covered} | {dom}")
         return "\n".join(rows)
 
@@ -770,7 +797,16 @@ class BaseAnswerGenerator:
     def _compose_topline_recommendation(self, context: SynthesisContext) -> str:
         """Produce a concise (2–3 sentences) recommendation block without extra LLM calls."""
         results = list(context.search_results or [])
-        domains = { (r.get("domain") or r.get("source") or "").lower() for r in results }
+        from urllib.parse import urlparse as _up
+        def _dom(row: Dict[str, Any]) -> str:
+            d = (row.get("domain") or "").lower()
+            if d:
+                return d
+            try:
+                return _up((row.get("url") or "").strip()).netloc.lower()
+            except Exception:
+                return ""
+        domains = { _dom(r) for r in results }
         n = len(results)
         d = len([x for x in domains if x])
         if n >= 12 and d >= 6:
