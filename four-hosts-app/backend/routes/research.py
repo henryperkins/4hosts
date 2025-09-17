@@ -138,7 +138,59 @@ async def execute_real_research(
         if progress_tracker:
             await progress_tracker.update_progress(research_id, "classification", 5)
 
-        cls = await classification_engine.classify_query(research.query)
+        # Respect per-request AI classification toggle (LLM on/off)
+        _prev_use_llm = None
+        try:
+            _prev_use_llm = getattr(classification_engine.classifier, "use_llm", None)
+            desired = bool(getattr(getattr(research, "options", object()), "enable_ai_classification", _prev_use_llm if _prev_use_llm is not None else True))
+            if _prev_use_llm is not None:
+                classification_engine.classifier.use_llm = desired  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            cls = await classification_engine.classify_query(research.query)
+        finally:
+            try:
+                if _prev_use_llm is not None:
+                    classification_engine.classifier.use_llm = _prev_use_llm  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        # Reinforce stored classification (from submission) to avoid divergence
+        try:
+            stored = await research_store.get(research_id)
+            pc = (stored or {}).get("paradigm_classification") if stored else None
+            if isinstance(pc, dict):
+                primary_ui = ((pc.get("primary") or {}).get("paradigm"))
+                if primary_ui:
+                    from models.base import HOST_TO_MAIN_PARADIGM as _HTM
+                    host_override = None
+                    for hp, ui in _HTM.items():
+                        if str(ui.value) == str(primary_ui):
+                            host_override = hp
+                            break
+                    if host_override and host_override != getattr(cls, "primary_paradigm", None):
+                        prev_primary = getattr(cls, "primary_paradigm", None)
+                        cls.primary_paradigm = host_override  # type: ignore[attr-defined]
+                        try:
+                            cls.secondary_paradigm = prev_primary  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                        try:
+                            dist = getattr(cls, "distribution", {}) or {}
+                            if dist:
+                                for p in list(dist.keys()):
+                                    dist[p] = 0.025
+                                dist[host_override] = 0.9
+                                cls.distribution = dist  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                        try:
+                            cls.confidence = max(float(getattr(cls, "confidence", 0.0) or 0.0), 0.9)  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
         # Respect explicit paradigm override from request/options if present
         try:
@@ -269,14 +321,44 @@ async def execute_real_research(
             await progress_tracker.update_progress(research_id, "search", 25)
 
         class _UserCtxShim:
-            def __init__(self, role: str, source_limit: int):
+            def __init__(self, role: str, source_limit: int, language: str, region: str, enable_real_search: bool, depth: str, query_concurrency: int):
                 self.role = role
                 self.source_limit = source_limit
+                self.language = language
+                self.region = region
+                self.enable_real_search = enable_real_search
+                self.depth = depth
+                self.query_concurrency = query_concurrency
 
         # Resolve user role string (e.g., 'PRO') for orchestrator context
         user_role_name = user_role.name if isinstance(user_role, UserRole) else str(user_role).upper()
         max_sources = int(research.options.max_sources)
-        user_ctx = _UserCtxShim(user_role_name, max_sources)
+        depth_name = research.options.depth.value if hasattr(research, 'options') else 'standard'
+        # Depth-aware tuning of sources and concurrency
+        if depth_name == 'quick':
+            max_sources = max(10, int(max_sources * 0.5))
+            query_concurrency = 2
+        elif depth_name == 'deep':
+            max_sources = min(200, int(max_sources * 2))
+            query_concurrency = 6
+        else:
+            query_concurrency = 0  # use default from env
+
+        user_ctx = _UserCtxShim(
+            user_role_name,
+            max_sources,
+            getattr(research.options, "language", "en"),
+            getattr(research.options, "region", "us"),
+            bool(getattr(research.options, "enable_real_search", True)),
+            depth_name,
+            query_concurrency,
+        )
+
+        # If real search is disabled and we are not already in deep_research, prefer deep path when allowed
+        enable_deep = (research.options.depth == ResearchDepth.DEEP_RESEARCH)
+        if not getattr(research.options, "enable_real_search", True) and not enable_deep:
+            if (isinstance(user_role, UserRole) and user_role in [UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]) or (str(user_role_name).upper() in {"PRO", "ENTERPRISE", "ADMIN"}):
+                enable_deep = True
 
         orch_resp = await research_orchestrator.execute_research(
             classification=cls,  # type: ignore[arg-type]
@@ -284,7 +366,7 @@ async def execute_real_research(
             user_context=user_ctx,
             progress_callback=progress_tracker,
             research_id=research_id,
-            enable_deep_research=(research.options.depth == ResearchDepth.DEEP_RESEARCH),
+            enable_deep_research=enable_deep,
             deep_research_mode=None,
             synthesize_answer=True,
             answer_options={"research_id": research_id, "max_length": SYNTHESIS_MAX_LENGTH_DEFAULT},
@@ -785,6 +867,23 @@ async def execute_real_research(
             await progress_tracker.update_progress(research_id, "complete", 98)
             await progress_tracker.complete_research(research_id, {"summary": answer_payload.get("summary", "")[:200]})
 
+        # Trigger webhook for completion (if available)
+        try:
+            if webhook_manager is not None:
+                await webhook_manager.trigger_event(
+                    WebhookEvent.RESEARCH_COMPLETED,
+                    {
+                        "research_id": research_id,
+                        "user_id": user_id,
+                        "query": research.query,
+                        "paradigm": paradigm_analysis.get("primary", {}).get("paradigm", "unknown"),
+                        "sources_analyzed": metadata.get("total_sources_analyzed"),
+                        "processing_time_seconds": metadata.get("processing_time_seconds"),
+                    },
+                )
+        except Exception:
+            pass
+
     except Exception as e:
         # Log full traceback for easier debugging and include exception type
         logger.exception("execute_real_research failed for %s: %s", research_id, str(e))
@@ -796,6 +895,21 @@ async def execute_real_research(
         )
         if progress_tracker:
             await progress_tracker.fail_research(research_id, str(e))
+
+        # Trigger webhook for failure
+        try:
+            if webhook_manager is not None:
+                await webhook_manager.trigger_event(
+                    WebhookEvent.RESEARCH_FAILED,
+                    {
+                        "research_id": research_id,
+                        "user_id": user_id,
+                        "query": getattr(research, "query", ""),
+                        "error": str(e),
+                    },
+                )
+        except Exception:
+            pass
     finally:
         # Always decrement concurrent counter when using limiter
         if limiter is not None and limiter_identifier:
@@ -841,9 +955,25 @@ async def submit_research(
 
     try:
         # Classify the query using the new classification engine
-        classification_result = await classification_engine.classify_query(
-            research.query
-        )
+        # Honor per-request AI classification toggle (LLM on/off)
+        _prev_use_llm = None
+        try:
+            _prev_use_llm = getattr(classification_engine.classifier, "use_llm", None)
+            desired = bool(getattr(getattr(research, "options", object()), "enable_ai_classification", _prev_use_llm if _prev_use_llm is not None else True))
+            if _prev_use_llm is not None:
+                classification_engine.classifier.use_llm = desired  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            classification_result = await classification_engine.classify_query(
+                research.query
+            )
+        finally:
+            try:
+                if _prev_use_llm is not None:
+                    classification_engine.classifier.use_llm = _prev_use_llm  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
         # Convert to the old format for compatibility
         classification = ParadigmClassification(
@@ -953,9 +1083,10 @@ async def get_research_status(
     if not research:
         raise HTTPException(status_code=404, detail="Research not found")
 
-    # Verify ownership
+    # Verify ownership (use canonical user_id; fall back to id for compatibility)
+    requester_id = str(getattr(current_user, "user_id", getattr(current_user, "id", None)))
     if (
-        research["user_id"] != str(current_user.id)
+        research["user_id"] != requester_id
         and current_user.role != UserRole.ADMIN
     ):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1002,9 +1133,10 @@ async def get_research_results(
     if not research:
         raise HTTPException(status_code=404, detail="Research not found")
 
-    # Verify ownership
+    # Verify ownership (use canonical user_id; fall back to id for compatibility)
+    requester_id = str(getattr(current_user, "user_id", getattr(current_user, "id", None)))
     if (
-        research["user_id"] != str(current_user.id)
+        research["user_id"] != requester_id
         and current_user.role != UserRole.ADMIN
     ):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1347,9 +1479,10 @@ async def cancel_research(
     if not research:
         raise HTTPException(status_code=404, detail="Research not found")
 
-    # Verify ownership
+    # Verify ownership (use canonical user_id; fall back to id for compatibility)
+    requester_id = str(getattr(current_user, "user_id", getattr(current_user, "id", None)))
     if (
-        research["user_id"] != str(current_user.id)
+        research["user_id"] != requester_id
         and current_user.role != UserRole.ADMIN
     ):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1404,6 +1537,20 @@ async def cancel_research(
                 )
             except Exception:
                 pass
+
+        # Trigger webhook for cancellation
+        try:
+            if webhook_manager is not None:
+                await webhook_manager.trigger_event(
+                    WebhookEvent.RESEARCH_CANCELLED,
+                    {
+                        "research_id": research_id,
+                        "user_id": str(current_user.user_id),
+                        "cancelled_at": datetime.utcnow().isoformat(),
+                    },
+                )
+        except Exception:
+            pass
 
         return {
             "research_id": research_id,

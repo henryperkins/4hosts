@@ -186,6 +186,13 @@ async def lifespan(app: FastAPI):
         app.state.auth_service = auth_service
         app.state.rate_limiter = RateLimiter()
         app.state.webhook_manager = WebhookManager()
+        # Expose the webhook manager to route modules that keep a module-level
+        # reference for convenience (avoids passing the app everywhere)
+        try:
+            from routes import research as _research_routes  # type: ignore
+            _research_routes.webhook_manager = app.state.webhook_manager
+        except Exception as e:
+            logger.warning("Failed to wire webhook_manager into routes.research: %s", e)
         app.state.export_service = ExportService()
         logger.info("✓ Production services initialized")
 

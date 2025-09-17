@@ -815,10 +815,16 @@ class UnifiedResearchOrchestrator:
             return default
 
     async def initialize(self):
-        """Initialize the orchestrator"""
-        self.search_manager = create_search_manager()
-        # SearchAPIManager uses context manager protocol
-        await self.search_manager.__aenter__()
+        """Initialize the orchestrator. If a search_manager is already
+        provided (e.g., injected by the application), reuse it instead of
+        creating a new one to avoid duplicate provider sessions.
+        """
+        if getattr(self, "search_manager", None) and getattr(getattr(self, "search_manager"), "apis", None):
+            logger.info("Reusing existing SearchAPIManager for orchestrator")
+        else:
+            self.search_manager = create_search_manager()
+            # SearchAPIManager uses context manager protocol
+            await self.search_manager.__aenter__()
         # Fail fast on empty provider set to avoid silent no-op searches
         try:
             if not getattr(self.search_manager, "apis", {}):
@@ -2078,15 +2084,35 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         max_results = int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())
         paradigm_code = normalize_to_internal_code(primary_paradigm)
         min_rel = bernard_min_relevance() if paradigm_code == "bernard" else 0.25
+        # Depth-aware tweaks: allow slightly lower threshold for DEEP to broaden recall
+        try:
+            depth = str(getattr(user_context, "depth", "")).lower()
+            if depth == "deep":
+                min_rel = max(0.05, min_rel - 0.05)
+        except Exception:
+            pass
 
         # Run per-query searches concurrently with a cap to avoid API bursts
-        concurrency = int(os.getenv("SEARCH_QUERY_CONCURRENCY", "4"))
+        # Allow per-request concurrency override via user_context
+        try:
+            concurrency = int(getattr(user_context, "query_concurrency", 0) or 0)
+        except Exception:
+            concurrency = 0
+        if concurrency <= 0:
+            concurrency = int(os.getenv("SEARCH_QUERY_CONCURRENCY", "4"))
         sem = asyncio.Semaphore(max(1, concurrency))
 
         async def _run_query(idx: int, q: str) -> Tuple[str, List[SearchResult]]:
             if check_cancelled and await check_cancelled():
                 logger.info("Research cancelled before executing query #%d", idx + 1)
                 return q, []
+            # Honor per-request flag to disable real web search (frontend/user option)
+            try:
+                if hasattr(user_context, "enable_real_search") and not bool(getattr(user_context, "enable_real_search")):
+                    logger.info("Real web search disabled by user context; skipping query #%d", idx + 1)
+                    return q, []
+            except Exception:
+                pass
             # Progress (started)
             if progress_callback and research_id:
                 try:
@@ -2107,10 +2133,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 except Exception:
                     pass
 
+            # Build SearchConfig using user context (language/region) when provided
+            try:
+                lang = str(getattr(user_context, "language", "en") or "en")
+            except Exception:
+                lang = "en"
+            try:
+                reg = str(getattr(user_context, "region", "us") or "us")
+            except Exception:
+                reg = "us"
+
             config = SearchConfig(
                 max_results=max_results,
-                language="en",
-                region="us",
+                language=lang,
+                region=reg,
                 min_relevance_score=min_rel,
             )
 
@@ -2627,6 +2663,27 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             background=True,
             include_paradigm_context=True,
         )
+
+        # Propagate request-level options (user_location, search_context_size) when available
+        try:
+            if research_id:
+                rec = await self.research_store.get(research_id)
+                opts = (rec or {}).get("options") or {}
+                # user_location: pass through as-is if dict
+                ul = opts.get("user_location")
+                if isinstance(ul, dict):
+                    deep_config.user_location = ul
+                # search_context_size: map small/medium/large -> LOW/MEDIUM/HIGH
+                scs = str(opts.get("search_context_size") or "").lower().strip()
+                from services.openai_responses_client import SearchContextSize as _SCS
+                if scs in {"small", "low"}:
+                    deep_config.search_context_size = _SCS.LOW
+                elif scs in {"large", "high"}:
+                    deep_config.search_context_size = _SCS.HIGH
+                elif scs in {"medium"}:
+                    deep_config.search_context_size = _SCS.MEDIUM
+        except Exception:
+            pass
 
         # Apply experiment override from research record when available
         try:
