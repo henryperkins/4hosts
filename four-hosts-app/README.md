@@ -67,6 +67,25 @@ npm run dev
 
 The application will be available at `http://localhost:5173`
 
+## Enable Exa (Optional)
+
+- Add your Exa API key and toggles:
+  - Edit `four-hosts-app/backend/.env` (or copy from `.env.example`) and set:
+    ```
+    EXA_API_KEY=your-key
+    SEARCH_DISABLE_EXA=0
+    EXA_INCLUDE_TEXT=0
+    EXA_SEARCH_AS_PRIMARY=0
+    EXA_BASE_URL=https://api.exa.ai
+    EXA_TIMEOUT_SEC=15
+    ```
+  - The top-level `start-app.sh` seeds these keys in `backend/.env` if missing.
+  - Docker users: `four-hosts-app/docker-compose.yml` injects the same `EXA_*` env vars into the backend container.
+
+- Notes:
+  - Set `EXA_SEARCH_AS_PRIMARY=1` to make Exa the primary provider; otherwise it is added as a fallback.
+  - `EXA_INCLUDE_TEXT=1` returns page text directly from Exa (useful for faster credibility checks); it may increase payload size and cost.
+
 ### Docker Compose Deployment
 
 Use the bundled Docker setup when you want the full stack (PostgreSQL, Redis, backend, frontend) running with one command.

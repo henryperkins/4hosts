@@ -43,6 +43,29 @@ find_available_port() {
 
 echo "🚀  Starting Four Hosts stack..."
 
+# Seed backend/.env with EXA_* toggles if missing (dev convenience)
+ENV_FILE="$BACKEND_DIR/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "Creating $ENV_FILE with default development values..."
+  touch "$ENV_FILE"
+fi
+
+ensure_env() {
+  local key="$1"; shift
+  local default="$1"
+  if ! grep -qE "^${key}=" "$ENV_FILE"; then
+    echo "${key}=${default}" >> "$ENV_FILE"
+  fi
+}
+
+# Exa provider toggles (safe defaults)
+ensure_env EXA_API_KEY ""
+ensure_env SEARCH_DISABLE_EXA "0"
+ensure_env EXA_INCLUDE_TEXT "0"
+ensure_env EXA_SEARCH_AS_PRIMARY "0"
+ensure_env EXA_BASE_URL "https://api.exa.ai"
+ensure_env EXA_TIMEOUT_SEC "15"
+
 # Check for Docker containers that might conflict
 if docker ps --format '{{.Names}}' | grep -q '^fourhosts-'; then
     echo "⚠️  Found running Four Hosts Docker containers."

@@ -1067,7 +1067,7 @@ class SearchConfig:
     authority_whitelist: List[str] = field(default_factory=list)
     authority_blacklist: List[str] = field(default_factory=list)
     prefer_primary_sources: bool = True
-    min_relevance_score: float = 0.25
+    min_relevance_score: float = 0.15  # Lowered from 0.25 to be more inclusive
 
     # Brave-specific
     offset: int = 0
@@ -1351,41 +1351,83 @@ class ContentRelevanceFilter:
 
     def _term_frequency(self, text: str, terms: List[str]) -> float:
         if not terms or not text:
-            return 0.0
-        return sum(1 for t in terms if t in text) / len(terms)
+            return 0.1  # Give minimal score instead of 0
+        # More forgiving: count partial matches and give bonus for any match
+        matches = sum(1 for t in terms if t.lower() in text.lower())
+        if matches > 0:
+            # At least one term matched, give a base score + frequency bonus
+            return min(0.3 + (matches / len(terms)) * 0.7, 1.0)
+        return 0.1  # No matches still get minimal score
 
     def _title_relevance(self, title: str, terms: List[str]) -> float:
         if not terms or not title:
-            return 0.0
-        return sum(1 for t in terms if t in title) / len(terms)
+            return 0.1  # Give minimal score instead of 0
+        # More forgiving for title matches
+        matches = sum(1 for t in terms if t.lower() in title.lower())
+        if matches > 0:
+            # Title matches are valuable, give higher base score
+            return min(0.4 + (matches / len(terms)) * 0.6, 1.0)
+        return 0.1
 
     def _freshness(self, dt: Optional[datetime]) -> float:
         if not dt:
-            return 0.5
+            return 0.6  # Unknown date gets better default score
         age = (datetime.now(timezone.utc) - dt).days
         if age <= 7:
             return 1.0
         if age <= 30:
-            return 0.8
+            return 0.85
         if age <= 90:
-            return 0.6
+            return 0.7
         if age <= 365:
+            return 0.55
+        if age <= 730:  # 2 years
             return 0.4
-        return 0.2
+        return 0.3  # Even old content gets some score
 
     def score(self, res: SearchResult, query: str, key_terms: List[str], cfg: SearchConfig) -> float:
         text = (res.title or "").lower() + " " + (res.snippet or "").lower()
-        score = 0.35 * self._term_frequency(text, key_terms)
-        score += 0.25 * self._title_relevance((res.title or "").lower(), key_terms)
-        score += 0.10 * self._freshness(res.published_date)
-        score += 0.05  # metadata bonus plain
+
+        # More balanced scoring with higher base scores
+        score = 0.25 * self._term_frequency(text, key_terms)
+        score += 0.20 * self._title_relevance((res.title or "").lower(), key_terms)
+        score += 0.15 * self._freshness(res.published_date)
+        score += 0.15  # Base metadata bonus increased
+
+        # Bonus for having content
+        if res.snippet and len(res.snippet) > 50:
+            score += 0.1
+        if res.title and len(res.title) > 10:
+            score += 0.05
+
+        # Domain authority bonus for known good sources
+        if res.domain:
+            domain_lower = res.domain.lower()
+            if any(auth in domain_lower for auth in ['.edu', '.gov', 'wikipedia', 'nature.com', 'science.org']):
+                score += 0.1
+
         return min(1.0, score)
 
     def filter(self, results: List[SearchResult], query: str, cfg: SearchConfig) -> List[SearchResult]:
         k = self.qopt.get_key_terms(query)
         for r in results:
             r.relevance_score = self.score(r, query, k, cfg)
-        return [r for r in results if r.relevance_score >= cfg.min_relevance_score]
+
+        # Sort by relevance score
+        sorted_results = sorted(results, key=lambda r: r.relevance_score, reverse=True)
+
+        # Filter by threshold, but ensure we keep at least some results
+        filtered = [r for r in sorted_results if r.relevance_score >= cfg.min_relevance_score]
+
+        # Fallback: if we filtered out everything, keep top 10 results regardless of score
+        if not filtered and sorted_results:
+            logger.warning(f"All {len(sorted_results)} results below threshold {cfg.min_relevance_score}, keeping top 10")
+            filtered = sorted_results[:10]
+            # Mark these as below threshold for transparency
+            for r in filtered:
+                r.raw_data["below_relevance_threshold"] = True
+
+        return filtered
 
 
 # --------------------------------------------------------------------------- #
@@ -1530,6 +1572,7 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         stop=stop_after_attempt(3),
         wait=wait_exponential(min=2, max=10),
         retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
+        reraise=True,
     )
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
@@ -1597,6 +1640,96 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                 published_date=meta_dt,
                 raw_data=it,
             )
+            ensure_snippet_content(res)
+            results.append(res)
+        return self.rfilter.filter(results, query, cfg)
+
+
+# --------------------------------------------------------------------------- #
+#                               ExaSearchAPI                                   #
+# --------------------------------------------------------------------------- #
+
+class ExaSearchAPI(BaseSearchAPI):
+    """Exa.ai web search provider.
+
+    Implements BaseSearchAPI.search() using Exa REST API and the shared
+    resiliency/rate limiting stack in this module.
+    """
+
+    def __init__(self, api_key: str, base_url: str | None = None):
+        super().__init__(api_key, rate=60)
+        self.base = (base_url or os.getenv("EXA_BASE_URL") or "https://api.exa.ai").rstrip("/")
+        self._search_path = "/search"
+
+    @with_circuit_breaker("exa_search", failure_threshold=3, recovery_timeout=30)
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
+        reraise=True,
+    )
+    async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
+        await self.rate.wait()
+        q_limit = int(os.getenv("SEARCH_PROVIDER_Q_LIMIT", "400"))
+        payload: Dict[str, Any] = {
+            "query": _safe_truncate_query(self.qopt.optimize_query(query), q_limit),
+            "numResults": min(cfg.max_results, 10),
+        }
+
+        # Optional: include full text in results
+        if os.getenv("EXA_INCLUDE_TEXT", "0").lower() in {"1", "true", "yes"}:
+            payload["contents"] = {"text": True}
+
+        headers = {
+            "x-api-key": self.api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        timeout = aiohttp.ClientTimeout(total=float(os.getenv("EXA_TIMEOUT_SEC", "15")))
+
+        async with self._sess().post(f"{self.base}{self._search_path}", headers=headers, json=payload, timeout=timeout) as r:
+            if r.status == 429:
+                # Let manager apply cooldown via RateLimitedError bubbling
+                raise RateLimitedError()
+            if r.status >= 500:
+                # Trigger tenacity retry on server errors
+                raise aiohttp.ClientError(f"Exa {r.status}")
+            if r.status != 200:
+                return []
+            try:
+                data = await r.json()
+            except Exception:
+                # Unexpected body
+                return []
+
+        items = (data or {}).get("results", []) or []
+        results: List[SearchResult] = []
+        for it in items:
+            # Highlights list -> choose first for snippet, preserve all in raw_data
+            highlights: List[str] = it.get("highlights") or []
+            res = SearchResult(
+                title=it.get("title") or "",
+                url=it.get("url") or "",
+                snippet=(highlights[0] if highlights else ""),
+                source="exa",
+                published_date=safe_parse_date(it.get("publishedDate")) if isinstance(it.get("publishedDate"), str) else None,
+                author=(it.get("author") or None),
+                raw_data={
+                    "exa": {
+                        "id": it.get("id"),
+                        "score": it.get("score"),
+                        "highlights": highlights,
+                        "highlight_scores": it.get("highlightScores"),
+                        "image": it.get("image"),
+                        "favicon": it.get("favicon"),
+                    }
+                },
+            )
+            # Optional: include page text if returned
+            if os.getenv("EXA_INCLUDE_TEXT", "0").lower() in {"1", "true", "yes"}:
+                txt = it.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    res.content = txt[: int(os.getenv("SEARCH_HTML_MAX_CHARS", "250000"))]
             ensure_snippet_content(res)
             results.append(res)
         return self.rfilter.filter(results, query, cfg)
@@ -2396,6 +2529,13 @@ def create_search_manager() -> SearchAPIManager:
     g_cx = os.getenv("GOOGLE_CSE_CX")
     if g_key and g_cx and os.getenv("SEARCH_DISABLE_GOOGLE", "0") not in {"1", "true", "yes"}:
         mgr.add_api("google_cse", GoogleCustomSearchAPI(g_key, g_cx), is_fallback=True)
+
+    # Exa provider (configurable as primary or fallback)
+    exa_key = os.getenv("EXA_API_KEY")
+    if exa_key and os.getenv("SEARCH_DISABLE_EXA", "0").lower() not in {"1", "true", "yes"}:
+        exa_api = ExaSearchAPI(exa_key, base_url=os.getenv("EXA_BASE_URL"))
+        exa_primary = os.getenv("EXA_SEARCH_AS_PRIMARY", "0").lower() in {"1", "true", "yes"}
+        mgr.add_api("exa", exa_api, is_primary=exa_primary, is_fallback=(not exa_primary))
 
     # Academic/open providers
     if os.getenv("SEARCH_DISABLE_ARXIV", "0") not in {"1", "true", "yes"}:

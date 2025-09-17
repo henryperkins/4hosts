@@ -73,6 +73,8 @@ export interface ResearchResult {
     paradigms_used?: Paradigm[]
     deep_research_enabled?: boolean
     research_depth?: string
+    evidence_builder_skipped?: boolean
+    error_message?: string
     credibility_summary?: {
       average_score?: number
       high_credibility_count?: number
@@ -247,6 +249,10 @@ export interface SourceResult {
   content?: string
   source_api?: string
   metadata?: Record<string, unknown>
+  raw_data?: {
+    below_relevance_threshold?: boolean
+    [key: string]: unknown
+  }
 }
 
 export interface AgentTraceEvent {

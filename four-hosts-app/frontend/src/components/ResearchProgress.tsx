@@ -194,6 +194,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [activeCategory, setActiveCategory] = useState<'all' | 'search' | 'sources' | 'analysis' | 'system' | 'errors'>('all')
   const [isMobile, setIsMobile] = useState(false)
   const [validationError, setValidationError] = useState<string | null>(null)
+  const [pollingTimeout, setPollingTimeout] = useState<boolean>(false)
   const safeResearchId = React.useMemo(() => {
     const trimmed = (researchId || '').trim()
     return RESEARCH_ID_PATTERN.test(trimmed) ? trimmed : null
@@ -204,6 +205,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const onCompleteRef = useRef<typeof onComplete>(onComplete)
   const onCancelRef = useRef<typeof onCancel>(onCancel)
   const startTimeRef = useRef<number | null>(null)
+  const timeoutTimerRef = useRef<NodeJS.Timeout | null>(null)
   useEffect(() => { startTimeRef.current = startTime }, [startTime])
 
   useEffect(() => {
@@ -258,9 +260,28 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
 
     setValidationError(null)
     setIsConnecting(true)
+    setPollingTimeout(false)
+
+    // Set up polling timeout (3 minutes)
+    if (timeoutTimerRef.current) {
+      clearTimeout(timeoutTimerRef.current)
+    }
+    timeoutTimerRef.current = setTimeout(() => {
+      setPollingTimeout(true)
+      setCurrentStatus('failed')
+      if (onCompleteRef.current) {
+        onCompleteRef.current()
+      }
+    }, 180000) // 3 minutes timeout
 
     api.connectWebSocket(safeResearchId, (message) => {
       setIsConnecting(false)
+
+      // Clear timeout on any message received
+      if (timeoutTimerRef.current) {
+        clearTimeout(timeoutTimerRef.current)
+        timeoutTimerRef.current = null
+      }
 
       const rawData = message && typeof message.data === 'object' && message.data
         ? (message.data as Record<string, unknown>)
@@ -474,6 +495,22 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             status: 'failed',
             message: errorMsg
           }
+          // Ensure we trigger completion callback on failure
+          if (onCompleteRef.current) {
+            setTimeout(() => onCompleteRef.current?.(), 100)
+          }
+          break
+        }
+        case 'evidence_builder_skipped': {
+          // Handle the case where evidence builder is skipped due to no results
+          statusUpdate = {
+            status: 'failed',
+            message: 'No search results available for evidence building'
+          }
+          // Trigger completion to transition to results display
+          if (onCompleteRef.current) {
+            setTimeout(() => onCompleteRef.current?.(), 100)
+          }
           break
         }
         case 'research_started': {
@@ -654,6 +691,10 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
 
     return () => {
       api.unsubscribeFromResearch(safeResearchId)
+      if (timeoutTimerRef.current) {
+        clearTimeout(timeoutTimerRef.current)
+        timeoutTimerRef.current = null
+      }
     }
   }, [safeResearchId, CE_LEN])
 
@@ -888,6 +929,14 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           {validationError}
         </div>
       )}
+      {pollingTimeout && (
+        <div className="mb-3 p-3 rounded-lg border border-warning/40 bg-warning/10 text-warning text-sm">
+          <div className="font-medium">Research timeout</div>
+          <div className="text-xs">
+            The research appears to have stalled. This may be due to insufficient search results or a processing error.
+          </div>
+        </div>
+      )}
       {rateLimitWarning && (
         <div className="mb-3 p-3 rounded-lg border border-error/30 bg-error/10 text-error text-sm">
           <div className="font-medium">Rate limit warning</div>
@@ -1077,13 +1126,15 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
               { key: 'system', label: `System (${categoryCounts.system})` },
               { key: 'errors', label: `Errors (${categoryCounts.errors})`, emphasize: categoryCounts.errors > 0 },
             ] as const).map(tab => (
-              <button
+              <Button
                 key={tab.key}
-                onClick={() => setActiveCategory(tab.key)}
-                className={`px-2 py-1 rounded border ${activeCategory === tab.key ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-surface-subtle border-border text-text-muted'} ${'emphasize' in tab && tab.emphasize ? 'text-error border-error/30' : ''}`}
+                size="sm"
+                variant={activeCategory === tab.key ? 'primary' : 'ghost'}
+                className={'emphasize' in tab && tab.emphasize ? 'text-error' : ''}
+                onClick={() => setActiveCategory(tab.key as CategoryKey)}
               >
                 {tab.label}
-              </button>
+              </Button>
             ))}
           </div>
           <div
@@ -1120,17 +1171,19 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
       {/* Source Previews (collapsible, mobile-first) */}
       {sourcePreviews.length > 0 && showSourcePreviews && (
         <div className="mt-4 border-t border-border pt-2 sm:pt-4">
-          <button
-            className="w-full flex items-center justify-between py-2 text-left"
+          <Button
+            variant="ghost"
+            fullWidth
+            className="flex items-center justify-between py-2"
             onClick={() => setSourcesCollapsed(v => !v)}
             aria-expanded={!sourcesCollapsed}
           >
-            <h4 className="text-sm font-medium text-text">Recent Sources</h4>
+            <h4 className="text-sm font-medium text-text flex-1 text-left">Recent Sources</h4>
             <div className="flex items-center gap-2">
               <span className="text-xs text-text-muted">{sourcePreviews.length}</span>
               {sourcesCollapsed ? <FiChevronDown className="h-4 w-4" /> : <FiChevronUp className="h-4 w-4" />}
             </div>
-          </button>
+          </Button>
           {!sourcesCollapsed && (
             <div className="space-y-2">
               {sourcePreviews.map((source, index) => (

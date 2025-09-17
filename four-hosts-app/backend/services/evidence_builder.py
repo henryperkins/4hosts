@@ -172,6 +172,8 @@ def _pick_docs(results: List[Dict[str, Any]], max_docs: int) -> List[Dict[str, A
     )
     picked: List[Dict[str, Any]] = []
     seen_domains: set[str] = set()
+    domain_counts: dict[str, int] = {}
+
     for r in sorted_results:
         u = (_item_get(r, "url", "") or "").strip()
         if not u:
@@ -180,13 +182,20 @@ def _pick_docs(results: List[Dict[str, Any]], max_docs: int) -> List[Dict[str, A
         if not isinstance(metadata, dict):
             metadata = {}
         dom = metadata.get("domain") or _domain_from(u)
-        if dom in seen_domains and len(picked) < max_docs // 2:
-            # Early rounds: prioritize new domains
-            continue
+
+        # More forgiving domain diversity rules
+        domain_count = domain_counts.get(dom, 0)
+        # Allow up to 3 results per domain in first half, unlimited in second half
+        if domain_count >= 3 and len(picked) < max_docs // 2:
+            continue  # Skip this result in early rounds
+
         picked.append(r)
         seen_domains.add(dom)
+        domain_counts[dom] = domain_count + 1
+
         if len(picked) >= max_docs:
             break
+
     return picked
 
 
@@ -312,6 +321,29 @@ async def build_evidence_bundle(
         logger.warning("Evidence builder: No query provided for evidence extraction")
 
     docs = _pick_docs(results, max_docs=max_docs)
+
+    # FALLBACK: If no docs pass the picking criteria, use top N results anyway
+    if not docs and results:
+        logger.warning(f"Evidence builder: No documents met selection criteria from {len(results)} results. Using top {min(max_docs, len(results))} as fallback.")
+        # Sort by credibility score if available, otherwise take first N
+        sorted_results = sorted(
+            results,
+            key=lambda r: float(_item_get(r, "credibility_score", 0.0) or 0.0),
+            reverse=True
+        ) if any(_item_get(r, "credibility_score") for r in results) else results
+
+        # Take top N and mark them as fallback results
+        docs = sorted_results[:min(max_docs, len(results))]
+        for doc in docs:
+            # Mark these as fallback docs for transparency
+            metadata = _item_get(doc, "metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata["evidence_fallback"] = True
+            metadata["fallback_reason"] = "below_quality_threshold"
+            if isinstance(doc, dict):
+                doc["metadata"] = metadata
+
     if not docs:
         logger.warning(f"Evidence builder: No valid documents selected from {len(results)} results")
         return EvidenceBundle()

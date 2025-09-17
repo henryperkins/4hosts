@@ -103,6 +103,7 @@ export interface WebSocketMessage {
     | 'search.retry'
     | 'credibility.check'
     | 'deduplication.progress'
+    | 'evidence_builder_skipped'
   data: {
     status?: string
     progress?: number

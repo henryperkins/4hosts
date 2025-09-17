@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react'
 import { FiCheck, FiEdit2, FiSend } from 'react-icons/fi'
 import toast from 'react-hot-toast'
 import { InputField } from '../ui/InputField'
+import { Button } from '../ui/Button'
 import api from '../../services/api'
 import type { ParadigmClassification, Paradigm } from '../../types'
 
@@ -51,22 +52,22 @@ export const ClassificationFeedback: React.FC<Props> = ({ researchId, query, cla
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <span className="text-sm text-gray-700 dark:text-gray-300">Was this classification correct?</span>
         <div className="flex gap-2">
-          <button
-            type="button"
-            className={`px-3 py-1 rounded border text-sm ${agree === true ? 'bg-green-600 text-white border-green-600' : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300'}`}
+          <Button
+            variant={agree === true ? 'success' : 'ghost'}
+            size="sm"
             onClick={() => setAgree(true)}
             aria-pressed={agree === true}
           >
             Yes
-          </button>
-          <button
-            type="button"
-            className={`px-3 py-1 rounded border text-sm ${agree === false ? 'bg-red-600 text-white border-red-600' : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300'}`}
+          </Button>
+          <Button
+            variant={agree === false ? 'danger' : 'ghost'}
+            size="sm"
             onClick={() => setAgree(false)}
             aria-pressed={agree === false}
           >
             No
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -76,14 +77,14 @@ export const ClassificationFeedback: React.FC<Props> = ({ researchId, query, cla
             <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Choose the correct paradigm</label>
             <div className="flex flex-wrap gap-2">
               {options.map((p) => (
-                <button
+                <Button
                   key={p}
-                  type="button"
+                  size="sm"
+                  variant={correction === p ? 'primary' : 'ghost'}
                   onClick={() => setCorrection(p)}
-                  className={`px-3 py-1 rounded-full text-xs border ${correction === p ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300'}`}
                 >
                   {p.charAt(0).toUpperCase() + p.slice(1)}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -100,14 +101,16 @@ export const ClassificationFeedback: React.FC<Props> = ({ researchId, query, cla
       )}
 
       <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={submit}
+        <Button
+          variant="primary"
+          size="sm"
+          loading={submitting}
           disabled={submitting || (agree === false && !correction)}
-          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm border ${submitting ? 'opacity-60 cursor-not-allowed' : ''} ${agree === true || (agree === false && correction) ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300'}`}
+          icon={submitting ? FiEdit2 : FiSend}
+          onClick={submit}
         >
-          {submitting ? <FiEdit2 className="h-4 w-4 animate-pulse" /> : <FiSend className="h-4 w-4" />} Submit
-        </button>
+          Submit
+        </Button>
         {agree === true && (
           <span className="text-xs text-gray-500 dark:text-gray-400 inline-flex items-center gap-1"><FiCheck /> You’re confirming the classification.</span>
         )}

@@ -7,6 +7,7 @@ import { getParadigmClass, getParadigmDescription } from '../constants/paradigm'
 import { ContextMetricsPanel } from './ContextMetricsPanel'
 import { EvidencePanel } from './EvidencePanel'
 import { AnswerFeedback } from './feedback/AnswerFeedback'
+import { Button } from './ui/Button'
 import { getCredibilityBand, getCredibilityLabel, getCredibilityColor } from '../utils/credibility'
 
 interface ResultsDisplayEnhancedProps {
@@ -182,28 +183,70 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     setSourcesPage(1)
   }, [selectedCategories, selectedCredBands, results.research_id])
 
-  // If there's no answer data, show error state
+  // If there's no answer data, show error state with more details
   if (!answer) {
+    // Check for specific error conditions
+    const noSearchResults = results.metadata?.total_sources_analyzed === 0 ||
+                          results.metadata?.evidence_builder_skipped === true;
+    const belowThresholdResults = results.sources?.some(s =>
+      s.raw_data?.below_relevance_threshold === true
+    );
+    const isProcessing = results.status === 'processing' || results.status === 'pending';
+
     return (
       <div className="mt-8 animate-fade-in">
         <div className="bg-surface rounded-lg shadow-lg p-8 text-center transition-colors duration-200 border border-border">
           <FiAlertCircle className="h-16 w-16 text-error mx-auto mb-4" />
           <h3 className="text-xl font-semibold text-text mb-2">
-            Research Incomplete
+            {isProcessing ? 'Research Still Processing' : 'Research Incomplete'}
           </h3>
           <p className="text-text-muted mb-4">
-            This research could not be completed due to an error during processing.
+            {noSearchResults
+              ? 'No relevant search results were found for your query. Try rephrasing or broadening your search terms.'
+              : isProcessing
+                ? 'The research is still being processed. Please wait a moment...'
+                : 'This research could not be completed due to an error during processing.'}
           </p>
+          {belowThresholdResults && (
+            <div className="bg-warning/10 border border-warning/30 rounded-lg p-4 mb-4">
+              <p className="text-sm text-warning">
+                Note: Some results were below our quality threshold but were included to provide context.
+              </p>
+            </div>
+          )}
           <div className="bg-error/10 border border-error/30 rounded-lg p-4">
             <p className="text-sm text-error">
               Status: {results.status || 'Unknown'}
             </p>
             {results.metadata && (
-              <p className="text-sm text-error mt-1">
-                Research ID: {results.research_id}
-              </p>
+              <>
+                <p className="text-sm text-error mt-1">
+                  Research ID: {results.research_id}
+                </p>
+                {results.metadata.total_sources_analyzed !== undefined && (
+                  <p className="text-sm text-error mt-1">
+                    Sources analyzed: {results.metadata.total_sources_analyzed}
+                  </p>
+                )}
+                {results.metadata.error_message && (
+                  <p className="text-sm text-error mt-1">
+                    Error: {results.metadata.error_message}
+                  </p>
+                )}
+              </>
             )}
           </div>
+          {!isProcessing && (
+            <div className="mt-6">
+              <Button
+                variant="primary"
+                onClick={() => window.location.reload()}
+                className="mx-auto"
+              >
+                Try Another Search
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     )
@@ -367,17 +410,19 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                       })
                     }
                     return allowed.filter((f) => f in map).map((fmt) => (
-                      <button
+                      <Button
                         key={fmt}
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-start text-left capitalize"
                         onClick={() => handleExport(fmt)}
-                        className="w-full text-left px-4 py-2 text-sm text-text hover:bg-surface-subtle transition-colors duration-200 flex items-center gap-2 capitalize"
                         disabled={isExporting}
                       >
-                        {exportFormat === fmt && isExporting ? (
+                        {exportFormat === fmt && isExporting && (
                           <FiLoader className="h-4 w-4 animate-spin" />
-                        ) : null}
+                        )}
                         Export as {fmt.toUpperCase()}
-                      </button>
+                      </Button>
                     ))
                   })()
                 }
@@ -938,9 +983,10 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 <FiFilter className="h-4 w-4 text-text-subtle" />
                 <div className="flex flex-wrap gap-2">
                   {['all', ...Object.keys(categoryDistribution)].map((cat) => (
-                    <button
+                    <Button
                       key={cat}
-                      className={`px-2 py-1 rounded text-xs ${selectedCategories.has(cat) ? 'bg-primary text-white' : 'bg-surface-subtle text-text'}`}
+                      size="sm"
+                      variant={selectedCategories.has(cat) ? 'primary' : 'ghost'}
                       onClick={() => {
                         setSelectedCategories(prev => {
                           const next = new Set(prev)
@@ -951,22 +997,38 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                           return next
                         })
                       }}
-                    >{cat}</button>
+                    >
+                      {cat}
+                    </Button>
                   ))}
                 </div>
               </div>
               <div className="flex items-center gap-2 text-xs">
                 {(['high','medium','low'] as const).map(band => (
-                  <button
+                  <Button
                     key={band}
-                    className={`px-2 py-1 rounded ${selectedCredBands.has(band) ? (band==='high'?'bg-success':band==='medium'?'bg-primary':'bg-error')+' text-white':''} ${!selectedCredBands.has(band)?'bg-surface-subtle text-text':''}`}
-                    onClick={() => setSelectedCredBands(prev => {
-                      const next = new Set(prev)
-                      if (next.has(band)) next.delete(band); else next.add(band)
-                      if (next.size === 0) return new Set(['high','medium','low'])
-                      return next
-                    })}
-                  >{band}</button>
+                    size="sm"
+                    variant={
+                      selectedCredBands.has(band)
+                        ? band === 'high'
+                          ? 'success'
+                          : band === 'medium'
+                          ? 'primary'
+                          : 'danger'
+                        : 'ghost'
+                    }
+                    onClick={() =>
+                      setSelectedCredBands(prev => {
+                        const next = new Set(prev)
+                        if (next.has(band)) next.delete(band)
+                        else next.add(band)
+                        if (next.size === 0) return new Set(['high', 'medium', 'low'])
+                        return next
+                      })
+                    }
+                  >
+                    {band}
+                  </Button>
                 ))}
               </div>
             </div>
@@ -1250,12 +1312,13 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
 
         {citations.length > 5 && (
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setShowAllCitations(!showAllCitations)}
-            className="mt-4 text-sm text-primary hover:opacity-80 font-medium transition-colors duration-200 focus:outline-none focus:underline"
           >
             {showAllCitations ? 'Show less' : `Show all ${citations.length} citations`}
-          </button>
+          </Button>
         )}
       </div>
     </div>

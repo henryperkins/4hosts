@@ -1,5 +1,14 @@
 version: '3.8'
 
+# Exa provider env (reusable mapping for backend services)
+x-backend-exa-env: &backend-exa-env
+  EXA_API_KEY: ${EXA_API_KEY}
+  SEARCH_DISABLE_EXA: ${SEARCH_DISABLE_EXA:-0}
+  EXA_INCLUDE_TEXT: ${EXA_INCLUDE_TEXT:-0}
+  EXA_SEARCH_AS_PRIMARY: ${EXA_SEARCH_AS_PRIMARY:-0}
+  EXA_BASE_URL: ${EXA_BASE_URL:-https://api.exa.ai}
+  EXA_TIMEOUT_SEC: ${EXA_TIMEOUT_SEC:-15}
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -33,6 +42,15 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  # NOTE: This backend-only compose file does not define the FastAPI
+  # backend service. The main stack at ../docker-compose.yml contains
+  # the backend. Ensure it includes the EXA_* environment variables
+  # (see x-backend-exa-env defined above). Example:
+  #
+  # backend:
+  #   environment:
+  #     <<: *backend-exa-env
 
 volumes:
   postgres_data:
