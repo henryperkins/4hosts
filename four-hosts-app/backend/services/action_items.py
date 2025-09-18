@@ -46,7 +46,15 @@ def _schema(max_items: int = 6) -> Dict[str, Any]:
                                 "maxItems": 4,
                             }
                         },
-                        "required": ["action", "priority"],
+                        # Responses API strict JSON schema requires all defined
+                        # properties to be listed in "required".
+                        "required": [
+                            "action",
+                            "description",
+                            "priority",
+                            "timeline",
+                            "source_ids"
+                        ],
                         "additionalProperties": False,
                     },
                 }
@@ -137,4 +145,3 @@ Guidelines:
     except Exception as e:
         logger.debug(f"Dynamic action items failed: {e}")
         return []
-

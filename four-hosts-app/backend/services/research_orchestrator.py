@@ -398,10 +398,11 @@ class EarlyRelevanceFilter:
             return False
 
         # Query relevance check - use query_compressor for better keyword extraction
+        # Make this check less aggressive - only filter if NO query terms match at all
         try:
             import re as _re
             query_terms = set(query_compressor.extract_keywords(query))
-            if query_terms:
+            if query_terms and len(query_terms) > 2:  # Only apply if we have multiple query terms
                 # Use regex tokenization for more flexible matching
                 def _toks(text: str) -> set[str]:
                     return {t for t in _re.findall(r"[A-Za-z0-9]+", (text or "").lower()) if len(t) > 2}
@@ -409,21 +410,30 @@ class EarlyRelevanceFilter:
                 result_terms = _toks(combined_text)
                 if result_terms:
                     # Check for direct term matches
-                    has_query_term = bool(query_terms & result_terms)
+                    matching_terms = query_terms & result_terms
+
+                    # Be more lenient: require at least 1 matching term OR 30% of query terms
+                    min_matches = max(1, len(query_terms) // 3)
+                    has_enough_matches = len(matching_terms) >= min_matches
 
                     # If no direct matches, check for partial matches with shorter keywords
-                    if not has_query_term:
+                    if not has_enough_matches:
                         # Try with 2-character minimum for short keywords
                         short_query_terms = {t for t in query_terms if len(t) >= 2}
                         short_result_terms = {t for t in _re.findall(r"[A-Za-z0-9]+", (combined_text or "").lower()) if len(t) >= 2}
-                        has_query_term = bool(short_query_terms & short_result_terms)
+                        has_enough_matches = len(short_query_terms & short_result_terms) >= min_matches
 
-                    if not has_query_term:
-                        return False
+                    # Only filter out if we have VERY poor relevance
+                    if not has_enough_matches and len(matching_terms) == 0:
+                        # Double check for related terms before filtering
+                        related_terms = {'llm', 'ai', 'gpt', 'model', 'language', 'prompt', 'context', 'engineering'}
+                        if not any(term in combined_text.lower() for term in related_terms):
+                            return False
         except Exception:
-            # Fallback to simple split if query_compressor fails
+            # Fallback to simple split if query_compressor fails - be more lenient
             query_terms = [term.lower() for term in query.split() if len(term) > 2]
-            if query_terms:
+            if query_terms and len(query_terms) > 2:
+                # Require at least 1 term match for multi-word queries
                 has_query_term = any(term in combined_text for term in query_terms)
                 if not has_query_term:
                     return False

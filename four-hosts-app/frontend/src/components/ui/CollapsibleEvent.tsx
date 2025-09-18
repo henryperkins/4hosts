@@ -6,7 +6,7 @@ import { clsx } from 'clsx'
 interface CollapsibleEventProps {
   message: string
   timestamp: string
-  details?: any
+  details?: Record<string, unknown>
   priority?: 'low' | 'medium' | 'high' | 'critical'
   type?: string
   icon?: React.ReactNode
@@ -38,15 +38,16 @@ export const CollapsibleEvent: React.FC<CollapsibleEventProps> = ({
     }
   }
 
-  const formatDetails = (data: any): string => {
+  const formatDetails = (data: unknown): string => {
     try {
-      // Remove sensitive or redundant fields
-      const cleaned = { ...data }
-      delete cleaned.timestamp
-      delete cleaned.message
-      delete cleaned.status
-
-      return JSON.stringify(cleaned, null, 2)
+      if (data && typeof data === 'object') {
+        const cleaned = { ...(data as Record<string, unknown>) }
+        delete (cleaned as Record<string, unknown>).timestamp
+        delete (cleaned as Record<string, unknown>).message
+        delete (cleaned as Record<string, unknown>).status
+        return JSON.stringify(cleaned, null, 2)
+      }
+      return String(data)
     } catch {
       return String(data)
     }

@@ -209,7 +209,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
         dispatch({ type: 'SET_DEPTH', payload: 'deep' })
       }
     } else {
-      dispatch({ type: 'UPDATE_OPTIONS', payload: { max_sources: 50, search_context_size: 'medium' as any } })
+      dispatch({ type: 'UPDATE_OPTIONS', payload: { max_sources: 50, search_context_size: 'medium' } })
       dispatch({ type: 'SET_DEPTH', payload: state.depth === 'deep' ? 'standard' : state.depth })
     }
     dispatch({ type: 'SET_COMPREHENSIVE', payload: next })
@@ -402,7 +402,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                 <select
                   className="input text-sm"
                   value={state.options.search_context_size || 'medium'}
-                  onChange={(e) => dispatch({ type: 'UPDATE_OPTIONS', payload: { search_context_size: e.target.value as any } })}
+                  onChange={(e) => dispatch({ type: 'UPDATE_OPTIONS', payload: { search_context_size: (e.target.value as 'small' | 'medium' | 'large') } })}
                 >
                   <option value="small">Small</option>
                   <option value="medium">Medium</option>

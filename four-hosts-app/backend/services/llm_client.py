@@ -556,7 +556,7 @@ class LLMClient:
                 op_kwargs = {k: v for k, v in kw.items() if k not in ["stream", "tool_choice"]}
                 # For o-series on OpenAI Chat Completions, strip unsupported params
                 if str(model_name).startswith("o") or model_name in {"gpt-5", "gpt-5-mini", "gpt-5-nano"}:
-                    for p in ["temperature", "top_p", "presence_penalty", "frequency_penalty", "max_tokens"]:
+                    for p in ["temperature", "top_p", "presence_penalty", "frequency_penalty", "max_tokens", "response_format"]:
                         op_kwargs.pop(p, None)
                 if tools and tool_choice:
                     op_kwargs["tool_choice"] = self._wrap_tool_choice(tool_choice)

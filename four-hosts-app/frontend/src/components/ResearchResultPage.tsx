@@ -31,15 +31,15 @@ export const ResearchResultPage = () => {
         const data = await api.getResearchResults(id)
 
         // Handle terminal failure / cancellation
-        if ((data as any).status === 'failed' || (data as any).status === 'cancelled') {
-          setError((data as any).message || `Research ${(data as any).status}`)
+        if (data.status === 'failed' || data.status === 'cancelled') {
+          setError(data.message || `Research ${data.status}`)
           setIsLoading(false)
           if (pollRef.current) clearInterval(pollRef.current)
           return
         }
 
         // If not yet completed, keep polling
-        if ((data as any).status && (data as any).status !== 'completed') {
+        if (data.status && data.status !== 'completed') {
           setIsLoading(true)
           return
         }
@@ -48,7 +48,7 @@ export const ResearchResultPage = () => {
         setResults(data)
         setIsLoading(false)
         if (pollRef.current) clearInterval(pollRef.current)
-      } catch (e) {
+      } catch {
         setError('Failed to load research results')
         setIsLoading(false)
         if (pollRef.current) clearInterval(pollRef.current)

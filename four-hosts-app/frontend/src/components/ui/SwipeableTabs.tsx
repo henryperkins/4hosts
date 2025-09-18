@@ -27,7 +27,7 @@ export const SwipeableTabs: React.FC<SwipeableTabsProps> = ({
   const activeIndex = tabs.findIndex(t => t.key === activeTab)
   const [isDragging, setIsDragging] = useState(false)
 
-  const handleDragEnd = (_: any, info: PanInfo) => {
+  const handleDragEnd = (_evt: unknown, info: PanInfo) => {
     setIsDragging(false)
     const threshold = 50
     const velocity = info.velocity.x
@@ -127,4 +127,3 @@ export const SwipeableTabs: React.FC<SwipeableTabsProps> = ({
     </div>
   )
 }
-

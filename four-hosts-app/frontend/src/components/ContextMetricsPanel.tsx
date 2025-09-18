@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import api from '../services/api'
+import { validateContextMetrics } from '../utils/validation'
 
 type LayerMetrics = {
   write?: number
@@ -19,9 +20,10 @@ export function ContextMetricsPanel() {
     const run = async () => {
       try {
         const data = await api.getContextMetrics()
-        const cp = (data as any)?.context_pipeline || {}
-        setTotal(cp.total_processed || 0)
-        setAvg(cp.average_processing_time || 0)
+        const parsed = validateContextMetrics(data)
+        const cp = parsed.context_pipeline
+        setTotal(cp.total_processed)
+        setAvg(cp.average_processing_time)
         setLayers(cp.layer_metrics || {})
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load context metrics')
@@ -56,7 +58,7 @@ export function ContextMetricsPanel() {
             <p className="text-gray-900 dark:text-gray-100 font-semibold">W:{layers.write||0} S:{layers.select||0}</p>
           </div>
           <div className="bg-white dark:bg-gray-800 rounded p-3 border border-gray-200 dark:border-gray-700">
-            <p className="text-gray-600 dark:text-gray-400">Layer Count</p>
+            <p className="text-gray-600 dark:text-gray-400">Pipeline</p>
             <p className="text-gray-900 dark:text-gray-100 font-semibold">C:{layers.compress||0} I:{layers.isolate||0}</p>
           </div>
         </div>
@@ -64,4 +66,3 @@ export function ContextMetricsPanel() {
     </div>
   )
 }
-

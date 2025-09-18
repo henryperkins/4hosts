@@ -122,21 +122,23 @@ export interface ResearchStatusResponse {
 // ... (rest of the interfaces are the same)
 
 class APIService {
-  private isRefreshing = false
-  private failedQueue: { resolve: (value: string) => void; reject: (reason: Error) => void }[] = []
+  // Single-flight refresh via shared promise to prevent stampedes
+  private refreshPromise: Promise<void> | null = null
 
-  constructor() {}
-
-  private processFailedQueue(error: Error | null, token: string | null = null) {
-    this.failedQueue.forEach(prom => {
-      if (error) {
-        prom.reject(error);
-      } else if (token) {
-        prom.resolve(token);
-      }
-    });
-    this.failedQueue = [];
+  constructor() {
+    // Proactive cleanup of any open WebSockets when the page is closed or navigated away
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('beforeunload', () => {
+        try {
+          this.disconnectWebSocket()
+        } catch {
+          // ignore cleanup failures
+        }
+      })
+    }
   }
+
+  // Deprecated queue mechanism removed in favor of shared refreshPromise
 
   private async fetchWithAuth(url: string, options: RequestInit = {}, isRetry = false, csrfRetry = false): Promise<Response> {
     const headers: Record<string, string> = {
@@ -211,39 +213,29 @@ class APIService {
         return Promise.reject(new Error(errorMessage));
       }
 
-      if (this.isRefreshing) {
-        console.log('Token refresh already in progress, queuing request');
-        return new Promise((resolve, reject) => {
-          this.failedQueue.push({ resolve, reject });
-        })
-        .then(() => this.fetchWithAuth(url, options, true));
-      }
-
-      this.isRefreshing = true;
-      console.log('Starting token refresh');
-
+      // Single-flight refresh logic
       try {
-        await this.refreshToken();
-        console.log('Token refresh successful, retrying request');
-        this.processFailedQueue(null, 'refreshed');
+        if (!this.refreshPromise) {
+          console.log('Starting token refresh')
+          this.refreshPromise = this.refreshToken()
+        } else {
+          console.log('Token refresh already in progress, awaiting...')
+        }
+        await this.refreshPromise
+        console.log('Token refresh successful, retrying request')
         // Add small delay to ensure cookies are set
-        await new Promise(resolve => setTimeout(resolve, 100));
-
+        await new Promise(resolve => setTimeout(resolve, 100))
         // After successful refresh, clear CSRF token to force refresh on next request
-        CSRFProtection.clearToken();
-
-        return this.fetchWithAuth(url, options, true);
+        CSRFProtection.clearToken()
+        return this.fetchWithAuth(url, options, true)
       } catch (error) {
-        console.error('Token refresh failed:', error);
-        this.processFailedQueue(error instanceof Error ? error : new Error('Unknown error'), null);
-
+        console.error('Token refresh failed:', error)
         // Clear auth state on token refresh failure
         const { useAuthStore } = await import('../store/authStore')
         useAuthStore.getState().reset()
-
-        return Promise.reject(error);
+        return Promise.reject(error)
       } finally {
-        this.isRefreshing = false;
+        this.refreshPromise = null
       }
     }
 
@@ -806,10 +798,21 @@ class APIService {
   // WebSocket Management
   private wsConnections: Map<string, WebSocket> = new Map()
   private wsCallbacks: Map<string, (message: WSMessage) => void> = new Map()
+  private wsReconnectFlags: Map<string, boolean> = new Map()
+  private wsReconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
 
   connectWebSocket(researchId: string, onMessage: (message: WSMessage) => void): void {
     if (this.wsConnections.has(researchId)) {
       this.disconnectWebSocket(researchId)
+    }
+
+    // Mark this socket as eligible for reconnection
+    this.wsReconnectFlags.set(researchId, true)
+    // Clear any pending reconnect timers
+    const t = this.wsReconnectTimers.get(researchId)
+    if (t) {
+      clearTimeout(t)
+      this.wsReconnectTimers.delete(researchId)
     }
 
     // Use the API_BASE_URL and convert it to WebSocket URL
@@ -846,9 +849,22 @@ class APIService {
     }
 
     ws.onclose = () => {
-      // WebSocket disconnected
+      // Drop current connection reference
       this.wsConnections.delete(researchId)
-      this.wsCallbacks.delete(researchId)
+      const shouldReconnect = this.wsReconnectFlags.get(researchId)
+      if (shouldReconnect) {
+        // Attempt reconnection after 5s; reuse existing callback
+        const timer = setTimeout(() => {
+          const cb = this.wsCallbacks.get(researchId)
+          if (cb) {
+            this.connectWebSocket(researchId, cb)
+          }
+        }, 5000)
+        this.wsReconnectTimers.set(researchId, timer)
+      } else {
+        // Manual shutdown: clean up callback map
+        this.wsCallbacks.delete(researchId)
+      }
     }
 
     this.wsConnections.set(researchId, ws)
@@ -857,14 +873,23 @@ class APIService {
 
   disconnectWebSocket(researchId?: string): void {
     if (researchId) {
+      // Stop reconnection attempts for this id
+      this.wsReconnectFlags.set(researchId, false)
+      const t = this.wsReconnectTimers.get(researchId)
+      if (t) { clearTimeout(t); this.wsReconnectTimers.delete(researchId) }
       const ws = this.wsConnections.get(researchId)
-      if (ws) {
-        ws.close()
-        this.wsConnections.delete(researchId)
-        this.wsCallbacks.delete(researchId)
-      }
+      if (ws) { ws.close() }
+      this.wsConnections.delete(researchId)
+      this.wsCallbacks.delete(researchId)
     } else {
       // Disconnect all WebSockets
+      // Disable reconnect across the board and clear timers
+      this.wsConnections.forEach((_ws, id) => {
+        this.wsReconnectFlags.set(id, false)
+        const t = this.wsReconnectTimers.get(id)
+        if (t) { clearTimeout(t) }
+      })
+      this.wsReconnectTimers.clear()
       this.wsConnections.forEach((ws) => ws.close())
       this.wsConnections.clear()
       this.wsCallbacks.clear()

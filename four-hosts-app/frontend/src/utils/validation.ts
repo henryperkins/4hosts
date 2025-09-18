@@ -130,6 +130,15 @@ export const MetricsDataSchema = z.object({
   system_health: z.enum(['healthy', 'degraded', 'unhealthy'])
 })
 
+// Lightweight schema for context metrics used by ContextMetricsPanel
+export const ContextMetricsSchema = z.object({
+  context_pipeline: z.object({
+    total_processed: z.number().default(0),
+    average_processing_time: z.number().default(0),
+    layer_metrics: z.record(z.string(), z.number()).default({}),
+  })
+})
+
 // Validation functions with proper error handling
 export function validateLoginResponse(data: unknown): LoginResponse {
   try {
@@ -163,6 +172,16 @@ export function validateMetricsData(data: unknown): MetricsData {
   } catch (error) {
     console.error('Invalid metrics data:', error)
     throw new Error('Invalid metrics data format')
+  }
+}
+
+export function validateContextMetrics(data: unknown): z.infer<typeof ContextMetricsSchema> {
+  try {
+    return ContextMetricsSchema.parse(data)
+  } catch (error) {
+    console.error('Invalid context metrics:', error)
+    // Provide a safe default rather than throwing to avoid breaking the panel
+    return { context_pipeline: { total_processed: 0, average_processing_time: 0, layer_metrics: {} } }
   }
 }
 

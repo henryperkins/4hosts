@@ -9,18 +9,18 @@ export interface AnswerSection {
   content: string;
   confidence: number;
   sources_count: number;
-  citations: any[];
+  citations: string[];
   key_insights?: string[];
   // Allow backend to add extras without breaking FE
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface AnswerPayload {
   summary: string;
   sections: AnswerSection[];
-  action_items: any[];
-  citations: any[];
-  metadata: Record<string, any>;
+  action_items: Array<Record<string, unknown>>;
+  citations: Array<Record<string, unknown>>;
+  metadata: Record<string, unknown>;
 }
 
 export interface ParadigmSummary {
@@ -53,11 +53,10 @@ export interface ResearchFinalResult {
   status: ResearchStatus;
   paradigm_analysis: ParadigmAnalysis;
   answer: AnswerPayload;
-  integrated_synthesis?: Record<string, any> | null;
-  mesh_synthesis?: Record<string, any> | null;
+  integrated_synthesis?: Record<string, unknown> | null;
+  mesh_synthesis?: Record<string, unknown> | null;
   sources: SourceResult[];
-  metadata: Record<string, any>;
-  cost_info?: Record<string, any>;
+  metadata: Record<string, unknown>;
+  cost_info?: Record<string, unknown>;
   export_formats?: Record<string, string>;
 }
-

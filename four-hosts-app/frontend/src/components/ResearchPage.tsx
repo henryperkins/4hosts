@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 // AlertCircle not currently used
 import { Alert } from './ui/Alert'
@@ -20,16 +21,8 @@ export const ResearchPage = () => {
   const [error, setError] = useState<string | null>(null)
   const [currentResearchId, setCurrentResearchId] = useState<string | null>(null)
   const [showProgress, setShowProgress] = useState(false)
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-      }
-    }
-  }, [])
+  const [stopPolling, setStopPolling] = useState(false)
+  const pollStartRef = useRef<number | null>(null)
 
   // Live classification preview with debounce
   useEffect(() => {
@@ -55,8 +48,7 @@ export const ResearchPage = () => {
             secondary: data.secondary ?? null,
             distribution: data.distribution || {},
             confidence: typeof data.confidence === 'number' ? data.confidence : 0,
-            explanation: data.explanation || {},
-            signals: (data as any).signals || undefined
+            explanation: data.explanation || {}
           })
         }
       } catch {
@@ -89,94 +81,13 @@ export const ResearchPage = () => {
     setError(null)
     setResults(null)
     setShowProgress(true)
+    setStopPolling(false)
 
     try {
       // Submit research query
       const data = await api.submitResearch(query, options)
       setCurrentResearchId(data.research_id)
-
-      // Poll for results (extend to avoid premature timeout)
-      let retries = 0
-      const maxRetries = 600 // 20 minutes at 2s interval
-
-      pollIntervalRef.current = setInterval(async () => {
-        try {
-          // Increment retries for each poll tick
-          retries++
-
-          const resultsData = await api.getResearchResults(data.research_id)
-
-          // Handle staged response (status present but not final)
-          const stagedStatuses: StagedStatus[] = ['queued','processing','in_progress']
-          const status = getStatus(resultsData)
-          if (status && stagedStatuses.includes(status as StagedStatus)) {
-            // Still processing; keep polling (WebSocket shows progress). Do not auto-cancel.
-            if (retries >= maxRetries) {
-              // Convert to a soft timeout: keep progress visible, stop polling, let WS finish.
-              setError('Research is taking longer than usual but is still running. You can keep this page open or come back later in History.')
-              setIsLoading(false)
-              clearInterval(pollIntervalRef.current!)
-            }
-            return
-          }
-
-          // Handle terminal staged failures
-          if (status === 'failed' || status === 'cancelled') {
-            const message = getMessage(resultsData) || 'Please try again'
-            setError(`Research ${status}: ${message}`)
-            setIsLoading(false)
-            setShowProgress(false)
-            clearInterval(pollIntervalRef.current!)
-            return
-          }
-
-          // Final result path
-          setResults(resultsData)
-
-          // Extract paradigm classification from results
-          if (resultsData.paradigm_analysis && resultsData.paradigm_analysis.primary) {
-            const primary = resultsData.paradigm_analysis.primary
-            const secondary = resultsData.paradigm_analysis.secondary
-
-            const distribution: Record<string, number> = {}
-            distribution[primary.paradigm] = typeof primary.confidence === 'number' ? primary.confidence : 0
-
-            if (secondary?.paradigm) {
-              distribution[secondary.paradigm] = typeof secondary.confidence === 'number' ? secondary.confidence : 0
-            }
-
-            const allParadigms = ['dolores', 'teddy', 'bernard', 'maeve']
-            allParadigms.forEach(p => {
-              if (!(p in distribution)) distribution[p] = 0
-            })
-
-            const explanation: Record<string, string> = {
-              [primary.paradigm]: primary.approach ?? ''
-            }
-
-            if (secondary?.paradigm) {
-              explanation[secondary.paradigm] = secondary.approach ?? ''
-            }
-
-            setParadigmClassification({
-              primary: primary.paradigm,
-              secondary: secondary?.paradigm || null,
-              distribution,
-              confidence: typeof primary.confidence === 'number' ? primary.confidence : 0,
-              explanation
-            })
-          }
-          setIsLoading(false)
-          setShowProgress(false)
-          clearInterval(pollIntervalRef.current!)
-        } catch {
-          if (retries >= maxRetries) {
-            setError('Research is taking longer than usual but is still running. You can keep this page open or come back later in History.')
-            setIsLoading(false)
-            clearInterval(pollIntervalRef.current!)
-          }
-        }
-      }, 2000)
+      pollStartRef.current = Date.now()
 
     } catch (err) {
       if (err instanceof Error && err.message.includes('No refresh token available')) {
@@ -189,6 +100,86 @@ export const ResearchPage = () => {
       }
     }
   }
+
+  // React Query polling for results
+  const { data: polledResults } = useQuery({
+    queryKey: ['research-results', currentResearchId],
+    queryFn: () => api.getResearchResults(currentResearchId as string),
+    enabled: showProgress && !!currentResearchId && !stopPolling,
+    // Keep polling until final status
+    refetchInterval: (query) => {
+      const d: unknown = query.state.data as unknown
+      const s = getStatus(d)
+      const staged: StagedStatus[] = ['queued','processing','in_progress']
+      return (s && staged.includes(s as StagedStatus)) ? 2000 : false
+    },
+    staleTime: 1000,
+  })
+
+  // Apply polled results
+  useEffect(() => {
+    if (!polledResults) return
+    const status = getStatus(polledResults)
+    const staged: StagedStatus[] = ['queued','processing','in_progress']
+    if (status && staged.includes(status as StagedStatus)) return
+
+    if (status === 'failed' || status === 'cancelled') {
+      const message = getMessage(polledResults) || 'Please try again'
+      setError(`Research ${status}: ${message}`)
+      setIsLoading(false)
+      setShowProgress(false)
+      setStopPolling(true)
+      return
+    }
+
+    // Final result path
+    setResults(polledResults as ResearchResult)
+
+    // Extract paradigm classification from results
+    const r = polledResults as ResearchResult
+    if (r.paradigm_analysis && r.paradigm_analysis.primary) {
+      const primary = r.paradigm_analysis.primary
+      const secondary = r.paradigm_analysis.secondary
+
+      const distribution: Record<string, number> = {}
+      distribution[primary.paradigm] = typeof primary.confidence === 'number' ? primary.confidence : 0
+      if (secondary?.paradigm) {
+        distribution[secondary.paradigm] = typeof secondary.confidence === 'number' ? secondary.confidence : 0
+      }
+      const allParadigms = ['dolores', 'teddy', 'bernard', 'maeve']
+      allParadigms.forEach(p => { if (!(p in distribution)) distribution[p] = 0 })
+      const explanation: Record<string, string> = { [primary.paradigm]: primary.approach ?? '' }
+      if (secondary?.paradigm) explanation[secondary.paradigm] = secondary.approach ?? ''
+      setParadigmClassification({
+        primary: primary.paradigm,
+        secondary: secondary?.paradigm || null,
+        distribution,
+        confidence: typeof primary.confidence === 'number' ? primary.confidence : 0,
+        explanation
+      })
+    }
+    setIsLoading(false)
+    setShowProgress(false)
+    setStopPolling(true)
+  }, [polledResults])
+
+  // Soft timeout for polling (default 20 minutes)
+  useEffect(() => {
+    if (!showProgress || !currentResearchId) return
+    const TIMEOUT_MS = Number(import.meta.env.VITE_RESULTS_POLL_TIMEOUT_MS || 20 * 60 * 1000)
+    const id = setInterval(() => {
+      const start = pollStartRef.current
+      if (!start) return
+      const elapsed = Date.now() - start
+      if (elapsed >= TIMEOUT_MS) {
+        setError('Research is taking longer than usual but is still running. You can keep this page open or come back later in History.')
+        setIsLoading(false)
+        setStopPolling(true)
+        clearInterval(id)
+      }
+    }, 2000)
+    return () => clearInterval(id)
+  }, [showProgress, currentResearchId])
 
   return (
     <div id="main-content" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-fade-in">

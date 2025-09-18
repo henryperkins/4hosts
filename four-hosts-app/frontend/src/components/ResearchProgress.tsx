@@ -1,14 +1,14 @@
-import React, { useEffect, useState, useRef, useLayoutEffect } from 'react'
-import { FiClock, FiX, FiSearch, FiDatabase, FiCpu, FiCheckCircle, FiZap, FiChevronDown, FiChevronUp } from 'react-icons/fi'
-import { format } from 'date-fns'
+import React, { useEffect, useState, useRef, useMemo } from 'react'
+import { FiClock, FiX, FiChevronDown, FiChevronUp } from 'react-icons/fi'
 import { Button } from './ui/Button'
 import { Card } from './ui/Card'
 import { StatusBadge, type StatusType } from './ui/StatusIcon'
 import { ProgressBar } from './ui/ProgressBar'
 import { LoadingSpinner } from './ui/LoadingSpinner'
 import { Badge } from './ui/Badge'
-import { SwipeableTabs } from './ui/SwipeableTabs'
-import { CollapsibleEvent } from './ui/CollapsibleEvent'
+import PhaseTracker from './research/PhaseTracker'
+import ResearchStats from './research/ResearchStats'
+import EventLog, { type ProgressUpdate as LogUpdate, type CategoryKey as LogCategory } from './research/EventLog'
 import api from '../services/api'
 import { stripHtml } from '../utils/sanitize'
 
@@ -144,13 +144,7 @@ interface RateLimitWarningData {
   reset_time?: string
 }
 
-interface ResearchPhase {
-  name: string
-  icon: React.ReactNode
-  progress: [number, number]
-  isActive?: boolean
-  isCompleted?: boolean
-}
+//
 
 interface ResearchStats {
   sourcesFound: number
@@ -200,7 +194,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     const trimmed = (researchId || '').trim()
     return RESEARCH_ID_PATTERN.test(trimmed) ? trimmed : null
   }, [researchId])
-  const updatesContainerRef = useRef<HTMLDivElement>(null)
+  // Event log container handled inside EventLog component
   // Refs to avoid re-subscribing WebSocket when these change
   const currentStatusRef = useRef<ProgressUpdate['status']>('pending')
   const onCompleteRef = useRef<typeof onComplete>(onComplete)
@@ -263,17 +257,18 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     setIsConnecting(true)
     setPollingTimeout(false)
 
-    // Set up polling timeout (3 minutes)
+    // Set up polling timeout (configurable)
     if (timeoutTimerRef.current) {
       clearTimeout(timeoutTimerRef.current)
     }
+    const TIMEOUT_MS = Number(import.meta.env.VITE_PROGRESS_WS_TIMEOUT_MS || 180000)
     timeoutTimerRef.current = setTimeout(() => {
       setPollingTimeout(true)
       setCurrentStatus('failed')
       if (onCompleteRef.current) {
         onCompleteRef.current()
       }
-    }, 180000) // 3 minutes timeout
+    }, Number.isFinite(TIMEOUT_MS) ? TIMEOUT_MS : 180000)
 
     api.connectWebSocket(safeResearchId, (message) => {
       setIsConnecting(false)
@@ -708,12 +703,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     return () => clearInterval(id)
   }, [startTime])
 
-  // Auto-scroll to bottom when updates change
-  useLayoutEffect(() => {
-    if (updatesContainerRef.current) {
-      updatesContainerRef.current.scrollTop = updatesContainerRef.current.scrollHeight
-    }
-  }, [updates])
+  // (auto-scroll moved into EventLog component)
 
   const handleCancel = async () => {
     setIsCancelling(true)
@@ -760,135 +750,39 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     return currentStatus.charAt(0).toUpperCase() + currentStatus.slice(1)
   }
 
-  // Defensive cleanup for any provider HTML that might slip into messages
-  const cleanMessage = (msg?: string) => (typeof msg === 'string' ? stripHtml(msg) : '')
-
-  const isNoisy = (msg?: string) => {
-    const m = (msg || '').toLowerCase()
-    // Only hide truly repetitive messages
-    return m.includes('heartbeat') || m.includes('still processing')
-  }
-
-  // Categorize updates for filtered views
-  const categorize = (u: ProgressUpdate): 'search' | 'sources' | 'analysis' | 'system' | 'errors' | 'all' => {
-    const t = (u.type || '').toLowerCase()
-    if (t.includes('search.')) return 'search'
-    if (t === 'source_found' || t === 'source_analyzed') return 'sources'
-    if (t === 'research_phase_change' && (u.message || '').toLowerCase().includes('analysis')) return 'analysis'
-    if (t === 'credibility.check' || t === 'deduplication.progress') return 'analysis'
-    if (t === 'system.notification' || t === 'rate_limit.warning' || t === 'connected' || t === 'disconnected') return 'system'
-    if (t === 'error' || t === 'research_failed') return 'errors'
-    return 'all'
-  }
-
-  const getMessageStyle = (p?: ProgressUpdate['priority']) => {
-    switch (p) {
-      case 'critical':
-        return 'border-l-4 border-error bg-error/5'
-      case 'high':
-        return 'border-l-4 border-primary bg-primary/5'
-      default:
-        return ''
-    }
-  }
-
   type CategoryKey = 'all' | 'search' | 'sources' | 'analysis' | 'system' | 'errors'
-  const categoryCounts = React.useMemo((): Record<CategoryKey, number> => {
-    const counts: Record<CategoryKey, number> = { all: updates.length, search: 0, sources: 0, analysis: 0, system: 0, errors: 0 }
-    for (const u of updates) {
-      const cat = categorize(u) as CategoryKey
-      counts[cat] += 1
-    }
-    return counts
-  }, [updates])
 
   const canCancel = () => {
     return currentStatus === 'processing' || currentStatus === 'in_progress' || currentStatus === 'pending'
   }
 
-  // Helper function to render events
-  const renderEvents = () => {
-    return updates
-      .filter(u => showVerbose || !isNoisy(u.message))
-      .filter(u => (activeCategory === 'all' ? true : categorize(u) === activeCategory))
-      .map((update, index) => {
-        // Determine icon for the event
-        let icon: React.ReactNode = null
-        if (update.message?.includes('Searching')) {
-          icon = <FiSearch className="h-4 w-4 text-primary animate-pulse" />
-        } else if (update.message?.includes('credibility')) {
-          icon = <FiCheckCircle className="h-4 w-4 text-green-500" />
-        } else if (update.message?.includes('duplicate')) {
-          icon = <FiDatabase className="h-4 w-4 text-yellow-500" />
-        }
-
-        return (
-          <CollapsibleEvent
-            key={index}
-            message={cleanMessage(update.message) || `Status: ${update.status}`}
-            timestamp={format(new Date(update.timestamp), 'HH:mm:ss')}
-            details={update.data}
-            priority={update.priority}
-            type={update.type}
-            icon={icon}
-            className={getMessageStyle(update.priority)}
-          />
-        )
-      })
-  }
-
-  // Define research phases
-  // Map backend phase strings → icon/component label for timeline rendering
-  const PHASE_ORDER: { key: string; label: string; icon: React.ReactNode }[] = [
-    { key: 'classification', label: 'Classification', icon: <FiCpu className="h-4 w-4" /> },
-    { key: 'context_engineering', label: 'Context Engineering', icon: <FiZap className="h-4 w-4" /> },
-    { key: 'search', label: 'Search & Retrieval', icon: <FiSearch className="h-4 w-4" /> },
-    { key: 'analysis', label: 'Analysis', icon: <FiDatabase className="h-4 w-4" /> },
-    { key: 'agentic_loop', label: 'Agentic Loop', icon: <FiZap className="h-4 w-4" /> },
-    { key: 'synthesis', label: 'Synthesis', icon: <FiCpu className="h-4 w-4" /> },
-    { key: 'complete', label: 'Complete', icon: <FiCheckCircle className="h-4 w-4" /> }
-  ]
-
-  const researchPhases: ResearchPhase[] = PHASE_ORDER.map((p, idx) => {
-    const currentIdx = PHASE_ORDER.findIndex(ph => ph.key === currentPhase)
-    return {
-      name: p.label,
-      icon: p.icon,
-      progress: [0, 0], // no longer used
-      isActive: idx === currentIdx,
-      isCompleted: idx < currentIdx
-    }
-  })
-
-  const hasStarted = !validationError && (startTime !== null || updates.length > 0 || currentStatus !== 'pending')
+  // Memoized derived displays
   const formatCount = (value: number): string => value.toLocaleString()
-  const boundedSearchesCompleted = stats.totalSearches > 0
-    ? Math.min(stats.searchesCompleted, stats.totalSearches)
-    : stats.searchesCompleted
-  const searchesDisplay = stats.totalSearches > 0
-    ? `${boundedSearchesCompleted}/${stats.totalSearches}`
-    : hasStarted
-      ? formatCount(stats.searchesCompleted)
-      : '-'
-  const analyzedDisplay = analysisTotal && analysisTotal > 0
-    ? `${Math.min(stats.sourcesAnalyzed, analysisTotal)}/${analysisTotal}`
-    : hasStarted
-      ? formatCount(stats.sourcesAnalyzed)
-      : '-'
-  const sourcesFoundDisplay = hasStarted ? formatCount(stats.sourcesFound) : '-'
-  const highQualityDisplay = hasStarted ? formatCount(stats.highQualitySources) : '-'
-  const duplicatesDisplay = hasStarted ? formatCount(stats.duplicatesRemoved) : '-'
-  const mcpToolsDisplay = hasStarted ? formatCount(stats.mcpToolsUsed) : '-'
-  const elapsedDisplay = hasStarted
-    ? `${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`
-    : '--:--'
-  const qualityRateDisplay = stats.sourcesFound > 0
-    ? `${Math.round((stats.highQualitySources / Math.max(1, stats.sourcesFound)) * 100)}%`
-    : hasStarted && stats.highQualitySources > 0
-      ? '100%'
-      : hasStarted
-        ? '0%'
-        : '-'
+  const hasStarted = !validationError && (startTime !== null || updates.length > 0 || currentStatus !== 'pending')
+  const boundedSearchesCompleted = useMemo(() => (
+    stats.totalSearches > 0 ? Math.min(stats.searchesCompleted, stats.totalSearches) : stats.searchesCompleted
+  ), [stats.searchesCompleted, stats.totalSearches])
+  const searchesDisplay = useMemo(() => (
+    stats.totalSearches > 0 ? `${boundedSearchesCompleted}/${stats.totalSearches}` : (hasStarted ? formatCount(stats.searchesCompleted) : '-')
+  ), [boundedSearchesCompleted, stats.totalSearches, stats.searchesCompleted, hasStarted])
+  const analyzedDisplay = useMemo(() => (
+    analysisTotal && analysisTotal > 0 ? `${Math.min(stats.sourcesAnalyzed, analysisTotal)}/${analysisTotal}` : (hasStarted ? formatCount(stats.sourcesAnalyzed) : '-')
+  ), [analysisTotal, stats.sourcesAnalyzed, hasStarted])
+  const sourcesFoundDisplay = useMemo(() => (hasStarted ? formatCount(stats.sourcesFound) : '-'), [hasStarted, stats.sourcesFound])
+  const highQualityDisplay = useMemo(() => (hasStarted ? formatCount(stats.highQualitySources) : '-'), [hasStarted, stats.highQualitySources])
+  const duplicatesDisplay = useMemo(() => (hasStarted ? formatCount(stats.duplicatesRemoved) : '-'), [hasStarted, stats.duplicatesRemoved])
+  const mcpToolsDisplay = useMemo(() => (hasStarted ? formatCount(stats.mcpToolsUsed) : '-'), [hasStarted, stats.mcpToolsUsed])
+  const elapsedDisplay = useMemo(() => (
+    hasStarted ? `${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}` : '--:--'
+  ), [elapsedSec, hasStarted])
+  const qualityRateDisplay = useMemo(() => (
+    stats.sourcesFound > 0
+      ? `${Math.round((stats.highQualitySources / Math.max(1, stats.sourcesFound)) * 100)}%`
+      : hasStarted && stats.highQualitySources > 0
+        ? '100%'
+        : hasStarted ? '0%' : '-'
+  ), [stats.sourcesFound, stats.highQualitySources, hasStarted])
+
   const showSearchMeta = currentPhase === 'search' && stats.totalSearches > 0
   const showAnalysisMeta = currentPhase === 'analysis' && !!analysisTotal && analysisTotal > 0
 
@@ -1003,152 +897,30 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         </div>
       )}
 
-      {currentPhase === 'context_engineering' && (currentStatus === 'processing' || currentStatus === 'in_progress') && (
-        <div className="mb-3 flex items-center gap-2">
-          {CE_LAYERS.map((label, idx) => {
-            const completed = ceLayerProgress.done > idx
-            const isActiveLayer = ceLayerProgress.done === idx
-            const badgeStyle = completed
-              ? 'bg-primary/10 border-primary/30 text-primary'
-              : isActiveLayer
-                ? 'bg-primary/10 border-primary/30 text-primary'
-                : 'bg-surface-subtle border-border text-text-muted'
-
-            return (
-              <span
-                key={label}
-                className={`text-[11px] px-2 py-1 rounded-full border ${badgeStyle}`}
-              >
-                {label}
-              </span>
-            )
-          })}
-        </div>
-      )}
-
       {hasStarted && (
         <>
-          <div className="mb-4 bg-surface-subtle rounded-lg p-4">
-            <div className="flex justify-between items-center gap-2">
-              {researchPhases.map((phase, index) => (
-                <div key={phase.name} className="flex items-center flex-1">
-                  <div className="flex flex-col items-center flex-1">
-                    <div className={`
-                      p-2 rounded-full mb-1 transition-colors
-                      ${phase.isCompleted ? 'bg-success/10 text-success' : 
-                        phase.isActive ? 'bg-primary/10 text-primary animate-pulse' : 
-                        'bg-surface-subtle text-text-muted'}
-                    `}>
-                      {phase.isCompleted ? <FiCheckCircle className="h-4 w-4" /> : phase.icon}
-                    </div>
-                    <span className={`text-xs font-medium ${phase.isActive ? 'text-text' : 'text-text-muted'}`}>
-                      {phase.name}
-                    </span>
-                  </div>
-                  {index < researchPhases.length - 1 && (
-                    <div className={`h-0.5 flex-1 mx-2 transition-colors ${
-                      phase.isCompleted ? 'bg-success' : 'bg-surface-muted'
-                    }`} />
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-8 gap-3 mb-4">
-            <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">{sourcesFoundDisplay}</div>
-              <div className="text-xs text-text-muted">Sources Found</div>
-            </div>
-            <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">{searchesDisplay}</div>
-              <div className="text-xs text-text-muted">Searches</div>
-            </div>
-            <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">{analyzedDisplay}</div>
-              <div className="text-xs text-text-muted">Analyzed</div>
-            </div>
-            <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-success">{highQualityDisplay}</div>
-              <div className="text-xs text-text-muted">High Quality</div>
-            </div>
-            <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">{qualityRateDisplay}</div>
-              <div className="text-xs text-text-muted">Quality Rate</div>
-            </div>
-            <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-error">{duplicatesDisplay}</div>
-              <div className="text-xs text-text-muted">Duplicates Removed</div>
-            </div>
-            <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-primary">{mcpToolsDisplay}</div>
-              <div className="text-xs text-text-muted">Tools Executed</div>
-            </div>
-            <div className="bg-surface-subtle rounded-lg p-3">
-              <div className="text-2xl font-bold text-text">{elapsedDisplay}</div>
-              <div className="text-xs text-text-muted">Elapsed</div>
-            </div>
-          </div>
+          <PhaseTracker currentPhase={currentPhase} currentStatus={currentStatus} ceLayerProgress={ceLayerProgress} />
+          <ResearchStats
+            sourcesFound={sourcesFoundDisplay}
+            searches={searchesDisplay}
+            analyzed={analyzedDisplay}
+            highQuality={highQualityDisplay}
+            qualityRate={qualityRateDisplay}
+            duplicates={duplicatesDisplay}
+            toolsExecuted={mcpToolsDisplay}
+            elapsed={elapsedDisplay}
+          />
         </>
       )}
 
-      {/* Category filters - SwipeableTabs on mobile, regular tabs on desktop */}
-      {isMobile ? (
-        <SwipeableTabs
-          tabs={[
-            { key: 'all', label: 'All', badge: categoryCounts.all },
-            { key: 'search', label: 'Search', badge: categoryCounts.search },
-            { key: 'sources', label: 'Sources', badge: categoryCounts.sources },
-            { key: 'analysis', label: 'Analysis', badge: categoryCounts.analysis },
-            { key: 'system', label: 'System', badge: categoryCounts.system },
-            { key: 'errors', label: 'Errors', badge: categoryCounts.errors, badgeVariant: categoryCounts.errors > 0 ? 'error' : 'default' },
-          ]}
-          activeTab={activeCategory}
-          onTabChange={(key) => setActiveCategory(key as typeof activeCategory)}
-        >
-          <div
-            ref={updatesContainerRef}
-            className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto"
-            role="log"
-            aria-label="Research progress updates"
-            aria-live="polite"
-          >
-            {renderEvents()}
-          </div>
-        </SwipeableTabs>
-      ) : (
-        <>
-          <div className="mb-2 flex flex-wrap gap-2 text-xs">
-            {([
-              { key: 'all', label: `All (${categoryCounts.all})` },
-              { key: 'search', label: `Search (${categoryCounts.search})` },
-              { key: 'sources', label: `Sources (${categoryCounts.sources})` },
-              { key: 'analysis', label: `Analysis (${categoryCounts.analysis})` },
-              { key: 'system', label: `System (${categoryCounts.system})` },
-              { key: 'errors', label: `Errors (${categoryCounts.errors})`, emphasize: categoryCounts.errors > 0 },
-            ] as const).map(tab => (
-              <Button
-                key={tab.key}
-                size="sm"
-                variant={activeCategory === tab.key ? 'primary' : 'ghost'}
-                className={'emphasize' in tab && tab.emphasize ? 'text-error' : ''}
-                onClick={() => setActiveCategory(tab.key as CategoryKey)}
-              >
-                {tab.label}
-              </Button>
-            ))}
-          </div>
-          <div
-            ref={updatesContainerRef}
-            className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto"
-            role="log"
-            aria-label="Research progress updates"
-            aria-live="polite"
-          >
-            {renderEvents()}
-          </div>
-        </>
-      )}
+      {/* Category filters and event stream */}
+      <EventLog
+        updates={updates as unknown as LogUpdate[]}
+        isMobile={isMobile}
+        showVerbose={showVerbose}
+        activeCategory={activeCategory as LogCategory}
+        onCategoryChange={(k) => setActiveCategory(k as CategoryKey)}
+      />
 
       {updates.length === 0 && !isConnecting && (
         <div className="text-center py-8 animate-fade-in">

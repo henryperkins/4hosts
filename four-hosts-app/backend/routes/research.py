@@ -1270,7 +1270,39 @@ async def get_research_results(
                 "can_cancel": research["status"] in [ResearchStatus.QUEUED]
             }
 
-    return research["results"]
+    # Ensure results have the expected structure for frontend
+    results = research["results"]
+
+    # The frontend expects 'answer' to exist for display
+    # If answer is missing or incomplete, try to reconstruct it
+    if results:
+        # Check if answer exists and has required fields
+        answer = results.get("answer")
+        if not answer or not isinstance(answer, dict):
+            # Try to get it from integrated_synthesis
+            integrated = results.get("integrated_synthesis")
+            if integrated and isinstance(integrated, dict):
+                primary = integrated.get("primary_answer")
+                if primary and isinstance(primary, dict):
+                    results["answer"] = primary
+                    logger.info(f"Populated answer from integrated_synthesis for research_id: {research_id}")
+
+        # Ensure answer has minimum required fields for display
+        if results.get("answer") and isinstance(results["answer"], dict):
+            answer = results["answer"]
+            # Ensure required fields exist with defaults
+            if "summary" not in answer:
+                answer["summary"] = "Research completed but no summary available."
+            if "sections" not in answer:
+                answer["sections"] = []
+            if "action_items" not in answer:
+                answer["action_items"] = []
+            if "citations" not in answer:
+                answer["citations"] = []
+            if "metadata" not in answer:
+                answer["metadata"] = {}
+
+    return results
 
 
 # ---------------------------------------------------------------------------
