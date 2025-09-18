@@ -113,36 +113,46 @@ export const ResearchPage = () => {
     queryKey: ['research-results', currentResearchId],
     queryFn: () => api.getResearchResults(currentResearchId as string),
     // Keep polling enabled until we have final results OR explicitly stopped
-    enabled: !!currentResearchId && !stopPolling && !results,
+    enabled: !!currentResearchId && !stopPolling,
     // Keep polling until final status
     refetchInterval: (query) => {
       const d: unknown = query.state.data as unknown
       const s = getStatus(d)
       const staged: StagedStatus[] = ['queued','processing','in_progress']
-      return (s && staged.includes(s as StagedStatus)) ? 2000 : false
+      // Keep polling if still in progress
+      if (s && staged.includes(s as StagedStatus)) return 2000
+      // Stop polling once we have a final status
+      return false
     },
     staleTime: 1000,
   })
 
   // Apply polled results
   useEffect(() => {
-    if (!polledResults) return
+    if (!polledResults || !currentResearchId) return
+
     const status = getStatus(polledResults)
     const staged: StagedStatus[] = ['queued','processing','in_progress']
+
+    // Skip if still in progress
     if (status && staged.includes(status as StagedStatus)) return
 
+    // Handle error states
     if (status === 'failed' || status === 'cancelled') {
       const message = getMessage(polledResults) || 'Please try again'
       setError(`Research ${status}: ${message}`)
       setIsLoading(false)
       setShowProgress(false)
       setStopPolling(true)
+      setCurrentResearchId(null)
       return
     }
 
     // Final result path - either explicit 'completed' or full results object
     if (status === 'completed' || (polledResults && typeof polledResults === 'object' &&
         'answer' in polledResults && 'paradigm_analysis' in polledResults)) {
+
+      // Set results first
       setResults(polledResults as ResearchResult)
 
       // Extract paradigm classification from results
@@ -160,6 +170,7 @@ export const ResearchPage = () => {
         allParadigms.forEach(p => { if (!(p in distribution)) distribution[p] = 0 })
         const explanation: Record<string, string> = { [primary.paradigm]: primary.approach ?? '' }
         if (secondary?.paradigm) explanation[secondary.paradigm] = secondary.approach ?? ''
+
         setParadigmClassification({
           primary: primary.paradigm,
           secondary: secondary?.paradigm || null,
@@ -168,11 +179,14 @@ export const ResearchPage = () => {
           explanation
         })
       }
+
+      // Clean up states
       setIsLoading(false)
       setShowProgress(false)
       setStopPolling(true)
+      setCurrentResearchId(null)
     }
-  }, [polledResults])
+  }, [polledResults, currentResearchId])
 
   // Soft timeout for polling (default 20 minutes)
   useEffect(() => {
@@ -245,10 +259,14 @@ export const ResearchPage = () => {
         <div className="animate-slide-up">
           <ResearchProgress
             researchId={currentResearchId}
-            onComplete={() => setShowProgress(false)}
+            onComplete={() => {
+              setShowProgress(false)
+              // Don't need to set isLoading false here - the polling will handle it
+            }}
             onCancel={() => {
               setShowProgress(false)
               setCurrentResearchId(null)
+              setIsLoading(false)
             }}
           />
         </div>

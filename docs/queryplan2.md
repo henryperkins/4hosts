@@ -34,10 +34,11 @@ Short version: centralizing query planning into `search/query_planner/` touches 
 ### context\_engineering.py — **Medium**
 
 * **Current**: `OptimizeLayer` instantiates `QueryOptimizer` and calls `generate_query_variations(...)`, `optimize_query(...)`, and `get_key_terms(...)`.
-* **Change**:
-
-  * Swap to the planner’s analyzer for **key terms** only (use `classification_engine.QueryAnalyzer` that the planner also uses), or import `QueryPlanner` when you really need ready-to-search variations.
-  * If this layer only needs “preview” variations for UI, call `QueryPlanner.initial_plan(...)` with a **low cap** and show the top N `QueryCandidate.query`. Drop direct `QueryOptimizer` usage so heuristics stay in one place.
+* **Change (PR1)**:
+  * Leave `OptimizeLayer` as-is to keep existing tests stable and behavior unchanged.
+* **Optional (PR2)**:
+  * If the layer needs “preview” variations for UI, import `QueryPlanner` and call `initial_plan(...)` with a low cap (e.g., 5) and show the top-N `QueryCandidate.query`.
+  * For key terms, continue using `QueryOptimizer.get_key_terms(...)` unless you add an equivalent `get_key_terms(...)` helper to `classification_engine.QueryAnalyzer` for a single point of truth.
 
 ### search\_apis.py — **Medium** (even though it’s one of the 7, it affects other callers)
 
@@ -46,6 +47,7 @@ Short version: centralizing query planning into `search/query_planner/` touches 
 
   * If `planned` is provided, **skip** `self.qopt.generate_query_variations` and just run the given candidates. Keep old behavior for backwards compatibility.
   * Emit a `query_variant` string like `"{stage}:{label}"` on each result (helps downstream analytics).
+  * Add `SearchAPIManager.search_with_plan(planned)` to pass planned candidates down to each provider by calling `api.search_with_variations(query, cfg, planned=planned)`.
 
 ### research\_store.py / research\_persistence.py — **Low → Medium** (observability)
 
@@ -77,8 +79,8 @@ Short version: centralizing query planning into `search/query_planner/` touches 
 
 ### classification\_engine.py — **Low**
 
-* Already provides `QueryAnalyzer`; the planner will call it.
-* No change beyond maybe exposing `get_key_terms(...)` cheaply if not already public (it is).
+* Provides `QueryAnalyzer` for feature extraction; the planner should source key terms via `QueryOptimizer.get_key_terms(...)` today.
+* Optional: add a small `get_key_terms(...)` helper to `QueryAnalyzer` in a later PR if you prefer a single point of truth for term extraction.
 
 ### background\_llm.py, llm\_client.py, openai\_responses\_client.py, llm\_critic.py — **None**
 
@@ -116,7 +118,7 @@ Short version: centralizing query planning into `search/query_planner/` touches 
    Add `QueryCandidate` and `PlannerConfig` in `search/query_planner/types.py`. Other files shouldn’t construct these directly except orchestrators/tests, but they’ll read `query_variant` from results.
 
 2. **Orchestrator wiring**
-   In `research_orchestrator.py` (covered previously), construct the planner, pass `planned` to `search_apis.BaseSearchAPI.search_with_variations(...)`, and use `planner.followups(...)` when agentic coverage suggests gaps. This is the only call-site you need to touch to propagate the new plan everywhere.
+   In `research_orchestrator.py` (covered previously), construct the planner and call `SearchAPIManager.search_with_plan(planned)` to pass candidates to providers via the new `planned` parameter, and use `planner.followups(...)` when agentic coverage suggests gaps. This is the only call-site you need to touch to propagate the new plan everywhere.
 
 3. **Env → config**
    Move any query-variation envs (e.g., `SEARCH_QUERY_VARIATIONS_LIMIT`, `ENABLE_QUERY_LLM`) into a single place that builds `PlannerConfig`. Everyone else reads from the config object via the orchestrator—not directly from `os.environ`.

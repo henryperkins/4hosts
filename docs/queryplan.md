@@ -120,7 +120,7 @@ from .types import PlannerConfig, QueryCandidate
 from .base import RuleBasedStage, LLMVariationsStage, ParadigmStage, AgenticFollowupsStage
 from services.search_apis import QueryOptimizer
 from services.paradigm_search import get_search_strategy
-from services.classification_engine import QueryAnalyzer  # for key terms
+# Key-term extraction: use QueryOptimizer.get_key_terms() (or add an equivalent helper to QueryAnalyzer)
 
 def _canon(q: str) -> str:  # canonicalize for dedup
     q = q.strip()
@@ -138,10 +138,10 @@ class QueryPlanner:
         self.llm  = LLMVariationsStage()
         self.par  = ParadigmStage(get_search_strategy)
         self.agentic = AgenticFollowupsStage()
-        self.analyzer = QueryAnalyzer()
+        self.qopt_terms = QueryOptimizer()
 
     async def initial_plan(self, *, seed_query: str, paradigm: str) -> list[QueryCandidate]:
-        key_terms = self.analyzer.get_key_terms(seed_query)
+        key_terms = self.qopt_terms.get_key_terms(seed_query)
         stage_map = {"rule_based": self.rule, "llm": self.llm, "paradigm": self.par}
         bag: list[QueryCandidate] = []
         for stage_name in self.cfg.stage_order:
@@ -150,7 +150,7 @@ class QueryPlanner:
         return self._merge_and_rank(bag)
 
     async def followups(self, *, seed_query: str, paradigm: str, coverage, missing_terms, domain_gaps) -> list[QueryCandidate]:
-        key_terms = self.analyzer.get_key_terms(seed_query)
+        key_terms = self.qopt_terms.get_key_terms(seed_query)
         bag = await self.agentic.generate(seed_query=seed_query, paradigm=paradigm, key_terms=key_terms, cfg=self.cfg, coverage=coverage, missing_terms=missing_terms, domain_gaps=domain_gaps)
         return self._merge_and_rank(bag)
 
@@ -195,8 +195,8 @@ class QueryPlanner:
      * `ENABLE_QUERY_LLM` → `cfg.enable_llm`
      * `SEARCH_QUERY_VARIATIONS_LIMIT` → `cfg.max_candidates`
      * `ADAPTIVE_QUERY_LIMIT` can still influence `ParadigmStage` through its own strategy.
-   * Call `planner.initial_plan(seed_query, paradigm)` to get candidates.
-   * Execute via `search_manager.run_planned(...)` (a lightweight wrapper that passes candidates down to providers).
+   * Call `planner.initial_plan(seed_query, paradigm)` to get candidates; when using planned candidates, skip `_compress_and_dedup_queries()` and `_prioritize_queries()` to avoid double-dedup/order drift.
+   * Execute via `search_manager.search_with_plan(planned)` (a lightweight wrapper that passes candidates down to providers).
    * After the first batch, compute coverage/gaps using your existing `evaluate_coverage_from_sources` & `summarize_domain_gaps`, then call `planner.followups(...)` to fetch the second round. Stop when coverage ≥ threshold or on budget.
 
 3. **Paradigm ranking stays.** You already use `strategy.filter_and_rank_results(...)`; keep it for result ranking. The planner only standardizes *inputs* to search.
@@ -218,7 +218,7 @@ Surface these as JSON/YAML once, not scattered across modules.
 
 * **Trace each candidate:** include `tags={"reason":"synonym","entity":"<X>"}`, or e.g. `{"missing_term":"right to repair"}` for agentic. Log a compact “plan trace” for debugging.
 * **Budget-aware:** enforce a global `planner.max_candidates` and per-stage caps. Respect existing provider CPH/CPM throttles; the planner is just deciding *what* to search.
-* **Locale/language:** if `QueryAnalyzer` sees non-English, pass `language` down to `SearchConfig` and mute WordNet synonyms.
+* **Locale/language:** if the analyzer detects non-English, pass `language` down to `SearchConfig` and mute WordNet synonyms.
 
 ---
 
@@ -228,7 +228,8 @@ Surface these as JSON/YAML once, not scattered across modules.
 
 * Add `planned: List[QueryCandidate] | None` parameter to `BaseSearchAPI.search_with_variations()`.
 * Implement `QueryPlanner` module.
-* In `research_orchestrator.py`, construct & call the planner; pass plan to the search manager. Keep the provider fallback intact.
+* Add `SearchAPIManager.search_with_plan(planned)` and wire it to pass `planned` down to providers via `.search_with_variations(..., planned=planned)`.
+* In `research_orchestrator.py`, construct & call the planner; pass plan to the search manager using `search_with_plan`. Keep the provider fallback intact.
 
 **PR2 (cleanup):**
 
