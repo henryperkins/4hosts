@@ -64,7 +64,14 @@ export const ResearchPage = () => {
   const getStatus = (obj: unknown): StagedStatus | string | undefined => {
     if (obj && typeof obj === 'object') {
       const rec = obj as Record<string, unknown>
-      return typeof rec.status === 'string' ? rec.status : undefined
+      // Check for explicit status field
+      if (typeof rec.status === 'string') {
+        return rec.status
+      }
+      // If we have answer and paradigm_analysis, it's completed results
+      if (rec.answer && rec.paradigm_analysis) {
+        return 'completed'
+      }
     }
     return undefined
   }
@@ -105,7 +112,8 @@ export const ResearchPage = () => {
   const { data: polledResults } = useQuery({
     queryKey: ['research-results', currentResearchId],
     queryFn: () => api.getResearchResults(currentResearchId as string),
-    enabled: showProgress && !!currentResearchId && !stopPolling,
+    // Keep polling enabled until we have final results OR explicitly stopped
+    enabled: !!currentResearchId && !stopPolling && !results,
     // Keep polling until final status
     refetchInterval: (query) => {
       const d: unknown = query.state.data as unknown
@@ -132,35 +140,38 @@ export const ResearchPage = () => {
       return
     }
 
-    // Final result path
-    setResults(polledResults as ResearchResult)
+    // Final result path - either explicit 'completed' or full results object
+    if (status === 'completed' || (polledResults && typeof polledResults === 'object' &&
+        'answer' in polledResults && 'paradigm_analysis' in polledResults)) {
+      setResults(polledResults as ResearchResult)
 
-    // Extract paradigm classification from results
-    const r = polledResults as ResearchResult
-    if (r.paradigm_analysis && r.paradigm_analysis.primary) {
-      const primary = r.paradigm_analysis.primary
-      const secondary = r.paradigm_analysis.secondary
+      // Extract paradigm classification from results
+      const r = polledResults as ResearchResult
+      if (r.paradigm_analysis && r.paradigm_analysis.primary) {
+        const primary = r.paradigm_analysis.primary
+        const secondary = r.paradigm_analysis.secondary
 
-      const distribution: Record<string, number> = {}
-      distribution[primary.paradigm] = typeof primary.confidence === 'number' ? primary.confidence : 0
-      if (secondary?.paradigm) {
-        distribution[secondary.paradigm] = typeof secondary.confidence === 'number' ? secondary.confidence : 0
+        const distribution: Record<string, number> = {}
+        distribution[primary.paradigm] = typeof primary.confidence === 'number' ? primary.confidence : 0
+        if (secondary?.paradigm) {
+          distribution[secondary.paradigm] = typeof secondary.confidence === 'number' ? secondary.confidence : 0
+        }
+        const allParadigms = ['dolores', 'teddy', 'bernard', 'maeve']
+        allParadigms.forEach(p => { if (!(p in distribution)) distribution[p] = 0 })
+        const explanation: Record<string, string> = { [primary.paradigm]: primary.approach ?? '' }
+        if (secondary?.paradigm) explanation[secondary.paradigm] = secondary.approach ?? ''
+        setParadigmClassification({
+          primary: primary.paradigm,
+          secondary: secondary?.paradigm || null,
+          distribution,
+          confidence: typeof primary.confidence === 'number' ? primary.confidence : 0,
+          explanation
+        })
       }
-      const allParadigms = ['dolores', 'teddy', 'bernard', 'maeve']
-      allParadigms.forEach(p => { if (!(p in distribution)) distribution[p] = 0 })
-      const explanation: Record<string, string> = { [primary.paradigm]: primary.approach ?? '' }
-      if (secondary?.paradigm) explanation[secondary.paradigm] = secondary.approach ?? ''
-      setParadigmClassification({
-        primary: primary.paradigm,
-        secondary: secondary?.paradigm || null,
-        distribution,
-        confidence: typeof primary.confidence === 'number' ? primary.confidence : 0,
-        explanation
-      })
+      setIsLoading(false)
+      setShowProgress(false)
+      setStopPolling(true)
     }
-    setIsLoading(false)
-    setShowProgress(false)
-    setStopPolling(true)
   }, [polledResults])
 
   // Soft timeout for polling (default 20 minutes)

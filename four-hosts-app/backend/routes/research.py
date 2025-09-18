@@ -1326,6 +1326,10 @@ async def get_research_results(
             if "metadata" not in answer:
                 answer["metadata"] = {}
 
+        # Ensure status field is included for frontend consistency
+        if "status" not in results:
+            results["status"] = "completed"
+
     return results
 
 

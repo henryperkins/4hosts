@@ -14,7 +14,7 @@ from datetime import datetime
 # Add the current directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from services.search_apis import BraveSearchAPI, SearchConfig, RateLimiter
+from services.search_apis import BraveSearchAPI, SearchConfig
 
 
 def print_result(result, index):
@@ -48,9 +48,7 @@ async def test_basic_search():
         return False
 
     # Create API instance
-    brave_api = BraveSearchAPI(
-        api_key=api_key, rate_limiter=RateLimiter(calls_per_minute=60)
-    )
+    brave_api = BraveSearchAPI(api_key=api_key)
 
     query = "artificial intelligence ethics 2024"
     config = SearchConfig(max_results=5, language="en", region="us")
@@ -245,9 +243,7 @@ async def test_rate_limiting():
     if not api_key:
         return False
 
-    brave_api = BraveSearchAPI(
-        api_key=api_key, rate_limiter=RateLimiter(calls_per_minute=60)
-    )
+    brave_api = BraveSearchAPI(api_key=api_key)
 
     query = "rate limit test"
     config = SearchConfig(max_results=1)

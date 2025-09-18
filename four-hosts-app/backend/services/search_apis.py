@@ -19,7 +19,7 @@ import random
 import re
 import string
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union, cast, Callable, Awaitable
@@ -45,6 +45,7 @@ from tenacity import (
 
 # Circuit breaker for resilient external API calls
 from utils.circuit_breaker import with_circuit_breaker, CircuitOpenError
+from services.rate_limiter import ClientRateLimiter
 
 
 # --------------------------------------------------------------------------- #
@@ -1081,23 +1082,9 @@ class SearchConfig:
 
 
 # --------------------------------------------------------------------------- #
-#                         RATE LIMITER                                        #
+#                         RATE LIMITER (client-side)                          #
 # --------------------------------------------------------------------------- #
-
-class RateLimiter:
-    def __init__(self, calls_per_minute: int = 60):
-        self.calls = deque()
-        self.cpm = calls_per_minute
-
-    async def wait(self):
-        now = datetime.now(timezone.utc)
-        while self.calls and (now - self.calls[0]) >= timedelta(minutes=1):
-            self.calls.popleft()
-        if len(self.calls) >= self.cpm:
-            delay = 60 - (now - self.calls[0]).total_seconds()
-            if delay > 0:
-                await asyncio.sleep(delay)
-        self.calls.append(datetime.now(timezone.utc))
+# Use ClientRateLimiter from services.rate_limiter directly.
 
 
 # --------------------------------------------------------------------------- #
@@ -1437,7 +1424,7 @@ class ContentRelevanceFilter:
 class BaseSearchAPI:
     def __init__(self, api_key: str = "", rate: int = 60):
         self.api_key = api_key
-        self.rate = RateLimiter(calls_per_minute=rate)
+        self.rate = ClientRateLimiter(calls_per_minute=rate)
         self.session: Optional[aiohttp.ClientSession] = None
         self.qopt = QueryOptimizer()
         self.rfilter = ContentRelevanceFilter()

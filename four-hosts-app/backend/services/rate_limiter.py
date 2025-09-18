@@ -4,6 +4,7 @@ Phase 5: Production-Ready Features
 """
 
 import time
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, Tuple
 from collections import defaultdict, deque
@@ -18,7 +19,29 @@ import logging
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from services.auth_service import UserRole, RATE_LIMITS, get_api_key_info, decode_token
+try:
+    # Heavy server-side auth dependencies; may not be available in simple client-only contexts
+    from services.auth_service import UserRole, RATE_LIMITS, get_api_key_info, decode_token
+except Exception:  # pragma: no cover - fallback for lightweight imports
+    from enum import Enum
+
+    class UserRole(str, Enum):  # minimal stub for client-side contexts
+        FREE = "free"
+
+    RATE_LIMITS = {
+        UserRole.FREE: {
+            "concurrent_requests": 5,
+            "requests_per_minute": 60,
+            "requests_per_hour": 3600,
+            "requests_per_day": 100000,
+        }
+    }
+
+    async def get_api_key_info(*_args, **_kwargs):  # type: ignore[empty-body]
+        return None
+
+    async def decode_token(*_args, **_kwargs):  # type: ignore[empty-body]
+        return {}
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -613,3 +636,59 @@ class CostBasedRateLimiter:
         now = datetime.now(timezone.utc)
         tomorrow = now + timedelta(days=1)
         return tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+# --- Client-Side Token Bucket (for outbound calls) ---
+
+
+class ClientRateLimiter:
+    """
+    Lightweight async token-bucket limiter for client/outbound usage.
+
+    Purpose:
+    - Provide simple, per-process smoothing for outbound provider calls
+      (e.g., search/fetch) without touching the production API limiter.
+    - Avoid confusion with the server-side RateLimiter by using a distinct name.
+
+    Notes:
+    - Uses `asyncio` and in-process state only (no Redis, no headers).
+    - Tokens refill continuously; capacity defaults to `calls_per_minute`.
+    - `.wait()` blocks until 1 token is available (configurable via `tokens`).
+    """
+
+    def __init__(
+        self,
+        calls_per_minute: int = 60,
+        *,
+        burst: Optional[int] = None,
+        clock: Optional[callable] = None,
+    ) -> None:
+        if calls_per_minute <= 0:
+            raise ValueError("calls_per_minute must be > 0")
+        self._rate_per_sec: float = calls_per_minute / 60.0
+        self._capacity: float = float(burst if burst is not None else calls_per_minute)
+        self._tokens: float = self._capacity
+        self._clock = clock or time.monotonic
+        self._updated: float = self._clock()
+        self._lock = asyncio.Lock()
+
+    def _refill(self) -> None:
+        now = self._clock()
+        elapsed = max(0.0, now - self._updated)
+        if elapsed > 0:
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate_per_sec)
+            self._updated = now
+
+    async def wait(self, tokens: float = 1.0) -> None:
+        if tokens <= 0:
+            return
+        while True:
+            async with self._lock:
+                self._refill()
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return
+                needed = tokens - self._tokens
+                # Compute sleep outside the lock to let other coroutines progress
+                sleep_for = needed / self._rate_per_sec if self._rate_per_sec > 0 else 0.05
+            await asyncio.sleep(max(0.001, sleep_for))
