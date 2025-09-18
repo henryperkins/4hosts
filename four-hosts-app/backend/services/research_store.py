@@ -129,11 +129,38 @@ class ResearchStore:
         return research_id in self.fallback_store
 
     async def update_field(self, research_id: str, field: str, value: Any):
-        """Update a specific field"""
-        data = await self.get(research_id)
-        if data:
-            data[field] = value
-            await self.set(research_id, data)
+        """Update a specific field (delegates to update_fields)."""
+        await self.update_fields(research_id, {field: value})
+
+    async def update_fields(self, research_id: str, patch: Dict[str, Any]):
+        """
+        Atomically update multiple fields by performing a single read/merge/write
+        of the full research record. Adds/bumps a monotonically increasing
+        `version` and updates `_updated_at` timestamp on every write.
+
+        For Redis, this results in a single SET of the merged JSON payload which
+        is atomic at the key level. For the in-memory fallback it updates the
+        single object reference.
+        """
+        if not isinstance(patch, dict):
+            patch = {"_patch": patch}
+
+        # Read existing record (or start a new one if missing)
+        current = await self.get(research_id) or {}
+
+        # Merge and bump version
+        try:
+            prev_version = int(current.get("version", 0) or 0)
+        except Exception:
+            prev_version = 0
+
+        merged = dict(current)
+        merged.update(patch)
+        merged["version"] = prev_version + 1
+        merged["_updated_at"] = datetime.utcnow().isoformat()
+
+        # Write back once
+        await self.set(research_id, merged)
 
     async def get_user_research(
         self,

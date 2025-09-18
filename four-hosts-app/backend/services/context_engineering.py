@@ -888,10 +888,7 @@ class OptimizeLayer(ContextLayer):
             import os
             if os.getenv("ENABLE_QUERY_LLM", "0").lower() in {"1", "true", "yes"}:
                 try:
-                    try:
-                        from backend.services.llm_query_optimizer import propose_semantic_variations  # type: ignore
-                    except Exception:  # pragma: no cover
-                        from services.llm_query_optimizer import propose_semantic_variations  # type: ignore
+                    from services.llm_query_optimizer import propose_semantic_variations  # type: ignore
                     llm_vars = await propose_semantic_variations(
                         base_query,
                         paradigm,

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from backend.services.research_store import research_store
+from services.research_store import research_store
 
 logger = logging.getLogger(__name__)
 

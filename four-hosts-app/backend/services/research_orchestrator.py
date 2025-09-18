@@ -9,6 +9,7 @@ import os
 from typing import List, Dict, Any, Optional, Tuple, Set, cast, TypedDict
 from datetime import datetime
 from collections import defaultdict, deque
+from urllib.parse import quote_plus
 from dataclasses import dataclass, field
 
 # Contracts
@@ -30,6 +31,7 @@ from services.search_apis import (
     SearchConfig,
     create_search_manager,
 )
+from services.exa_research import exa_research_client
 from services.credibility import get_source_credibility
 from services.paradigm_search import get_search_strategy, SearchContext
 from services.cache import (
@@ -996,6 +998,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             metrics=search_metrics_local,
         )
 
+        # Record per-query effectiveness (query -> results count)
+        try:
+            query_effectiveness = [
+                {"query": q, "results": len(res or [])}
+                for q, res in (search_results or {}).items()
+            ]
+        except Exception:
+            query_effectiveness = []
+
         # Check for cancellation before processing results
         if await check_cancelled():
             return {"status": "cancelled", "message": "Research was cancelled"}
@@ -1009,6 +1020,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             progress_callback,
             research_id,
             metrics=search_metrics_local,
+        )
+
+        await self._augment_with_exa_research(
+            processed_results,
+            classification,
+            context_engineered,
+            user_context,
+            progress_callback,
+            research_id,
         )
 
         # Check for cancellation before deep research
@@ -1134,6 +1154,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         processed_results["metadata"]["high_quality_sources"] = high_quality_sources
         processed_results["metadata"]["category_distribution"] = category_distribution
         processed_results["metadata"].setdefault("bias_distribution", {})
+        if progress_callback and research_id:
+            try:
+                await progress_callback.update_progress(
+                    research_id,
+                    sources_analyzed=total_sources_analyzed,
+                    high_quality_sources=high_quality_sources,
+                )
+            except Exception:
+                pass
         processed_results["metadata"].setdefault("agent_trace", [])
 
         normalized_sources: List[Dict[str, Any]] = []
@@ -1191,8 +1220,38 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             normalized_sources = []
 
-        # Optional answer synthesis (P2)
+        # Optional answer synthesis (P2) with data-quality gating
         synthesized_answer = None
+        if synthesize_answer:
+            # Gate synthesis when there isn't enough or credible evidence
+            try:
+                min_results = int(os.getenv("MIN_RESULTS_FOR_SYNTHESIS", "3") or 3)
+            except Exception:
+                min_results = 3
+            try:
+                min_avg_cred = float(os.getenv("MIN_AVG_CREDIBILITY", "0.45") or 0.45)
+            except Exception:
+                min_avg_cred = 0.45
+
+            try:
+                results_count = len(processed_results.get("results", []) or [])
+            except Exception:
+                results_count = 0
+            try:
+                avg_cred = float((processed_results.get("credibility_summary") or {}).get("average_score", 0.0) or 0.0)
+            except Exception:
+                avg_cred = 0.0
+
+            if results_count < min_results or avg_cred < min_avg_cred:
+                md = processed_results.setdefault("metadata", {})
+                md["insufficient_data"] = {
+                    "reason": "insufficient_results" if results_count < min_results else "low_average_credibility",
+                    "results_count": results_count,
+                    "avg_credibility": avg_cred,
+                    "thresholds": {"min_results": min_results, "min_avg_credibility": min_avg_cred},
+                }
+                synthesize_answer = False
+
         if synthesize_answer:
             try:
                 # Build evidence quotes from processed results (typed EvidenceQuote)
@@ -1306,6 +1365,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         f"Research ID: {research_id or 'N/A'}"
                     )
 
+                logger.info(f"Starting answer synthesis for research_id: {research_id}")
                 synthesized_answer = await self._synthesize_answer(
                     classification=classification,
                     context_engineered=context_engineered,
@@ -1431,6 +1491,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 **processed_results["metadata"],
                 "total_results": len(processed_results["results"]),
                 "queries_executed": len(optimized_queries),
+                "query_effectiveness": query_effectiveness,
                 "sources_used": processed_results["sources_used"],
                 "credibility_summary": processed_results["credibility_summary"],
                 "deduplication_stats": processed_results["dedup_stats"],
@@ -1582,6 +1643,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         evidence_bundle: Any | None = None,
     ) -> Any:
         """Build a SynthesisContext from research outputs and invoke answer generator."""
+        logger.info(f"_synthesize_answer called for research_id: {research_id}, results count: {len(results)}")
         if not _ANSWER_GEN_AVAILABLE:
             error_msg = (
                 "CRITICAL: Answer generation module not available - Cannot synthesize response. "
@@ -1897,6 +1959,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # Call the generator using the legacy signature for broad compatibility
         assert answer_orchestrator is not None, "Answer generation not available"
+        logger.info(f"Calling answer_orchestrator.generate_answer for research_id: {research_id}")
         answer = await answer_orchestrator.generate_answer(
             paradigm=paradigm_code,
             query=getattr(context_engineered, "original_query", ""),
@@ -1986,6 +2049,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             pass
 
+        logger.info(f"Answer generation completed for research_id: {research_id}")
         return answer
 
 
@@ -2479,6 +2543,156 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             },
             "contradictions": {"count": 0, "examples": []},
         }
+
+    async def _augment_with_exa_research(
+        self,
+        processed_results: Dict[str, Any],
+        classification: ClassificationResultSchema,
+        context_engineered: ContextEngineeredQuerySchema,
+        user_context: Any,
+        progress_callback: Optional[Any],
+        research_id: Optional[str],
+    ) -> None:
+        """Run Exa research to supplement Brave results when configured."""
+
+        try:
+            enabled = os.getenv("ENABLE_EXA_RESEARCH_SUPPLEMENT", "1").lower() in {"1", "true", "yes"}
+        except Exception:
+            enabled = True
+        if not enabled:
+            return
+
+        if not exa_research_client.is_configured():
+            return
+
+        results = processed_results.get("results", []) or []
+        if not results:
+            return
+
+        brave_highlights: List[Dict[str, str]] = []
+        for res in results:
+            try:
+                source_name = (getattr(res, "source", "") or "").lower()
+                if not source_name and hasattr(res, "source_api"):
+                    source_name = (getattr(res, "source_api", "") or "").lower()
+            except Exception:
+                source_name = ""
+            if "brave" not in source_name:
+                continue
+            brave_highlights.append(
+                {
+                    "title": str(getattr(res, "title", "") or ""),
+                    "url": str(getattr(res, "url", "") or ""),
+                    "snippet": str(getattr(res, "snippet", "") or getattr(res, "content", "") or ""),
+                }
+            )
+
+        if not brave_highlights:
+            return
+
+        primary_paradigm = getattr(classification, "primary_paradigm", None)
+        focus = self._focus_for_paradigm(primary_paradigm)
+
+        original_query = getattr(context_engineered, "original_query", "") or getattr(user_context, "query", "")
+        if not original_query:
+            original_query = getattr(classification, "query", "")
+
+        if not original_query:
+            return
+
+        if progress_callback and research_id:
+            try:
+                await progress_callback.update_progress(
+                    research_id,
+                    phase="analysis",
+                    message="Running supplemental Exa research",
+                )
+            except Exception:
+                pass
+
+        exa_output = await exa_research_client.supplement_with_research(
+            original_query,
+            brave_highlights,
+            focus=focus,
+        )
+
+        if not exa_output or not exa_output.summary:
+            return
+
+        supplemental_sources = [src for src in exa_output.supplemental_sources if src.get("url")]
+
+        content_lines = [f"Summary: {exa_output.summary.strip()}"]
+        if exa_output.key_findings:
+            content_lines.append("Key Findings:")
+            content_lines.extend([f"- {finding}" for finding in exa_output.key_findings])
+        if supplemental_sources:
+            content_lines.append("Supplemental Sources:")
+            for src in supplemental_sources[:5]:
+                title = src.get("title") or src.get("url")
+                content_lines.append(f"* {title} ({src.get('url')})")
+
+        pseudo_url = f"exa://research/{quote_plus(original_query[:80])}"
+        supplement = SearchResult(
+            title="Exa Research Synthesis",
+            url=pseudo_url,
+            snippet=exa_output.summary[:280],
+            source="exa_research",
+            content="\n".join(content_lines),
+            relevance_score=0.85,
+            credibility_score=0.65,
+            raw_data={
+                "key_findings": exa_output.key_findings,
+                "supplemental_sources": supplemental_sources,
+                "focus": focus,
+            },
+            result_type="research",
+        )
+
+        # Prepend so the synthesis step sees it early without displacing top Brave hits entirely
+        processed_results["results"].insert(0, supplement)
+
+        metadata = processed_results.setdefault("metadata", {})
+        metadata["exa_research"] = {
+            "summary": exa_output.summary,
+            "key_findings": exa_output.key_findings,
+            "supplemental_sources": supplemental_sources,
+        }
+        metadata.setdefault("apis_used", [])
+        try:
+            apis = set(metadata.get("apis_used", []) or [])
+            apis.add("exa_research")
+            metadata["apis_used"] = list(apis)
+        except Exception:
+            metadata["apis_used"] = list({"exa_research"})
+
+        try:
+            sources_used = set(processed_results.get("sources_used", []) or [])
+            sources_used.add("exa_research")
+            processed_results["sources_used"] = list(sources_used)
+        except Exception:
+            processed_results["sources_used"] = ["exa_research"]
+
+        if progress_callback and research_id:
+            try:
+                await progress_callback.update_progress(
+                    research_id,
+                    phase="analysis",
+                    message="Exa research augmentation complete",
+                )
+            except Exception:
+                pass
+
+    @staticmethod
+    def _focus_for_paradigm(paradigm: Optional[HostParadigm]) -> Optional[str]:
+        mapping = {
+            HostParadigm.BERNARD: "Provide data-backed evidence, recent studies, and quantitative context.",
+            HostParadigm.MAEVE: "Highlight strategic implications, competitive dynamics, and actionable levers.",
+            HostParadigm.DOLORES: "Surface investigative findings, equity impacts, and accountability angles.",
+            HostParadigm.TEDDY: "Emphasize community outcomes, practitioner guidance, and support resources.",
+        }
+        if paradigm in mapping:
+            return mapping[paradigm]
+        return None
 
 
 

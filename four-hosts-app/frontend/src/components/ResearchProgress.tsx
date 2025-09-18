@@ -118,6 +118,7 @@ interface WebSocketData {
   total_searches?: number
   high_quality_sources?: number
   duplicates_removed?: number
+  mcp_tools_used?: number
   apis?: string[]
   // Determinate progress fields
   items_done?: number

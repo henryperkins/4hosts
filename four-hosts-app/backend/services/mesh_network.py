@@ -174,7 +174,7 @@ class MeshNetworkNegotiator:
         ])
 
         # LLM client (lazy import to avoid heavy import path on app startup)
-        from backend.services.llm_client import llm_client
+        from services.llm_client import llm_client
 
         for paradigm in paradigms:
             prompt = (
@@ -248,7 +248,7 @@ class MeshNetworkNegotiator:
                 },
                 "strict": True,
             }
-            from backend.services.llm_client import llm_client
+            from services.llm_client import llm_client
             result = await llm_client.generate_structured_output(
                 prompt=prompt,
                 schema=schema,
@@ -290,7 +290,7 @@ class MeshNetworkNegotiator:
                 },
                 "strict": True,
             }
-            from backend.services.llm_client import llm_client
+            from services.llm_client import llm_client
             result = await llm_client.generate_structured_output(
                 prompt=prompt,
                 schema=schema,

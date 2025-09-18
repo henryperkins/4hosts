@@ -454,8 +454,30 @@ class LLMClient:
                         "store": True,
                     }
 
-                    # Responses API doesn't support response_format parameter
-                    # Instead, add JSON instructions to guide structured output
+                    # Structured outputs (JSON mode / schema)
+                    text_format: Optional[Dict[str, Any]] = None
+                    if json_schema:
+                        schema_name = json_schema.get("name") if isinstance(json_schema, dict) else None
+                        schema_payload = json_schema.get("schema") if isinstance(json_schema, dict) else None
+                        description = json_schema.get("description") if isinstance(json_schema, dict) else None
+                        strict = json_schema.get("strict") if isinstance(json_schema, dict) else None
+                        text_format = {
+                            "type": "json_schema",
+                            "name": schema_name or "JSONSchema",
+                            "schema": schema_payload or json_schema,
+                        }
+                        if description:
+                            text_format["description"] = description
+                        if strict is not None:
+                            text_format["strict"] = strict
+                    elif response_format:
+                        fmt_type = response_format.get("type") if isinstance(response_format, dict) else None
+                        if fmt_type in {"json_object", "text"}:
+                            text_format = {"type": fmt_type}
+
+                    if text_format:
+                        resp_req["text"] = {"format": text_format}
+
                     if json_schema or response_format:
                         json_instruction = "You must respond with valid JSON that matches the required schema."
                         if response_format and response_format.get("type") == "json_object":
@@ -1126,6 +1148,8 @@ async def responses_create(
     store: bool = True,
     previous_response_id: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
+    response_format: Optional[Dict[str, Any]] = None,
+    text: Optional[Dict[str, Any]] = None,
 ) -> Union[Dict[str, Any], AsyncIterator[Dict[str, Any]]]:
     from services.openai_responses_client import get_responses_client
     client = get_responses_client()
@@ -1141,6 +1165,8 @@ async def responses_create(
         store=store,
         previous_response_id=previous_response_id,
         max_output_tokens=max_output_tokens,
+        response_format=response_format,
+        text=text,
     )
 
 async def responses_retrieve(response_id: str) -> Dict[str, Any]:

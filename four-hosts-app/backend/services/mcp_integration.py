@@ -182,6 +182,22 @@ class MCPIntegration:
             except Exception:
                 pass
         
+        if research_id and not response.error:
+            research_key = str(research_id)
+            try:
+                state = progress_tracker.research_progress.get(research_key)
+                current = int(state.get("mcp_tools_used", 0) or 0) + 1 if state else None
+            except Exception:
+                current = None
+            if current is not None:
+                try:
+                    await progress_tracker.update_progress(
+                        research_key,
+                        mcp_tools_used=current,
+                    )
+                except Exception:
+                    pass
+
         if response.error:
             logger.warning(f"Tool execution error: {response.error}")
             raise Exception(f"MCP tool execution failed: {response.error}")

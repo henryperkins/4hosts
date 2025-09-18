@@ -490,7 +490,6 @@ class ConnectionManager:
 # --- Progress Tracker ---
 
 
-from typing import Any  # at top we already have; ensure not duplicate but ensure imported earlier import list includes Any; top already includes Any. We'll keep.
 
 class ProgressTracker:
     """Tracks and broadcasts research progress"""
@@ -508,6 +507,31 @@ class ProgressTracker:
         # Rolling average duration per phase (milliseconds)
         self._phase_stats: Dict[str, List[float]] = {}
 
+        # Weighted progress model (sums to 1.0)
+        self._phase_weights: Dict[str, float] = {
+            "classification": 0.10,
+            "context": 0.15,
+            "search": 0.45,
+            "processing": 0.10,  # dedup/credibility/filtering
+            "synthesis": 0.20,
+        }
+
+        # Throttled persistence of progress snapshots to the research store
+        self._persist_interval_sec: int = int(os.getenv("PROGRESS_PERSIST_INTERVAL_SEC", "2") or 2)
+        self._last_persist: Dict[str, float] = {}
+
+    def _canonical_phase(self, phase: Optional[str]) -> Optional[str]:
+        if not phase:
+            return None
+        p = str(phase).lower()
+        if p in {"context_engineering", "contextualization", "context"}:
+            return "context"
+        if p in {"deduplication", "credibility", "filtering", "agentic_loop", "processing"}:
+            return "processing"
+        if p in {"classification", "search", "synthesis", "complete", "initialization"}:
+            return p
+        return p
+
     async def start_research(
         self, research_id: str, user_id: str, query: str, paradigm: str, depth: str
     ):
@@ -523,7 +547,15 @@ class ProgressTracker:
             "progress": 0,
             "sources_found": 0,
             "sources_analyzed": 0,
+            "total_searches": 0,
+            "searches_completed": 0,
+            "high_quality_sources": 0,
+            "duplicates_removed": 0,
+            "mcp_tools_used": 0,
             "phase_start": datetime.now(timezone.utc),
+            # Track units and completions for weighted progress
+            "phase_units": {},
+            "completed_phases": set(),
         }
 
         # Broadcast start event
@@ -558,6 +590,11 @@ class ProgressTracker:
         phase: Optional[str] = None,
         sources_found: Optional[int] = None,
         sources_analyzed: Optional[int] = None,
+        total_searches: Optional[int] = None,
+        searches_completed: Optional[int] = None,
+        high_quality_sources: Optional[int] = None,
+        duplicates_removed: Optional[int] = None,
+        mcp_tools_used: Optional[int] = None,
         items_done: Optional[int] = None,
         items_total: Optional[int] = None,
         custom_data: Optional[Dict[str, Any]] = None,
@@ -603,6 +640,9 @@ class ProgressTracker:
 
         progress_data = self.research_progress[research_id]
 
+        # Canonicalize for consistency
+        phase = self._canonical_phase(phase)
+
         # Update fields
         if phase and phase != progress_data["phase"]:
             old_phase = progress_data["phase"]
@@ -618,6 +658,15 @@ class ProgressTracker:
 
             # Reset phase_start for new phase
             progress_data["phase_start"] = datetime.now(timezone.utc)
+            # Mark previous (non-initialization) phase as completed
+            try:
+                if old_phase and old_phase not in {None, "initialization"}:
+                    cset = progress_data.get("completed_phases") or set()
+                    # normalize old_phase key
+                    cset.add(self._canonical_phase(old_phase))
+                    progress_data["completed_phases"] = cset
+            except Exception:
+                pass
             await self.connection_manager.broadcast_to_research(
                 research_id,
                 WSMessage(
@@ -630,8 +679,51 @@ class ProgressTracker:
                 ),
             )
 
-        if progress is not None:
-            progress_data["progress"] = min(max(progress, 0), 100)
+        # Capture real units of work when provided (e.g., search queries)
+        if items_total is not None:
+            try:
+                key = self._canonical_phase(progress_data.get("phase")) or ""
+                if key:
+                    units = progress_data.get("phase_units") or {}
+                    units[key] = {
+                        "done": int(items_done or 0),
+                        "total": max(1, int(items_total)),
+                    }
+                    progress_data["phase_units"] = units
+            except Exception:
+                pass
+
+        # Compute weighted overall progress if possible; otherwise respect explicit numeric value
+        overall: Optional[int] = None
+        try:
+            weights = self._phase_weights
+            canonical_order = ["classification", "context", "search", "processing", "synthesis"]
+            cset = progress_data.get("completed_phases") or set()
+            units = progress_data.get("phase_units") or {}
+            current = self._canonical_phase(progress_data.get("phase"))
+            total = 0.0
+            for ph in canonical_order:
+                w = float(weights.get(ph, 0.0))
+                if ph in cset:
+                    total += w
+                elif ph == current:
+                    # progress within current phase
+                    frac = 0.0
+                    if ph in units and units[ph].get("total"):
+                        frac = max(0.0, min(1.0, units[ph].get("done", 0) / float(units[ph]["total"])) )
+                    elif isinstance(progress, (int, float)):
+                        frac = max(0.0, min(1.0, float(progress) / 100.0))
+                    total += w * frac
+                else:
+                    total += 0.0
+            overall = int(round(min(max(total, 0.0), 1.0) * 100))
+        except Exception:
+            overall = None
+
+        if overall is not None:
+            progress_data["progress"] = overall
+        elif progress is not None:
+            progress_data["progress"] = min(max(int(progress), 0), 100)
 
         # Update timestamp for ETA calculations and heart-beat idle detection
         progress_data["last_update"] = datetime.now(timezone.utc)
@@ -650,11 +742,23 @@ class ProgressTracker:
         except Exception:
             eta_seconds = None
 
-        if sources_found is not None:
-            progress_data["sources_found"] = sources_found
+        def _store_metric(key: str, value: Optional[int]):
+            if value is None:
+                return
+            try:
+                normalized = max(0, int(value))
+            except Exception:
+                return
+            if progress_data.get(key) != normalized:
+                progress_data[key] = normalized
 
-        if sources_analyzed is not None:
-            progress_data["sources_analyzed"] = sources_analyzed
+        _store_metric("sources_found", sources_found)
+        _store_metric("sources_analyzed", sources_analyzed)
+        _store_metric("total_searches", total_searches)
+        _store_metric("searches_completed", searches_completed)
+        _store_metric("high_quality_sources", high_quality_sources)
+        _store_metric("duplicates_removed", duplicates_removed)
+        _store_metric("mcp_tools_used", mcp_tools_used)
 
         # Broadcast progress update
         update_data = {
@@ -665,6 +769,11 @@ class ProgressTracker:
             "sources_analyzed": progress_data["sources_analyzed"],
             # Help frontend status rendering during progress
             "status": "in_progress",
+            "total_searches": progress_data.get("total_searches", 0),
+            "searches_completed": progress_data.get("searches_completed", 0),
+            "high_quality_sources": progress_data.get("high_quality_sources", 0),
+            "duplicates_removed": progress_data.get("duplicates_removed", 0),
+            "mcp_tools_used": progress_data.get("mcp_tools_used", 0),
         }
 
         if message:
@@ -690,6 +799,34 @@ class ProgressTracker:
             await research_status_cache().delete(research_id)
         except Exception as e:
             logger.debug(f"Cache invalidation (status) failed: {e}")
+
+        # Persist a lightweight progress snapshot periodically so REST `/status`
+        # stays in sync with live WS updates.
+        try:
+            import time as _t
+            now = _t.time()
+            last = float(self._last_persist.get(research_id, 0.0) or 0.0)
+            if now - last >= max(1, self._persist_interval_sec):
+                self._last_persist[research_id] = now
+                snapshot = {
+                    "phase": progress_data.get("phase"),
+                    "progress": progress_data.get("progress"),
+                    "sources_found": progress_data.get("sources_found", 0),
+                    "sources_analyzed": progress_data.get("sources_analyzed", 0),
+                    "total_searches": progress_data.get("total_searches", 0),
+                    "searches_completed": progress_data.get("searches_completed", 0),
+                    "high_quality_sources": progress_data.get("high_quality_sources", 0),
+                    "duplicates_removed": progress_data.get("duplicates_removed", 0),
+                    "mcp_tools_used": progress_data.get("mcp_tools_used", 0),
+                    "last_update": progress_data.get("last_update").isoformat() if progress_data.get("last_update") else None,
+                }
+                if eta_seconds is not None:
+                    snapshot["eta_seconds"] = eta_seconds
+                # Local import to avoid cycles at module load
+                from services.research_store import research_store as _rs
+                await _rs.update_fields(research_id, {"progress": snapshot})
+        except Exception as e:
+            logger.debug(f"Progress persistence skipped: {e}")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -728,7 +865,12 @@ class ProgressTracker:
             # Initialize if not exists
             self.research_progress[research_id] = {
                 "sources_found": 0,
-                "sources_analyzed": 0
+                "sources_analyzed": 0,
+                "total_searches": 0,
+                "searches_completed": 0,
+                "high_quality_sources": 0,
+                "duplicates_removed": 0,
+                "mcp_tools_used": 0
             }
 
         self.research_progress[research_id]["sources_found"] += 1
@@ -760,20 +902,11 @@ class ProgressTracker:
                 },
             ),
         )
-        # Mirror as research_progress for current UI
-        await self.connection_manager.broadcast_to_research(
+        # Update weighted progress using the tracker
+        await self.update_progress(
             research_id,
-            WSMessage(
-                type=WSEventType.RESEARCH_PROGRESS,
-                data={
-                    "research_id": research_id,
-                    "message": "Starting answer synthesis...",
-                    "progress": 80,
-                    "phase": "synthesis",
-                    "status": "in_progress",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-            ),
+            phase="synthesis",
+            message="Starting answer synthesis...",
         )
 
     async def report_synthesis_progress(self, research_id: str, completed: int, total: int):
@@ -808,19 +941,10 @@ class ProgressTracker:
                 },
             ),
         )
-        # Mirror as research_progress for current UI
-        await self.connection_manager.broadcast_to_research(
+        await self.update_progress(
             research_id,
-            WSMessage(
-                type=WSEventType.RESEARCH_PROGRESS,
-                data={
-                    "research_id": research_id,
-                    "message": f"Answer synthesis completed ({sections} sections, {citations} citations)",
-                    "progress": 95,
-                    "status": "in_progress",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-            ),
+            phase="synthesis",
+            message=f"Answer synthesis completed ({sections} sections, {citations} citations)",
         )
 
     async def report_source_analyzed(
@@ -853,6 +977,13 @@ class ProgressTracker:
             return
 
         progress_data = self.research_progress[research_id]
+        # Ensure progress shows 100 and phase is complete
+        try:
+            progress_data["completed_phases"] = set(self._phase_weights.keys())
+            progress_data["phase"] = "complete"
+            progress_data["progress"] = 100
+        except Exception:
+            pass
         duration = (
             datetime.now(timezone.utc) - progress_data["started_at"]
         ).total_seconds()
@@ -964,6 +1095,16 @@ class ResearchProgressTracker(ProgressTracker):
                 }
             )
         )
+        if research_id in self.research_progress:
+            try:
+                total_int = max(0, int(total))
+            except Exception:
+                total_int = None
+            if total_int is not None:
+                progress_state = self.research_progress[research_id]
+                current_total = int(progress_state.get("total_searches", 0) or 0)
+                if total_int > current_total:
+                    progress_state["total_searches"] = total_int
     
     async def report_search_completed(self, research_id: str, query: str, results_count: int):
         """Report that a search has completed"""
@@ -979,6 +1120,24 @@ class ResearchProgressTracker(ProgressTracker):
                 }
             )
         )
+        if research_id in self.research_progress:
+            try:
+                progress_state = self.research_progress[research_id]
+                completed = int(progress_state.get("searches_completed", 0) or 0) + 1
+                total_recorded = int(progress_state.get("total_searches", 0) or 0)
+                total_value = max(total_recorded, completed)
+            except Exception:
+                completed = None
+                total_value = None
+            if completed is not None:
+                try:
+                    await self.update_progress(
+                        research_id,
+                        searches_completed=completed,
+                        total_searches=total_value,
+                    )
+                except Exception:
+                    pass
     
     async def report_credibility_check(self, research_id: str, domain: str, score: float):
         """Report credibility check progress"""
@@ -1010,6 +1169,20 @@ class ResearchProgressTracker(ProgressTracker):
                 }
             )
         )
+
+        if research_id in self.research_progress:
+            try:
+                removed_total = max(0, int(before_count) - int(after_count))
+            except Exception:
+                removed_total = None
+            if removed_total is not None:
+                try:
+                    await self.update_progress(
+                        research_id,
+                        duplicates_removed=removed_total,
+                    )
+                except Exception:
+                    pass
 
 
 # --- WebSocket Authentication ---

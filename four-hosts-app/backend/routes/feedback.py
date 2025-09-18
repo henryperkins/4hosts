@@ -35,14 +35,14 @@ from models.feedback import (
 )
 
 # Auth dependency
-from backend.core.dependencies import get_current_user
+from core.dependencies import get_current_user
 # Research store (Redis + in-mem fallback)
-from backend.services.research_store import research_store
+from services.research_store import research_store
 # Enhanced integration helpers – self-healing & ML pipeline hooks
-from backend.services.enhanced_integration import record_user_feedback
+from services.enhanced_integration import record_user_feedback
 # Feature flags and rate limiting
-from backend.core.config import ENABLE_FEEDBACK_RATE_LIMIT
-from backend.services.rate_limiter import RateLimitExceeded
+from core.config import ENABLE_FEEDBACK_RATE_LIMIT
+from services.rate_limiter import RateLimitExceeded
 
 logger = logging.getLogger(__name__)
 

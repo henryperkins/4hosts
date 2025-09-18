@@ -99,6 +99,8 @@ class ResponsesAPIRequest:
     max_tool_calls: Optional[int] = None
     instructions: Optional[str] = None
     store: bool = True
+    response_format: Optional[Dict[str, Any]] = None
+    text: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -206,6 +208,8 @@ class OpenAIResponsesClient:
         store: bool = True,
         previous_response_id: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        text: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], AsyncIterator[Dict[str, Any]]]:
         """
         Create a response using the Responses API.
@@ -304,6 +308,16 @@ class OpenAIResponsesClient:
             request_data["previous_response_id"] = previous_response_id
         if max_output_tokens is not None:
             request_data["max_output_tokens"] = max_output_tokens
+        if response_format:
+            if self.is_azure:
+                # Azure Responses preview currently rejects response_format.
+                logger.debug(
+                    "Azure Responses API does not support response_format – relying on instructions fallback"
+                )
+            else:
+                request_data["response_format"] = response_format
+        if text:
+            request_data["text"] = text
 
         # Make request
         async with httpx.AsyncClient(timeout=3600) as client:
@@ -350,7 +364,19 @@ class OpenAIResponsesClient:
                     json=request_data,
                     timeout=3600,
                 )
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    try:
+                        body = exc.response.text
+                    except Exception:
+                        body = "<unavailable>"
+                    logger.error(
+                        "Responses API request failed (%s): %s",
+                        exc.response.status_code,
+                        body,
+                    )
+                    raise
                 return response.json()
 
     async def retrieve_response(

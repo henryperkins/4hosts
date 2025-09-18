@@ -18,6 +18,84 @@ from utils.security import sanitize_user_input, pattern_validator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# --- Structured Output Definitions ---
+
+# JSON schema used when requesting LLM-driven classifications. Enforces
+# well-formed output so downstream parsing does not fail even if the model
+# attempts to add commentary around the payload.
+CLASSIFICATION_JSON_SCHEMA: Dict[str, Any] = {
+    "name": "FourHostsClassification",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "dolores": {
+                "type": "object",
+                "properties": {
+                    "score": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 10,
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "One or two sentence explanation",
+                    },
+                },
+                "required": ["score", "reasoning"],
+                "additionalProperties": False,
+            },
+            "teddy": {
+                "type": "object",
+                "properties": {
+                    "score": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 10,
+                    },
+                    "reasoning": {
+                        "type": "string",
+                    },
+                },
+                "required": ["score", "reasoning"],
+                "additionalProperties": False,
+            },
+            "bernard": {
+                "type": "object",
+                "properties": {
+                    "score": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 10,
+                    },
+                    "reasoning": {
+                        "type": "string",
+                    },
+                },
+                "required": ["score", "reasoning"],
+                "additionalProperties": False,
+            },
+            "maeve": {
+                "type": "object",
+                "properties": {
+                    "score": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 10,
+                    },
+                    "reasoning": {
+                        "type": "string",
+                    },
+                },
+                "required": ["score", "reasoning"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["dolores", "teddy", "bernard", "maeve"],
+        "additionalProperties": False,
+    },
+}
+
 # Internal imports - deferred to avoid circular dependency
 llm_client = None
 LLM_AVAILABLE = False
@@ -672,27 +750,37 @@ Return as JSON with this structure:
             
 
             # Generate completion returns a string
-            response_text = await llm_client.generate_completion(
+            response_payload = await llm_client.generate_completion(
                 prompt=prompt,
                 paradigm="bernard",  # Use analytical paradigm for classification
-                response_format={"type": "json_object"},
+                json_schema=CLASSIFICATION_JSON_SCHEMA,
                 temperature=0.3,  # Lower temperature for more consistent classification
                 max_tokens=500,
             )
 
-            # Log raw response for debugging
-            logger.debug(f"LLM raw response: {response_text[:200]}...")
+            # Log a truncated raw response for telemetry (keep <=1k chars)
+            try:
+                preview = response_payload if isinstance(response_payload, str) else json.dumps(response_payload)
+            except Exception:
+                preview = str(response_payload)
+            logger.debug(f"LLM raw response (truncated): {preview[:1024]}")
 
             # Parse the JSON response with robust error handling/repair
             llm_result: Optional[Dict[str, Any]]
-            try:
-                llm_result = json.loads(response_text)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parsing error: {e}")
-                logger.error(f"Raw response that failed to parse: {response_text}")
-                llm_result = _repair_and_parse_json(response_text)
-                if llm_result is None:
-                    return {}
+            if isinstance(response_payload, dict):
+                llm_result = response_payload
+            else:
+                response_text = str(response_payload).strip()
+                try:
+                    llm_result = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON parsing error: {e}")
+                    snippet = response_text[:1024]
+                    logger.error(f"Raw response that failed to parse (≤1kB): {snippet}")
+                    llm_result = _repair_and_parse_json(response_text)
+                    if llm_result is None:
+                        logger.warning("Falling back to rule-based classification after LLM parse failure")
+                        return {}
 
             # Validate the structure
             if not isinstance(llm_result, dict):

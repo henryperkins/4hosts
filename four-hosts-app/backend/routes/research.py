@@ -37,6 +37,7 @@ from services.research_orchestrator import research_orchestrator
 from services.background_llm import background_llm_manager
 from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT, ENABLE_MESH_NETWORK
 from services.result_adapter import ResultAdapter
+from models.result_models import ResearchFinalResult
 from services.mesh_network import mesh_negotiator
 import html as _html
 import re as _re
@@ -45,6 +46,8 @@ from models.context_models import ClassificationDetailsSchema
 from services.webhook_manager import WebhookEvent, WebhookManager
 from services.export_service import ExportOptions, ExportFormat, ExportService
 from services.rate_limiter import RateLimitExceeded
+from models.result_models import ResearchFinalResult as _ResearchFinalResult
+from utils.error_handling import log_exception
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +106,7 @@ async def execute_real_research(
     user_role: UserRole | str = UserRole.PRO,
     limiter=None,
     limiter_identifier: str | None = None,
-):
+): 
     """Execute the full research pipeline and persist results.
 
     Steps:
@@ -114,6 +117,9 @@ async def execute_real_research(
     - Persist results to research_store and broadcast completion
     """
 
+    # Collect non-fatal warnings to include in metadata
+    _warnings: list[dict[str, str]] = []
+
     async def check_cancelled():
         """Check if research has been cancelled"""
         research_data = await research_store.get(research_id)
@@ -123,8 +129,8 @@ async def execute_real_research(
     if limiter is not None and limiter_identifier:
         try:
             await limiter.increment_concurrent(limiter_identifier)
-        except Exception:
-            pass
+        except Exception as e:
+            log_exception("limiter.increment_concurrent", e, research_id=research_id)
 
     try:
         # Mark in-progress
@@ -136,112 +142,116 @@ async def execute_real_research(
             return
 
         if progress_tracker:
-            await progress_tracker.update_progress(research_id, "classification", 5)
+            await progress_tracker.update_progress(research_id, phase="classification")
 
         # Respect per-request AI classification toggle (LLM on/off)
         _prev_use_llm = None
+        classification_error: Exception | None = None
+        cls = None
+        prev_llm_weight: float | None = None
         try:
             _prev_use_llm = getattr(classification_engine.classifier, "use_llm", None)
             desired = bool(getattr(getattr(research, "options", object()), "enable_ai_classification", _prev_use_llm if _prev_use_llm is not None else True))
             if _prev_use_llm is not None:
                 classification_engine.classifier.use_llm = desired  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        except Exception as e:
+            log_exception("metadata.override_flag", e, research_id=research_id)
         try:
             cls = await classification_engine.classify_query(research.query)
+        except Exception as e:
+            classification_error = e
+            log_exception("classification.llm", e, research_id=research_id)
+
+            # Retry with rule-based classification only when LLM path fails
+            try:
+                classifier = getattr(classification_engine, "classifier", None)
+                if classifier and getattr(classifier, "use_llm", False):
+                    prev_llm_weight = getattr(classifier, "llm_weight", None)
+                    classifier.use_llm = False  # type: ignore[attr-defined]
+                    try:
+                        classifier.llm_weight = 0.0  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Retrying classification without LLM after JSON parse failure (research_id=%s)",
+                        research_id,
+                    )
+                    cls = await classifier.classify(research.query, research_id)
+                    classification_error = None
+            except Exception as retry_exc:
+                log_exception("classification.retry_rule_only", retry_exc, research_id=research_id)
+                classification_error = retry_exc
         finally:
+            # Restore classifier configuration
+            try:
+                if prev_llm_weight is not None:
+                    classification_engine.classifier.llm_weight = prev_llm_weight  # type: ignore[attr-defined]
+            except Exception:
+                pass
             try:
                 if _prev_use_llm is not None:
                     classification_engine.classifier.use_llm = _prev_use_llm  # type: ignore[attr-defined]
             except Exception:
                 pass
 
+        if classification_error or cls is None:
+            error_payload = {
+                "stage": "classification",
+                "message": str(classification_error) if classification_error else "classification_failed",
+            }
+            await research_store.update_fields(
+                research_id,
+                {
+                    "status": ResearchStatus.FAILED,
+                    "error": error_payload,
+                },
+            )
+            if progress_tracker:
+                try:
+                    await progress_tracker.fail_research(
+                        research_id,
+                        error="classification_failed",
+                        error_details=error_payload,
+                    )
+                except Exception:
+                    pass
+            return
+
         # Reinforce stored classification (from submission) to avoid divergence
         try:
             stored = await research_store.get(research_id)
             pc = (stored or {}).get("paradigm_classification") if stored else None
             if isinstance(pc, dict):
-                primary_ui = ((pc.get("primary") or {}).get("paradigm"))
-                if primary_ui:
+                primary_data = pc.get("primary")
+                if isinstance(primary_data, dict):
+                    primary_ui = primary_data.get("paradigm")
+                else:
+                    primary_ui = None
+            elif isinstance(pc, str):
+                # Handle string case - may be a paradigm name directly
+                primary_ui = pc
+            else:
+                primary_ui = None
+
+            if primary_ui:
                     from models.base import HOST_TO_MAIN_PARADIGM as _HTM
-                    host_override = None
+                    # Map UI paradigm (Paradigm enum value) back to HostParadigm for services
+                    host_primary = None
                     for hp, ui in _HTM.items():
                         if str(ui.value) == str(primary_ui):
-                            host_override = hp
+                            host_primary = hp
                             break
-                    if host_override and host_override != getattr(cls, "primary_paradigm", None):
+                    if host_primary and host_primary != getattr(cls, "primary_paradigm", None):
                         prev_primary = getattr(cls, "primary_paradigm", None)
-                        cls.primary_paradigm = host_override  # type: ignore[attr-defined]
+                        cls.primary_paradigm = host_primary  # type: ignore[attr-defined]
+                        # Preserve previous as secondary when available, but do not mutate confidence/distribution
                         try:
-                            cls.secondary_paradigm = prev_primary  # type: ignore[attr-defined]
+                            if prev_primary:
+                                cls.secondary_paradigm = prev_primary  # type: ignore[attr-defined]
                         except Exception:
                             pass
-                        try:
-                            dist = getattr(cls, "distribution", {}) or {}
-                            if dist:
-                                for p in list(dist.keys()):
-                                    dist[p] = 0.025
-                                dist[host_override] = 0.9
-                                cls.distribution = dist  # type: ignore[attr-defined]
-                        except Exception:
-                            pass
-                        try:
-                            cls.confidence = max(float(getattr(cls, "confidence", 0.0) or 0.0), 0.9)  # type: ignore[attr-defined]
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
-        # Respect explicit paradigm override from request/options if present
-        try:
-            override_ui = getattr(getattr(research, "options", object()), "paradigm_override", None)
-            if override_ui:
-                from models.base import HOST_TO_MAIN_PARADIGM as _HTM
-
-                # Map UI paradigm (Paradigm enum) back to HostParadigm
-                host_override = None
-                for hp, ui in _HTM.items():
-                    if ui == override_ui:
-                        host_override = hp
-                        break
-
-                if host_override and host_override != getattr(cls, "primary_paradigm", None):
-                    prev_primary = getattr(cls, "primary_paradigm", None)
-                    # Force primary
-                    cls.primary_paradigm = host_override  # type: ignore[attr-defined]
-                    # Optionally demote previous primary to secondary for transparency
-                    try:
-                        cls.secondary_paradigm = prev_primary  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-                    # Nudge distribution toward override for UI metrics
-                    try:
-                        dist = getattr(cls, "distribution", {}) or {}
-                        if dist:
-                            # Set override high and smooth the rest
-                            for p in list(dist.keys()):
-                                dist[p] = 0.025
-                            dist[host_override] = 0.9
-                            cls.distribution = dist  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-                    # Raise confidence to reflect explicit override
-                    try:
-                        cls.confidence = max(float(getattr(cls, "confidence", 0.0) or 0.0), 0.9)  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-                    # Add reasoning note for auditability
-                    try:
-                        rsn = getattr(cls, "reasoning", {}) or {}
-                        arr = list(rsn.get(host_override, []) or [])
-                        arr.insert(0, f"User override applied: forced primary to {override_ui.value}")
-                        rsn[host_override] = arr
-                        cls.reasoning = rsn  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-        except Exception:
-            # Non-fatal; continue with original classification
-            pass
+        except Exception as e:
+            log_exception("metadata.classification_details", e, research_id=research_id)
 
         # Stream classification summary
         try:
@@ -256,19 +266,15 @@ async def execute_real_research(
                 ) if hasattr(primary, 'name') else ""
                 await progress_tracker.update_progress(
                     research_id,
-                    None,
-                    8,
-                    custom_data={
-                        "message": (
-                            f"Classification → primary: {getattr(primary, 'name', primary)}, "
-                            f"secondary: {getattr(secondary, 'name', secondary) or 'n/a'}, "
-                            f"confidence: {confidence:.2f}"
-                            + (f"; dist: {dist_preview}" if dist_preview else "")
-                        )
-                    },
+                    message=(
+                        f"Classification → primary: {getattr(primary, 'name', primary)}, "
+                        f"secondary: {getattr(secondary, 'name', secondary) or 'n/a'}, "
+                        f"confidence: {confidence:.2f}"
+                        + (f"; dist: {dist_preview}" if dist_preview else "")
+                    ),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            log_exception("progress.agent_trace_emit", e, research_id=research_id)
 
         # 2) Context Engineering
         if await check_cancelled():
@@ -276,7 +282,7 @@ async def execute_real_research(
             return
 
         if progress_tracker:
-            await progress_tracker.update_progress(research_id, "context_engineering", 15)
+            await progress_tracker.update_progress(research_id, phase="context")
 
         # Use global pipeline to accumulate metrics
         ce = await context_pipeline.process_query(cls, research_id=research_id)
@@ -293,20 +299,16 @@ async def execute_real_research(
                 variations = len(((getattr(ce, "optimize_output", {}) or {}).get("variations") or {})) if hasattr(ce, "optimize_output") else 0
                 await progress_tracker.update_progress(
                     research_id,
-                    None,
-                    20,
-                    custom_data={
-                        "message": (
-                            "Context: "
-                            + (f"focus='{doc_focus[:40]}', " if doc_focus else "")
-                            + (f"search_queries={searches}, " if searches else "")
-                            + (f"rewrites={rewrites}, " if rewrites else "")
-                            + (f"variations={variations}, " if variations else "")
-                            + (f"compression={comp_ratio*100:.0f}%, " if isinstance(comp_ratio, (int, float)) else "")
-                            + (f"token_budget={token_budget}, " if token_budget else "")
-                            + (f"isolation='{iso_strategy}'" if iso_strategy else "")
-                        ).rstrip(', ')
-                    },
+                    message=(
+                        "Context: "
+                        + (f"focus='{doc_focus[:40]}', " if doc_focus else "")
+                        + (f"search_queries={searches}, " if searches else "")
+                        + (f"rewrites={rewrites}, " if rewrites else "")
+                        + (f"variations={variations}, " if variations else "")
+                        + (f"compression={comp_ratio*100:.0f}%, " if isinstance(comp_ratio, (int, float)) else "")
+                        + (f"token_budget={token_budget}, " if token_budget else "")
+                        + (f"isolation='{iso_strategy}'" if iso_strategy else "")
+                    ).rstrip(', '),
                 )
         except Exception:
             pass
@@ -318,7 +320,7 @@ async def execute_real_research(
 
         if progress_tracker:
             # Align with FE "Search & Retrieval" phase key
-            await progress_tracker.update_progress(research_id, "search", 25)
+            await progress_tracker.update_progress(research_id, phase="search")
 
         class _UserCtxShim:
             def __init__(self, role: str, source_limit: int, language: str, region: str, enable_real_search: bool, depth: str, query_concurrency: int):
@@ -354,11 +356,11 @@ async def execute_real_research(
             query_concurrency,
         )
 
-        # If real search is disabled and we are not already in deep_research, prefer deep path when allowed
+        # Determine deep research activation:
+        # - Only auto-enable when the request explicitly asks for deep research
+        #   (depth == deep_research). Do NOT enable deep when real search is
+        #   disabled — deep research augments search, it does not replace it.
         enable_deep = (research.options.depth == ResearchDepth.DEEP_RESEARCH)
-        if not getattr(research.options, "enable_real_search", True) and not enable_deep:
-            if (isinstance(user_role, UserRole) and user_role in [UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]) or (str(user_role_name).upper() in {"PRO", "ENTERPRISE", "ADMIN"}):
-                enable_deep = True
 
         orch_resp = await research_orchestrator.execute_research(
             classification=cls,  # type: ignore[arg-type]
@@ -490,6 +492,20 @@ async def execute_real_research(
             "metadata": getattr(answer_obj, "metadata", {}) or {},
         }
 
+        # If orchestrator signaled insufficient data and no summary exists, add a user-facing note
+        try:
+            md_insuff = (orch_resp.get("metadata") or {}).get("insufficient_data")
+            if (not answer_payload.get("summary")) and isinstance(md_insuff, dict):
+                reason = md_insuff.get("reason", "insufficient_data")
+                cnt = md_insuff.get("results_count")
+                answer_payload["summary"] = (
+                    f"Insufficient high-quality evidence to synthesize an answer. "
+                    f"Reason: {reason.replace('_', ' ')}"
+                    + (f"; results={cnt}" if cnt is not None else "")
+                )
+        except Exception:
+            pass
+
         # Convert sources from orchestrator response results (already compressed/normalized)
         sources_payload = []
         for raw in orch_resp.get("results", []) or []:
@@ -595,13 +611,15 @@ async def execute_real_research(
             types = [s.get("source_type", "web") for s in sources_payload]
             unique_types = len(set(types)) if types else 0
             bias_ok = (domain_diversity >= 0.6 and dominant_share <= 0.4 and unique_types >= 2)
-        except Exception:
+        except Exception as e:
             actionable_ratio = 0.0
             bias_ok = False
             domain_diversity = 0.0
             dominant_domain = None
             dominant_share = 0.0
             unique_types = 0
+            log_exception("metrics.compute_failed", e, research_id=research_id)
+            _warnings.append({"code": "metrics.compute_failed", "message": str(e)})
 
         # Compute paradigm fit (confidence and margin)
         try:
@@ -613,8 +631,9 @@ async def execute_real_research(
                 margin = float(top[0] - top[1])
             else:
                 margin = float(getattr(cls, "confidence", 0.0) or 0.0)
-        except Exception:
+        except Exception as e:
             margin = 0.0
+            log_exception("metrics.paradigm_margin", e, research_id=research_id)
 
         metadata = {
             "total_sources_analyzed": len(sources_payload),
@@ -812,13 +831,26 @@ async def execute_real_research(
         except Exception as e:
             # Use module-level logger; avoid overshadowing it within function scope
             logger.warning("Integrated synthesis assembly skipped: %s", e)
+            _warnings.append({"code": "integrated_synthesis.failed", "message": str(e)})
 
         # Mesh network negotiation (optional)
         mesh_synthesis = None
         if ENABLE_MESH_NETWORK:
             try:
                 if await mesh_negotiator.should_negotiate(cls):
-                    evidence_pool = orch_resp.get("results", []) or []
+                    raw_evidence = orch_resp.get("results", []) or []
+                    # Convert SearchResult objects to dicts for mesh negotiator
+                    evidence_pool = []
+                    for item in raw_evidence:
+                        if hasattr(item, 'model_dump'):
+                            evidence_pool.append(item.model_dump())
+                        elif hasattr(item, 'dict'):
+                            evidence_pool.append(item.dict())
+                        elif isinstance(item, dict):
+                            evidence_pool.append(item)
+                        else:
+                            # Skip non-dict items
+                            continue
                     mesh = await mesh_negotiator.negotiate(
                         classification=cls,
                         evidence_pool=evidence_pool,
@@ -840,6 +872,15 @@ async def execute_real_research(
                     }
             except Exception as e:
                 logger.warning("Mesh negotiation failed: %s", e)
+                _warnings.append({"code": "mesh.negotiation_failed", "message": str(e)})
+
+        # Attach accumulated warnings/degraded to metadata
+        if _warnings:
+            try:
+                metadata.setdefault("warnings", []).extend(_warnings)
+                metadata["degraded"] = True
+            except Exception:
+                pass
 
         final_result = {
             "research_id": research_id,
@@ -859,12 +900,30 @@ async def execute_real_research(
             },
         }
 
-        await research_store.update_field(research_id, "results", final_result)
-        await research_store.update_field(research_id, "status", ResearchStatus.COMPLETED)
+        # Validate final result against API contract; log and mark degraded on failure but do not block
+        try:
+            validated = ResearchFinalResult(**final_result)
+            final_result = validated.dict()
+        except Exception as e:
+            log_exception("final_result.validation_failed", e, research_id=research_id)
+            try:
+                metadata.setdefault("warnings", []).append({
+                    "code": "contract.validation_failed",
+                    "message": str(e),
+                })
+                metadata["degraded"] = True
+                final_result["metadata"] = metadata
+            except Exception:
+                pass
+
+        # Persist results and status together to avoid race conditions
+        await research_store.update_fields(
+            research_id,
+            {"results": final_result, "status": ResearchStatus.COMPLETED},
+        )
 
         if progress_tracker:
-            # Keep timeline consistent; final bump before completion event
-            await progress_tracker.update_progress(research_id, "complete", 98)
+            # Broadcast completion after storage; WS will finalize progress to 100
             await progress_tracker.complete_research(research_id, {"summary": answer_payload.get("summary", "")[:200]})
 
         # Trigger webhook for completion (if available)
@@ -887,11 +946,13 @@ async def execute_real_research(
     except Exception as e:
         # Log full traceback for easier debugging and include exception type
         logger.exception("execute_real_research failed for %s: %s", research_id, str(e))
-        await research_store.update_field(research_id, "status", ResearchStatus.FAILED)
-        await research_store.update_field(
+        # Persist failure status and error message atomically
+        await research_store.update_fields(
             research_id,
-            "error",
-            f"{e.__class__.__name__}: {str(e)}",
+            {
+                "status": ResearchStatus.FAILED,
+                "error": f"{e.__class__.__name__}: {str(e)}",
+            },
         )
         if progress_tracker:
             await progress_tracker.fail_research(research_id, str(e))
@@ -993,6 +1054,27 @@ async def submit_research(
                 for p, r in classification_result.reasoning.items()
             },
         )
+
+        # Apply user override ONCE at submission (single source of truth)
+        try:
+            override_ui = getattr(getattr(research, "options", object()), "paradigm_override", None)
+            if override_ui and override_ui != classification.primary:
+                prev = classification.primary
+                classification.primary = override_ui
+                # Preserve engine suggestion as secondary if not already set
+                if not classification.secondary or classification.secondary == override_ui:
+                    classification.secondary = prev
+                logger.info(
+                    "classification.override_applied",
+                    extra={
+                        "research_id": research_id,
+                        "user_id": str(getattr(current_user, "user_id", "unknown")),
+                        "from": getattr(prev, "value", str(prev)),
+                        "to": getattr(override_ui, "value", str(override_ui)),
+                    },
+                )
+        except Exception:
+            pass
 
         # Store research request
         # Optional experiment override via header (e.g., X-Experiment: v2)
@@ -1252,6 +1334,26 @@ async def submit_deep_research(
             },
         )
 
+        # Apply user override ONCE at submission
+        try:
+            override_ui = research.options.paradigm_override
+            if override_ui and override_ui != classification.primary:
+                prev = classification.primary
+                classification.primary = override_ui
+                if not classification.secondary or classification.secondary == override_ui:
+                    classification.secondary = prev
+                logger.info(
+                    "classification.override_applied",
+                    extra={
+                        "research_id": research_id,
+                        "user_id": str(getattr(current_user, "user_id", "unknown")),
+                        "from": getattr(prev, "value", str(prev)),
+                        "to": getattr(override_ui, "value", str(override_ui)),
+                    },
+                )
+        except Exception:
+            pass
+
         # Store request
         research_data = {
             "id": research_id,
@@ -1436,6 +1538,25 @@ async def resume_deep_research(
                 for p, r in classification_result.reasoning.items()
             },
         )
+        # Respect stored override once when resuming
+        try:
+            override_ui = getattr(getattr(rq, "options", object()), "paradigm_override", None)
+            if override_ui and override_ui != classification.primary:
+                prev = classification.primary
+                classification.primary = override_ui
+                if not classification.secondary or classification.secondary == override_ui:
+                    classification.secondary = prev
+                logger.info(
+                    "classification.override_applied",
+                    extra={
+                        "research_id": research_id,
+                        "user_id": str(getattr(current_user, "user_id", "unknown")),
+                        "from": getattr(prev, "value", str(prev)),
+                        "to": getattr(override_ui, "value", str(override_ui)),
+                    },
+                )
+        except Exception:
+            pass
         await research_store.update_field(research_id, "paradigm_classification", classification.dict())
     except Exception:
         classification = None
@@ -1692,6 +1813,13 @@ async def export_research_result(
         raise HTTPException(status_code=400, detail="Research not completed")
 
     final = research.get("results") or {}
+
+    # Validate result shape before exporting
+    try:
+        _ = _ResearchFinalResult(**final)
+    except Exception as e:
+        logger.error("Export blocked: invalid result shape for %s: %s", research_id, e)
+        raise HTTPException(status_code=400, detail=f"Invalid result shape; cannot export: {e}")
 
     # Construct exporter-agnostic payload
     export_payload = {

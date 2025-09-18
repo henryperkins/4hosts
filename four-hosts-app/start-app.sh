@@ -35,7 +35,7 @@ find_available_port() {
     local base_port=$1
     local port=$base_port
     while ! check_port $port; do
-        echo "⚠️  Port $port is in use, trying next..."
+        echo "⚠️  Port $port is in use, trying next..." >&2
         port=$((port + 1))
     done
     echo $port
@@ -92,7 +92,7 @@ if ! check_port $FRONTEND_PORT; then
 fi
 
 # --- Backend --------------------------------------------------------------
-echo "\n🟦  Booting FastAPI backend (hot-reload)"
+echo -e "\n🟦  Booting FastAPI backend (hot-reload)"
 (
   cd "$BACKEND_DIR"
   # Activate venv if it exists; otherwise run python directly.
@@ -104,15 +104,15 @@ echo "\n🟦  Booting FastAPI backend (hot-reload)"
 BACKEND_PID=$!
 
 # --- Frontend -------------------------------------------------------------
-echo "\n🟩  Launching Vite dev server"
+echo -e "\n🟩  Launching Vite dev server"
 (
   cd "$FRONTEND_DIR"
   exec npm run dev -- --port $FRONTEND_PORT
 ) &
 FRONTEND_PID=$!
 
-echo "\n✔️  Backend: http://localhost:$BACKEND_PORT   |   Frontend: http://localhost:$FRONTEND_PORT"
+echo -e "\n✔️  Backend: http://localhost:$BACKEND_PORT   |   Frontend: http://localhost:$FRONTEND_PORT"
 echo "Press Ctrl+C to stop both."
 
-trap 'echo "\n🛑  Shutting down..."; kill $BACKEND_PID $FRONTEND_PID; wait' INT TERM
+trap 'echo -e "\n🛑  Shutting down..."; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; wait' INT TERM
 wait
