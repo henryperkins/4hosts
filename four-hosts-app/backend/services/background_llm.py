@@ -53,10 +53,10 @@ class BackgroundLLMManager:
         """Submit a task to run in background mode"""
         try:
             # Normalize roles for o-series (use 'developer' instead of 'system')
-            # Allow callers to pass a specific deployment/model (o3, gpt-4.1, gpt-4.1-mini)
-            model = kwargs.get("model") or os.getenv("AZURE_OPENAI_DEPLOYMENT", "o3")
+            # Model selection defaults are centralized in the Responses client
+            model = kwargs.get("model")
             norm_messages = []
-            if isinstance(messages, list) and model.startswith("o"):
+            if isinstance(messages, list) and model and model.startswith("o"):
                 for m in messages:
                     if isinstance(m, dict) and m.get("role") == "system":
                         nm = dict(m)
@@ -77,11 +77,11 @@ class BackgroundLLMManager:
                 tools=tools,
                 background=True,
                 stream=False,
-                reasoning={"summary": "auto"},
+                # Centralize LLM parameter defaults in responses client
                 max_tool_calls=kwargs.get("max_tool_calls"),
                 instructions=kwargs.get("instructions"),
                 store=True,
-                max_output_tokens=kwargs.get("max_output_tokens", 4000),
+                max_output_tokens=kwargs.get("max_output_tokens"),
             )
 
             # Extract task ID from HTTP JSON

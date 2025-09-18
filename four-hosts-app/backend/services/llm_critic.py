@@ -140,8 +140,6 @@ async def llm_coverage_and_claims(
             prompt,
             paradigm=paradigm or "bernard",
             json_schema={"name": CRITIC_SCHEMA["name"], "schema": CRITIC_SCHEMA["schema"]},
-            max_tokens=800,
-            temperature=0.2,
         )
         # Robust parsing and validation
         default_payload = {"coverage_score": 0.5, "missing_facets": [], "flagged_sources": [], "warnings": ["critic_parse_failed"]}

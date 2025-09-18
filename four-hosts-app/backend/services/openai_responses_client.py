@@ -18,6 +18,11 @@ from typing import Any, AsyncIterator, cast, Dict, List, Optional, Union
 
 import httpx
 from openai import AsyncOpenAI
+try:
+    # Central default for output token limits (align with llm_client/config)
+    from core.config import SYNTHESIS_BASE_TOKENS as DEFAULT_MAX_TOKENS
+except Exception:  # pragma: no cover - fallback for safety
+    DEFAULT_MAX_TOKENS = 8000
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -298,6 +303,14 @@ class OpenAIResponsesClient:
             request_data["background"] = background
         if stream:
             request_data["stream"] = stream
+        # Default reasoning behavior for o-series when not explicitly provided
+        if reasoning is None:
+            try:
+                m = str(model or "").lower()
+            except Exception:
+                m = ""
+            if m.startswith("o"):
+                reasoning = {"summary": "auto"}
         if reasoning:
             request_data["reasoning"] = reasoning
         if max_tool_calls is not None:
@@ -306,6 +319,9 @@ class OpenAIResponsesClient:
             request_data["instructions"] = instructions
         if previous_response_id:
             request_data["previous_response_id"] = previous_response_id
+        # Centralize max output tokens default
+        if max_output_tokens is None:
+            max_output_tokens = DEFAULT_MAX_TOKENS
         if max_output_tokens is not None:
             request_data["max_output_tokens"] = max_output_tokens
         if response_format:

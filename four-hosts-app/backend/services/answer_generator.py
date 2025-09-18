@@ -1069,8 +1069,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="dolores",
-                max_tokens=int(SYNTHESIS_BASE_TOKENS * section_def['weight']),
-                temperature=0.7
+                
             )
         except Exception as e:
             if os.getenv("LLM_STRICT", "0") == "1":
@@ -1428,8 +1427,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="bernard",
-                max_tokens=int(SYNTHESIS_BASE_TOKENS * section_def['weight']),
-                temperature=0.3
+                
             )
         except Exception as e:
             if os.getenv("LLM_STRICT", "0") == "1":
@@ -1871,8 +1869,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="maeve",
-                max_tokens=int(SYNTHESIS_BASE_TOKENS * section_def['weight']),
-                temperature=0.5
+                
             )
         except Exception as e:
             if os.getenv("LLM_STRICT", "0") == "1":
@@ -2167,8 +2164,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="teddy",
-                max_tokens=int(SYNTHESIS_BASE_TOKENS * section_def['weight']),
-                temperature=0.6
+                
             )
         except Exception as e:
             if os.getenv("LLM_STRICT", "0") == "1":

@@ -399,7 +399,6 @@ class DeepResearchService:
                     + ([CodeInterpreterTool()] if config.enable_code_interpreter else [])
                     + (mcp_tools or [])
                 ),
-                reasoning={"summary": "auto"},
                 max_tool_calls=config.max_tool_calls,
                 background=config.background,
                 store=True,

@@ -352,7 +352,7 @@ class RewriteLayer(ContextLayer):
                     "Preserve the intent. Quote named entities and key phrases.\n\n"
                     f"Query: {original}"
                 )
-            txt = await llm_client.generate_completion(prompt, paradigm=paradigm, temperature=0.3, max_tokens=160)
+            txt = await llm_client.generate_completion(prompt, paradigm=paradigm)
             if isinstance(txt, str) and txt.strip():
                 lines_out = [s.strip("- ") for s in str(txt).splitlines() if s.strip()]
                 for s in lines_out:

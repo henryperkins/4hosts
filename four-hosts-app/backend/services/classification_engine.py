@@ -754,8 +754,6 @@ Return as JSON with this structure:
                 prompt=prompt,
                 paradigm="bernard",  # Use analytical paradigm for classification
                 json_schema=CLASSIFICATION_JSON_SCHEMA,
-                temperature=0.3,  # Lower temperature for more consistent classification
-                max_tokens=500,
             )
 
             # Log a truncated raw response for telemetry (keep <=1k chars)

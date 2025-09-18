@@ -51,8 +51,6 @@ async def llm_ping() -> Dict[str, str]:
         resp = await llm_client.generate_completion(
             prompt="ping",
             paradigm="bernard",
-            max_tokens=1,
-            temperature=0.0,
         )
         return {"status": "ok", "llm_response": resp.strip()}
     except Exception as e:
