@@ -4,8 +4,10 @@ Phase 5: Production-Ready Features
 """
 
 import os
+import asyncio
 from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
+from pathlib import Path
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine
@@ -347,7 +349,7 @@ pool_monitor = ConnectionPoolMonitor(engine)
 # Simple wrapper for main.py
 async def init_database():
     """Initialize database tables"""
-    await db_manager.create_all_tables()
+    await run_migrations()
 
 
 # --- Database Migrations ---
@@ -355,17 +357,16 @@ async def init_database():
 
 async def run_migrations():
     """Run database migrations using Alembic"""
-    import subprocess
+    from alembic import command
+    from alembic.config import Config
 
-    try:
-        # Run alembic upgrade
-        result = subprocess.run(
-            ["alembic", "upgrade", "head"], capture_output=True, text=True, check=True
-        )
-        logger.info(f"Migrations completed: {result.stdout}")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Migration failed: {e.stderr}")
-        raise
+    alembic_cfg = Config(str((Path(__file__).resolve().parent.parent / "alembic.ini").resolve()))
+
+    def _upgrade_head() -> None:
+        command.upgrade(alembic_cfg, "head")
+
+    await asyncio.to_thread(_upgrade_head)
+    logger.info("Alembic migrations applied to head")
 
 
 # --- Health Checks ---

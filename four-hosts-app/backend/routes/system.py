@@ -154,6 +154,8 @@ async def get_system_stats(request: Request) -> Dict[str, Any]:
             "paradigm_distribution": dist,
             "average_processing_time": avg_time,
             "cache_hit_rate": hit_rate,
+            "cache_hits": int(cache_stats.get("hit_count", 0)),
+            "cache_misses": int(cache_stats.get("miss_count", 0)),
             "system_health": health,
         }
     except Exception as e:
@@ -164,6 +166,8 @@ async def get_system_stats(request: Request) -> Dict[str, Any]:
             "paradigm_distribution": {},
             "average_processing_time": 0,
             "cache_hit_rate": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
             "system_health": "degraded",
         }
 

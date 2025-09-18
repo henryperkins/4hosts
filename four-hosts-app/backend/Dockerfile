@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Four Hosts Backend
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
 
 # --- Production Stage ---
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -50,21 +50,33 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY --chown=appuser:appuser . .
 
+# Copy entrypoint script and ensure it is executable
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh && chown appuser:appuser /app/docker-entrypoint.sh
+
 # Create necessary directories
-RUN mkdir -p /app/logs /app/data /app/nltk_data && \
+RUN mkdir -p /app/logs /app/data /app/nltk_data /app/model_cache && \
     chown -R appuser:appuser /app
+
+# Download essential NLTK data as root before switching user
+RUN python -c "import nltk; nltk.download('punkt', download_dir='/app/nltk_data'); nltk.download('stopwords', download_dir='/app/nltk_data'); nltk.download('wordnet', download_dir='/app/nltk_data')" && \
+    chown -R appuser:appuser /app/nltk_data
 
 # Ensure ownership (defensive) of HF cache after code copy
 RUN chown -R appuser:appuser /home/appuser/.cache
 
 # Configure runtime environment
 ENV NLTK_DATA=/app/nltk_data
+ENV PYTHONUNBUFFERED=1
+ENV TRANSFORMERS_CACHE=/app/model_cache
 
 # Switch to non-root user
 USER appuser
 
-# Explicitly set HF cache location (optional clarity)
+# Explicitly set HF and transformers cache locations
 ENV HF_HOME=/home/appuser/.cache/huggingface
+ENV TRANSFORMERS_CACHE=/app/model_cache
+ENV TORCH_HOME=/app/model_cache
 
 # Expose port
 EXPOSE 8000
@@ -73,5 +85,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the application (use single worker; app manages async)
+# Run migrations before launching the app
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+
+# Default command launches uvicorn (can be overridden at runtime)
 CMD ["uvicorn", "main_new:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

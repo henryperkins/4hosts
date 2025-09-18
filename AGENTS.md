@@ -1,15 +1,14 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `four-hosts-app/backend`: FastAPI service (Python 3.11) with contracts, services, migrations, and tests under `tests/`.
+- `four-hosts-app/backend`: FastAPI service (Python 3.12) with contracts, services, migrations, and tests under `tests/`.
 - `four-hosts-app/frontend`: Vite + React/TypeScript UI; shared pieces sit in `src/components`, hooks in `src/hooks`, state logic in `src/store`.
 - `docs/` plus `four-hosts-app/docs/`: architecture notes and runbooks—consult them before touching APIs or orchestration flows.
 - Root scripts such as `start-app.sh` and `stop-app.sh` coordinate the local stack; keep them executable and cross-shell friendly.
 
-## Build, Test, and Development Commands
-- `./start-app.sh` / `./stop-app.sh`: launch or halt backend (uvicorn) and frontend (Vite) with automatic `backend/.env` scaffolding.
+- `./start-app.sh` / `./stop-app.sh`: launch or halt backend (uvicorn) and frontend (Vite); the starter script now seeds `backend/.env`, ensures Docker Postgres on `localhost:5433`, runs Alembic migrations, and then starts both services with hot reload.
 - Backend setup: `cd four-hosts-app/backend && python -m venv venv && source venv/bin/activate && pip install -r requirements.txt`.
-- Backend-only run: `four-hosts-app/backend/start_backend.sh`; apply schema updates with `alembic upgrade head`.
+- Backend-only run: `four-hosts-app/backend/start_backend.sh`; migrations via `alembic upgrade head` (uses the same async config as startup entrypoints).
 - Frontend setup: `cd four-hosts-app/frontend && npm install && npm run dev -- --port 5173`; production build via `npm run build`.
 - Quality gates: `pytest`, `npm run lint`, and `npm run design:lint` must pass before submitting changes.
 
@@ -29,6 +28,5 @@
 - PRs include a change summary, linked issue, verification notes (`pytest`, `npm run build`, etc.), and UI screenshots or GIFs for visual work.
 - Keep scope focused; flag schema or config migrations early and stage unrelated refactors separately.
 
-## Security & Configuration Tips
-- `start-app.sh` seeds `backend/.env` with a development JWT secret—rotate it for shared or deployed environments and use a secrets manager for production values.
+- `start-app.sh` seeds `backend/.env` with a development JWT secret and exports a default `DATABASE_URL` targeting the compose Postgres on port 5433—rotate secrets and override environment variables for shared or deployed environments.
 - Strip API keys, cookies, and dumps from the tree; extend `.gitignore` when introducing new generated artifacts or logs.

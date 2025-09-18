@@ -7,17 +7,14 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
-from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import Column, String, DateTime, Boolean, JSON, Integer
-from sqlalchemy.ext.declarative import declarative_base
 import redis
 import logging
 
 from utils.async_utils import run_in_thread
 
 from database.connection import get_db
-from database.models import Base
+from database.models import RefreshToken, RevokedToken
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -26,55 +23,6 @@ logger = logging.getLogger(__name__)
 REFRESH_TOKEN_LENGTH = 32
 REFRESH_TOKEN_EXPIRE_DAYS = 30
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-
-class RefreshToken(Base):
-    """Database model for refresh tokens"""
-
-    __tablename__ = "refresh_tokens"
-
-    id = Column(String(255), primary_key=True)
-    token_hash = Column(String(255), unique=True, nullable=False, index=True)
-    user_id = Column(String(255), nullable=False, index=True)
-    device_id = Column(String(255))
-    ip_address = Column(String(45))
-    user_agent = Column(String(500))
-
-    # Token metadata
-    family_id = Column(String(255), index=True)  # For refresh token rotation
-    generation = Column(Integer, default=0)
-
-    # Status
-    is_active = Column(Boolean, default=True, nullable=False)
-    is_revoked = Column(Boolean, default=False, nullable=False)
-    revoked_at = Column(DateTime(timezone=True))
-    revoked_reason = Column(String(255))
-
-    # Timestamps
-    created_at = Column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
-    )
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    last_used_at = Column(DateTime(timezone=True))
-
-    # Additional security
-    scope = Column(JSON, default=list)
-    token_metadata = Column(JSON, default=dict)
-
-
-class RevokedToken(Base):
-    """Database model for revoked JWT tokens (JTI blacklist)"""
-
-    __tablename__ = "revoked_tokens"
-
-    jti = Column(String(255), primary_key=True)
-    token_type = Column(String(50))  # access, refresh
-    user_id = Column(String(255), index=True)
-    revoked_at = Column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
-    )
-    revoked_reason = Column(String(255))
-    expires_at = Column(DateTime(timezone=True), nullable=False)  # Original expiration
 
 
 class TokenManager:

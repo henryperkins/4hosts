@@ -810,3 +810,38 @@ class UserSession(Base):
         Index("idx_session_token", "session_token"),
         Index("idx_session_active", "is_active"),
     )
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id = Column(String(255), primary_key=True)
+    token_hash = Column(String(255), unique=True, nullable=False, index=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    device_id = Column(String(255))
+    ip_address = Column(String(45))
+    user_agent = Column(String(500))
+    family_id = Column(String(255), index=True)
+    generation = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_revoked = Column(Boolean, default=False, nullable=False)
+    revoked_at = Column(DateTime(timezone=True))
+    revoked_reason = Column(String(255))
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    last_used_at = Column(DateTime(timezone=True))
+    scope = Column(JSON, default=list)
+    token_metadata = Column(JSONB, default=dict)
+
+
+class RevokedToken(Base):
+    __tablename__ = "revoked_tokens"
+
+    jti = Column(String(255), primary_key=True)
+    token_type = Column(String(50))
+    user_id = Column(String(255), index=True)
+    revoked_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    revoked_reason = Column(String(255))
+    expires_at = Column(DateTime(timezone=True), nullable=False)

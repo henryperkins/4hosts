@@ -305,6 +305,43 @@ CREATE INDEX IF NOT EXISTS idx_session_user ON user_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_session_token ON user_sessions(session_token);
 CREATE INDEX IF NOT EXISTS idx_session_active ON user_sessions(is_active);
 
+-- Create refresh_tokens table
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id VARCHAR(255) PRIMARY KEY,
+    token_hash VARCHAR(255) UNIQUE NOT NULL,
+    user_id VARCHAR(255) NOT NULL,
+    device_id VARCHAR(255),
+    ip_address VARCHAR(45),
+    user_agent VARCHAR(500),
+    family_id VARCHAR(255),
+    generation INTEGER DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    is_revoked BOOLEAN NOT NULL DEFAULT false,
+    revoked_at TIMESTAMP WITH TIME ZONE,
+    revoked_reason VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    last_used_at TIMESTAMP WITH TIME ZONE,
+    scope JSONB DEFAULT '[]'::jsonb,
+    token_metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_refresh_token_hash ON refresh_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_refresh_token_user ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_token_family ON refresh_tokens(family_id);
+
+-- Create revoked_tokens table
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+    jti VARCHAR(255) PRIMARY KEY,
+    token_type VARCHAR(50),
+    user_id VARCHAR(255),
+    revoked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    revoked_reason VARCHAR(255),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_revoked_token_user ON revoked_tokens(user_id);
+
 -- Create user_feedback table
 CREATE TABLE IF NOT EXISTS user_feedback (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

@@ -35,6 +35,11 @@ from services.enhanced_integration import (
 from services.context_engineering import context_pipeline
 from services.research_orchestrator import research_orchestrator
 from services.background_llm import background_llm_manager
+from services.research_persistence import (
+    persist_completion,
+    persist_failure,
+    record_submission,
+)
 from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT, ENABLE_MESH_NETWORK
 from services.result_adapter import ResultAdapter
 from models.result_models import ResearchFinalResult
@@ -922,6 +927,12 @@ async def execute_real_research(
             {"results": final_result, "status": ResearchStatus.COMPLETED},
         )
 
+        await persist_completion(
+            research_id=research_id,
+            user_id=user_id,
+            final_result=final_result,
+        )
+
         if progress_tracker:
             # Broadcast completion after storage; WS will finalize progress to 100
             await progress_tracker.complete_research(research_id, {"summary": answer_payload.get("summary", "")[:200]})
@@ -953,6 +964,11 @@ async def execute_real_research(
                 "status": ResearchStatus.FAILED,
                 "error": f"{e.__class__.__name__}: {str(e)}",
             },
+        )
+        await persist_failure(
+            research_id=research_id,
+            user_id=user_id,
+            error=f"{e.__class__.__name__}: {str(e)}",
         )
         if progress_tracker:
             await progress_tracker.fail_research(research_id, str(e))
@@ -1096,6 +1112,14 @@ async def submit_research(
             **({"experiment": exp_override} if exp_override else {}),
         }
         await research_store.set(research_id, research_data)
+
+        await record_submission(
+            research_id=research_id,
+            user_id=str(current_user.user_id),
+            query_text=research.query,
+            options=research.options.dict(),
+            classification=classification.dict(),
+        )
 
         # Execute real research
         background_tasks.add_task(

@@ -266,20 +266,30 @@ fi
 
 cd "$BACKEND_DIR"
 
-# Ensure database is available (attempt simple TCP check on 5432)
-if ! (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1; then
-    echo "🗄️  Postgres not reachable on 5432. Attempting to start docker-compose services..."
+# Ensure database is available (attempt simple TCP check on 5433)
+DB_HOST="127.0.0.1"
+DB_PORT_PRIMARY=5433
+DB_PORT_FALLBACK=5432
+
+if ! (echo > /dev/tcp/$DB_HOST/$DB_PORT_PRIMARY) >/dev/null 2>&1; then
+    echo "🗄️  Postgres not reachable on $DB_PORT_PRIMARY. Attempting to start docker-compose services..."
     if command -v docker >/dev/null 2>&1 && command -v docker compose >/dev/null 2>&1; then
         docker compose up -d postgres redis 2>/dev/null || docker compose up -d
         echo -n "   Waiting for Postgres to become healthy"
         for i in {1..30}; do
-            if (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1; then
+            if (echo > /dev/tcp/$DB_HOST/$DB_PORT_PRIMARY) >/dev/null 2>&1; then
                 echo " - ready"
                 break
             fi
             echo -n "."
             sleep 1
         done
+        # Fallback check on 5432 if custom port isn't open
+        if ! (echo > /dev/tcp/$DB_HOST/$DB_PORT_PRIMARY) >/dev/null 2>&1 && \
+           (echo > /dev/tcp/$DB_HOST/$DB_PORT_FALLBACK) >/dev/null 2>&1; then
+            DB_PORT_PRIMARY=$DB_PORT_FALLBACK
+            echo "ℹ️  Falling back to Postgres on port $DB_PORT_PRIMARY"
+        fi
     else
         echo "⚠️  Docker/Compose not available; continuing and backend may fail to init DB."
     fi
@@ -294,6 +304,23 @@ fi
 # Activate virtual environment and install dependencies
 source venv/bin/activate
 pip install -r requirements.txt > /dev/null 2>&1
+
+# Provide default DATABASE_URL if none is set
+if [ -z "${DATABASE_URL:-}" ]; then
+    export DATABASE_URL="postgresql+asyncpg://user:password@$DB_HOST:$DB_PORT_PRIMARY/fourhosts"
+fi
+
+# Run Alembic migrations before launching backend
+if command -v alembic >/dev/null 2>&1; then
+    echo "📦 Applying database migrations via Alembic..."
+    if alembic upgrade head; then
+        echo "✅ Database migrations complete"
+    else
+        echo "⚠️  Alembic migrations failed; backend may not start correctly"
+    fi
+else
+    echo "⚠️  Alembic CLI not found; skipping migrations"
+fi
 
 # Set environment variable
 export ENVIRONMENT=development

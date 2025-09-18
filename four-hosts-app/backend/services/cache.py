@@ -16,6 +16,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from .search_apis import SearchResult
+from services.metrics import metrics
 
 # Lightweight helpers to provide namespaced caches for app features.
 # These wrap the existing CacheManager instance in this module.
@@ -103,6 +104,12 @@ class CacheManager:
 
         return f"{prefix}:{key_string}"
 
+    def _record_cache_event(self, namespace: str, hit: bool) -> None:
+        try:
+            metrics.increment("cache_hits" if hit else "cache_misses", namespace)
+        except Exception:
+            pass
+
     async def get_search_results(
         self, query: str, config_dict: Dict[str, Any], paradigm: str
     ) -> Optional[List[SearchResult]]:
@@ -117,6 +124,7 @@ class CacheManager:
 
                 if cached_data:
                     self.hit_count += 1
+                    self._record_cache_event("search", True)
                     results_data = json.loads(cached_data)
 
                     # Convert back to SearchResult objects
@@ -135,6 +143,7 @@ class CacheManager:
                     return results
                 else:
                     self.miss_count += 1
+                    self._record_cache_event("search", False)
                     logger.info(f"Cache MISS for search: {query[:50]}...")
                     return None
 
@@ -192,10 +201,12 @@ class CacheManager:
 
                 if cached_data:
                     self.hit_count += 1
+                    self._record_cache_event("paradigm", True)
                     logger.info(f"Cache HIT for paradigm: {query[:50]}...")
                     return json.loads(cached_data)
                 else:
                     self.miss_count += 1
+                    self._record_cache_event("paradigm", False)
                     return None
 
         except Exception as e:
@@ -227,11 +238,14 @@ class CacheManager:
             async with self.get_client() as client:
                 cached_data = await client.get(key)
                 if cached_data is None:
+                    self._record_cache_event("generic", False)
                     return None
                 # Try JSON decode, otherwise return raw string
                 try:
+                    self._record_cache_event("generic", True)
                     return json.loads(cached_data)
                 except Exception:
+                    self._record_cache_event("generic", True)
                     return cached_data
         except Exception as e:
             logger.error(f"Cache get_kv error: {str(e)}")
@@ -261,7 +275,9 @@ class CacheManager:
                 cached_data = await client.get(cache_key)
 
                 if cached_data:
+                    self._record_cache_event("credibility", True)
                     return json.loads(cached_data)
+                self._record_cache_event("credibility", False)
                 return None
 
         except Exception as e:
@@ -378,9 +394,14 @@ class CacheManager:
                 cached_data = await client.get(key)
                 if cached_data:
                     self.hit_count += 1
-                    return json.loads(cached_data)
+                    self._record_cache_event("generic", True)
+                    try:
+                        return json.loads(cached_data)
+                    except Exception:
+                        return cached_data
                 else:
                     self.miss_count += 1
+                    self._record_cache_event("generic", False)
                     return None
         except Exception as e:
             logger.error(f"Cache get error: {str(e)}")

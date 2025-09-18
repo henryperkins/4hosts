@@ -16,7 +16,7 @@ import hashlib
 
 # Revision identifiers
 revision = 'add_api_key_index'
-down_revision = None  # Update this to the latest revision in your migrations
+down_revision = '20250827_initial_schema'
 branch_labels = None
 depends_on = None
 

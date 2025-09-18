@@ -18,7 +18,7 @@ The Four Hosts application is a paradigm-aware research system that classifies q
 ```bash
 # Start backend server
 cd four-hosts-app/backend
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # On Windows: venv\Scripts\activate (Python 3.12 runtime)
 uvicorn main_new:app --reload
 
 # Run tests
@@ -47,8 +47,8 @@ npm run lint
 
 ### Full Stack
 ```bash
-# Start both frontend and backend (from four-hosts-app/)
-./start-app.sh
+# Start both frontend and backend (from repo root)
+./start-app.sh  # Ensures dockerized Postgres on 127.0.0.1:5433 and runs Alembic migrations
 ```
 
 ## Architecture Overview
@@ -111,13 +111,13 @@ AZURE_OPENAI_ENDPOINT=
 AZURE_OPENAI_DEPLOYMENT=
 AZURE_OPENAI_API_VERSION=2024-10-01-preview
 
-# Search APIs (At least one required)
-GOOGLE_API_KEY=
-GOOGLE_SEARCH_ENGINE_ID=
-BRAVE_API_KEY=
+# Search APIs (at least one required)
+GOOGLE_CSE_API_KEY=
+GOOGLE_CSE_CX=
+BRAVE_SEARCH_API_KEY=
 
 # Database
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost/fourhost
+DATABASE_URL=postgresql+asyncpg://user:password@127.0.0.1:5433/fourhosts
 
 # Redis (Optional, for caching)
 REDIS_URL=redis://localhost:6379
@@ -164,6 +164,6 @@ JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
 ### Common Issues
 - **LLM not working**: Check Azure OpenAI credentials and deployment name
 - **Search returns no results**: Verify API keys and rate limits
-- **Database errors**: Run `alembic upgrade head` to apply migrations
+- **Database errors**: Ensure the compose Postgres service is running (port 5433) and rerun `alembic upgrade head`
 - **Frontend build fails**: Ensure Node.js 18+ and run `npm install`
 - **Test failures**: Some tests require environment variables or external services
