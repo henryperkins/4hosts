@@ -343,26 +343,7 @@ class DeepResearchService:
             except Exception as e:
                 raise RuntimeError(f"Responses client not available: {e}")
 
-            # Resolve model: allow env override; default to o3 for Azure (no deep-research deployment),
-            # otherwise prefer o3-deep-research when available
-            try:
-                deep_model_env = os.getenv("DEEP_RESEARCH_MODEL")
-            except Exception:
-                deep_model_env = None
-            try:
-                from .openai_responses_client import get_responses_client
-                _rc = get_responses_client()
-                is_azure = getattr(_rc, "is_azure", False)
-            except Exception:
-                is_azure = True
-            deep_model = deep_model_env or ("o3" if is_azure else "o3-deep-research")
-            # Map model name to Azure deployment name when using Azure
-            if is_azure:
-                try:
-                    from .llm_client import llm_client as _lc
-                    deep_model = _lc._azure_model_for(deep_model)
-                except Exception:
-                    deep_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", deep_model)
+            # Model selection defaults are centralized; avoid per-module overrides
 
             from time import perf_counter
             stage1_start = perf_counter()
@@ -378,30 +359,16 @@ class DeepResearchService:
             except Exception:
                 mcp_tools = []
 
-            stage1 = await client.create_response(
-                model=deep_model,
-                input=[
-                    {
-                        "role": "developer",
-                        "content": [
-                            {"type": "input_text", "text": system_prompt}
-                        ],
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": research_prompt}
-                        ],
-                    },
-                ],
-                tools=(
-                    ([web_search_config] if web_search_config else [])
-                    + ([CodeInterpreterTool()] if config.enable_code_interpreter else [])
-                    + (mcp_tools or [])
-                ),
+            from .llm_client import responses_deep_research as _responses_deep_research
+            stage1 = await _responses_deep_research(
+                query=research_prompt,
+                use_web_search=bool(web_search_config is not None),
+                web_search_config=web_search_config,
+                use_code_interpreter=config.enable_code_interpreter,
+                mcp_servers=mcp_tools,
+                system_prompt=system_prompt,
                 max_tool_calls=config.max_tool_calls,
                 background=config.background,
-                store=True,
             )
 
             # If running in background, poll for completion
@@ -431,7 +398,7 @@ class DeepResearchService:
                         else None
                     ),
                     success=True,
-                    model=deep_model,
+                    model=stage_model,
                     prompt_version=(config.prompt_variant or None),
                 )
             except Exception:
@@ -453,13 +420,12 @@ class DeepResearchService:
                 "Prioritize high-credibility sources, highlight key findings, and include a short bibliography."
             )
 
-            stage1_id_final = (
-                stage1.get("id") if isinstance(stage1, dict) else None
-            )
+            stage1_id_final = (stage1.get("id") if isinstance(stage1, dict) else None)
+            stage_model = (stage1.get("model") if isinstance(stage1, dict) else None)
 
             stage2_start = perf_counter()
             stage2 = await client.create_response(
-                model=deep_model,
+                model=stage_model,
                 input=[
                     {
                         "role": "user",
@@ -488,7 +454,7 @@ class DeepResearchService:
                         else None
                     ),
                     success=True,
-                    model=deep_model,
+                    model=stage_model,
                     prompt_version=(config.prompt_variant or None),
                 )
             except Exception:

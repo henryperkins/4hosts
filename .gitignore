@@ -106,3 +106,4 @@ Thumbs.db
 .DS_Store
 .aider*
 four-hosts-app/backend/brave-search-mcp-server
+examples/

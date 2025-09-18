@@ -42,7 +42,7 @@ async def start_background(req: StartBackgroundRequest):
     client = get_responses_client()
     try:
         resp = await client.create_response(
-            model=(req.model or "o3"),
+            model=req.model,
             input=[m.model_dump() if isinstance(m, Message) else m for m in (req.input if isinstance(req.input, list) else [{"role": "user", "content": req.input}])],
             tools=req.tools,
             background=True,
@@ -87,4 +87,3 @@ async def stream_response(response_id: str, starting_after: Optional[int] = Quer
         return StreamingResponse(event_gen(), media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to stream response: {e}")
-

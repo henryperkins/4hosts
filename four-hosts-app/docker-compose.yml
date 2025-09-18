@@ -219,7 +219,11 @@ services:
       backend:
         condition: service_started  # Frontend can start once backend is running
     ports:
-      - "127.0.0.1:5173:80"  # Bind to loopback to avoid internet exposure
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./frontend/certs:/etc/nginx/certs:ro
+      - ./frontend/certbot:/var/www/certbot:ro
     restart: unless-stopped
     networks:
       - fourhosts-network
