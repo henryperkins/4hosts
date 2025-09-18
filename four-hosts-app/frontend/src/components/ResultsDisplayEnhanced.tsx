@@ -505,7 +505,6 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   }
 
   const citations = Array.isArray(baseAnswer.citations) ? baseAnswer.citations : []
-  const sections = Array.isArray(baseAnswer.sections) ? baseAnswer.sections : []
   const actionItems = Array.isArray(baseAnswer.action_items) ? baseAnswer.action_items : []
   const summary = baseAnswer.summary || 'No summary available'
 

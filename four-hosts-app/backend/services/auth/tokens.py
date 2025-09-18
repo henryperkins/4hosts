@@ -18,7 +18,24 @@ if SECRET_KEY_ENV is None or SECRET_KEY_ENV.strip() == "":
         "Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
     )
 SECRET_KEY: Final[str] = SECRET_KEY_ENV
-print(f"[DEBUG] JWT_SECRET_KEY loaded in tokens.py: {SECRET_KEY[:10]}...")
+
+# Avoid leaking secrets in logs. Provide an optional, safe debug path that
+# logs only a short hash and length when explicitly enabled.
+if os.getenv("DEBUG_SECURE_LOGS", "0") == "1":
+    try:
+        import hashlib
+        import structlog  # preferred logger per repository guidelines
+
+        logger = structlog.get_logger(__name__)
+        digest = hashlib.sha256(SECRET_KEY.encode()).hexdigest()[:8]
+        logger.debug(
+            "JWT secret loaded",
+            sha256_prefix=digest,
+            length=len(SECRET_KEY),
+        )
+    except Exception:
+        # As a last resort, never print the secret; fail silently if logging stack isn't ready
+        pass
 
 # Define constants directly to avoid circular imports
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
