@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 import os
 from utils.url_utils import extract_domain
+from utils.date_utils import safe_parse_date, iso_or_none
 from models.context_models import (
     HostParadigm,
 )
@@ -307,14 +308,9 @@ class BaseAnswerGenerator:
         from datetime import datetime, timezone
         def _recency_score(v) -> float:
             try:
-                dt = v
-                if isinstance(v, str):
-                    dt = datetime.fromisoformat(v.replace('Z', '+00:00'))
+                dt = safe_parse_date(v)
                 if not dt:
                     return 0.0
-                # Normalize to tz-aware before subtracting
-                if isinstance(dt, datetime) and dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
                 now = datetime.now(timezone.utc)
                 # 0..1 over ~5 years
                 age_days = max(0.0, (now - dt).days)
@@ -733,7 +729,7 @@ class BaseAnswerGenerator:
         elif isinstance(ts_val, str):
             try:
                 # Try simple ISO formats
-                ts_norm = datetime.fromisoformat(ts_val)
+                ts_norm = safe_parse_date(ts_val)
             except Exception:
                 meta["published_date_raw"] = ts_val
 
@@ -896,7 +892,7 @@ class BaseAnswerGenerator:
                         evidence_quotes.append(q.model_dump())
                     elif hasattr(q, "dict"):
                         evidence_quotes.append(q.dict())
-                
+
             except Exception:
                 evidence_quotes = []
 
@@ -1165,7 +1161,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="dolores",
-                
+
             )
         except Exception as e:
             logger.error(
@@ -1589,7 +1585,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="bernard",
-                
+
             )
         except Exception as e:
             logger.error(
@@ -2041,7 +2037,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="maeve",
-                
+
             )
         except Exception as e:
             if os.getenv("LLM_STRICT", "0") == "1":
@@ -2333,7 +2329,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="teddy",
-                
+
             )
         except Exception as e:
             if os.getenv("LLM_STRICT", "0") == "1":

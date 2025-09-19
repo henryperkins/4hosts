@@ -6,10 +6,11 @@ Handles long-running LLM tasks using the background mode
 import asyncio
 import logging
 from typing import Dict, Optional, Any, Callable
-from datetime import datetime, timedelta
 from enum import Enum
 import os
 from services.progress import progress as _pt
+from utils.retry import calculate_exponential_backoff
+from utils.date_utils import get_current_utc
 
 from services.cache import cache_manager
 from services.research_store import research_store
@@ -93,7 +94,7 @@ class BackgroundLLMManager:
                 metadata["research_id"] = research_id
             self.active_tasks[task_id] = {
                 "status": BackgroundTaskStatus.PENDING,
-                "created_at": datetime.utcnow(),
+                "created_at": get_current_utc(),
                 "callback": callback,
                 "metadata": metadata,
             }
@@ -199,7 +200,7 @@ class BackgroundLLMManager:
 
     async def _poll_task_status(self, task_id: str):
         """Poll for task completion"""
-        start_time = datetime.utcnow()
+        start_time = get_current_utc()
         # Try to correlate with a research_id to emit WebSocket progress updates
         try:
             research_id = (self.active_tasks.get(task_id) or {}).get("metadata", {}).get("research_id")
@@ -215,7 +216,7 @@ class BackgroundLLMManager:
                     break
 
                 # Check timeout
-                if (datetime.utcnow() - start_time).seconds > self.max_poll_duration:
+                if (get_current_utc() - start_time).seconds > self.max_poll_duration:
                     logger.warning(f"Background task {task_id} timed out")
                     self.active_tasks[task_id]["status"] = BackgroundTaskStatus.FAILED
                     self.active_tasks[task_id]["error"] = "Task timed out"
@@ -330,7 +331,7 @@ class BackgroundLLMManager:
                                     pass
                             # Heartbeat every ~5 seconds
                             try:
-                                now = datetime.utcnow()
+                                now = get_current_utc()
                                 last_emit = self.active_tasks[task_id].get("last_emit")
                                 if research_id and (not last_emit or (now - last_emit).total_seconds() >= 5):
                                     await _pt.update_progress(
@@ -344,11 +345,15 @@ class BackgroundLLMManager:
                 except Exception as e:
                     logger.error(f"Error polling task {task_id}: {e}")
 
-                # Wait before next poll (use simple backoff to reduce churn)
+                # Wait before next poll (use centralized backoff with jitter)
                 try:
-                    prev_wait = self.active_tasks[task_id].get("_wait", self.poll_interval)
-                    next_wait = min(15, max(self.poll_interval, int(prev_wait * 1.5)))
-                    self.active_tasks[task_id]["_wait"] = next_wait
+                    attempt = self.active_tasks[task_id].get("_attempt", 0) + 1
+                    self.active_tasks[task_id]["_attempt"] = attempt
+                    next_wait = calculate_exponential_backoff(
+                        attempt,
+                        base_delay=self.poll_interval,
+                        max_delay=15.0
+                    )
                     await asyncio.sleep(next_wait)
                 except Exception:
                     await asyncio.sleep(self.poll_interval)
@@ -381,7 +386,7 @@ class BackgroundLLMManager:
         # Ensure an active task record exists
         self.active_tasks.setdefault(task_id, {
             "status": BackgroundTaskStatus.PENDING,
-            "created_at": datetime.utcnow(),
+            "created_at": get_current_utc(),
             "callback": None,
             "metadata": {"research_id": research_id} if research_id else {},
         })
@@ -424,9 +429,9 @@ class BackgroundLLMManager:
 
     async def wait_for_task(self, task_id: str, timeout: int = 60) -> Any:
         """Wait for a task to complete and return result"""
-        start_time = datetime.utcnow()
+        start_time = get_current_utc()
 
-        while (datetime.utcnow() - start_time).seconds < timeout:
+        while (get_current_utc() - start_time).seconds < timeout:
             status = await self.get_task_status(task_id)
 
             if status["status"] == BackgroundTaskStatus.COMPLETED:

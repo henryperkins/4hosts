@@ -58,11 +58,13 @@ class TestInputSanitizer:
 
     def test_url_validation(self):
         """Test URL validation and sanitization."""
+        from utils.url_utils import sanitize_url
+
         valid_url = "https://example.com/path"
         invalid_url = "javascript:alert('xss')"
 
-        assert self.sanitizer.sanitize_url(valid_url) == valid_url
-        assert self.sanitizer.sanitize_url(invalid_url) is None
+        assert sanitize_url(valid_url) == valid_url
+        assert sanitize_url(invalid_url) is None
 
     def test_sql_identifier_sanitization(self):
         """Test SQL identifier sanitization."""
@@ -387,7 +389,6 @@ def test_centralized_utilities_exist():
 
     # Check convenience functions
     assert callable(security.sanitize_user_input)
-    assert callable(security.validate_and_sanitize_url)
     assert callable(security.is_valid_email)
     assert callable(security.safe_regex_compile)
 

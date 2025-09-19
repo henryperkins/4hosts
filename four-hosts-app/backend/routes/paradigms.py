@@ -2,7 +2,6 @@
 Paradigm-related routes for the Four Hosts Research API
 """
 
-import logging
 import structlog
 from typing import Dict, Any
 
@@ -26,6 +25,7 @@ from services.enhanced_integration import (
     enhanced_classification_engine as classification_engine
 )
 
+from utils.date_utils import get_current_utc
 logger = structlog.get_logger(__name__)
 
 # Create router
@@ -152,7 +152,7 @@ async def override_paradigm(
         await research_store.update_field(payload.research_id, "status", "processing")
         await research_store.update_field(payload.research_id, "results", None)
         await research_store.update_field(payload.research_id, "error", None)
-        await research_store.update_field(payload.research_id, "requeued_at", __import__("datetime").datetime.utcnow().isoformat())
+        await research_store.update_field(payload.research_id, "requeued_at", get_current_utc().isoformat())
     except Exception as e:
         logger.error("Failed to update research for override: %s", e)
         raise HTTPException(status_code=500, detail="Failed to persist override")

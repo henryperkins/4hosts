@@ -2,11 +2,11 @@
 System routes for SSOTA telemetry and limits
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import structlog
 # pylint: disable=import-error
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter
 
@@ -18,6 +18,7 @@ from models.base import ResearchStatus
 import json
 from fastapi import Request
 from utils.type_coercion import as_int
+from utils.date_utils import safe_parse_date, get_current_utc
 
 router = APIRouter(prefix="/system", tags=["system"])
 logger = structlog.get_logger(__name__)
@@ -203,17 +204,6 @@ async def get_extended_stats() -> Dict[str, Any]:
         }
 
 
-def _parse_timestamp(value: Any) -> Optional[datetime]:
-    if not isinstance(value, str):
-        return None
-    try:
-        if value.endswith("Z"):
-            value = value.replace("Z", "+00:00")
-        return datetime.fromisoformat(value)
-    except Exception:
-        return None
-
-
 @router.get("/search-metrics")
 async def get_search_metrics(window_minutes: int = 60, limit: int = 720) -> Dict[str, Any]:
     """Return persisted search metrics suitable for dashboards and alerting."""
@@ -227,7 +217,7 @@ async def get_search_metrics(window_minutes: int = 60, limit: int = 720) -> Dict
         logger.error("Failed to retrieve search metrics: %s", e)
         events = []
 
-    now = datetime.now(timezone.utc)
+    now = get_current_utc()
     cutoff = now - timedelta(minutes=window_minutes)
 
     timeline = {}
@@ -243,7 +233,7 @@ async def get_search_metrics(window_minutes: int = 60, limit: int = 720) -> Dict
     dedup_count = 0
 
     for event in events:
-        ts = _parse_timestamp(event.get("timestamp"))
+        ts = safe_parse_date(event.get("timestamp"))
         if not ts or ts < cutoff:
             continue
 

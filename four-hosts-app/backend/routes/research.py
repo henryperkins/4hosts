@@ -2,13 +2,12 @@
 Research routes for the Four Hosts Research API
 """
 
-import logging
 import structlog
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional, cast, Dict
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Response, Request
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Request
 
 from models.research import (
     ResearchQuery,
@@ -45,13 +44,15 @@ from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT, ENABLE_MESH_NETWORK
 from services.result_adapter import ResultAdapter
 from models.result_models import ResearchFinalResult
 from services.mesh_network import mesh_negotiator
-import html as _html
-import re as _re
 from models.base import Paradigm
 from models.context_models import ClassificationDetailsSchema
 from services.webhook_manager import WebhookEvent, WebhookManager
 from services.rate_limiter import RateLimitExceeded
 from utils.error_handling import log_exception
+from utils.text_sanitize import sanitize_text
+from utils.security import validate_and_sanitize_url
+from utils.domain_categorizer import categorize
+from utils.date_utils import get_current_utc
 
 logger = structlog.get_logger(__name__)
 
@@ -516,20 +517,28 @@ async def execute_real_research(
             try:
                 r = ResultAdapter(raw)
                 # Extra defensive cleanup in case any provider markup slipped through
-                title = _re.sub(r"<[^>]+>", " ", _html.unescape(r.title or "")).strip()
-                snippet = _re.sub(r"<[^>]+>", " ", _html.unescape(r.snippet or "")).strip()
+                title = sanitize_text(r.title or "")
+                snippet = sanitize_text(r.snippet or "")
                 md = r.metadata or {}
                 domain = (r.domain or md.get("domain") or "")
+                safe_url_val = validate_and_sanitize_url(r.url or md.get("url", "") or "")
+                url_out = safe_url_val if safe_url_val else ((r.url or md.get("url", "") or "").strip())
+                src_cat = md.get("source_category")
+                if not src_cat and domain:
+                    try:
+                        src_cat = categorize(domain, content_type=md.get("content_type"), meta=md)
+                    except Exception:
+                        src_cat = None
                 sources_payload.append(
                     {
                         "title": title,
-                        "url": r.url or md.get("url", "") or "",
+                        "url": url_out,
                         "snippet": snippet,
                         "domain": domain,
                         "credibility_score": float(r.credibility_score if r.credibility_score is not None else 0.5),
                         "published_date": md.get("published_date"),
                         "source_type": md.get("result_type", "web"),
-                        "source_category": md.get("source_category"),
+                        "source_category": src_cat,
                         "credibility_explanation": md.get("credibility_explanation"),
                     }
                 )
@@ -1090,7 +1099,7 @@ async def submit_research(
             "options": research.options.dict(),
             "status": ResearchStatus.PROCESSING,
             "paradigm_classification": classification.dict(),
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": get_current_utc().isoformat(),
             "results": None,
             **({"experiment": exp_override} if exp_override else {}),
         }
@@ -1152,7 +1161,7 @@ async def submit_research(
             "research_id": research_id,
             "status": ResearchStatus.PROCESSING,
             "paradigm_classification": classification.dict(),
-            "estimated_completion": (datetime.utcnow() + timedelta(minutes=eta_minutes)).isoformat(),
+            "estimated_completion": (get_current_utc() + timedelta(minutes=eta_minutes)).isoformat(),
             "websocket_url": f"/ws/research/{research_id}",
         }
 
@@ -1393,7 +1402,7 @@ async def submit_deep_research(
             "options": research.options.dict(),
             "status": ResearchStatus.PROCESSING,
             "paradigm_classification": classification.dict(),
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": get_current_utc().isoformat(),
             "results": None,
         }
         await research_store.set(research_id, research_data)
@@ -1547,7 +1556,7 @@ async def resume_deep_research(
 
     # Update state and launch background execution
     await research_store.update_field(research_id, "status", ResearchStatus.PROCESSING)
-    await research_store.update_field(research_id, "estimated_completion", (datetime.utcnow() + timedelta(minutes=12)).isoformat())
+    await research_store.update_field(research_id, "estimated_completion", (get_current_utc() + timedelta(minutes=12)).isoformat())
 
     # Re-classify for transparency and attach to record
     try:
@@ -1675,7 +1684,7 @@ async def cancel_research(
                         data={
                             "research_id": research_id,
                             "status": "cancelled",
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": get_current_utc().isoformat(),
                         },
                     ),
                 )
@@ -1690,7 +1699,7 @@ async def cancel_research(
                     {
                         "research_id": research_id,
                         "user_id": str(current_user.user_id),
-                        "cancelled_at": datetime.utcnow().isoformat(),
+                        "cancelled_at": get_current_utc().isoformat(),
                     },
                 )
         except Exception:
@@ -1701,7 +1710,7 @@ async def cancel_research(
             "status": "cancelled",
             "message": "Research has been successfully cancelled",
             "cancelled": True,
-            "cancelled_at": datetime.utcnow().isoformat()
+            "cancelled_at": get_current_utc().isoformat()
         }
 
     except Exception as e:
@@ -1796,7 +1805,7 @@ async def submit_research_feedback(
         await research_store.update_field(research_id, "user_feedback", {
             "satisfaction_score": satisfaction_score,
             "paradigm_feedback": paradigm_feedback,
-            "submitted_at": datetime.utcnow().isoformat()
+            "submitted_at": get_current_utc().isoformat()
         })
 
         return {

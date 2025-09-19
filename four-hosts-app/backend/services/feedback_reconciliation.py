@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.research_store import research_store
+from utils.date_utils import safe_parse_date
 
 logger = logging.getLogger(__name__)
 
@@ -232,14 +233,7 @@ class FeedbackReconciliationService:
 
     @staticmethod
     def _parse_time(val: Any) -> Optional[datetime]:
-        if isinstance(val, datetime):
-            return val
-        if isinstance(val, str):
-            try:
-                return datetime.fromisoformat(val.replace("Z", "+00:00"))
-            except Exception:
-                return None
-        return None
+        return safe_parse_date(val)
 
     @staticmethod
     def _short_hash(text: str) -> str:

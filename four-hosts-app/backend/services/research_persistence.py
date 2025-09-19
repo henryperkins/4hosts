@@ -24,6 +24,7 @@ from database.models import (
     ResearchStatus as DBResearchStatus,
 )
 from models.base import Paradigm, ResearchDepth as ApiResearchDepth
+from utils.date_utils import safe_parse_date
 
 import structlog
 
@@ -134,17 +135,6 @@ def _extract_action_items(answer: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     return []
 
 
-def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        # Support strings missing timezone by assuming UTC
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
 
 
 async def persist_completion(
@@ -220,7 +210,7 @@ async def persist_completion(
                         bias_score=_extract_float(raw, "bias_score"),
                         source_type=raw.get("source_type"),
                         source_metadata=raw,
-                        published_date=_parse_iso_datetime(raw.get("published_date")),
+                        published_date=safe_parse_date(raw.get("published_date")),
                         found_at=_now(),
                     )
                     session.add(source)

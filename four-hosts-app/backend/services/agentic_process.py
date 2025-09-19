@@ -128,17 +128,22 @@ def propose_queries_from_missing(
 
 def summarize_domain_gaps(sources: List[Dict[str, Any]]) -> Dict[str, int]:
     """Return simple counts by domain class: academic, government, nonprofit, media, industry."""
+    from utils.domain_categorizer import categorize
+
     counts = {"academic": 0, "government": 0, "nonprofit": 0, "media": 0, "industry": 0}
     for s in sources or []:
         u = s.get("url") or ""
         host = extract_domain(u)
-        if host.endswith(".edu"):
+        category = categorize(host)
+
+        # Map domain categorizer categories to agentic process categories
+        if category == "academic":
             counts["academic"] += 1
-        elif host.endswith(".gov") or ".gov/" in u:
+        elif category == "government":
             counts["government"] += 1
-        elif host.endswith(".org"):
+        elif category in ["blog", "reference"]:  # .org domains and reference sites
             counts["nonprofit"] += 1
-        elif any(k in host for k in ["nytimes", "guardian", "washingtonpost", "bloomberg", "reuters", "apnews", "bbc"]):
+        elif category == "news":
             counts["media"] += 1
         else:
             counts["industry"] += 1

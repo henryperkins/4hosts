@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Dict, Optional, List, Any
 import os
-from datetime import datetime
+from utils.date_utils import get_current_utc
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class ResearchStore:
         """Remove expired entries from fallback store."""
         if not self.fallback_store_exp:
             return
-        now_ts = datetime.utcnow().timestamp()
+        now_ts = get_current_utc().timestamp()
         expired = [
             k for k, ts in self.fallback_store_exp.items()
             if ts <= now_ts
@@ -84,10 +84,10 @@ class ResearchStore:
         # Fallback to in-memory with TTL approximation (24h) and timestamp
         self._purge_fallback_expired()
         data = dict(data or {})
-        data["_updated_at"] = datetime.utcnow().isoformat()
+        data["_updated_at"] = get_current_utc().isoformat()
         self.fallback_store[research_id] = data
         self.fallback_store_exp[research_id] = (
-            datetime.utcnow().timestamp() + 86400
+            get_current_utc().timestamp() + 86400
         )
 
     async def get(self, research_id: str) -> Optional[Dict]:
@@ -157,7 +157,7 @@ class ResearchStore:
         merged = dict(current)
         merged.update(patch)
         merged["version"] = prev_version + 1
-        merged["_updated_at"] = datetime.utcnow().isoformat()
+        merged["_updated_at"] = get_current_utc().isoformat()
 
         # Write back once
         await self.set(research_id, merged)

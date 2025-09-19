@@ -34,7 +34,8 @@ from utils.url_utils import (
 # Import retry utilities
 from utils.retry import (
     handle_rate_limit, RateLimitedError as RetryRateLimitedError,
-    parse_retry_after, calculate_exponential_backoff
+    parse_retry_after, calculate_exponential_backoff,
+    get_search_retry_decorator, get_api_retry_decorator
 )
 try:
     import fitz  # PyMuPDF
@@ -192,11 +193,6 @@ async def response_body_snippet(
             return "<unreadable>"
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=2, min=4, max=30),
-    retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
-)
 # _retry_after_to_seconds replaced by utils.retry.parse_retry_after
 def _retry_after_to_seconds(val: str) -> float:
     """Parse Retry-After which may be seconds or HTTP-date."""
@@ -271,7 +267,10 @@ def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = N
         pass
     # Canonical
     try:
-        link_canon = soup.find("link", rel=lambda v: v and "canonical" in str(v).lower())
+        link_canon = soup.find(
+            "link",
+            rel=lambda v: bool(v and "canonical" in str(v).lower())
+        )
         if link_canon and link_canon.get("href"):
             meta["canonical_url"] = link_canon.get("href")
     except Exception:
@@ -1108,8 +1107,7 @@ class BraveSearchAPI(BaseSearchAPI):
         self.base = "https://api.search.brave.com/res/v1/web/search"
 
     @with_circuit_breaker("brave_search", failure_threshold=3, recovery_timeout=30)
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=4, max=10),
-           retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)))
+    @get_search_retry_decorator()
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         q_limit = int(os.getenv("SEARCH_PROVIDER_Q_LIMIT", "400"))
@@ -1160,12 +1158,7 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
         self.cx = cx
 
     @with_circuit_breaker("google_search", failure_threshold=3, recovery_timeout=30)
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(min=2, max=10),
-        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
-        reraise=True,
-    )
+    @get_api_retry_decorator()
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         params = {
@@ -1254,12 +1247,7 @@ class ExaSearchAPI(BaseSearchAPI):
         self._search_path = "/search"
 
     @with_circuit_breaker("exa_search", failure_threshold=3, recovery_timeout=30)
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(min=2, max=10),
-        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
-        reraise=True,
-    )
+    @get_api_retry_decorator()
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         q_limit = int(os.getenv("SEARCH_PROVIDER_Q_LIMIT", "400"))
@@ -1522,9 +1510,7 @@ class SemanticScholarAPI(BaseSearchAPI):
             self.api_key = self._keys[self._key_idx]
 
     @with_circuit_breaker("semantic_scholar", failure_threshold=5, recovery_timeout=60)
-    @retry(stop=stop_after_attempt(3),
-           wait=wait_exponential(min=2, max=10),
-           retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)))
+    @get_api_retry_decorator()
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
         params = {

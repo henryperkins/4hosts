@@ -20,6 +20,7 @@ from collections import defaultdict
 
 from .cache import cache_manager
 from .brave_grounding import brave_client
+from utils.retry import calculate_exponential_backoff, handle_rate_limit
 
 logger = structlog.get_logger(__name__)
 
@@ -170,8 +171,8 @@ class DomainAuthorityChecker:
         return await self._heuristic_domain_authority(domain)
 
     async def _get_moz_domain_authority(self, domain: str) -> Optional[float]:
-        """Get domain authority from Moz API with backoff on repeated failures"""
-        
+        """Get domain authority from Moz API with exponential backoff on repeated failures"""
+
         # Check if we're in backoff period
         if self.moz_backoff_until and get_current_utc() < self.moz_backoff_until:
             logger.debug(f"Moz API in backoff period, skipping DA check for {domain}")
@@ -231,15 +232,33 @@ class DomainAuthorityChecker:
                     error_text = await response.text()
                     logger.warning("Moz API error for %s: %s - %s", domain, response.status, error_text)
                     
-                    # Handle auth and rate/5xx errors with backoff
+                    # Handle auth and rate/5xx errors with exponential backoff
                     if response.status in (401, 429, 500, 502, 503, 504):
                         self.moz_failures += 1
                         if self.moz_failures >= 3:
-                            # Backoff for 1 hour after 3 failures
-                            self.moz_backoff_until = get_current_utc() + timedelta(hours=1)
-                            logger.warning("Moz API failing repeatedly, backing off for 1 hour")
+                            # Use exponential backoff calculation for longer failure periods
+                            backoff_seconds = calculate_exponential_backoff(
+                                attempt=self.moz_failures,
+                                base_delay=60,  # Start with 1 minute
+                                factor=2.0,
+                                max_delay=3600,  # Cap at 1 hour
+                                jitter_mode="full"
+                            )
+                            self.moz_backoff_until = get_current_utc() + timedelta(seconds=backoff_seconds)
+                            logger.warning("Moz API failing repeatedly, backing off for %d seconds", backoff_seconds)
                         else:
                             logger.debug("Moz API recoverable error (%d/3), will retry", self.moz_failures)
+
+                        # Handle rate limiting headers if present
+                        if response.status == 429:
+                            await handle_rate_limit(
+                                url=url,
+                                response_headers=response.headers,
+                                attempt=self.moz_failures,
+                                prefer_server=True,
+                                base_delay=60,
+                                max_delay=3600
+                            )
 
         except Exception as e:
             # Prefer structured status where possible
@@ -254,8 +273,16 @@ class DomainAuthorityChecker:
             if status == 401 or "401" in msg:
                 self.moz_failures += 1
                 if self.moz_failures >= 3:
-                    self.moz_backoff_until = get_current_utc() + timedelta(hours=1)
-                    logger.warning("Moz API failing repeatedly (401), backing off for 1 hour")
+                    # Use exponential backoff for authentication failures
+                    backoff_seconds = calculate_exponential_backoff(
+                        attempt=self.moz_failures,
+                        base_delay=60,
+                        factor=2.0,
+                        max_delay=3600,
+                        jitter_mode="full"
+                    )
+                    self.moz_backoff_until = get_current_utc() + timedelta(seconds=backoff_seconds)
+                    logger.warning("Moz API failing repeatedly (401), backing off for %d seconds", backoff_seconds)
                 else:
                     logger.debug("Moz API 401 error (%d/3), will retry", self.moz_failures)
             else:
@@ -265,6 +292,7 @@ class DomainAuthorityChecker:
 
     async def _heuristic_domain_authority(self, domain: str) -> float:
         """Heuristic domain authority based on known high-authority domains"""
+        from utils.domain_categorizer import categorize
 
         # High authority domains (score 80-100)
         high_authority = {
@@ -299,17 +327,22 @@ class DomainAuthorityChecker:
         if domain in high_authority:
             return high_authority[domain]
 
-        # Check TLD patterns
-        if domain.endswith(".gov"):
-            return 85
-        elif domain.endswith(".edu"):
-            return 80
-        elif domain.endswith(".org"):
-            return 60  # Non-profits generally trusted
-        elif domain.endswith(".com"):
-            return 45  # Commercial sites vary widely
-        else:
-            return 40  # Other TLDs
+        # Use domain categorizer for consistent scoring
+        category = categorize(domain)
+        category_scores = {
+            "government": 85,
+            "academic": 80,
+            "news": 70,
+            "reference": 75,
+            "blog": 60,
+            "social": 50,
+            "tech": 55,
+            "video": 50,
+            "pdf": 65,
+            "other": 40
+        }
+
+        return category_scores.get(category, 40)
 
 
 class BiasDetector:
@@ -411,17 +444,25 @@ class BiasDetector:
 
     async def _heuristic_bias_score(self, domain: str) -> Tuple[str, float, str]:
         """Heuristic bias scoring for unknown domains"""
+        from utils.domain_categorizer import categorize
 
-        # Government and academic sources are generally neutral and factual
-        if domain.endswith(".gov"):
-            return "center", 0.8, "high"
-        elif domain.endswith(".edu"):
-            return "center", 0.8, "high"
-        elif domain.endswith(".org"):
-            return "center", 0.7, "medium"  # NGOs can have bias but often factual
+        category = categorize(domain)
 
-        # Commercial and personal sites default to unknown
-        return "center", 0.5, "medium"
+        # Category-based bias and factual scoring
+        category_scores = {
+            "government": ("center", 0.8, "high"),
+            "academic": ("center", 0.8, "high"),
+            "news": ("center", 0.7, "high"),
+            "reference": ("center", 0.8, "high"),
+            "blog": ("center", 0.7, "medium"),  # NGOs/blogs can have bias but often factual
+            "social": ("center", 0.4, "low"),
+            "tech": ("center", 0.6, "medium"),
+            "video": ("center", 0.5, "medium"),
+            "pdf": ("center", 0.7, "medium"),
+            "other": ("center", 0.5, "medium")
+        }
+
+        return category_scores.get(category, ("center", 0.5, "medium"))
 
 
 class ControversyDetector:
@@ -1082,12 +1123,24 @@ class SourceReputationDatabase:
         elif fact_check_rating == "low":
             factors.append("Low Factual Accuracy")
 
-        if domain.endswith(".gov"):
-            factors.append("Government Source")
-        elif domain.endswith(".edu"):
-            factors.append("Academic Institution")
-        elif domain.endswith(".org"):
-            factors.append("Non-profit Organization")
+        # Use domain categorizer for consistent categorization
+        from utils.domain_categorizer import categorize
+        category = categorize(domain)
+
+        category_factors = {
+            "government": "Government Source",
+            "academic": "Academic Institution",
+            "news": "News Organization",
+            "reference": "Reference Source",
+            "blog": "Non-profit Organization",
+            "social": "Social Media Platform",
+            "tech": "Technology Source",
+            "video": "Video Platform",
+            "pdf": "Document Source"
+        }
+
+        if category in category_factors:
+            factors.append(category_factors[category])
 
         return factors
 

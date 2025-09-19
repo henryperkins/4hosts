@@ -15,6 +15,8 @@ from enum import Enum
 from typing import Any
 import uuid
 
+from utils.date_utils import iso_or_none
+
 from fastapi import WebSocket, WebSocketDisconnect, Depends, Query, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
@@ -50,7 +52,7 @@ class WSEventType(str, Enum):
     SOURCE_FOUND = "source.found"
     SOURCE_ANALYZING = "source.analyzing"
     SOURCE_ANALYZED = "source.analyzed"
-    
+
     # Search events
     SEARCH_STARTED = "search.started"
     SEARCH_COMPLETED = "search.completed"
@@ -60,7 +62,7 @@ class WSEventType(str, Enum):
     SYNTHESIS_STARTED = "synthesis.started"
     SYNTHESIS_PROGRESS = "synthesis.progress"
     SYNTHESIS_COMPLETED = "synthesis.completed"
-    
+
     # Analysis events
     CREDIBILITY_CHECK = "credibility.check"
     DEDUPLICATION = "deduplication.progress"
@@ -398,12 +400,12 @@ class ConnectionManager:
     async def disconnect_all(self):
         """Disconnect all active WebSocket connections"""
         logger.info("Disconnecting all WebSocket connections...")
-        
+
         # Create a list of all connections to disconnect
         all_connections = []
         for user_connections in self.active_connections.values():
             all_connections.extend(user_connections)
-        
+
         # Disconnect each connection
         for websocket in all_connections:
             try:
@@ -415,13 +417,13 @@ class ConnectionManager:
                     pass
             except Exception as e:
                 logger.error(f"Error disconnecting websocket: {e}")
-        
+
         # Clear all data structures
         self.active_connections.clear()
         self.connection_metadata.clear()
         self.research_subscriptions.clear()
         self.message_history.clear()
-        
+
         logger.info("All WebSocket connections disconnected")
 
     # --- Message Transformation ---
@@ -478,7 +480,7 @@ class ConnectionManager:
 
         # Ensure timestamp string
         ts = ws_message.timestamp
-        ts_str = ts.isoformat() if isinstance(ts, (datetime,)) else str(ts)
+        ts_str = iso_or_none(ts) or str(ts)
 
         return {
             "type": type_mapping.get(ws_message.type, str(ws_message.type)),
@@ -1078,7 +1080,7 @@ class ResearchProgressTracker(ProgressTracker):
             positional = ()
 
         await super().update_progress(research_id, *positional, **kwargs)
-    
+
     async def report_search_started(self, research_id: str, query: str, engine: str, index: int, total: int):
         """Report that a search has started"""
         await self.connection_manager.broadcast_to_research(
@@ -1105,7 +1107,7 @@ class ResearchProgressTracker(ProgressTracker):
                 current_total = int(progress_state.get("total_searches", 0) or 0)
                 if total_int > current_total:
                     progress_state["total_searches"] = total_int
-    
+
     async def report_search_completed(self, research_id: str, query: str, results_count: int):
         """Report that a search has completed"""
         await self.connection_manager.broadcast_to_research(
@@ -1138,7 +1140,7 @@ class ResearchProgressTracker(ProgressTracker):
                     )
                 except Exception:
                     pass
-    
+
     async def report_credibility_check(self, research_id: str, domain: str, score: float):
         """Report credibility check progress"""
         await self.connection_manager.broadcast_to_research(
@@ -1153,7 +1155,7 @@ class ResearchProgressTracker(ProgressTracker):
                 }
             )
         )
-    
+
     async def report_deduplication(self, research_id: str, before_count: int, after_count: int):
         """Report deduplication progress"""
         await self.connection_manager.broadcast_to_research(

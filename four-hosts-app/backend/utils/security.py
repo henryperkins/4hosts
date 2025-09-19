@@ -11,13 +11,12 @@ import hashlib
 import secrets
 from typing import Optional, List, Pattern
 import logging
-from .url_utils import sanitize_url as url_utils_sanitize_url
+from .url_utils import MAX_URL_LENGTH
 
 logger = logging.getLogger(__name__)
 
 # Configuration constants
 MAX_QUERY_LENGTH = 5000
-MAX_URL_LENGTH = 2048
 MAX_API_KEY_LENGTH = 128
 MAX_TOKEN_LENGTH = 2048
 
@@ -68,26 +67,6 @@ class InputSanitizer:
 
         return text
 
-    def sanitize_url(self, url: str) -> Optional[str]:
-        """Validate and sanitize URL input."""
-        if not url or len(url) > MAX_URL_LENGTH:
-            return None
-
-        # Basic URL validation
-        url_pattern = re.compile(
-            r'^https?://'  # http:// or https://
-            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
-            r'localhost|'  # localhost...
-            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
-            r'(?::\d+)?'  # optional port
-            r'(?:/?|[/?]\S+)$', re.IGNORECASE
-        )
-
-        if not url_pattern.match(url):
-            logger.warning(f"Invalid URL format: {url[:50]}...")
-            return None
-
-        return url
 
     def sanitize_sql_identifier(self, identifier: str) -> str:
         """Sanitize SQL identifiers (table names, column names)."""
@@ -242,9 +221,6 @@ def sanitize_user_input(text: str) -> str:
     return input_sanitizer.sanitize_text(text)
 
 
-def validate_and_sanitize_url(url: str) -> Optional[str]:
-    """Validate and sanitize URL using centralized url_utils."""
-    return url_utils_sanitize_url(url)
 
 
 def is_valid_email(email: str) -> bool:

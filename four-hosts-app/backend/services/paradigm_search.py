@@ -541,8 +541,11 @@ class TeddySearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
         # Bonus for community/nonprofit sources
         if result.domain in self.preferred_sources:
             score += 0.3
-        elif result.domain.endswith(".org"):
-            score += 0.2
+        else:
+            from utils.domain_categorizer import categorize
+            category = categorize(result.domain)
+            if category == "blog":  # .org domains categorized as blogs
+                score += 0.2
 
         # Bonus for care-related keywords
         care_keywords = [
@@ -768,10 +771,13 @@ class BernardSearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
         # Strong bonus for academic sources
         if result.domain in self.preferred_sources:
             score += 0.4
-        elif result.domain.endswith(".edu") or "journal" in result.domain:
-            score += 0.3
         elif result.result_type == "academic":
             score += 0.35
+        else:
+            from utils.domain_categorizer import categorize
+            category = categorize(result.domain)
+            if category == "academic" or "journal" in result.domain:
+                score += 0.3
 
         # Bonus for research-related keywords
         research_keywords = [

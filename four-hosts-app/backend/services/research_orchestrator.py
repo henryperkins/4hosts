@@ -4,24 +4,23 @@ Combines all the best features from multiple orchestrator implementations
 """
 
 import asyncio
-import logging
 import structlog
 import os
-from typing import List, Dict, Any, Optional, Tuple, cast, TypedDict
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 from collections import defaultdict, deque
 from urllib.parse import quote_plus
+from utils.url_utils import clean_url, normalize_url, extract_domain
 from dataclasses import dataclass, field
 
 # Contracts
 from contracts import ResearchStatus as ContractResearchStatus  # type: ignore
 # json import removed (unused)
-import re
 from services.research_store import research_store
 from models.base import ResearchStatus as RuntimeResearchStatus
 
 from models.context_models import (
-    SearchResultSchema, ClassificationResultSchema,
+    ClassificationResultSchema,
     ContextEngineeredQuerySchema,
     HostParadigm,
     QueryFeaturesSchema
@@ -40,7 +39,6 @@ from services.paradigm_search import get_search_strategy, SearchContext
 from services.cache import (
     cache_manager,
 )
-from services.text_compression import query_compressor
 from core.config import (
     EVIDENCE_MAX_DOCS_DEFAULT,
     EVIDENCE_QUOTES_PER_DOC_DEFAULT,
@@ -48,6 +46,7 @@ from core.config import (
     SYNTHESIS_MAX_LENGTH_DEFAULT,
 )
 from services.result_normalizer import normalize_result
+from utils.retry import retry_with_backoff
 from services.deep_research_service import (
     deep_research_service,
     DeepResearchConfig,
@@ -717,18 +716,23 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
             if deep_results:
                 # Avoid duplicates by URL against ranked results before appending deep results
-                seen_urls = {
-                    getattr(r, "url", None)
-                    for r in processed_results.get("results", [])
-                    if getattr(r, "url", None)
-                }
+                seen_urls: set[str] = set()
+                try:
+                    for r in processed_results.get("results", []) or []:
+                        ru = getattr(r, "url", None)
+                        if ru:
+                            seen_urls.add(normalize_url(clean_url(ru, remove_tracking=True)))
+                except Exception:
+                    pass
                 unique_deep: List[dict] = []
                 for d in deep_results:
                     try:
-                        u = (d.get("url") or "").strip()
+                        u_raw = (d.get("url") or "").strip()
+                        u_norm = normalize_url(clean_url(u_raw, remove_tracking=True)) if u_raw else ""
                     except Exception:
-                        u = ""
-                    if u and u not in seen_urls:
+                        u_norm = ""
+                    if u_norm and u_norm not in seen_urls:
+                        d["url"] = u_norm
                         unique_deep.append(d)
                 processed_results["results"].extend(unique_deep)
                 processed_results["metadata"]["deep_research_enabled"] = True
@@ -2385,20 +2389,19 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 mcounts[api_name] = int(mcounts.get(api_name, 0)) + 1
             metrics["api_call_counts"] = mcounts
 
-        attempt = 0
-        delay = self.retry_policy.base_delay_sec
-        results: List[SearchResult] = []
+        # Track retry attempts
+        retry_count = [0]  # Using list to make it mutable in nested function
 
-        while attempt < self.retry_policy.max_attempts:
-            # Cancellation gate before each retry attempt
+        async def _execute_search():
+            """Inner function for retry_with_backoff"""
+            # Cancellation check
             if check_cancelled and await check_cancelled():
                 logger.info(
                     "Search cancelled during retry phase for q='%s'",
                     candidate.query[:80],
                 )
-                break
+                return []
 
-            attempt += 1
             try:
                 # Use search_all and emit per-provider progress updates
                 coro = sm.search_all(
@@ -2409,27 +2412,19 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 )
                 task_result = await asyncio.wait_for(coro, timeout=self.search_task_timeout)
                 if isinstance(task_result, list):
-                    results = task_result
+                    return task_result
                 else:
-                    results = []
-                break  # success
-            except asyncio.TimeoutError:
+                    return []
+            except asyncio.TimeoutError as e:
                 logger.error(
                     f"Search task timeout for query: {candidate.query}, research_id: {research_id}"
                 )
                 if metrics is not None:
                     metrics["task_timeouts"] = int(metrics.get("task_timeouts", 0)) + 1
-                if attempt < self.retry_policy.max_attempts:
-                    if metrics is not None:
+                    if retry_count[0] < self.retry_policy.max_attempts - 1:
                         metrics["retries_attempted"] = int(metrics.get("retries_attempted", 0)) + 1
-                    await asyncio.sleep(min(delay, self.retry_policy.max_delay_sec))
-                    delay = min(delay * 2.0, self.retry_policy.max_delay_sec)
-                    continue
-                else:
-                    logger.error(
-                        "Search task timeout q='%s'",
-                        candidate.query[:120],
-                    )
+                retry_count[0] += 1
+                raise e
             except asyncio.CancelledError:
                 logger.error(
                     f"Search cancelled for query: {candidate.query}, research_id: {research_id}"
@@ -2452,20 +2447,32 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     except Exception:
                         mex[api_name] = int(mex.get(api_name, 0)) + 1
                     metrics["exceptions_by_api"] = mex
-                if attempt < self.retry_policy.max_attempts:
-                    if metrics is not None:
+                    if retry_count[0] < self.retry_policy.max_attempts - 1:
                         metrics["retries_attempted"] = int(metrics.get("retries_attempted", 0)) + 1
-                    await asyncio.sleep(min(delay, self.retry_policy.max_delay_sec))
-                    delay = min(delay * 2.0, self.retry_policy.max_delay_sec)
-                    continue
-                else:
-                    logger.error(
-                        "Search failed err=%s q='%s'",
-                        str(e),
-                        candidate.query[:120],
-                    )
+                retry_count[0] += 1
+                raise e
 
-        return results
+        # Use centralized retry_with_backoff
+        try:
+            results = await retry_with_backoff(
+                _execute_search,
+                max_attempts=self.retry_policy.max_attempts,
+                base_delay=self.retry_policy.base_delay_sec,
+                factor=2.0,
+                max_delay=self.retry_policy.max_delay_sec,
+                exceptions=(asyncio.TimeoutError, Exception),
+            )
+            return results
+        except asyncio.CancelledError:
+            # Re-raise CancelledError without wrapping
+            raise
+        except Exception as e:
+            logger.error(
+                "Search failed after all retries err=%s q='%s'",
+                str(e),
+                candidate.query[:120],
+            )
+            return []
 
     def _apply_early_relevance_filter(
         self,
@@ -2643,7 +2650,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 continue
 
             try:
-                domain = url.split('/')[2] if ('/' in url and len(url.split('/')) > 2) else url
+                domain = extract_domain(url)
             except Exception:
                 domain = ""
             deep_search_results.append({
@@ -2720,9 +2727,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         adapted: List[SearchResult] = []
         for d in deep_items or []:
-            url = (d.get("url") or "").strip()
-            domain = url.split("/")[2] if ("/" in url and len(url.split("/")) > 2) else url
-            title = d.get("title") or (url.split("/")[-1] if url else "(deep research)")
+            raw_url = (d.get("url") or "").strip()
+            url = normalize_url(clean_url(raw_url, remove_tracking=True)) if raw_url else ""
+            domain = extract_domain(url) if url else ""
+            title = d.get("title") or (raw_url.split("/")[-1] if raw_url else "(deep research)")
             snippet = d.get("snippet") or d.get("summary") or ""
             src = d.get("source_api") or d.get("search_api") or "deep_research"
             try:

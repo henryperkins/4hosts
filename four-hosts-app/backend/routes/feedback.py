@@ -19,10 +19,8 @@ Events are shaped using models.feedback.* schemas.
 
 from __future__ import annotations
 
-import logging
 import structlog
 import uuid
-from datetime import datetime
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -44,6 +42,7 @@ from services.enhanced_integration import record_user_feedback
 # Feature flags and rate limiting
 from core.config import ENABLE_FEEDBACK_RATE_LIMIT
 from services.rate_limiter import RateLimitExceeded
+from utils.date_utils import get_current_utc
 
 logger = structlog.get_logger(__name__)
 
@@ -62,6 +61,7 @@ EVENT_ANSWER = "answer"
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
 async def _persist_feedback_event(
     *,
     event_type: str,
@@ -85,7 +85,7 @@ async def _persist_feedback_event(
         user_id=user_id,
         type=event_type,
         payload=payload,
-        timestamp=datetime.utcnow(),
+        timestamp=get_current_utc(),
     ).dict()
 
     try:

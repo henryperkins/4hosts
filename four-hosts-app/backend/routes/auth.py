@@ -2,20 +2,15 @@
 Authentication routes for the Four Hosts Research API
 """
 
-import os
 import uuid
-import logging
 import structlog
-from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Response, Request, Depends
-from fastapi.security import HTTPAuthorizationCredentials
 
 from models.auth import (
     UserCreate,
     UserLogin,
     Token,
-    RefreshTokenRequest,
     LogoutRequest,
     PreferencesPayload
 )
@@ -23,7 +18,6 @@ from services.auth_service import (
     auth_service as real_auth_service,
     create_access_token,
     create_refresh_token,
-    get_current_user as auth_get_current_user,
     ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from services.token_manager import token_manager
@@ -32,8 +26,8 @@ from database.connection import get_db_context, get_db
 from database.models import User as DBUser
 from core.dependencies import get_current_user, get_current_user_optional
 from core.config import is_production
-from middleware.security import get_csrf_token
 from sqlalchemy import select
+from utils.date_utils import get_current_utc
 
 logger = structlog.get_logger(__name__)
 
@@ -176,7 +170,7 @@ async def login(login_data: UserLogin, response: Response, request: Request):
             "role": user.role.value,
             "created_at": (
                 user.created_at.isoformat()
-                if user.created_at else datetime.utcnow().isoformat()
+                if user.created_at else get_current_utc().isoformat()
             ),
             "is_active": user.is_active
         },
@@ -296,7 +290,7 @@ async def get_current_user_info(current_user=Depends(get_current_user)):
         created_at = (
             db_user.created_at.isoformat()
             if db_user and db_user.created_at is not None
-            else datetime.utcnow().isoformat()
+            else get_current_utc().isoformat()
         )
         is_active = db_user.is_active if db_user else True
     finally:
