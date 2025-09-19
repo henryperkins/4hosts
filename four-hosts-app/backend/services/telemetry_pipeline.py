@@ -15,7 +15,7 @@ import structlog
 # pylint: disable=import-error
 
 from services.cache import cache_manager
-from utils.type_coercion import as_int, as_float
+from utils.type_coercion import as_int, as_float, coerce_iterable
 
 # Optional dependency: expose the type only for static type checkers.
 if TYPE_CHECKING:  # pragma: no cover
@@ -124,7 +124,7 @@ class TelemetryPipeline:
                 dedup_rate
             )
 
-        for provider in _coerce_iterable(record.get("apis_used")):
+        for provider in coerce_iterable(record.get("apis_used")):
             provider_name = str(provider or "unknown").lower()
             self._prometheus.search_provider_usage.labels(
                 provider=provider_name
@@ -144,12 +144,7 @@ class TelemetryPipeline:
 # (see above)
 
 
-def _coerce_iterable(value: Any) -> Iterable[Any]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple, set)):
-        return value
-    return [value]
+# _coerce_iterable moved to utils.type_coercion.coerce_iterable
 
 
 def _iter_costs(value: Any) -> Iterable[tuple[str, float]]:

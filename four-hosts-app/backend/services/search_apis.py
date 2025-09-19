@@ -20,11 +20,22 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Callable, Awaitable, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Callable, Awaitable, Union, TYPE_CHECKING
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
 import aiohttp
+
+# Import URL utilities
+from utils.url_utils import (
+    normalize_url, is_valid_url, extract_domain, extract_doi,
+    clean_url, sanitize_url, extract_base_domain
+)
+# Import retry utilities
+from utils.retry import (
+    handle_rate_limit, RateLimitedError as RetryRateLimitedError,
+    parse_retry_after, calculate_exponential_backoff
+)
 try:
     import fitz  # PyMuPDF
 except Exception:
@@ -48,6 +59,7 @@ from services.rate_limiter import ClientRateLimiter
 from services.text_utils import tokenize
 from utils.text_sanitize import sanitize_text
 from utils.domain_categorizer import categorize
+from utils.date_utils import safe_parse_date
 if TYPE_CHECKING:
     from search.query_planner import QueryCandidate
 
@@ -88,38 +100,7 @@ def _structured_log(level: str, event: str, meta: Dict[str, Any]):
 
 
 
-def safe_parse_date(raw: str | None) -> Optional[datetime]:
-    """Return timezone-aware datetime or None."""
-    if not raw or not isinstance(raw, str):
-        return None
-    raw = raw.strip()
-    if not raw:
-        return None
-    raw = raw.replace("Z", "+00:00")
-    try:
-        # Try ISO-style first
-        dt = datetime.fromisoformat(raw)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        pass
-
-    # Fallbacks: year-only or YYYY-MM
-    m = re.match(r"^\s*(\d{4})\s*$", raw)
-    if m:
-        try:
-            return datetime(int(m.group(1)), 1, 1, tzinfo=timezone.utc)
-        except Exception:
-            return None
-    m = re.match(r"^\s*(\d{4})-(\d{1,2})\s*$", raw)
-    if m:
-        y, mo = int(m.group(1)), int(m.group(2))
-        try:
-            return datetime(y, mo, 1, tzinfo=timezone.utc)
-        except Exception:
-            return None
-    return None
+# safe_parse_date moved to utils.date_utils
 
 
 
@@ -130,11 +111,7 @@ def ngram_tokenize(text: str, n: int = 3) -> List[str]:
     return [" ".join(toks[i: i + n]) for i in range(max(0, len(toks) - n + 1))]
 
 
-def extract_doi(text: str | None) -> Optional[str]:
-    if not text:
-        return None
-    m = re.search(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+", text)
-    return m.group(0) if m else None
+# extract_doi moved to utils.url_utils
 
 
 def extract_arxiv_id(url: str | None) -> Optional[str]:
@@ -155,27 +132,6 @@ def ensure_snippet_content(result: "SearchResult"):
         result.raw_data.setdefault("content_source", "search_api_snippet")
         result.raw_data.setdefault("content_type", "snippet_only")
 
-
-def _strip_tags(text: str) -> str:
-    """Lightweight HTML tag and entity cleanup used for titles/snippets.
-
-    - Unescape HTML entities (so &lt; becomes <)
-    - Remove all remaining <...> tags including publisher-specific like <jats:p>
-    - Collapse whitespace
-    """
-    if not text:
-        return ""
-    try:
-        import re as _re
-        # Decode HTML entities first
-        t = _html.unescape(str(text))
-        # Remove tags
-        t = _re.sub(r"<[^>]+>", " ", t)
-        # Normalize whitespace
-        t = _re.sub(r"\s+", " ", t).strip()
-        return t
-    except Exception:
-        return str(text)
 
 
 def normalize_result_text_fields(result: "SearchResult") -> None:
@@ -220,8 +176,8 @@ def _safe_truncate_query(q: str, limit: int) -> str:
 #                        NETWORK / FETCH HELPERS                              #
 # --------------------------------------------------------------------------- #
 
-class RateLimitedError(aiohttp.ClientError):
-    """Raised on HTTP-429 to let tenacity back-off."""
+# Use RateLimitedError from utils.retry, but keep alias for backward compatibility
+RateLimitedError = RetryRateLimitedError
 
 
 async def response_body_snippet(
@@ -241,22 +197,11 @@ async def response_body_snippet(
     wait=wait_exponential(multiplier=2, min=4, max=30),
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, RateLimitedError)),
 )
+# _retry_after_to_seconds replaced by utils.retry.parse_retry_after
 def _retry_after_to_seconds(val: str) -> float:
     """Parse Retry-After which may be seconds or HTTP-date."""
-    try:
-        if val.isdigit():
-            return float(val)
-    except Exception:
-        pass
-    # Try HTTP-date
-    try:
-        from email.utils import parsedate_to_datetime
-        dt = parsedate_to_datetime(val)
-        if dt:
-            return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
-    except Exception:
-        return 0.0
-    return 0.0
+    result = parse_retry_after(val)
+    return result if result is not None else 0.0
 
 
 async def _rate_limit_backoff(
@@ -273,13 +218,8 @@ async def _rate_limit_backoff(
     different fetch functions.
     """
     # Track attempts per host on the session (for test visibility and tuning)
-    from urllib.parse import urlparse as _up
-    host = ""
-    try:
-        host = _up(url).netloc.lower()
-    except Exception:
-        host = ""
-    attr_name = f"{attr_prefix}{host}" if host else f"{attr_prefix}generic"
+    host = extract_domain(url) or "generic"
+    attr_name = f"{attr_prefix}{host}"
     attempts = int(getattr(session, attr_name, 0) or 0) + 1
     try:
         setattr(session, attr_name, attempts)
@@ -287,41 +227,22 @@ async def _rate_limit_backoff(
         # Non-fatal if session is immutable
         pass
 
-    # Configurable parameters
-    base = float(os.getenv("SEARCH_RATE_LIMIT_BASE_DELAY", "1"))
-    factor = float(os.getenv("SEARCH_RATE_LIMIT_BACKOFF_FACTOR", "2"))
-    max_delay = float(os.getenv("SEARCH_RATE_LIMIT_MAX_DELAY", "30"))
-    jitter_mode = (os.getenv("SEARCH_RATE_LIMIT_JITTER", "full") or "full").lower()
+    # Use centralized rate limit handler - it handles all the logic and sleeps
+    delay = await handle_rate_limit(
+        url=url,
+        response_headers=response_headers,
+        attempt=attempts,
+        prefer_server=prefer_server
+    )
 
-    # Attempt-based exponential backoff
-    computed = base * (factor ** max(0, attempts - 1))
+    _structured_log("warning", "rate_limited_fetch", {
+        "url": url,
+        "attempt": attempts,
+        "delay": round(delay, 3)
+    })
 
-    # Respect server Retry-After when present by capping upper bound
-    retry_hdr = ""
-    for k in ("retry-after", "Retry-After"):
-        if k in response_headers:
-            retry_hdr = str(response_headers.get(k) or "")
-            break
-    server_retry = _retry_after_to_seconds(retry_hdr) if retry_hdr else None
-
-    if prefer_server and server_retry is not None and server_retry > 0:
-        upper = server_retry
-    else:
-        upper = min(computed, max_delay)
-        if server_retry is not None and server_retry > 0:
-            upper = min(upper, server_retry)
-    # Ensure a tiny positive bound
-    upper = max(upper, 0.0)
-
-    delay = upper
-    if jitter_mode == "full":
-        try:
-            delay = random.uniform(0, upper)
-        except Exception:
-            delay = upper
-
-    _structured_log("warning", "rate_limited_fetch", {"url": url, "attempt": attempts, "upper_bound": round(upper, 3), "delay": round(delay, 3)})
-    await asyncio.sleep(delay)
+    # Note: handle_rate_limit already slept, but we need to raise for retry handlers
+    raise RateLimitedError(f"Rate limited on {url}")
 
 def _first_non_empty(*vals: Optional[str]) -> Optional[str]:
     for v in vals:
@@ -630,8 +551,17 @@ def _structured_text_fallback(soup: BeautifulSoup, max_chars: int | None) -> str
     out = "\n".join(pieces).strip() or soup.get_text(" ", strip=True)
     return out[:max_chars] if max_chars else out
 
-async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
-    """GET `url`, honour 429 back-off, return plaintext (PDF or HTML)."""
+async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str, with_meta: bool = False) -> Union[str, Tuple[str, Dict[str, Any]]]:
+    """GET `url`, honour 429 back-off, return plaintext (PDF or HTML).
+
+    Args:
+        session: aiohttp client session
+        url: URL to fetch and parse
+        with_meta: If True, return tuple of (text, metadata_dict). If False, return just text.
+
+    Returns:
+        str if with_meta=False, or Tuple[str, Dict[str, Any]] if with_meta=True
+    """
     headers = {
         "User-Agent": "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -650,14 +580,15 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
     async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as r:
         if r.status == 429:
             await _rate_limit_backoff(url, dict(r.headers), session=session)
-            return ""
+            return ("", {}) if with_meta else ""
         if r.status != 200:
-            return ""
+            return ("", {}) if with_meta else ""
 
         ctype = (r.headers.get("Content-Type") or "").lower()
         is_pdf = "application/pdf" in ctype or url.lower().endswith(".pdf")
         if is_pdf and fitz is not None:
             data = await r.read()
+            text = ""
             try:
                 with fitz.open(stream=data, filetype="pdf") as pdf:
                     max_pages = int(os.getenv("SEARCH_PDF_MAX_PAGES", "15"))
@@ -703,107 +634,26 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
                         m = _re.search(r"\n\s*(References|Bibliography|Acknowledg(e)?ments)\s*\n", joined, _re.I)
                         if m:
                             joined = joined[:m.start()].strip()
-                    return joined[:max_chars]
+                    text = joined[:max_chars]
             except Exception:
                 # Fall back to HTML parse if PDF parse fails
-                pass
+                text = ""
+
+            if with_meta:
+                meta = {"http": {"content_type": ctype, "last_modified": r.headers.get("Last-Modified")}}
+                return text, meta
+            else:
+                return text
 
         # HTML/text parse – prefer readability/main-content extractor with fallback
         html = await r.text()
         max_chars = int(os.getenv("SEARCH_HTML_MAX_CHARS", "250000"))
         mode = (os.getenv("SEARCH_HTML_MODE", "main") or "main").lower()
-        # Optional: use readability-lxml if available and requested
-        if mode in {"readability", "auto"}:
-            try:
-                from readability import Document  # type: ignore
-                doc = Document(html)
-                content_html = doc.summary() or ""
-                if content_html:
-                    soup = BeautifulSoup(content_html, "html.parser")
-                    return _assemble_text_from_block(soup, max_chars)
-            except Exception:
-                # Fall through to main extractor
-                pass
-        # Heuristic main extractor
-        if mode in {"main", "auto"}:
-            try:
-                return _extract_main_text(html, url, max_chars=max_chars)
-            except Exception:
-                pass
-        # Legacy structured extractor
+
+        # Content extraction
+        text = ""
         try:
-            soup = BeautifulSoup(html, "html.parser")
-            return _structured_text_fallback(soup, max_chars)
-        except Exception:
-            return sanitize_text(html, max_len=max_chars)
-
-
-async def fetch_and_parse_url_with_meta(session: aiohttp.ClientSession, url: str) -> Tuple[str, Dict[str, Any]]:
-    """Like fetch_and_parse_url but also returns extracted metadata as a dict."""
-    headers = {
-        "User-Agent": "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate",
-        "DNT": "1",
-    }
-    timeout_sec = float(os.getenv("SEARCH_FETCH_TIMEOUT_SEC", "25"))
-    if "doi.org" in url or "ssrn.com" in url:
-        acad_min = float(os.getenv("SEARCH_ACADEMIC_MIN_TIMEOUT", "20"))
-        timeout_sec = max(timeout_sec, acad_min)
-    timeout = aiohttp.ClientTimeout(total=timeout_sec)
-
-    async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as r:
-        if r.status == 429:
-            await _rate_limit_backoff(url, dict(r.headers), session=session)
-            return "", {}
-        if r.status != 200:
-            return "", {}
-
-        ctype = (r.headers.get("Content-Type") or "").lower()
-        is_pdf = "application/pdf" in ctype or url.lower().endswith(".pdf")
-        if is_pdf and fitz is not None:
-            data = await r.read()
-            text = ""
-            try:
-                with fitz.open(stream=data, filetype="pdf") as pdf:
-                    max_pages = int(os.getenv("SEARCH_PDF_MAX_PAGES", "15"))
-                    max_chars = int(os.getenv("SEARCH_PDF_MAX_CHARS", "200000"))
-                    stop_at_refs = os.getenv("SEARCH_PDF_STOP_AT_REFERENCES", "1") in {"1", "true", "yes"}
-                    parts: list[str] = []
-                    for i, p in enumerate(pdf):
-                        if i >= max_pages:
-                            break
-                        try:
-                            d = p.get_text("dict")
-                            for block in d.get("blocks", []):
-                                for line in block.get("lines", []):
-                                    for span in line.get("spans", []):
-                                        txt = (span.get("text") or "").strip()
-                                        if txt:
-                                            parts.append(txt)
-                        except Exception:
-                            parts.append(p.get_text())
-                        if sum(len(x) + 1 for x in parts) >= max_chars:
-                            break
-                    joined = "\n".join(parts)
-                    if stop_at_refs:
-                        import re as _re
-                        m = _re.search(r"\n\s*(References|Bibliography|Acknowledg(e)?ments)\s*\n", joined, _re.I)
-                        if m:
-                            joined = joined[:m.start()].strip()
-                    text = joined[:max_chars]
-            except Exception:
-                text = ""
-            meta = {"http": {"content_type": ctype, "last_modified": r.headers.get("Last-Modified")}}
-            return text, meta
-
-        # HTML path
-        html = await r.text()
-        max_chars = int(os.getenv("SEARCH_HTML_MAX_CHARS", "250000"))
-        mode = (os.getenv("SEARCH_HTML_MODE", "main") or "main").lower()
-        # Content
-        try:
+            # Optional: use readability-lxml if available and requested
             if mode in {"readability", "auto"}:
                 try:
                     from readability import Document  # type: ignore
@@ -825,66 +675,27 @@ async def fetch_and_parse_url_with_meta(session: aiohttp.ClientSession, url: str
             except Exception:
                 text = sanitize_text(html, max_len=max_chars)
 
-        # Metadata
-        meta = _extract_metadata_from_html(html, headers=dict(r.headers)) if os.getenv("SEARCH_EXTRACT_METADATA", "1") in {"1", "true", "yes"} else {}
-        return text, meta
+        if with_meta:
+            # Metadata extraction
+            meta = _extract_metadata_from_html(html, headers=dict(r.headers)) if os.getenv("SEARCH_EXTRACT_METADATA", "1") in {"1", "true", "yes"} else {}
+            return text, meta
+        else:
+            return text
+
+
 
 
 # --------------------------------------------------------------------------- #
 #                            DOMAIN HELPERS                                   #
 # --------------------------------------------------------------------------- #
 
-class URLNormalizer:
-    @staticmethod
-    def normalize_url(url: str) -> str:
-        if not url:
-            return ""
-        url = url.strip()
-        if url.startswith("10."):
-            return f"https://doi.org/{url}"
-        if "doi.org/" in url:
-            doi = unquote(url.split("doi.org/", 1)[1])
-            return f"https://doi.org/{doi}"
-        p = urlparse(url if "://" in url else f"https://{url}")
-        return urlunparse((p.scheme, p.netloc.lower(), p.path, p.params, p.query, p.fragment))
-
-    @staticmethod
-    def is_valid_url(url: str) -> bool:
-        p = urlparse(url)
-        return bool(p.scheme and p.netloc)
+# URLNormalizer moved to utils.url_utils
+# Using normalize_url and is_valid_url directly from url_utils
 
 
-# Local CircuitBreaker removed; using utils.circuit_breaker.circuit_manager
-
-    def ok(self, domain: str) -> bool:
-        if domain not in self.blocked:
-            return True
-        now = time.time()
-        until = self.block_until.get(domain) or (self.last_fail.get(domain, 0) + self.timeout)
-        if now >= until:
-            # Auto-reset on expiry
-            self.blocked.discard(domain)
-            self.failures[domain] = 0
-            self.block_until.pop(domain, None)
-            return True
-        return False
-
-    def fail(self, domain: str):
-        self.failures[domain] = self.failures.get(domain, 0) + 1
-        self.last_fail[domain] = time.time()
-        if self.failures[domain] >= self.threshold:
-            self.blocked.add(domain)
-            # Exponential backoff window increases with consecutive failures above threshold
-            over = max(0, self.failures[domain] - self.threshold + 1)
-            wait = min(self.timeout * (self.backoff_factor ** (over - 1)) if over > 0 else self.timeout, self.max_timeout)
-            self.block_until[domain] = self.last_fail[domain] + wait
-
-    def success(self, domain: str):
-        self.failures[domain] = max(0, self.failures.get(domain, 0) - 1)
-        # Gradually recover: when we succeed, allow requests and clear block state
-        if domain in self.blocked:
-            self.blocked.discard(domain)
-            self.block_until.pop(domain, None)
+# --------------------------------------------------------------------------- #
+#                            FETCHER WRAPPER                                  #
+# --------------------------------------------------------------------------- #
 
 
 class RespectfulFetcher:
@@ -928,10 +739,10 @@ class RespectfulFetcher:
         self.last_fetch[domain] = time.time()
 
     async def fetch(self, session: aiohttp.ClientSession, url: str, on_rate_limit: Optional[Callable[[str], Awaitable[None]]] = None) -> str | None:
-        url = URLNormalizer.normalize_url(url)
-        if not URLNormalizer.is_valid_url(url):
+        url = normalize_url(url)
+        if not is_valid_url(url):
             return None
-        domain = urlparse(url).netloc
+        domain = extract_domain(url)
 
         if domain in self.blocked_domains or any(domain.endswith("." + d) for d in self.blocked_domains):
             return None
@@ -954,7 +765,7 @@ class RespectfulFetcher:
         await self._pace_domain(domain)
 
         try:
-            text = await breaker.call(fetch_and_parse_url, session, url)
+            text = await breaker.call(fetch_and_parse_url, session, url, False)
             return text
         except Exception as e:
             if isinstance(e, (RateLimitedError, CircuitOpenError)) and on_rate_limit:
@@ -965,10 +776,10 @@ class RespectfulFetcher:
             return None
 
     async def fetch_with_meta(self, session: aiohttp.ClientSession, url: str, on_rate_limit: Optional[Callable[[str], Awaitable[None]]] = None) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-        url = URLNormalizer.normalize_url(url)
-        if not URLNormalizer.is_valid_url(url):
+        url = normalize_url(url)
+        if not is_valid_url(url):
             return None, None
-        domain = urlparse(url).netloc
+        domain = extract_domain(url)
 
         if domain in self.blocked_domains or any(domain.endswith("." + d) for d in self.blocked_domains):
             return None, None
@@ -990,7 +801,7 @@ class RespectfulFetcher:
         await self._pace_domain(domain)
 
         try:
-            text, meta = await breaker.call(fetch_and_parse_url_with_meta, session, url)
+            text, meta = await breaker.call(fetch_and_parse_url, session, url, True)
             return text, meta
         except Exception as e:
             if isinstance(e, (RateLimitedError, CircuitOpenError)) and on_rate_limit:
@@ -1031,7 +842,7 @@ class SearchResult:
     def __post_init__(self):
         if not self.domain and self.url:
             try:
-                self.domain = urlparse(self.url).netloc.lower()
+                self.domain = extract_domain(self.url)
             except Exception:
                 self.domain = ""
         # Prefer hashing substantive content; fall back to title+snippet signature
@@ -1328,7 +1139,7 @@ class BraveSearchAPI(BaseSearchAPI):
                 snippet=item.get("description", ""),
                 source="brave",
                 published_date=dt,
-                domain=urlparse(item.get("url", "")).netloc if item.get("url") else "",
+                domain=extract_domain(item.get("url", "")),
                 raw_data=item,
             )
             ensure_snippet_content(res)
@@ -2304,10 +2115,10 @@ class SearchAPIManager:
                         canonical_url = meta.get("canonical_url")
                         if isinstance(canonical_url, str) and canonical_url.strip():
                             try:
-                                normalized = URLNormalizer.normalize_url(canonical_url)
-                                if URLNormalizer.is_valid_url(normalized):
+                                normalized = normalize_url(canonical_url)
+                                if is_valid_url(normalized):
                                     res.url = normalized
-                                    res.domain = urlparse(normalized).netloc.lower()
+                                    res.domain = extract_domain(normalized)
                             except Exception:
                                 pass
                     pub = (meta.get("published_date") if isinstance(meta, dict) else None)

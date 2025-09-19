@@ -25,7 +25,8 @@ from database.models import (
     ResearchStatus,
     ParadigmType,
 )
-from database.connection import get_db_context
+from database.connection import get_db_context  # legacy, will be removed gradually
+from services.database_operations import DatabaseOperations
 from services.auth_service import hash_password, verify_password, create_access_token
 
 # Configure logging
@@ -34,12 +35,12 @@ logger = structlog.get_logger(__name__)
 # --- User Profile Management ---
 
 
-class UserProfileService:
+class UserProfileService(DatabaseOperations):
     """Service for managing user profiles"""
 
     async def get_user_profile(self, user_id: UUID) -> Optional[Dict[str, Any]]:
         """Get complete user profile"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = (
                 select(User)
                 .where(User.id == user_id)
@@ -92,7 +93,7 @@ class UserProfileService:
         if not filtered_updates:
             return False
 
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = (
                 update(User)
                 .where(User.id == user_id)
@@ -108,7 +109,7 @@ class UserProfileService:
         self, user_id: UUID, preferences: Dict[str, Any]
     ) -> bool:
         """Update user preferences"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             # Get current preferences
             stmt = select(User.preferences).where(User.id == user_id)
             result = await session.execute(stmt)
@@ -131,7 +132,7 @@ class UserProfileService:
         self, user_id: UUID, current_password: str, new_password: str
     ) -> bool:
         """Change user password"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             # Get user
             stmt = select(User).where(User.id == user_id)
             result = await session.execute(stmt)
@@ -156,7 +157,7 @@ class UserProfileService:
 
     async def delete_user_account(self, user_id: UUID, password: str) -> bool:
         """Delete user account (soft delete)"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             # Verify password
             stmt = select(User).where(User.id == user_id)
             result = await session.execute(stmt)
@@ -192,7 +193,7 @@ class UserProfileService:
 # --- Saved Searches Management ---
 
 
-class SavedSearchesService:
+class SavedSearchesService(DatabaseOperations):
     """Service for managing saved searches"""
 
     async def save_search(
@@ -203,7 +204,7 @@ class SavedSearchesService:
         notes: Optional[str] = None,
     ) -> bool:
         """Save a research query for later reference"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             # Check if research exists and belongs to user or is public
             stmt = select(ResearchQuery).where(
                 and_(
@@ -263,7 +264,7 @@ class SavedSearchesService:
 
     async def unsave_search(self, user_id: UUID, research_id: UUID) -> bool:
         """Remove a saved search"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = delete(user_saved_searches).where(
                 and_(
                     user_saved_searches.c.user_id == user_id,
@@ -285,7 +286,7 @@ class SavedSearchesService:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Get user's saved searches with filters"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             # Build query
             stmt = (
                 select(
@@ -349,7 +350,7 @@ class SavedSearchesService:
         self, user_id: UUID, search_term: str, limit: int = 20
     ) -> List[Dict[str, Any]]:
         """Search through saved queries"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             # Search in query text and notes
             stmt = (
                 select(
@@ -422,12 +423,12 @@ class SavedSearchesService:
 # --- API Key Management ---
 
 
-class APIKeyService:
+class APIKeyService(DatabaseOperations):
     """Service for managing API keys"""
 
     async def list_api_keys(self, user_id: UUID) -> List[Dict[str, Any]]:
         """List all API keys for user"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = (
                 select(APIKey)
                 .where(APIKey.user_id == user_id)
@@ -468,7 +469,7 @@ class APIKeyService:
         allowed_origins: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create new API key"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             # Get user's role if not specified
             if not role:
                 stmt = select(User.role).where(User.id == user_id)
@@ -512,7 +513,7 @@ class APIKeyService:
 
     async def revoke_api_key(self, user_id: UUID, key_id: UUID) -> bool:
         """Revoke an API key"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = (
                 update(APIKey)
                 .where(and_(APIKey.id == key_id, APIKey.user_id == user_id))
@@ -535,7 +536,7 @@ class APIKeyService:
         if not filtered_updates:
             return False
 
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = (
                 update(APIKey)
                 .where(
@@ -568,7 +569,7 @@ class APIKeyService:
 # --- Research History Service ---
 
 
-class ResearchHistoryService:
+class ResearchHistoryService(DatabaseOperations):
     """Service for managing research history"""
 
     async def get_research_history(
@@ -582,7 +583,7 @@ class ResearchHistoryService:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Get user's research history with filters"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = select(ResearchQuery).where(ResearchQuery.user_id == user_id)
 
             # Apply filters
@@ -636,7 +637,7 @@ class ResearchHistoryService:
         self, user_id: UUID, period_days: int = 30
     ) -> Dict[str, Any]:
         """Get research usage statistics"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             since_date = datetime.now(timezone.utc) - timedelta(days=period_days)
 
             # Get aggregated stats
@@ -695,7 +696,7 @@ class ResearchHistoryService:
 # --- Session Management ---
 
 
-class SessionService:
+class SessionService(DatabaseOperations):
     """Service for managing user sessions"""
 
     async def create_session(
@@ -706,7 +707,7 @@ class SessionService:
         device_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create new user session"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             # Generate tokens
             session_token = secrets.token_urlsafe(32)
             refresh_token = secrets.token_urlsafe(32)
@@ -743,7 +744,7 @@ class SessionService:
 
     async def validate_session(self, session_token: str) -> Optional[Dict[str, Any]]:
         """Validate and get session info"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = select(UserSession).where(
                 and_(
                     UserSession.session_token == session_token,
@@ -776,7 +777,7 @@ class SessionService:
 
     async def end_session(self, session_token: str) -> bool:
         """End a user session"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = (
                 update(UserSession)
                 .where(UserSession.session_token == session_token)
@@ -792,7 +793,7 @@ class SessionService:
         self, user_id: UUID, except_token: Optional[str] = None
     ) -> int:
         """End all sessions for user except specified one"""
-        async with get_db_context() as session:
+        async with self.db_session() as session:
             stmt = update(UserSession).where(
                 and_(UserSession.user_id == user_id, UserSession.is_active == True)
             )

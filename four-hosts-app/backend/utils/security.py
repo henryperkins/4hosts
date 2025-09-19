@@ -11,6 +11,7 @@ import hashlib
 import secrets
 from typing import Optional, List, Pattern
 import logging
+from .url_utils import sanitize_url as url_utils_sanitize_url
 
 logger = logging.getLogger(__name__)
 
@@ -242,8 +243,8 @@ def sanitize_user_input(text: str) -> str:
 
 
 def validate_and_sanitize_url(url: str) -> Optional[str]:
-    """Validate and sanitize URL."""
-    return input_sanitizer.sanitize_url(url)
+    """Validate and sanitize URL using centralized url_utils."""
+    return url_utils_sanitize_url(url)
 
 
 def is_valid_email(email: str) -> bool:

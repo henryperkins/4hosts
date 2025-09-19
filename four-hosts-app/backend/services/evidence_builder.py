@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any, Dict, List, Tuple
+from utils.url_utils import extract_domain
 from models.evidence import EvidenceQuote, EvidenceBundle, EvidenceDocument
 
 from utils.injection_hygiene import sanitize_snippet, flag_suspicious_snippet
@@ -97,11 +98,7 @@ def _semantic_scores(query: str, sentences: List[str]) -> List[float]:
 
 
 def _domain_from(url: str) -> str:
-    try:
-        from urllib.parse import urlparse
-        return urlparse(url).netloc.lower()
-    except Exception:
-        return ""
+    return extract_domain(url)
 
 
 async def _fetch_texts(urls: List[str]) -> Dict[str, str]:

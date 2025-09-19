@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import asyncio
-from urllib.parse import urlparse
+from utils.url_utils import extract_base_domain
 
 from .llm_client import llm_client
 from .credibility import get_source_credibility
@@ -61,11 +61,8 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
 
 
 def _domain_from_url(url: str) -> Optional[str]:
-    try:
-        host = urlparse(url).netloc.lower()
-        return host[4:] if host.startswith("www.") else host
-    except Exception:
-        return None
+    domain = extract_base_domain(url)
+    return domain if domain else None
 
 
 def _build_prompt(query: str, paradigm: str, themes: List[str], focus: List[str], sources: List[Dict[str, Any]], cred_hints: Optional[List[str]] = None) -> str:

@@ -11,6 +11,7 @@ import structlog
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from utils.date_utils import calculate_age_days, get_current_utc, iso_or_none
 # urlparse unused
 # re unused
 import os
@@ -35,7 +36,7 @@ class CredibilityScore:
     fact_check_rating: Optional[str] = None  # "high", "medium", "low", "mixed"
     paradigm_alignment: Dict[str, float] = field(default_factory=dict)
     reputation_factors: List[str] = field(default_factory=list)
-    last_updated: datetime = field(default_factory=datetime.now)
+    last_updated: datetime = field(default_factory=get_current_utc)
     
     # New comprehensive features
     recency_score: float = 1.0  # Temporal relevance (0.0 to 1.0)
@@ -58,7 +59,7 @@ class CredibilityScore:
             "fact_check_rating": self.fact_check_rating,
             "paradigm_alignment": self.paradigm_alignment,
             "reputation_factors": self.reputation_factors,
-            "last_updated": self.last_updated.isoformat(),
+            "last_updated": iso_or_none(self.last_updated),
             "recency_score": self.recency_score,
             "cross_source_agreement": self.cross_source_agreement,
             "controversy_score": self.controversy_score,
@@ -172,7 +173,7 @@ class DomainAuthorityChecker:
         """Get domain authority from Moz API with backoff on repeated failures"""
         
         # Check if we're in backoff period
-        if self.moz_backoff_until and datetime.now() < self.moz_backoff_until:
+        if self.moz_backoff_until and get_current_utc() < self.moz_backoff_until:
             logger.debug(f"Moz API in backoff period, skipping DA check for {domain}")
             return None
         
@@ -183,7 +184,7 @@ class DomainAuthorityChecker:
             from urllib.parse import quote
 
             # Moz API authentication
-            expires = int((datetime.now() + timedelta(minutes=5)).timestamp())
+            expires = int((get_current_utc() + timedelta(minutes=5)).timestamp())
             string_to_sign = f"{self.moz_api_key}\n{expires}"
             signature = base64.b64encode(
                 hmac.new(
@@ -235,7 +236,7 @@ class DomainAuthorityChecker:
                         self.moz_failures += 1
                         if self.moz_failures >= 3:
                             # Backoff for 1 hour after 3 failures
-                            self.moz_backoff_until = datetime.now() + timedelta(hours=1)
+                            self.moz_backoff_until = get_current_utc() + timedelta(hours=1)
                             logger.warning("Moz API failing repeatedly, backing off for 1 hour")
                         else:
                             logger.debug("Moz API recoverable error (%d/3), will retry", self.moz_failures)
@@ -253,7 +254,7 @@ class DomainAuthorityChecker:
             if status == 401 or "401" in msg:
                 self.moz_failures += 1
                 if self.moz_failures >= 3:
-                    self.moz_backoff_until = datetime.now() + timedelta(hours=1)
+                    self.moz_backoff_until = get_current_utc() + timedelta(hours=1)
                     logger.warning("Moz API failing repeatedly (401), backing off for 1 hour")
                 else:
                     logger.debug("Moz API 401 error (%d/3), will retry", self.moz_failures)
@@ -555,22 +556,22 @@ class RecencyModeler:
         """Calculate recency score with exponential decay"""
         if not published_date:
             return 0.5  # Unknown date gets neutral score
-        
-        now = datetime.now()
+
+        now = get_current_utc()
         age = now - published_date
-        
+
         # Apply breaking news boost if applicable
         if is_breaking and age < self.breaking_news_window:
             boost = self.breaking_news_boost * (1 - age.total_seconds() / self.breaking_news_window.total_seconds())
         else:
             boost = 0
-        
+
         # Get decay rate for category
         decay_days = self.decay_rates.get(category, 30)  # Default 30 days
-        
+
         # Calculate exponential decay
         # Score = e^(-ln(2) * days_old / half_life)
-        days_old = age.total_seconds() / 86400  # Convert to days
+        days_old = calculate_age_days(published_date) or 0
         decay_score = math.exp(-0.693 * days_old / decay_days)
         
         # Combine decay score with any boost
@@ -731,9 +732,8 @@ class SourceReputationDatabase:
             cached_data = None
         if cached_data and not content and not search_terms:  # Use cache only for basic lookups
             # Convert back to CredibilityScore object
-            cached_data["last_updated"] = datetime.fromisoformat(
-                cached_data["last_updated"]
-            )
+            from utils.date_utils import ensure_datetime
+            cached_data["last_updated"] = ensure_datetime(cached_data["last_updated"])
             return CredibilityScore(**cached_data)
 
         async with self.domain_checker:
@@ -1173,10 +1173,10 @@ async def test_credibility_system():
     
     # Test with different publication dates
     test_dates = [
-        (datetime.now() - timedelta(hours=12), "12 hours ago"),
-        (datetime.now() - timedelta(days=7), "1 week ago"),
-        (datetime.now() - timedelta(days=30), "1 month ago"),
-        (datetime.now() - timedelta(days=365), "1 year ago"),
+        (get_current_utc() - timedelta(hours=12), "12 hours ago"),
+        (get_current_utc() - timedelta(days=7), "1 week ago"),
+        (get_current_utc() - timedelta(days=30), "1 month ago"),
+        (get_current_utc() - timedelta(days=365), "1 year ago"),
     ]
     
     for date, description in test_dates:
@@ -1246,7 +1246,7 @@ async def test_credibility_system():
     credibility = await get_source_credibility(
         domain="nytimes.com",
         search_terms=["politics", "election"],
-        published_date=datetime.now() - timedelta(days=2),
+        published_date=get_current_utc() - timedelta(days=2),
         paradigm="bernard"
     )
     

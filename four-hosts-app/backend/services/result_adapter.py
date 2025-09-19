@@ -5,6 +5,7 @@ Handles both dict and object formats to prevent AttributeError crashes
 
 from typing import Any, Dict, Optional, Union, List
 import logging
+from utils.url_utils import extract_domain
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +93,7 @@ class ResultAdapter:
         
         # Extract domain from URL if not present
         if not domain and self.url:
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(self.url)
-                domain = parsed.netloc
-            except Exception:
-                domain = ''
+            domain = extract_domain(self.url)
         
         return domain
     

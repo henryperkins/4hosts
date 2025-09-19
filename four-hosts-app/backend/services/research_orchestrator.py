@@ -47,6 +47,7 @@ from core.config import (
     EVIDENCE_BUDGET_TOKENS_DEFAULT,
     SYNTHESIS_MAX_LENGTH_DEFAULT,
 )
+from services.result_normalizer import normalize_result
 from services.deep_research_service import (
     deep_research_service,
     DeepResearchConfig,
@@ -853,31 +854,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         credibility = 0.0
                 credibility = max(0.0, min(1.0, float(credibility or 0.0)))
                 published_date = metadata.get("published_date")
-                if published_date is None:
-                    published_date = getattr(result, "published_date", None)
-                # Ensure JSON-serializable date
-                try:
-                    from datetime import date, datetime as _dt
-                    if isinstance(published_date, (_dt, date)):
-                        published_date = published_date.isoformat()
-                except Exception:
-                    pass
-                result_type = metadata.get("result_type") or getattr(result, "result_type", "web")
-                normalized_sources.append(
-                    {
-                        "title": adapter.title,
-                        "url": url,
-                        "snippet": adapter.snippet,
-                        "content": adapter.content,
-                        "domain": adapter.domain,
-                        "credibility_score": credibility,
-                        "published_date": published_date,
-                        "result_type": result_type or "web",
-                        "source_api": adapter.source_api,
-                        "source_category": metadata.get("source_category"),
-                        "metadata": metadata,
-                    }
+                # Use centralized result normalizer
+                normalized_result = normalize_result(
+                    adapter=adapter,
+                    url=url,
+                    credibility=credibility,
+                    metadata=metadata,
+                    is_dict_result=False,
+                    result=result
                 )
+                normalized_sources.append(normalized_result)
         except Exception:
             normalized_sources = []
 
@@ -1377,35 +1363,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     except Exception:
                         credibility = 0.0
 
-                published_date = metadata.get("published_date")
-                if published_date is None and not is_dict_result:
-                    published_date = getattr(result, "published_date", None)
-                # Ensure JSON-serializable date
-                try:
-                    from datetime import date, datetime as _dt
-                    if isinstance(published_date, (_dt, date)):
-                        published_date = published_date.isoformat()
-                except Exception:
-                    pass
-
-                result_type = metadata.get("result_type")
-                if not result_type and not is_dict_result:
-                    result_type = getattr(result, "result_type", "web")
-
-                normalized_sources.append(
-                    {
-                        "title": adapter.title,
-                        "url": url,
-                        "snippet": adapter.snippet,
-                        "content": adapter.content,
-                        "domain": adapter.domain,
-                        "credibility_score": float(credibility or 0.0),
-                        "published_date": published_date,
-                        "result_type": result_type or "web",
-                        "source_api": adapter.source_api,
-                        "metadata": metadata,
-                    }
+                # Use centralized result normalizer
+                normalized_result = normalize_result(
+                    adapter=adapter,
+                    url=url,
+                    credibility=credibility,
+                    metadata=metadata,
+                    is_dict_result=is_dict_result,
+                    result=result if not is_dict_result else None
                 )
+                normalized_sources.append(normalized_result)
             except Exception:
                 logger.debug("[synthesis] Failed to normalize result", exc_info=True)
                 continue

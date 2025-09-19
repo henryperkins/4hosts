@@ -8,6 +8,7 @@ import json
 import csv
 import asyncio
 from datetime import datetime, timezone
+from utils.date_utils import format_timestamp, format_human_readable, format_date_only, get_current_iso
 from typing import Dict, Any, List, Optional, Union
 from enum import Enum
 import pandas as pd
@@ -220,7 +221,7 @@ class PDFExporter(BaseExporter):
         buffer.close()
 
         # Create filename
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = format_timestamp()
         filename = (
             f"research_report_{research_data.get('id', 'unknown')}_{timestamp}.pdf"
         )
@@ -234,7 +235,7 @@ class PDFExporter(BaseExporter):
             metadata={
                 "pages": doc.page,
                 "paradigm": paradigm,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": get_current_iso(),
             },
         )
 
@@ -250,7 +251,7 @@ class PDFExporter(BaseExporter):
             ["Query", research_data.get("query", "N/A")],
             ["Paradigm", research_data.get("paradigm", "N/A").title()],
             ["Depth", research_data.get("depth", "N/A")],
-            ["Generated", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")],
+            ["Generated", format_human_readable()],
             ["Sources Analyzed", str(research_data.get("sources_count", 0))],
             [
                 "Confidence Score",
@@ -385,7 +386,7 @@ class PDFExporter(BaseExporter):
         canvas.drawRightString(
             doc.width + doc.leftMargin,
             doc.height + doc.topMargin - 0.5 * inch,
-            datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            format_date_only(),
         )
 
         # Footer
@@ -414,7 +415,7 @@ class JSONExporter(BaseExporter):
         # Prepare export data
         export_data = {
             "metadata": {
-                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "exported_at": get_current_iso(),
                 "format_version": "1.0",
                 "exporter": "four_hosts_research",
             },
@@ -458,7 +459,7 @@ class JSONExporter(BaseExporter):
         )
 
         # Create filename
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = format_timestamp()
         filename = (
             f"research_data_{research_data.get('id', 'unknown')}_{timestamp}.json"
         )
@@ -535,7 +536,7 @@ class CSVExporter(BaseExporter):
         output.close()
 
         # Create filename
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = format_timestamp()
         filename = (
             f"research_export_{research_data.get('id', 'unknown')}_{timestamp}.csv"
         )
@@ -580,7 +581,7 @@ class ExcelExporter(BaseExporter):
                     research_data.get("depth", ""),
                     f"{research_data.get('confidence_score', 0) * 100:.1f}%",
                     research_data.get("sources_count", 0),
-                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    format_human_readable(),
                 ],
             }
             overview_df = pd.DataFrame(overview_data)
@@ -635,7 +636,7 @@ class ExcelExporter(BaseExporter):
         output.close()
 
         # Create filename
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = format_timestamp()
         filename = (
             f"research_analysis_{research_data.get('id', 'unknown')}_{timestamp}.xlsx"
         )
@@ -688,7 +689,7 @@ class MarkdownExporter(BaseExporter):
                 f"- **Sources Analyzed**: {research_data.get('sources_count', 0)}"
             )
             lines.append(
-                f"- **Generated**: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                f"- **Generated**: {format_human_readable()}"
             )
             lines.append("")
 
@@ -759,7 +760,7 @@ class MarkdownExporter(BaseExporter):
         markdown_data = "\n".join(lines).encode("utf-8")
 
         # Create filename
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = format_timestamp()
         filename = (
             f"research_report_{research_data.get('id', 'unknown')}_{timestamp}.md"
         )

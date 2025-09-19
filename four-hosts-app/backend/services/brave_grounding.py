@@ -18,7 +18,8 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlencode
+from utils.url_utils import extract_domain
 
 import aiohttp
 
@@ -221,10 +222,7 @@ class BraveGroundingClient:
 
     @staticmethod
     def _make_citation(url: str, title: Optional[str]) -> BraveCitation:
-        try:
-            host = urlparse(url).netloc
-        except Exception:
-            host = ""
+        host = extract_domain(url)
         return BraveCitation(title=title, url=url, hostname=host)
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import List, Tuple, Dict, Any
 import re
+from utils.url_utils import extract_domain
 
 
 def _normalize(text: str) -> str:
@@ -127,14 +128,10 @@ def propose_queries_from_missing(
 
 def summarize_domain_gaps(sources: List[Dict[str, Any]]) -> Dict[str, int]:
     """Return simple counts by domain class: academic, government, nonprofit, media, industry."""
-    from urllib.parse import urlparse
     counts = {"academic": 0, "government": 0, "nonprofit": 0, "media": 0, "industry": 0}
     for s in sources or []:
         u = s.get("url") or ""
-        try:
-            host = urlparse(u).netloc.lower()
-        except Exception:
-            host = ""
+        host = extract_domain(u)
         if host.endswith(".edu"):
             counts["academic"] += 1
         elif host.endswith(".gov") or ".gov/" in u:

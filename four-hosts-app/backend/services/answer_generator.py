@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 # (no collections needed)
 
 import os
+from utils.url_utils import extract_domain
 from models.context_models import (
     HostParadigm,
 )
@@ -321,16 +322,12 @@ class BaseAnswerGenerator:
             except Exception:
                 return 0.0
 
-        from urllib.parse import urlparse
         def _domain_of(row: Dict[str, Any]) -> str:
             dom = (row.get("domain") or "").strip().lower()
             if dom:
                 return dom
             u2 = (row.get("url") or "").strip()
-            try:
-                return urlparse(u2).netloc.lower()
-            except Exception:
-                return ""
+            return extract_domain(u2)
 
         scored: List[Tuple[float, Dict[str, Any]]] = []
         for r in results:
@@ -514,11 +511,7 @@ class BaseAnswerGenerator:
             # Prefer explicit domain, else derive from URL; avoid provider name
             domain = (r.get("domain") or "").strip()
             if not domain:
-                try:
-                    from urllib.parse import urlparse as _up
-                    domain = _up((r.get("url") or "").strip()).netloc
-                except Exception:
-                    domain = ""
+                domain = extract_domain((r.get("url") or "").strip())
             date = (r.get("published_date") or ext.get("published_date") or "")
             date_s = _fmt_date(date)
             authors = ext.get("authors") if isinstance(ext, dict) else None
@@ -679,7 +672,6 @@ class BaseAnswerGenerator:
         def _tok(t: str) -> set:
             import re
             return set([w for w in re.findall(r"[A-Za-z0-9]+", (t or "").lower()) if len(w) > 2])
-        from urllib.parse import urlparse as _up
         results_for_scan = list(context.search_results or [])
         for theme in focus:
             tt = _tok(theme)
@@ -699,9 +691,8 @@ class BaseAnswerGenerator:
             if isinstance(best, dict) and best:
                 dom = (best.get("domain") or "")
                 if not dom:
-                    try:
-                        dom = _up((best.get("url") or "").strip()).netloc
-                    except Exception:
+                    dom = extract_domain((best.get("url") or "").strip())
+                    if not dom:  # Handle empty domain case
                         dom = ""
             rows.append(f"{theme} | {covered} | {dom}")
         return "\n".join(rows)
@@ -831,15 +822,11 @@ class BaseAnswerGenerator:
     def _compose_topline_recommendation(self, context: SynthesisContext) -> str:
         """Produce a concise (2–3 sentences) recommendation block without extra LLM calls."""
         results = list(context.search_results or [])
-        from urllib.parse import urlparse as _up
         def _dom(row: Dict[str, Any]) -> str:
             d = (row.get("domain") or "").lower()
             if d:
                 return d
-            try:
-                return _up((row.get("url") or "").strip()).netloc.lower()
-            except Exception:
-                return ""
+            return extract_domain((row.get("url") or "").strip())
         domains = { _dom(r) for r in results }
         n = len(results)
         d = len([x for x in domains if x])
