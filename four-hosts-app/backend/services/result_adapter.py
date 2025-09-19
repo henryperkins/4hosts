@@ -124,7 +124,14 @@ class ResultAdapter:
             return self._result.get('paradigm_alignment', '')
         else:
             return getattr(self._result, 'paradigm_alignment', '')
-    
+
+    @property
+    def query_variant(self) -> str:
+        """Expose planner stage:label metadata when available."""
+        if self._is_dict:
+            return str(self._result.get('query_variant', '') or '')
+        return str(getattr(self._result, 'query_variant', '') or '')
+
     @property
     def metadata(self) -> Dict[str, Any]:
         """Get metadata with fallback handling"""

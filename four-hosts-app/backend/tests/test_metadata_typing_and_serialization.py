@@ -1,6 +1,15 @@
 import pytest
 from typing import Any, Dict, List
 
+pytest.importorskip("pydantic")
+
+from pathlib import Path
+import sys
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from services.research_orchestrator import ResearchOrchestrator
 from models.context_models import (
     ClassificationResultSchema,
@@ -18,8 +27,15 @@ async def test_classification_details_and_metrics_shapes():
     class _StubSearchManager:
         apis = {"google": True}
 
-        async def search_all(self, query, config, progress_callback=None, research_id=None):
+        async def search_all(self, planned, config, progress_callback=None, research_id=None):
+            assert planned, "planner must supply candidates"
             return []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
 
     orch.search_manager = _StubSearchManager()
 
@@ -63,6 +79,7 @@ async def test_classification_details_and_metrics_shapes():
         synthesize_answer=False,
         answer_options={},
     )
+    await orch.cleanup()
 
     # Assert: response container
     assert isinstance(resp, dict)

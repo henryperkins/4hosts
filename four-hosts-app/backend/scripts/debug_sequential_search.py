@@ -44,6 +44,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from services.search_apis import create_search_manager, SearchConfig  # type: ignore
+from search.query_planner import QueryCandidate
 from services.research_orchestrator import EarlyRelevanceFilter  # type: ignore
 try:
     from models.search import SearchResult  # type: ignore
@@ -154,7 +155,14 @@ async def run(query: str, paradigm: str, max_results: int, disable_filter: bool,
         per_provider: Dict[str, List[SearchResult]] = {}
         for name, api in mgr.apis.items():
             try:
-                res = await api.search_with_variations(query, cfg)
+                planned = [
+                    QueryCandidate(query=query, stage="context", label="manual")
+                ]
+                res = await api.search_with_variations(
+                    query,
+                    cfg,
+                    planned=planned,
+                )
             except Exception as e:
                 print(f"[WARN] provider {name} failed: {e}")
                 res = []

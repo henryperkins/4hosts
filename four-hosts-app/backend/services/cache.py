@@ -10,6 +10,7 @@ import json
 import logging
 import hashlib
 from typing import Any, Optional, Dict, List
+from collections import deque
 from datetime import datetime
 from dataclasses import asdict
 import asyncio
@@ -44,6 +45,7 @@ class CacheManager:
         self.redis_pool = None
         self.hit_count = 0
         self.miss_count = 0
+        self.search_metrics_fallback = deque(maxlen=2000)
 
         # TTL configurations (in seconds)
         self.ttl_config = {
@@ -56,6 +58,7 @@ class CacheManager:
             "research_status": 10,  # seconds
             "research_results": 300,  # seconds
             "system_public_stats": 30,  # seconds
+            "search_metrics_events": 7 * 24 * 3600,  # 7 days
         }
 
     async def initialize(self):
@@ -319,6 +322,49 @@ class CacheManager:
 
         except Exception as e:
             logger.error(f"Cost tracking error: {str(e)}")
+
+    async def record_search_metrics(self, record: Dict[str, Any], *, max_events: int = 2000) -> None:
+        """Persist per-run search metrics for downstream analytics."""
+        key = "search_metrics:events"
+        prepared = json.dumps(record, default=str)
+        ttl = self.ttl_config.get("search_metrics_events", 7 * 24 * 3600)
+
+        try:
+            async with self.get_client() as client:
+                pipe = client.pipeline()
+                pipe.lpush(key, prepared)
+                pipe.ltrim(key, 0, max(0, max_events - 1))
+                pipe.expire(key, ttl)
+                await pipe.execute()
+        except Exception as e:
+            logger.error(f"Search metrics record error: {str(e)}")
+        finally:
+            # Maintain an in-memory fallback so analytics keep working without Redis
+            self.search_metrics_fallback.append(dict(record))
+
+    async def get_search_metrics_events(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Fetch recent search metric events (oldest first)."""
+        key = "search_metrics:events"
+        raw_events: List[str] = []
+        events: List[Dict[str, Any]] = []
+
+        try:
+            async with self.get_client() as client:
+                raw_events = await client.lrange(key, 0, max(0, limit - 1))
+        except Exception as e:
+            logger.error(f"Search metrics retrieval error: {str(e)}")
+
+        for item in reversed(raw_events):  # stored newest-first, return oldest-first
+            try:
+                events.append(json.loads(item))
+            except Exception:
+                continue
+
+        if not events:
+            # Fall back to in-memory buffer
+            events = list(self.search_metrics_fallback)[-limit:]
+
+        return events
 
     async def get_daily_api_costs(
         self, date: Optional[str] = None

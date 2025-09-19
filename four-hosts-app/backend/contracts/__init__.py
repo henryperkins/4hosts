@@ -76,35 +76,10 @@ class GeneratedAnswer(BaseModel):
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# No-op adapter stubs (filled out in later PR slices)
-# ---------------------------------------------------------------------------
-
-
-def to_source(legacy_obj: Any) -> Source:  # type: ignore[valid-type]
-    """Temporary helper to cast an existing *legacy* search result object into
-    the new `Source` contract.
-
-    This performs best-effort field mapping and should **not** introduce any
-    side effects. It will be replaced by dedicated adapter modules once the
-    migration reaches PR2/PR3.
-    """
-
-    data = {
-        "url": getattr(legacy_obj, "url", "http://invalid.local"),
-        "title": getattr(legacy_obj, "title", ""),
-        "snippet": getattr(legacy_obj, "snippet", None),
-        "score": getattr(legacy_obj, "credibility_score", None),
-        "metadata": getattr(legacy_obj, "metadata", {}),
-    }
-    return Source.parse_obj(data)
-
-
 __all__ = [
     "ResearchStatus",
     "Source",
     "SearchResult",
     "ResearchBundle",
     "GeneratedAnswer",
-    "to_source",
 ]

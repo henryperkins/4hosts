@@ -49,9 +49,7 @@ import re as _re
 from models.base import Paradigm
 from models.context_models import ClassificationDetailsSchema
 from services.webhook_manager import WebhookEvent, WebhookManager
-from services.export_service import ExportOptions, ExportFormat, ExportService
 from services.rate_limiter import RateLimitExceeded
-from models.result_models import ResearchFinalResult as _ResearchFinalResult
 from utils.error_handling import log_exception
 
 logger = logging.getLogger(__name__)
@@ -1845,83 +1843,3 @@ async def submit_research_feedback(
     except Exception as e:
         logger.error("Failed to record feedback: %s", str(e))
         raise HTTPException(status_code=500, detail="Failed to record feedback")
-
-
-@router.get("/export/{research_id}/{fmt}")
-async def export_research_result(
-    research_id: str,
-    fmt: str,
-    current_user=Depends(get_current_user),
-):
-    """Export completed research results in the given format.
-
-    Supported formats: pdf, markdown, json, csv, excel
-    """
-    # Fetch research
-    research = await research_store.get(research_id)
-    if not research:
-        raise HTTPException(status_code=404, detail="Research not found")
-
-    # Verify ownership
-    if (
-        research["user_id"] != str(current_user.id)
-        and current_user.role != UserRole.ADMIN
-    ):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    if research.get("status") != ResearchStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="Research not completed")
-
-    final = research.get("results") or {}
-
-    # Validate result shape before exporting
-    try:
-        _ = _ResearchFinalResult(**final)
-    except Exception as e:
-        logger.error("Export blocked: invalid result shape for %s: %s", research_id, e)
-        raise HTTPException(status_code=400, detail=f"Invalid result shape; cannot export: {e}")
-
-    # Construct exporter-agnostic payload
-    export_payload = {
-        "id": research_id,
-        "query": research.get("query"),
-        "paradigm": ((final.get("paradigm_analysis") or {}).get("primary") or {}).get("paradigm", "unknown"),
-        "depth": (research.get("options") or {}).get("depth", "standard"),
-        "confidence_score": float(((final.get("paradigm_analysis") or {}).get("primary") or {}).get("confidence", 0.0) or 0.0),
-        "sources_count": len(final.get("sources") or []),
-        "summary": ((final.get("answer") or {}).get("summary") or ""),
-        "answer": final.get("answer") or {},
-        "sources": final.get("sources") or [],
-        "citations": (final.get("answer") or {}).get("citations") or [],
-        "metadata": final.get("metadata") or {},
-    }
-
-    # Resolve format
-    try:
-        fmt_enum = ExportFormat(fmt.lower())
-    except Exception:
-        raise HTTPException(status_code=400, detail="Unsupported export format")
-
-    options = ExportOptions(format=fmt_enum)
-
-    # Perform export
-    export_service = ExportService()
-    try:
-        result = await export_service.export_research(export_payload, options)
-
-        # Mark this legacy endpoint as deprecated; point to unified export router
-        headers = {
-            "Content-Disposition": f'attachment; filename="{result.filename}"',
-            "X-Export-Format": result.format,
-            "X-Export-Size": str(result.size_bytes),
-            "Deprecation": "true",
-            "Link": f"</v1/export/research/{research_id}>; rel=successor-version",
-        }
-        return Response(
-            content=result.data,
-            media_type=result.content_type,
-            headers=headers,
-        )
-    except Exception as e:
-        logger.error("Export failed: %s", e)
-        raise HTTPException(status_code=500, detail="Export failed")

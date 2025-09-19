@@ -37,6 +37,7 @@ from backend.services.search_apis import create_search_manager, SearchConfig
 from backend.services.context_engineering import ContextEngineeringPipeline
 from backend.services.classification_engine import ClassificationResult, HostParadigm, QueryFeatures
 from backend.services.context_engineering import QueryOptimizer
+from search.query_planner import QueryCandidate
 
 
 def _tokenize(text: str) -> List[str]:
@@ -91,9 +92,16 @@ async def _search_with_variations(query: str, variations: Dict[str, str], max_re
         results = []
         # include primary + a few variations
         all_queries = [variations.get("primary", query)] + list({v for k, v in variations.items() if k != "primary"})
-        for q in all_queries[:5]:
+        for idx, q in enumerate(all_queries[:5]):
             try:
-                res = await mgr.search_all(q, cfg)
+                planned = [
+                    QueryCandidate(
+                        query=q,
+                        stage="context",
+                        label=f"eval_{idx+1}",
+                    )
+                ]
+                res = await mgr.search_all(planned, cfg)
                 for r in res:
                     results.append({
                         "title": r.title or "",
@@ -217,4 +225,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

@@ -2,8 +2,10 @@
 System routes for SSOTA telemetry and limits
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import logging
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 
@@ -197,3 +199,132 @@ async def get_extended_stats() -> Dict[str, Any]:
             "quality": {},
             "counters": {},
         }
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str):
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+@router.get("/search-metrics")
+async def get_search_metrics(window_minutes: int = 60, limit: int = 720) -> Dict[str, Any]:
+    """Return persisted search metrics suitable for dashboards and alerting."""
+
+    window_minutes = max(5, min(window_minutes, 7 * 24 * 60))
+    limit = max(25, min(limit, 2000))
+
+    try:
+        events = await cache_manager.get_search_metrics_events(limit=limit)
+    except Exception as e:
+        logger.error("Failed to retrieve search metrics: %s", e)
+        events = []
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=window_minutes)
+
+    timeline = {}
+    provider_usage: Dict[str, int] = defaultdict(int)
+    provider_costs: Dict[str, float] = defaultdict(float)
+    paradigm_distribution: Dict[str, int] = defaultdict(int)
+
+    total_queries = 0
+    total_results = 0
+    total_cost = 0.0
+    runs = 0
+    dedup_sum = 0.0
+    dedup_count = 0
+
+    for event in events:
+        ts = _parse_timestamp(event.get("timestamp"))
+        if not ts or ts < cutoff:
+            continue
+
+        runs += 1
+
+        tq = _safe_int(event.get("total_queries"))
+        tr = _safe_int(event.get("total_results"))
+        total_queries += tq
+        total_results += tr
+
+        dedup = event.get("deduplication_rate")
+        if isinstance(dedup, (int, float)):
+            dedup_val = float(dedup)
+            dedup_sum += dedup_val
+            dedup_count += 1
+
+        depth = str(event.get("depth") or "standard").lower()
+        paradigm = str(event.get("paradigm") or "unknown").lower()
+        composite_key = (ts.replace(second=0, microsecond=0), paradigm, depth)
+        bucket = timeline.setdefault(
+            composite_key,
+            {
+                "timestamp": ts.replace(second=0, microsecond=0).isoformat(),
+                "runs": 0,
+                "total_queries": 0,
+                "total_results": 0,
+                "dedup_sum": 0.0,
+            },
+        )
+        bucket["runs"] += 1
+        bucket["total_queries"] += tq
+        bucket["total_results"] += tr
+        if isinstance(dedup, (int, float)):
+            bucket["dedup_sum"] += float(dedup)
+
+        paradigm_distribution[paradigm] += 1
+
+        for provider in event.get("apis_used", []):
+            provider_name = str(provider or "unknown").lower()
+            provider_usage[provider_name] += 1
+
+        for provider, cost in (event.get("provider_costs") or {}).items():
+            try:
+                val = float(cost)
+            except Exception:
+                continue
+            pname = str(provider or "unknown").lower()
+            provider_costs[pname] += val
+            total_cost += val
+
+    timeline_points = []
+    for (_, paradigm, depth), payload in sorted(timeline.items(), key=lambda x: x[0]):
+        runs_in_bucket = max(1, payload["runs"])
+        timeline_points.append(
+            {
+                "timestamp": payload["timestamp"],
+                "runs": payload["runs"],
+                "total_queries": payload["total_queries"],
+                "total_results": payload["total_results"],
+                "deduplication_rate": round(payload["dedup_sum"] / runs_in_bucket, 4),
+                "paradigm": paradigm,
+                "depth": depth,
+            }
+        )
+
+    avg_dedup = round(dedup_sum / dedup_count, 4) if dedup_count else 0.0
+
+    return {
+        "window_minutes": window_minutes,
+        "runs": runs,
+        "total_queries": total_queries,
+        "total_results": total_results,
+        "avg_deduplication_rate": avg_dedup,
+        "total_cost_usd": round(total_cost, 4),
+        "provider_usage": dict(provider_usage),
+        "provider_costs": {k: round(v, 4) for k, v in provider_costs.items()},
+        "paradigm_distribution": dict(paradigm_distribution),
+        "timeline": timeline_points,
+    }
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0

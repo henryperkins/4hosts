@@ -235,6 +235,36 @@ KPIs
 
 -------------------------------------------------------------------------------
 
+13) Progress Review & Next Steps (as of September 19, 2025)
+
+Key metrics snapshot
+- Request-scoped `search_metrics` now ship with orchestrator responses, exposing `total_queries`, `total_results`, `apis_used`, and `deduplication_rate`; dedup stats originate from `ResultDeduplicator.deduplicate_results()` and surface alongside metadata for downstream consumers (four-hosts-app/backend/services/research_orchestrator.py:1178, four-hosts-app/backend/services/query_planning/result_deduplicator.py:24, four-hosts-app/backend/services/research_orchestrator.py:2213).
+- Cost attribution uses `CostMonitor.track_search_cost`, but daily rollups remain cached only—no dashboard ingest yet (four-hosts-app/backend/services/query_planning/planning_utils.py:21).
+- Planner-driven follow-ups increment `total_queries`, yet we still lack explicit coverage/gap telemetry despite computing `coverage_ratio` inside the loop (four-hosts-app/backend/services/research_orchestrator.py:609).
+- Context Engineering’s Optimize layer now reuses the planner, aligning variation counts and enabling future preview metrics once logging is added (four-hosts-app/backend/services/context_engineering.py:912).
+
+Current blockers
+- Budget-aware orchestration is stalled: `BudgetAwarePlanner` is instantiated but never consulted when selecting tools, so spend caps and retry policy tuning are inert (services/research_orchestrator.py#L158).
+- Observability debt persists—`search_metrics` and cost data are not persisted to time-series storage, leaving us blind to regressions post-rollout.
+- High-risk helpers (`ResultDeduplicator`, `EarlyRelevanceFilter`) ship without direct unit tests, so regressions would only surface in integration testing.
+- Env consolidation is partial: runtime still honors legacy flags such as `ENABLE_QUERY_LLM`, allowing planner behavior to drift between services.
+
+Backlog priorities (highest first)
+- Wire `search_metrics` plus cost telemetry into analytics (Grafana/Amplitude) and add alerting for `deduplication_rate`, provider mix, and query volume.
+- Integrate `BudgetAwarePlanner` decisions into follow-ups and deep-research tooling, with guardrails for per-request spend and retries.
+- Add focused regression tests for `result_deduplicator`, `relevance_filter`, and cost tracking helpers.
+- Finish env-flag migration by updating docs, scripts, and CI to prefer `UNIFIED_QUERY_*` variables and removing duplicated toggles.
+
+Sprint goals (Sep 23 – Oct 4, 2025)
+- Deliver observability: persist planner/orchestrator metrics, publish a baseline dashboard, and document SLIs for query volume, dedup rate, and provider coverage.
+- Land budget enforcement and validation tests so follow-up loops respect spend caps and surface failures through CI.
+- Close the env-flag migration with tooling updates and a QA checklist for rollout.
+
+Review cadence
+- Schedule a cross-functional review on Thursday, September 25, 2025 at 15:00 ET to demo metrics dashboards, confirm budget enforcement design, and re-baseline scope before the sprint midpoint.
+
+-------------------------------------------------------------------------------
+
 Appendix: Key References (repo-validated clickable links)
 
 - Rule-based optimizer

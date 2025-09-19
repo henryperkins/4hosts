@@ -22,7 +22,7 @@ import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union, cast, Callable, Awaitable
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Type, Union, cast, Callable, Awaitable, TYPE_CHECKING
 import html as _html
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
@@ -46,6 +46,10 @@ from tenacity import (
 # Circuit breaker for resilient external API calls
 from utils.circuit_breaker import with_circuit_breaker, CircuitOpenError
 from services.rate_limiter import ClientRateLimiter
+from services.text_utils import tokenize, STOP_WORDS
+from services.query_planning import QueryOptimizer
+if TYPE_CHECKING:
+    from search.query_planner import QueryCandidate
 
 
 # --------------------------------------------------------------------------- #
@@ -82,42 +86,7 @@ def _structured_log(level: str, event: str, meta: Dict[str, Any]):
 #                        SHARED UTILITY FUNCTIONS                             #
 # --------------------------------------------------------------------------- #
 
-STOP_WORDS: Set[str]
 
-
-def _ensure_nltk_ready() -> bool:
-    """Return True if punkt/stopwords/wordnet are available (download if env allows)."""
-    try:
-        nltk.data.find("tokenizers/punkt")
-        nltk.data.find("corpora/stopwords")
-        nltk.data.find("corpora/wordnet")
-        return True
-    except LookupError:
-        if os.getenv("SEARCH_ALLOW_NLTK_DOWNLOADS") == "1":
-            try:
-                nltk.download("punkt", quiet=True)
-                nltk.download("stopwords", quiet=True)
-                nltk.download("wordnet", quiet=True)
-                return True
-            except Exception:
-                return False
-        return False
-
-
-_use_nltk = _ensure_nltk_ready()
-if _use_nltk:
-    try:
-        STOP_WORDS = set(nltk.corpus.stopwords.words("english"))
-    except Exception:
-        STOP_WORDS = {
-            "the", "a", "an", "and", "or", "but", "of", "in", "on", "for", "to", "with", "by",
-            "is", "are", "was", "were", "be", "as", "at", "it", "this", "that", "from",
-        }
-else:
-    STOP_WORDS = {
-        "the", "a", "an", "and", "or", "but", "of", "in", "on", "for", "to", "with", "by",
-        "is", "are", "was", "were", "be", "as", "at", "it", "this", "that", "from",
-    }
 
 
 def safe_parse_date(raw: str | None) -> Optional[datetime]:
@@ -154,10 +123,7 @@ def safe_parse_date(raw: str | None) -> Optional[datetime]:
     return None
 
 
-def tokenize(text: str, *, lower=True) -> List[str]:
-    text = text.lower() if lower else text
-    tokens = re.findall(r"\w+", text)
-    return [t for t in tokens if t not in STOP_WORDS]
+
 
 
 def ngram_tokenize(text: str, n: int = 3) -> List[str]:
@@ -559,7 +525,7 @@ def _extract_main_text(html: str, base_url: str | None = None, max_chars: int | 
             scored.append((sc, el))
     if not scored:
         # fallback to structured text of whole page
-        return _html_to_structured_text_legacy(soup, max_chars)
+        return _structured_text_fallback(soup, max_chars)
     scored.sort(key=lambda x: x[0], reverse=True)
     top_score, top_el = scored[0]
 
@@ -594,10 +560,11 @@ def _extract_main_text(html: str, base_url: str | None = None, max_chars: int | 
             break
     out = "\n".join(pieces).strip()
     if not out:
-        return _html_to_structured_text_legacy(soup, max_chars)
+        return _structured_text_fallback(soup, max_chars)
     return out[:max_chars] if max_chars else out
 
-def _html_to_structured_text_legacy(soup: BeautifulSoup, max_chars: int | None) -> str:
+
+def _structured_text_fallback(soup: BeautifulSoup, max_chars: int | None) -> str:
     pieces: list[str] = []
     try:
         title = soup.title.get_text(strip=True) if soup.title else ""
@@ -733,7 +700,7 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
         # Legacy structured extractor
         try:
             soup = BeautifulSoup(html, "html.parser")
-            return _html_to_structured_text_legacy(soup, max_chars)
+            return _structured_text_fallback(soup, max_chars)
         except Exception:
             return _strip_tags(html)[:max_chars]
 
@@ -826,7 +793,7 @@ async def fetch_and_parse_url_with_meta(session: aiohttp.ClientSession, url: str
         except Exception:
             try:
                 soup = BeautifulSoup(html, "html.parser")
-                text = _html_to_structured_text_legacy(soup, max_chars)
+                text = _structured_text_fallback(soup, max_chars)
             except Exception:
                 text = _strip_tags(html)[:max_chars]
 
@@ -1090,239 +1057,7 @@ class SearchConfig:
 # --------------------------------------------------------------------------- #
 #                           Query Optimiser                                   #
 # --------------------------------------------------------------------------- #
-class QueryOptimizer:
-    """
-    Generates cleaned-up / expanded query strings that retain user intent
-    while maximising recall (quoted-phrase protection, synonym expansion,
-    domain-specific boosts, etc.).
-    """
 
-    def __init__(self):
-        self.use_nltk = _use_nltk
-        self.stop_words = STOP_WORDS
-
-        # Terms that rarely influence retrieval quality
-        self.noise_terms: Set[str] = {"information", "details", "find", "show", "tell"}
-
-        # Common multi-word technical entities we want to protect (keep quoted)
-        self.known_entities = [
-            "context engineering",
-            "web applications",
-            "artificial intelligence",
-            "machine learning",
-            "deep learning",
-            "neural network",
-            "neural networks",
-            "large language model",
-            "large language models",
-            "state of the art",
-            "natural language processing",
-            "computer vision",
-            "reinforcement learning",
-            "generative ai",
-            "transformer models",
-            "foundation models",
-        ]
-
-        # Paradigm-specific dictionaries (used by _add_domain_specific_terms)
-        self.paradigm_terms = {
-            "dolores": ["investigation", "expose", "systemic", "corruption"],
-            "teddy": ["support", "community", "help", "care"],
-            "bernard": ["research", "analysis", "data", "evidence"],
-            "maeve": ["strategy", "business", "optimization", "market"],
-        }
-
-    # --------------------------------------------------------------------- #
-    #                     Internal helper functions                         #
-    # --------------------------------------------------------------------- #
-    def _extract_entities(self, query: str) -> Tuple[List[str], str]:
-        """
-        1.  Keep quoted phrases intact.          ->  "climate change"
-        2.  Detect known multi-token entities.   ->  machine learning
-        3.  Grab obvious proper nouns.           ->  OpenAI, Maeve
-        Returns (protected_entities, remaining_text)
-        """
-        protected: List[str] = []
-        remainder = query
-
-        # 1. quoted phrases -------------------------------------------------
-        for phrase in re.findall(r'"([^"]+)"', query):
-            protected.append(phrase)
-            remainder = remainder.replace(f'"{phrase}"', " ")
-
-        # 2. known entities --------------------------------------------------
-        low = remainder.lower()
-        for ent in self.known_entities:
-            if ent in low:
-                protected.append(ent)
-                low = low.replace(ent, " ")
-                remainder = re.sub(re.escape(ent), " ", remainder, flags=re.I)
-
-        # 3. proper nouns heuristic -----------------------------------------
-        proper = re.findall(r"\b[A-Z][a-z]{2,}\b", remainder)
-        for p in proper:
-            if p.lower() not in self.stop_words:
-                protected.append(p)
-
-        # Clean leftover text
-        remainder = re.sub(r"\s+", " ", remainder).strip()
-        return list(dict.fromkeys(protected)), remainder  # dedup while preserving order
-
-    def _intelligent_stopword_removal(self, text: str) -> List[str]:
-        tokens = tokenize(text)          # shared helper already removes stop-words
-        return [t for t in tokens if t not in self.noise_terms]
-
-    # --------------------------------------------------------------------- #
-    #                       Public helper methods                           #
-    # --------------------------------------------------------------------- #
-    def get_key_terms(self, query: str) -> List[str]:
-        ents, left = self._extract_entities(query)
-        return [e.replace('"', "") for e in ents] + self._intelligent_stopword_removal(left)
-
-    # --------------------------------------------------------------------- #
-    #              Query-expansion / variation generation                   #
-    # --------------------------------------------------------------------- #
-    def generate_query_variations(
-        self, query: str, paradigm: Optional[str] = None
-    ) -> Dict[str, str]:
-        """
-        Returns several variations keyed by a label:
-            {
-                "primary": "...",
-                "semantic": "...",
-                "question": "...",
-                "synonym": "...",
-                ...
-            }
-        We usually send only the first 2-3 variations to each provider.
-        """
-        ents, left = self._extract_entities(query)
-        keywords = self._intelligent_stopword_removal(left)
-
-        # PRIMARY (AND-joined) ---------------------------------------------
-        if ents or keywords:
-            primary = " AND ".join([f'"{e}"' for e in ents] + keywords)
-        else:
-            primary = query.strip()
-
-        variations: Dict[str, str] = {"primary": primary}
-
-        # SEMANTIC (OR between protected phrases) --------------------------
-        if len(ents) > 1:
-            quoted_ents = [f'"{e}"' for e in ents]
-            variations["semantic"] = f"({' OR '.join(quoted_ents)}) AND {' '.join(keywords)}"
-        else:
-            variations["semantic"] = primary.replace(" AND ", " ")
-
-        # QUESTION form ----------------------------------------------------
-        wh = ["what is", "how does", "why is", "explain", "when did"]
-        if not any(query.lower().startswith(w) for w in wh):
-            # De-duplicate terms case-insensitively, drop connectors, cap length
-            raw_terms = [e for e in ents] + keywords
-            seen: set[str] = set()
-            clean_terms: List[str] = []
-            for t in raw_terms:
-                tt = (t or "").strip()
-                if not tt:
-                    continue
-                tl = tt.lower()
-                if tl in {"and", "or", "the"}:
-                    continue
-                if tl not in seen:
-                    seen.add(tl)
-                    clean_terms.append(tt)
-            # Limit to keep queries readable
-            clean_terms = clean_terms[:6]
-            if clean_terms:
-                variations["question"] = (
-                    f"what is the relationship between {' and '.join(clean_terms)}"
-                )
-            else:
-                variations["question"] = f"what is {query}"  # fallback
-
-        # SYNONYM expansion -------------------------------------------------
-        syn_kw = self._expand_synonyms(keywords)
-        if syn_kw != keywords:
-            variations["synonym"] = " ".join([f'"{e}"' for e in ents] + syn_kw)
-
-        # RELATED concepts --------------------------------------------------
-        rel = self._get_related_concepts(keywords)
-        if rel:
-            variations["related"] = f"{primary} OR ({' OR '.join(rel)})"
-
-        # DOMAIN-specific ---------------------------------------------------
-        if paradigm:
-            dom = self._add_domain_specific_terms(primary, paradigm)
-            if dom != primary:
-                variations["domain_specific"] = dom
-
-        # BROAD (first 3 important terms) ----------------------------------
-        broad_terms = ents + keywords
-        if len(broad_terms) > 2:
-            variations["broad"] = " ".join(broad_terms[:3])
-
-        # EXACT phrase ------------------------------------------------------
-        if len(query.split()) <= 6:
-            variations["exact_phrase"] = f'"{query.strip()}"'
-
-        return variations
-
-    def optimize_query(self, query: str, paradigm: Optional[str] = None) -> str:
-        """Return just the 'primary' variation for convenience."""
-        return self.generate_query_variations(query, paradigm)["primary"]
-
-    # --------------------------------------------------------------------- #
-    #                       Private expansion helpers                       #
-    # --------------------------------------------------------------------- #
-    def _expand_synonyms(self, terms: List[str]) -> List[str]:
-        if not (self.use_nltk and terms):
-            return terms[:]  # unchanged
-
-        from nltk.corpus import wordnet as wn
-
-        expanded: List[str] = []
-        for t in terms:
-            expanded.append(t)
-            try:
-                syns = wn.synsets(t)
-            except Exception:
-                syns = []
-            for syn in syns[:2]:                      # limit per term
-                for lemma in syn.lemma_names()[:3]:
-                    lemma = lemma.replace("_", " ")
-                    if lemma.lower() != t.lower() and lemma not in expanded:
-                        expanded.append(lemma)
-            if len(expanded) >= len(terms) + 4:       # cap overall growth
-                break
-        return expanded
-
-    def _get_related_concepts(self, terms: List[str]) -> List[str]:
-        concept_map = {
-            "ai": ["artificial intelligence", "machine learning", "deep learning"],
-            "ml": ["machine learning", "algorithms", "models"],
-            "ethic": ["responsible ai", "moral", "governance"],
-            "security": ["cybersecurity", "privacy", "data protection"],
-            "climate": ["global warming", "environmental impact"],
-            "health": ["healthcare", "medical", "wellness"],
-            "finance": ["economic", "investment", "financial"],
-            "education": ["learning", "teaching", "academic"],
-        }
-        related: List[str] = []
-        for t in terms:
-            for key, vals in concept_map.items():
-                if key in t.lower():
-                    related.extend(vals)
-        # Also plural/singular normalization triggers
-        for t in terms:
-            if t.endswith("s"):
-                related.append(t[:-1])
-        return list(dict.fromkeys(related))[:3]        # unique, max 3
-
-    def _add_domain_specific_terms(self, query: str, paradigm: str) -> str:
-        extra = self.paradigm_terms.get(paradigm.lower())
-        if not extra:
-            return query
-        return f"{query} {' '.join(extra)}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1448,48 +1183,58 @@ class BaseSearchAPI:
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         raise NotImplementedError
 
-    async def search_with_variations(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
-        """Unified variation search; providers themselves handle rate limiting."""
-        variations = self.qopt.generate_query_variations(query)
-        # Prioritise variants for better recall/precision balance
-        priority = [
-            "primary",
-            "domain_specific",
-            "exact_phrase",
-            "synonym",
-            "related",
-            "broad",
-            "question",
-        ]
-        ordered = sorted(variations.items(), key=lambda kv: priority.index(kv[0]) if kv[0] in priority else 999)
-        limit = int(os.getenv("SEARCH_QUERY_VARIATIONS_LIMIT", "5"))
-        ordered = ordered[:limit]
+    async def search_with_variations(
+        self,
+        seed_query: str,
+        cfg: SearchConfig,
+        *,
+        planned: Sequence["QueryCandidate"],
+    ) -> List[SearchResult]:
+        """Execute the planned query candidates against this provider."""
+        if not planned:
+            raise ValueError("planned query candidates required for search_with_variations")
+
+        limit = int(os.getenv("SEARCH_QUERY_VARIATIONS_LIMIT", "12"))
+        concurrency = int(os.getenv("SEARCH_VARIANT_CONCURRENCY", "4"))
+        ordered = list(planned)[:limit]
 
         seen: Set[str] = set()
         out: List[SearchResult] = []
 
-        # Execute variant searches with light concurrency while respecting provider rate limiter
-        sem = asyncio.Semaphore(int(os.getenv("SEARCH_VARIANT_CONCURRENCY", "3")))
+        sem = asyncio.Semaphore(max(1, concurrency))
 
-        async def _run_variant(vt: str, q: str) -> List[SearchResult]:
+        async def _run_candidate(candidate: "QueryCandidate") -> List[SearchResult]:
             async with sem:
                 try:
-                    return await self.search(q, cfg)
+                    return await self.search(candidate.query, cfg)
                 except RateLimitedError:
-                    # Bubble up to manager so it can apply quota cooldowns
                     raise
-                except Exception as e:
-                    logger.warning(f"{self.__class__.__name__}:{vt} failed: {e}")
+                except Exception as exc:
+                    logger.warning(
+                        "%s:%s failed: %s",
+                        self.__class__.__name__,
+                        candidate.label,
+                        exc,
+                    )
                     return []
 
-        tasks = [asyncio.create_task(_run_variant(vt, q)) for vt, q in ordered]
-        results_by_variant = await asyncio.gather(*tasks, return_exceptions=False)
-        for (vt, _), res in zip(ordered, results_by_variant):
-            for r in res:
-                if r.url and r.url not in seen:
-                    seen.add(r.url)
-                    r.raw_data["query_variant"] = vt
-                    out.append(r)
+        tasks = [asyncio.create_task(_run_candidate(candidate)) for candidate in ordered]
+        results_by_candidate = await asyncio.gather(*tasks, return_exceptions=False)
+
+        for candidate, results in zip(ordered, results_by_candidate):
+            stage_label = f"{candidate.stage}:{candidate.label}".strip(":")
+            for result in results:
+                if result.url and result.url not in seen:
+                    seen.add(result.url)
+                    result.raw_data.setdefault("query_stage", candidate.stage)
+                    result.raw_data.setdefault("query_label", candidate.label)
+                    result.raw_data.setdefault("query_weight", candidate.weight)
+                    if candidate.source_filter:
+                        result.raw_data.setdefault("query_source_filter", candidate.source_filter)
+                    if candidate.tags:
+                        result.raw_data.setdefault("query_tags", candidate.tags)
+                    result.raw_data["query_variant"] = stage_label
+                    out.append(result)
         return out
 
 
@@ -2098,8 +1843,17 @@ class SearchAPIManager:
                 self._fallback_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
             return self._fallback_session
 
-    async def search_with_priority(self, query: str, cfg: SearchConfig, progress_callback: Optional[Any] = None, research_id: Optional[str] = None) -> List[SearchResult]:
-        """Search with priority: Try primary (Brave) first, then fallback (Google) if needed."""
+    async def search_with_priority(
+        self,
+        planned: Sequence["QueryCandidate"],
+        cfg: SearchConfig,
+        progress_callback: Optional[Any] = None,
+        research_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Search with priority: Try primary provider first, then fallbacks."""
+        if not planned:
+            return []
+        seed_query = planned[0].query
         all_results = []
         now_ts = time.time()
         min_results = int(os.getenv("SEARCH_MIN_RESULTS_THRESHOLD", "5"))
@@ -2107,11 +1861,19 @@ class SearchAPIManager:
         # Step 1: Try primary API (Brave) first
         if self.primary_api and self.primary_api in self.apis:
             if self.quota_blocked.get(self.primary_api, 0) <= now_ts:
-                logger.info(f"Searching with primary provider: {self.primary_api}")
+                logger.info(
+                    "Searching with primary provider: %s for plan of %d candidates",
+                    self.primary_api,
+                    len(planned),
+                )
                 try:
                     results = await self._search_single_provider(
-                        self.primary_api, self.apis[self.primary_api], query, cfg,
-                        progress_callback, research_id
+                        self.primary_api,
+                        self.apis[self.primary_api],
+                        planned,
+                        cfg,
+                        progress_callback,
+                        research_id,
                     )
                     if results:
                         all_results.extend(results)
@@ -2125,11 +1887,19 @@ class SearchAPIManager:
         if len(all_results) < min_results:
             for fallback_name in self.fallback_apis:
                 if fallback_name in self.apis and self.quota_blocked.get(fallback_name, 0) <= now_ts:
-                    logger.info(f"Insufficient results ({len(all_results)}), trying fallback: {fallback_name}")
+                    logger.info(
+                        "Insufficient results (%d), trying fallback: %s",
+                        len(all_results),
+                        fallback_name,
+                    )
                     try:
                         fallback_results = await self._search_single_provider(
-                            fallback_name, self.apis[fallback_name], query, cfg,
-                            progress_callback, research_id
+                            fallback_name,
+                            self.apis[fallback_name],
+                            planned,
+                            cfg,
+                            progress_callback,
+                            research_id,
                         )
                         if fallback_results:
                             all_results.extend(fallback_results)
@@ -2138,28 +1908,52 @@ class SearchAPIManager:
                         logger.warning(f"Fallback provider {fallback_name} failed: {e}")
 
         # Step 3: Run academic providers in parallel (always)
-        academic_results = await self._search_academic_parallel(query, cfg, progress_callback, research_id)
+        academic_results = await self._search_academic_parallel(
+            planned,
+            cfg,
+            progress_callback,
+            research_id,
+        )
         all_results.extend(academic_results)
 
         # Process and deduplicate results
         return await self._process_results(all_results, cfg)
 
-    async def _search_single_provider(self, name: str, api: BaseSearchAPI, query: str, cfg: SearchConfig,
-                                     progress_callback: Optional[Any], research_id: Optional[str]) -> List[SearchResult]:
+    async def _search_single_provider(
+        self,
+        name: str,
+        api: BaseSearchAPI,
+        planned: Sequence["QueryCandidate"],
+        cfg: SearchConfig,
+        progress_callback: Optional[Any],
+        research_id: Optional[str],
+    ) -> List[SearchResult]:
         """Search using a single provider with timeout and error handling."""
+        if not planned:
+            return []
+        seed_query = planned[0].query
         if progress_callback and research_id:
             try:
-                await progress_callback.report_search_started(research_id, query, name, 1, 1)
+                await progress_callback.report_search_started(
+                    research_id, seed_query, name, 1, 1
+                )
             except Exception:
                 pass
 
         timeout = float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
         try:
-            results = await asyncio.wait_for(api.search_with_variations(query, cfg), timeout=timeout)
+            results = await asyncio.wait_for(
+                api.search_with_variations(seed_query, cfg, planned=planned),
+                timeout=timeout,
+            )
 
             if progress_callback and research_id:
                 try:
-                    await progress_callback.report_search_completed(research_id, query, len(results) if results else 0)
+                    await progress_callback.report_search_completed(
+                        research_id,
+                        seed_query,
+                        len(results) if results else 0,
+                    )
                 except Exception:
                     pass
 
@@ -2177,9 +1971,16 @@ class SearchAPIManager:
             logger.warning(f"{name} circuit breaker open: {e}")
             raise
 
-    async def _search_academic_parallel(self, query: str, cfg: SearchConfig,
-                                       progress_callback: Optional[Any], research_id: Optional[str]) -> List[SearchResult]:
-        """Search academic providers in parallel."""
+    async def _search_academic_parallel(
+        self,
+        planned: Sequence["QueryCandidate"],
+        cfg: SearchConfig,
+        progress_callback: Optional[Any],
+        research_id: Optional[str],
+    ) -> List[SearchResult]:
+        """Search academic providers in parallel using the planned candidates."""
+        if not planned:
+            return []
         academic_providers = ['arxiv', 'crossref', 'semanticscholar', 'pubmed']
         tasks = {}
         now_ts = time.time()
@@ -2187,7 +1988,9 @@ class SearchAPIManager:
         for name in academic_providers:
             if name in self.apis and self.quota_blocked.get(name, 0) <= now_ts:
                 api = self.apis[name]
-                tasks[name] = asyncio.create_task(self._search_provider_silent(name, api, query, cfg))
+                tasks[name] = asyncio.create_task(
+                    self._search_provider_silent(name, api, planned, cfg)
+                )
 
         if not tasks:
             return []
@@ -2209,11 +2012,23 @@ class SearchAPIManager:
 
         return results
 
-    async def _search_provider_silent(self, name: str, api: BaseSearchAPI, query: str, cfg: SearchConfig) -> List[SearchResult]:
+    async def _search_provider_silent(
+        self,
+        name: str,
+        api: BaseSearchAPI,
+        planned: Sequence["QueryCandidate"],
+        cfg: SearchConfig,
+    ) -> List[SearchResult]:
         """Search without progress reporting (for parallel academic searches)."""
+        if not planned:
+            return []
+        seed_query = planned[0].query
         try:
             timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
-            return await asyncio.wait_for(api.search_with_variations(query, cfg), timeout=timeout)
+            return await asyncio.wait_for(
+                api.search_with_variations(seed_query, cfg, planned=planned),
+                timeout=timeout,
+            )
         except Exception as e:
             logger.debug(f"Academic provider {name} failed: {e}")
             return []
@@ -2237,24 +2052,47 @@ class SearchAPIManager:
 
         return unique_results
 
-    async def search_all(self, query: str, cfg: SearchConfig, progress_callback: Optional[Any] = None, research_id: Optional[str] = None) -> List[SearchResult]:
-        """Main search method that uses priority-based search with Brave as primary and Google as fallback."""
+    async def search_all(
+        self,
+        planned: Sequence["QueryCandidate"],
+        cfg: SearchConfig,
+        progress_callback: Optional[Any] = None,
+        research_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Main search method executing the provided plan."""
+        if not planned:
+            return []
         # Use the new priority-based search method
         use_priority = os.getenv("SEARCH_USE_PRIORITY_MODE", "1") not in {"0", "false", "no"}
         if use_priority:
-            return await self.search_with_priority(query, cfg, progress_callback, research_id)
+            return await self.search_with_priority(planned, cfg, progress_callback, research_id)
 
         # Legacy parallel search mode (if priority mode is disabled)
-        return await self.search_all_parallel(query, cfg, progress_callback, research_id)
+        return await self.search_all_parallel(planned, cfg, progress_callback, research_id)
 
-    async def search_all_parallel(self, query: str, cfg: SearchConfig, progress_callback: Optional[Any] = None, research_id: Optional[str] = None) -> List[SearchResult]:
-        """Legacy parallel search method (all providers at once)."""
-        # Provider-specific start events so UI shows "Searching Brave...", "Searching Google..."
+    async def search_all_parallel(
+        self,
+        planned: Sequence["QueryCandidate"],
+        cfg: SearchConfig,
+        progress_callback: Optional[Any] = None,
+        research_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Parallel search method supporting planned candidates."""
+        if not planned:
+            return []
+        seed_query = planned[0].query
+        # Provider-specific start events so UI shows provider progress
         if progress_callback and research_id:
             try:
                 total = max(1, len(self.apis))
                 for idx, name in enumerate(self.apis.keys()):
-                    await progress_callback.report_search_started(research_id, query, name, idx + 1, total)
+                    await progress_callback.report_search_started(
+                        research_id,
+                        seed_query,
+                        name,
+                        idx + 1,
+                        total,
+                    )
             except Exception:
                 pass
 
@@ -2297,7 +2135,10 @@ class SearchAPIManager:
                 continue
             async def _run_with_timeout(_api: BaseSearchAPI) -> List[SearchResult]:
                 try:
-                    return await asyncio.wait_for(_api.search_with_variations(query, cfg), timeout=_per_provider_to)
+                    return await asyncio.wait_for(
+                        _api.search_with_variations(seed_query, cfg, planned=planned),
+                        timeout=_per_provider_to,
+                    )
                 except asyncio.TimeoutError:
                     logger.warning(f"Provider timeout ({_per_provider_to:.1f}s): {getattr(_api, '__class__', type(_api)).__name__}")
                     return []
@@ -2541,7 +2382,15 @@ def create_search_manager() -> SearchAPIManager:
 async def _demo():
     async with create_search_manager() as mgr:
         cfg = SearchConfig(max_results=10)
-        res = await mgr.search_all("artificial intelligence ethics", cfg)
+        from search.query_planner import QueryCandidate  # local import to avoid circular at module load
+        planned = [
+            QueryCandidate(
+                query="artificial intelligence ethics",
+                stage="context",
+                label="demo",
+            )
+        ]
+        res = await mgr.search_all(planned, cfg)
         for r in res[:5]:
             print(r.title, "—", r.url)
 

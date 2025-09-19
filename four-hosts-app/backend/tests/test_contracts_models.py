@@ -42,24 +42,3 @@ def test_contracts_import_and_basic_instantiation():
 
     assert answer.status is ResearchStatus.OK
     assert bundle.sources[0].url == src.url
-
-
-def test_to_source_adapter_roundtrip():
-    """`to_source` should create a valid Source from a simple object."""
-
-    from types import SimpleNamespace
-    from backend.contracts import Source, to_source
-
-    legacy = SimpleNamespace(
-        url="https://legacy.example.com",
-        title="Legacy Title",
-        snippet=None,
-        credibility_score=0.42,
-        metadata={"legacy": True},
-    )
-
-    new_src = to_source(legacy)
-
-    assert isinstance(new_src, Source)
-    assert new_src.url == legacy.url
-

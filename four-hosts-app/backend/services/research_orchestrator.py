@@ -6,8 +6,8 @@ Combines all the best features from multiple orchestrator implementations
 import asyncio
 import logging
 import os
-from typing import List, Dict, Any, Optional, Tuple, Set, cast, TypedDict
-from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple, cast, TypedDict
+from datetime import datetime, timezone
 from collections import defaultdict, deque
 from urllib.parse import quote_plus
 from dataclasses import dataclass, field
@@ -31,6 +31,8 @@ from services.search_apis import (
     SearchConfig,
     create_search_manager,
 )
+from search.query_planner import QueryPlanner, QueryCandidate
+from services.query_planning import PlannerConfig, build_planner_config
 from services.exa_research import exa_research_client
 from services.credibility import get_source_credibility
 from services.paradigm_search import get_search_strategy, SearchContext
@@ -56,6 +58,20 @@ from services.agentic_process import (
     propose_queries_enriched,
 )
 from services.result_adapter import ResultAdapter
+from services.query_planning import PlannerConfig, build_planner_config
+from services.query_planning.result_deduplicator import ResultDeduplicator
+from services.query_planning.relevance_filter import EarlyRelevanceFilter
+from services.query_planning.planning_utils import (
+    CostMonitor,
+    ToolRegistry,
+    ToolCapability,
+    BudgetAwarePlanner,
+    RetryPolicy,
+    Plan,
+    PlannerCheckpoint,
+    Budget,
+    SearchMetrics,
+)
 from services.metrics import metrics
 # SearchContextSize import removed (unused)
 
@@ -122,548 +138,6 @@ class ResearchExecutionResult:
 
 
 
-
-class ResultDeduplicator:
-    """Removes duplicate search results using various similarity measures"""
-
-    def __init__(self, similarity_threshold: float = 0.8):
-        # Allow tuning via env; default to a less aggressive 0.9 to reduce
-        # accidental drops of near-duplicate but distinct items.
-        try:
-            env_thr = os.getenv("DEDUP_SIMILARITY_THRESH")
-            if env_thr is not None:
-                similarity_threshold = float(env_thr)
-        except Exception:
-            pass
-        self.similarity_threshold = similarity_threshold
-
-    def _simhash64(self, text: str) -> int:
-        import hashlib
-        if not text:
-            return 0
-        # Tokenize lightly and hash tokens; simple 64-bit simhash
-        toks = re.findall(r"[A-Za-z0-9]+", text.lower())
-        v = [0] * 64
-        for t in toks[:200]:  # cap tokens for speed
-            h = int(hashlib.blake2b(t.encode('utf-8'), digest_size=8).hexdigest(), 16)
-            for i in range(64):
-                v[i] += 1 if (h >> i) & 1 else -1
-        out = 0
-        for i in range(64):
-            if v[i] >= 0:
-                out |= (1 << i)
-        return out
-
-    @staticmethod
-    def _hamdist64(a: int, b: int) -> int:
-        x = a ^ b
-        # Kernighan bit count
-        c = 0
-        while x:
-            x &= x - 1
-            c += 1
-        return c
-
-    async def deduplicate_results(self, results: List[SearchResult]) -> Dict[str, Any]:
-        """Remove duplicate results using URL and content similarity"""
-        # Defensive guard – empty input
-        if not results:
-            return {
-                "unique_results": [],
-                "duplicates_removed": 0,
-                "similarity_threshold": self.similarity_threshold,
-            }
-
-        unique_results: List[SearchResult] = []
-        duplicates_removed = 0
-        seen_urls: set[str] = set()
-
-        # First pass: exact URL‐based deduplication.
-        # Skip any items that do not expose a usable ``url`` attribute
-        # to avoid unexpected ``AttributeError`` crashes that would halt
-        # the entire research pipeline mid-progress (observed by UI
-        # getting stuck at the *“Removing duplicate results…”* stage).
-        url_deduplicated: List[SearchResult] = []
-        for result in results:
-            url = getattr(result, "url", None)
-
-            # Verify a non-empty URL exists – otherwise drop the record
-            if not url or not isinstance(url, str):
-                logger.debug(
-                    "[dedup] Dropping result without valid URL: %s", repr(result)[:100]
-                )
-                duplicates_removed += 1
-                continue
-
-            if url not in seen_urls:
-                seen_urls.add(url)
-                url_deduplicated.append(result)
-            else:
-                duplicates_removed += 1
-
-        # Second pass: content-similarity via simhash bucketing to avoid O(n^2)
-        # Build buckets on leading bits; compare only within bucket
-        buckets: Dict[int, List[Tuple[int, SearchResult]]] = {}
-        for r in url_deduplicated:
-            try:
-                basis = f"{getattr(r,'title','')} {getattr(r,'snippet','')}"
-                sh = self._simhash64(basis)
-                key = (sh >> 52)  # top 12 bits as bucket key
-                buckets.setdefault(key, []).append((sh, r))
-            except Exception:
-                buckets.setdefault(0, []).append((0, r))
-
-        for key, items in buckets.items():
-            reps: List[Tuple[int, SearchResult]] = []
-            for sh, r in items:
-                is_dup = False
-                for sh2, kept in reps:
-                    try:
-                        # Adaptive threshold based on result type and domain
-                        result_type = getattr(r, 'result_type', None) or (r.metadata or {}).get('result_type', 'web')
-                        domain = getattr(r, 'domain', None) or (r.metadata or {}).get('domain', '')
-
-                        # More lenient for academic and government sources
-                        if result_type == 'academic' or '.edu' in domain or '.gov' in domain or 'arxiv' in domain:
-                            hamming_threshold = 8  # Very lenient for academic papers
-                        elif result_type in ('news', 'blog'):
-                            hamming_threshold = 5  # Moderate for news/blogs
-                        else:
-                            hamming_threshold = 3  # Strict for general web content
-
-                        # Check SimHash with adaptive threshold
-                        if self._hamdist64(sh, sh2) <= hamming_threshold:
-                            is_dup = True
-                        else:
-                            sim = self._calculate_content_similarity(r, kept)
-                            is_dup = sim > self.similarity_threshold
-                    except Exception:
-                        is_dup = False
-                    if is_dup:
-                        duplicates_removed += 1
-                        break
-                if not is_dup:
-                    reps.append((sh, r))
-                    unique_results.append(r)
-
-        logger.info(
-            "Deduplication: %s -> %s (%s duplicates removed)",
-            len(results),
-            len(unique_results),
-            duplicates_removed,
-        )
-
-        return {
-            "unique_results": unique_results,
-            "duplicates_removed": duplicates_removed,
-            "similarity_threshold": self.similarity_threshold,
-        }
-
-    def _calculate_content_similarity(
-        self, result1: SearchResult, result2: SearchResult
-    ) -> float:
-        """Calculate similarity between two search results"""
-        try:
-            h1 = getattr(result1, "content_hash", None)
-            h2 = getattr(result2, "content_hash", None)
-            if h1 and h2 and isinstance(h1, str) and isinstance(h2, str) and h1 == h2:
-                return 1.0
-        except Exception:
-            pass
-        # Defensive extraction helpers – return empty set when value missing
-        def words(text: Optional[str]) -> set[str]:
-            if not text or not isinstance(text, str):
-                return set()
-            return set(text.lower().split())
-
-        # Title similarity (Jaccard index)
-        title1_words = words(getattr(result1, "title", ""))
-        title2_words = words(getattr(result2, "title", ""))
-
-        if not title1_words or not title2_words:
-            title_similarity = 0.0
-        else:
-            intersection = len(title1_words.intersection(title2_words))
-            union = len(title1_words.union(title2_words))
-            title_similarity = intersection / union if union > 0 else 0.0
-
-        # Domain similarity – ensure attributes exist
-        domain1 = getattr(result1, "domain", "") or ""
-        domain2 = getattr(result2, "domain", "") or ""
-        domain_similarity = 1.0 if domain1 == domain2 and domain1 else 0.0
-
-        # Snippet similarity
-        snippet1_words = words(getattr(result1, "snippet", ""))
-        snippet2_words = words(getattr(result2, "snippet", ""))
-
-        if not snippet1_words or not snippet2_words:
-            snippet_similarity = 0.0
-        else:
-            intersection = len(snippet1_words.intersection(snippet2_words))
-            union = len(snippet1_words.union(snippet2_words))
-            snippet_similarity = intersection / union if union > 0 else 0.0
-
-        # Weighted combination (configurable + adaptive)
-        try:
-            w_title = float(os.getenv("DEDUP_TITLE_WEIGHT", "0.5"))
-            w_domain = float(os.getenv("DEDUP_DOMAIN_WEIGHT", "0.3"))
-            w_snippet = float(os.getenv("DEDUP_SNIPPET_WEIGHT", "0.2"))
-        except Exception:
-            w_title, w_domain, w_snippet = 0.5, 0.3, 0.2
-        # Adapt weights for academic results: titles are often standardized; rely more on domain + snippet
-        try:
-            if (getattr(result1, "result_type", "") == "academic" or getattr(result2, "result_type", "") == "academic"):
-                w_title, w_domain, w_snippet = 0.4, max(w_domain, 0.35), 0.25
-        except Exception:
-            pass
-        total_w = max(1e-9, w_title + w_domain + w_snippet)
-        w_title, w_domain, w_snippet = w_title/total_w, w_domain/total_w, w_snippet/total_w
-        overall_similarity = (
-            title_similarity * w_title
-            + domain_similarity * w_domain
-            + snippet_similarity * w_snippet
-        )
-
-        return overall_similarity
-
-
-class EarlyRelevanceFilter:
-    """Early-stage relevance filtering to remove obviously irrelevant results"""
-
-    def __init__(self):
-        self.spam_indicators = {
-            'viagra', 'cialis', 'casino', 'poker', 'lottery',
-            'weight loss', 'get rich quick', 'work from home',
-            'singles in your area', 'hot deals', 'limited time offer'
-        }
-
-        # Allow custom spam indicators via environment
-        try:
-            custom_spam = os.getenv("EARLY_FILTER_SPAM_INDICATORS")
-            if custom_spam:
-                additional_spam = [s.strip().lower() for s in custom_spam.split(",") if s.strip()]
-                self.spam_indicators.update(additional_spam)
-        except Exception:
-            pass
-
-        # Domain blocklist can be disabled via EARLY_FILTER_BLOCK_DOMAINS=0
-        try:
-            if os.getenv("EARLY_FILTER_BLOCK_DOMAINS", "1").lower() in {"1", "true", "yes", "on"}:
-                self.low_quality_domains = {
-                    'ezinearticles.com', 'articlesbase.com', 'squidoo.com',
-                    'hubpages.com', 'buzzle.com', 'ehow.com'
-                }
-            else:
-                self.low_quality_domains = set()
-        except Exception:
-            self.low_quality_domains = set()
-
-    def is_relevant(self, result: SearchResult, query: str, paradigm: str) -> bool:
-        """Check if a result meets minimum relevance criteria"""
-
-        # Check for spam content
-        title_val = (getattr(result, "title", "") or "")
-        snippet_val = (getattr(result, "snippet", "") or "")
-        combined_text = f"{title_val} {snippet_val}".lower()
-        if any(spam in combined_text for spam in self.spam_indicators):
-            return False
-
-        # Check for low-quality domains
-        if (getattr(result, "domain", "") or "").lower() in self.low_quality_domains:
-            return False
-
-        # Minimum content check
-        if not isinstance(title_val, str) or len(title_val.strip()) < 10:
-            return False
-        if not isinstance(snippet_val, str) or len(snippet_val.strip()) < 20:
-            return False
-
-        # Language detection (basic check for non-English) - configurable by context
-        # Allow override via user context language or environment variable
-        language = getattr(result, 'language', 'en') or 'en'  # some APIs provide language hint
-        ascii_threshold = 0.3  # default 30%
-
-        # Adjust threshold for non-English queries or when explicitly allowed
-        if language != 'en':
-            ascii_threshold = 0.8  # be more permissive for non-English content
-
-        # Allow environment override
-        try:
-            ascii_threshold = float(os.getenv("EARLY_FILTER_ASCII_THRESHOLD", str(ascii_threshold)))
-        except Exception:
-            pass
-
-        non_ascii_count = sum(1 for c in combined_text if ord(c) > 127)
-        if len(combined_text) > 0 and non_ascii_count > len(combined_text) * ascii_threshold:
-            return False
-
-        # Query relevance check - use query_compressor for better keyword extraction
-        # Make this check less aggressive - only filter if NO query terms match at all
-        try:
-            import re as _re
-            query_terms = set(query_compressor.extract_keywords(query))
-            if query_terms and len(query_terms) > 2:  # Only apply if we have multiple query terms
-                # Use regex tokenization for more flexible matching
-                def _toks(text: str) -> set[str]:
-                    return {t for t in _re.findall(r"[A-Za-z0-9]+", (text or "").lower()) if len(t) > 2}
-
-                result_terms = _toks(combined_text)
-                if result_terms:
-                    # Check for direct term matches
-                    matching_terms = query_terms & result_terms
-
-                    # Be more lenient: require at least 1 matching term OR 30% of query terms
-                    min_matches = max(1, len(query_terms) // 3)
-                    has_enough_matches = len(matching_terms) >= min_matches
-
-                    # If no direct matches, check for partial matches with shorter keywords
-                    if not has_enough_matches:
-                        # Try with 2-character minimum for short keywords
-                        short_query_terms = {t for t in query_terms if len(t) >= 2}
-                        short_result_terms = {t for t in _re.findall(r"[A-Za-z0-9]+", (combined_text or "").lower()) if len(t) >= 2}
-                        has_enough_matches = len(short_query_terms & short_result_terms) >= min_matches
-
-                    # Only filter out if we have VERY poor relevance
-                    if not has_enough_matches and len(matching_terms) == 0:
-                        # Double check for related terms before filtering
-                        related_terms = {'llm', 'ai', 'gpt', 'model', 'language', 'prompt', 'context', 'engineering'}
-                        if not any(term in combined_text.lower() for term in related_terms):
-                            return False
-        except Exception:
-            # Fallback to simple split if query_compressor fails - be more lenient
-            query_terms = [term.lower() for term in query.split() if len(term) > 2]
-            if query_terms and len(query_terms) > 2:
-                # Require at least 1 term match for multi-word queries
-                has_query_term = any(term in combined_text for term in query_terms)
-                if not has_query_term:
-                    return False
-
-        # Check for duplicate/mirror sites
-        if self._is_likely_duplicate_site((getattr(result, "domain", "") or "")):
-            return False
-
-        # Paradigm-specific early filters
-        if paradigm == "bernard" and getattr(result, "result_type", "web") == "web":
-            authoritative_indicators = ['.edu', '.gov', 'journal', 'research', 'study', 'analysis',
-                                      'technology', 'innovation', 'science', 'ieee', 'acm', 'mit',
-                                      'stanford', 'harvard', 'arxiv', 'nature', 'springer']
-            tech_indicators = ['ai', 'artificial intelligence', 'machine learning', 'deep learning',
-                             'neural', 'algorithm', 'technology', 'computing', 'software', 'innovation']
-
-            has_authority = any(indicator in (getattr(result, "domain", "") or "").lower() or indicator in combined_text for indicator in authoritative_indicators)
-            has_tech_content = any(indicator in combined_text for indicator in tech_indicators)
-
-            # Be permissive when there is direct query overlap – do not penalize generic but relevant snippets
-            has_direct_overlap = True
-            try:
-                q_terms = set(query_compressor.extract_keywords(query))
-            except Exception:
-                q_terms = {t for t in (query or "").lower().split() if len(t) > 2}
-            if q_terms:
-                has_direct_overlap = any(t in combined_text for t in q_terms)
-
-            if not (has_authority or has_tech_content) and not has_direct_overlap:
-                academic_terms = ['methodology', 'hypothesis', 'conclusion', 'abstract', 'citation',
-                                'analysis', 'framework', 'approach', 'technique', 'evaluation']
-                if not any(term in combined_text for term in academic_terms):
-                    return False
-
-        # Folded-in theme overlap (Jaccard) filter - with domain whitelisting
-        try:
-            thr = float(os.getenv("EARLY_THEME_OVERLAP_MIN", "0.08") or 0.08)
-            q_terms = set(query_compressor.extract_keywords(query))
-            if q_terms:
-                import re as _re
-                def _toks(text: str) -> set:
-                    return set([t for t in _re.findall(r"[A-Za-z0-9]+", (text or "").lower()) if len(t) > 2])
-                rtoks = _toks(combined_text)
-                if rtoks:
-                    inter = len(q_terms & rtoks)
-                    union = len(q_terms | rtoks)
-                    jac = (inter / float(union)) if union else 0.0
-
-                    # Whitelist well-known domains even with low overlap
-                    domain = (getattr(result, "domain", "") or "").lower()
-                    whitelist_domains = {
-                        'arxiv.org', 'scholar.google.com', 'pubmed.ncbi.nlm.nih.gov',
-                        'nature.com', 'science.org', 'ieee.org', 'acm.org',
-                        'springer.com', 'wiley.com', 'tandfonline.com', 'researchgate.net'
-                    }
-
-                    # Only apply threshold if not in whitelist
-                    if domain not in whitelist_domains and jac < thr:
-                        return False
-        except Exception:
-            pass
-
-        return True
-
-    def _is_likely_duplicate_site(self, domain: str) -> bool:
-        """Check if domain is likely a duplicate/mirror site"""
-        duplicate_patterns = [
-            r'.*-mirror\.', r'.*-cache\.', r'.*-proxy\.',
-            r'.*\.mirror\.', r'.*\.cache\.', r'.*\.proxy\.',
-            r'webcache\.', r'cached\.'
-        ]
-
-        for pattern in duplicate_patterns:
-            if re.match(pattern, domain.lower()):
-                return True
-
-        return False
-
-
-class CostMonitor:
-    """Monitors and tracks API costs"""
-
-    def __init__(self):
-        self.cost_per_call = {
-            "google": 0.005,  # $5 per 1000 queries
-            "brave": 0.0,     # Free tier
-            "arxiv": 0.0,     # Free
-            "pubmed": 0.0,    # Free
-        }
-
-    async def track_search_cost(self, api_name: str, queries_count: int) -> float:
-        """Track cost for search API calls"""
-        cost = self.cost_per_call.get(api_name, 0.0) * queries_count
-        await cache_manager.track_api_cost(api_name, cost, queries_count)
-        return cost
-
-    async def estimate_and_track_aggregate(self, providers: List[str], queries_count: int) -> Dict[str, float]:
-        """Estimate and record per‑provider costs for an aggregate search.
-
-        Returns a mapping of provider -> cost for this batch. Unknown providers are
-        treated as zero-cost (defensive default).
-        """
-        breakdown: Dict[str, float] = {}
-        for name in providers:
-            try:
-                # Record per‑provider (not "aggregate") so daily roll‑ups stay accurate
-                breakdown[name] = await self.track_search_cost(name, queries_count)
-            except Exception:
-                breakdown[name] = 0.0
-        return breakdown
-
-    async def get_daily_costs(self, date: Optional[str] = None) -> Dict[str, Dict[str, float]]:
-        """Get daily API costs"""
-        return await cache_manager.get_daily_api_costs(date)
-
-
-class RetryPolicy:
-    """Standardized retry/backoff policy configuration."""
-    def __init__(self, max_attempts: int = 3, base_delay_sec: float = 0.5, max_delay_sec: float = 8.0) -> None:
-        self.max_attempts = max_attempts
-        self.base_delay_sec = base_delay_sec
-        self.max_delay_sec = max_delay_sec
-
-
-@dataclass
-class ToolCapability:
-    name: str
-    cost_per_call_usd: float = 0.0
-    rpm_limit: Optional[int] = None
-    rpd_limit: Optional[int] = None
-    typical_latency_ms: Optional[int] = None
-    failure_types: List[str] = field(default_factory=list)
-    healthy: bool = True
-    last_health_check: Optional[datetime] = None
-
-
-class ToolRegistry:
-    """Registry for tool capabilities, costs, limits, and health status."""
-    def __init__(self) -> None:
-        self._tools: Dict[str, ToolCapability] = {}
-
-    def register(self, capability: ToolCapability) -> None:
-        self._tools[capability.name] = capability
-
-    def get(self, name: str) -> Optional[ToolCapability]:
-        return self._tools.get(name)
-
-    def list(self) -> List[ToolCapability]:
-        return list(self._tools.values())
-
-    def set_health(self, name: str, healthy: bool) -> None:
-        cap = self._tools.get(name)
-        if cap:
-            cap.healthy = healthy
-            cap.last_health_check = datetime.now()
-
-
-@dataclass
-class Budget:
-    max_tokens: int
-    max_cost_usd: float
-    max_wallclock_minutes: int
-
-
-@dataclass
-class PlannerCheckpoint:
-    name: str
-    description: str
-    done: bool = False
-
-
-@dataclass
-class Plan:
-    objective: str
-    checkpoints: List[PlannerCheckpoint]
-    budget: Budget
-    stop_conditions: Dict[str, Any] = field(default_factory=dict)
-    consumed_cost_usd: float = 0.0
-    consumed_tokens: int = 0
-    started_at: datetime = field(default_factory=datetime.now)
-
-    def can_spend(self, additional_cost_usd: float, additional_tokens: int) -> bool:
-        within_cost = (self.consumed_cost_usd + additional_cost_usd) <= self.budget.max_cost_usd
-        within_tokens = (self.consumed_tokens + additional_tokens) <= self.budget.max_tokens
-        return within_cost and within_tokens
-
-    def spend(self, cost_usd: float, tokens: int) -> None:
-        self.consumed_cost_usd += max(0.0, cost_usd)
-        self.consumed_tokens += max(0, tokens)
-
-
-class BudgetAwarePlanner:
-    """Simple budget-aware planner that selects tools and enforces spend."""
-    def __init__(self, registry: ToolRegistry, retry_policy: Optional[RetryPolicy] = None) -> None:
-        self.registry = registry
-        self.retry_policy = retry_policy or RetryPolicy()
-
-    def select_tools(self, preferred: List[str]) -> List[str]:
-        tools: List[str] = []
-        for name in preferred:
-            cap = self.registry.get(name)
-            if cap and cap.healthy:
-                tools.append(name)
-        return tools
-
-    def estimate_cost(self, tool_name: str, calls: int = 1) -> float:
-        cap = self.registry.get(tool_name)
-        return (cap.cost_per_call_usd * calls) if cap else 0.0
-
-    def record_tool_spend(self, plan: Plan, tool_name: str, calls: int, tokens: int = 0) -> bool:
-        cost = self.estimate_cost(tool_name, calls)
-        if not plan.can_spend(cost, tokens):
-            return False
-        plan.spend(cost, tokens)
-        return True
-
-
-class SearchMetrics(TypedDict, total=False):
-    total_queries: int
-    total_results: int
-    apis_used: List[str]
-    deduplication_rate: float
-    retries_attempted: int
-    task_timeouts: int
-    exceptions_by_api: Dict[str, int]
-    api_call_counts: Dict[str, int]
-    dropped_no_url: int
-    dropped_invalid_shape: int
-    compression_plural_used: int
-    compression_singular_used: int
 
 
 class UnifiedResearchOrchestrator:
@@ -877,6 +351,103 @@ class UnifiedResearchOrchestrator:
         except Exception:
             pass
 
+    async def _record_search_telemetry(
+        self,
+        research_id: Optional[str],
+        paradigm_code: str,
+        user_context: Any,
+        metrics_snapshot: SearchMetrics,
+        cost_breakdown: Dict[str, float],
+        processed_results: Dict[str, Any],
+        executed_candidates: List[QueryCandidate],
+    ) -> None:
+        from services.telemetry_pipeline import telemetry_pipeline
+
+        depth = "standard"
+        try:
+            depth_attr = getattr(user_context, "depth", None)
+            if depth_attr:
+                depth = str(depth_attr).lower()
+        except Exception:
+            pass
+
+        try:
+            apis_used_raw = metrics_snapshot.get("apis_used", [])  # type: ignore[call-arg]
+        except Exception:
+            apis_used_raw = []
+        if isinstance(apis_used_raw, (list, tuple, set)):
+            apis_used = [str(api).lower() for api in apis_used_raw if api]
+        elif apis_used_raw:
+            apis_used = [str(apis_used_raw).lower()]
+        else:
+            apis_used = []
+
+        try:
+            total_queries = int(metrics_snapshot.get("total_queries", 0))
+        except Exception:
+            total_queries = 0
+        if not total_queries:
+            total_queries = len(executed_candidates or [])
+
+        try:
+            total_results = int(metrics_snapshot.get("total_results", 0))
+        except Exception:
+            total_results = 0
+        if not total_results:
+            try:
+                total_results = len(processed_results.get("results", []) or [])
+            except Exception:
+                total_results = 0
+
+        try:
+            dedup_val_raw = metrics_snapshot.get("deduplication_rate")
+            dedup_value = float(dedup_val_raw) if isinstance(dedup_val_raw, (int, float)) else None
+        except Exception:
+            dedup_value = None
+
+        try:
+            processing_time = float(
+                (processed_results.get("metadata", {}) or {}).get("processing_time_seconds", 0.0) or 0.0
+            )
+        except Exception:
+            processing_time = 0.0
+
+        provider_costs: Dict[str, float] = {}
+        for provider, value in (cost_breakdown or {}).items():
+            try:
+                provider_costs[str(provider).lower()] = float(value)
+            except Exception:
+                continue
+
+        stage_breakdown: Dict[str, int] = defaultdict(int)
+        for candidate in executed_candidates or []:
+            try:
+                stage_breakdown[str(getattr(candidate, "stage", "unknown"))] += 1
+            except Exception:
+                stage_breakdown["unknown"] += 1
+
+        record: Dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "research_id": research_id,
+            "paradigm": paradigm_code,
+            "depth": depth,
+            "total_queries": total_queries,
+            "total_results": total_results,
+            "apis_used": apis_used,
+            "provider_costs": provider_costs,
+            "processing_time_seconds": processing_time,
+            "stage_breakdown": dict(stage_breakdown),
+        }
+
+        if dedup_value is not None:
+            record["deduplication_rate"] = dedup_value
+
+        total_cost = sum(provider_costs.values())
+        if total_cost:
+            record["total_cost_usd"] = total_cost
+
+        await telemetry_pipeline.record_search_run(record)
+
     async def cleanup(self):
         """Cleanup resources"""
         if self.search_manager:
@@ -947,29 +518,48 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             "compression_singular_used": 0,
         }
 
-        # Pure V2 query planning
+        # Unified query planner path
         limited = self._get_query_limit(user_context)
-        source_queries = list(getattr(context_engineered, "refined_queries", []) or [])
-        if not source_queries:
-            source_queries = [getattr(context_engineered, "original_query", "")]
+        refined_queries = list(getattr(context_engineered, "refined_queries", []) or [])
+        original_query = getattr(context_engineered, "original_query", "") or getattr(classification, "query", "")
+        seed_query = refined_queries[0] if refined_queries else original_query
+        if not seed_query:
+            seed_query = getattr(classification, "query", "") or ""
+
+        planner_cfg = self._build_planner_config(limited)
+        paradigm_code = normalize_to_internal_code(getattr(classification, "primary_paradigm", HostParadigm.BERNARD))
+        planner = QueryPlanner(planner_cfg)
+
         try:
-            optimized_all = self._compress_and_dedup_queries(source_queries)
-            optimized_queries = self._prioritize_queries(
-                optimized_all,
-                limited,
-                getattr(classification, "primary_paradigm", None),
+            planned_candidates = await planner.initial_plan(
+                seed_query=seed_query,
+                paradigm=paradigm_code,
+                additional_queries=refined_queries,
             )
         except Exception as e:
-            logger.warning(f"Query compression failed; using fallback. {e}")
-            optimized_queries = [getattr(context_engineered, "original_query", "")][:limited]
+            logger.warning(f"Query planning failed; using fallback. {e}")
+            fallback_query = seed_query or original_query or getattr(classification, "query", "")
+            planned_candidates = [
+                QueryCandidate(query=fallback_query, stage="rule_based", label="primary")
+            ]
+
+        if not planned_candidates:
+            fallback_query = seed_query or original_query or getattr(classification, "query", "") or ""
+            planned_candidates = [
+                QueryCandidate(query=fallback_query, stage="rule_based", label="primary")
+            ]
+
+        if len(planned_candidates) > limited:
+            planned_candidates = list(planned_candidates[:limited])
 
         logger.info(
-            f"Optimized queries to {len(optimized_queries)} for {classification.primary_paradigm.value}"
+            "Planned %d query candidates for %s",
+            len(planned_candidates),
+            getattr(classification.primary_paradigm, "value", classification.primary_paradigm),
         )
 
-        # Update metrics for total queries
-        # Update request-scoped metrics
-        search_metrics_local["total_queries"] = int(search_metrics_local.get("total_queries", 0)) + len(optimized_queries)
+        executed_candidates: List[QueryCandidate] = list(planned_candidates)
+        search_metrics_local["total_queries"] = int(search_metrics_local.get("total_queries", 0)) + len(executed_candidates)
 
         # Check for cancellation before executing searches
         if await check_cancelled():
@@ -998,7 +588,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # Execute searches with deterministic ordering
         search_results = await self._execute_searches_deterministic(
-            optimized_queries,
+            executed_candidates,
             classification.primary_paradigm,
             user_context,
             progress_callback,
@@ -1007,6 +597,76 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             cost_accumulator=cost_breakdown,
             metrics=search_metrics_local,
         )
+
+        # Agentic follow-up loop based on coverage gaps
+        if self.agentic_config.get("enabled", True):
+            executed_queries = {cand.query for cand in executed_candidates}
+            max_iters = max(0, int(self.agentic_config.get("max_iterations", 0)))
+            coverage_threshold = float(self.agentic_config.get("coverage_threshold", 0.75))
+            max_new_per_iter = max(0, int(self.agentic_config.get("max_new_queries_per_iter", 0)))
+
+            coverage_sources = self._collect_sources_for_coverage(search_results)
+            coverage_ratio, missing_terms = evaluate_coverage_from_sources(
+                original_query,
+                context_engineered,
+                coverage_sources,
+            )
+
+            iteration = 0
+            while (
+                iteration < max_iters
+                and coverage_ratio < coverage_threshold
+                and missing_terms
+            ):
+                try:
+                    followup_candidates = await planner.followups(
+                        seed_query=seed_query,
+                        paradigm=paradigm_code,
+                        missing_terms=missing_terms,
+                        coverage_sources=coverage_sources,
+                    )
+                except Exception as exc:
+                    logger.debug("Planner follow-ups failed: %s", exc)
+                    break
+
+                followup_filtered: List[QueryCandidate] = []
+                for cand in followup_candidates:
+                    if cand.query in executed_queries:
+                        continue
+                    followup_filtered.append(cand)
+                    if 0 < max_new_per_iter <= len(followup_filtered):
+                        break
+
+                if not followup_filtered:
+                    break
+
+                executed_candidates.extend(followup_filtered)
+                executed_queries.update(cand.query for cand in followup_filtered)
+                search_metrics_local["total_queries"] = int(search_metrics_local.get("total_queries", 0)) + len(followup_filtered)
+
+                followup_results = await self._execute_searches_deterministic(
+                    followup_filtered,
+                    classification.primary_paradigm,
+                    user_context,
+                    progress_callback,
+                    research_id,
+                    check_cancelled,
+                    cost_accumulator=cost_breakdown,
+                    metrics=search_metrics_local,
+                )
+
+                for query, res in followup_results.items():
+                    search_results[query] = res
+
+                coverage_sources.extend(
+                    self._collect_sources_for_coverage(followup_results)
+                )
+                coverage_ratio, missing_terms = evaluate_coverage_from_sources(
+                    original_query,
+                    context_engineered,
+                    coverage_sources,
+                )
+                iteration += 1
 
         # Record per-query effectiveness (query -> results count)
         try:
@@ -1500,7 +1160,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             "metadata": {
                 **processed_results["metadata"],
                 "total_results": len(processed_results["results"]),
-                "queries_executed": len(optimized_queries),
+                "queries_executed": len(executed_candidates),
                 "query_effectiveness": query_effectiveness,
                 "sources_used": processed_results["sources_used"],
                 "credibility_summary": processed_results["credibility_summary"],
@@ -1590,6 +1250,18 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             }
         except Exception:
             response["cost_info"] = {"search_api_costs": 0.0, "llm_costs": 0.0, "total": 0.0, "total_cost": 0.0}
+        try:
+            await self._record_search_telemetry(
+                research_id,
+                primary_code,
+                user_context,
+                search_metrics_local,
+                cost_breakdown,
+                processed_results,
+                executed_candidates,
+            )
+        except Exception:
+            logger.debug("Failed to persist search telemetry", exc_info=True)
         if synthesized_answer is not None:
             # Preserve object for downstream normalizers (routes/research.py)
             response["answer"] = synthesized_answer
@@ -1616,14 +1288,21 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 original_query=getattr(context_engineered, "original_query", ""),
                 paradigm=primary_code,
                 secondary_paradigm=secondary_code,
-                search_queries_executed=[{"query": q} for q in (optimized_queries or [])],
+                search_queries_executed=[
+                    {
+                        "query": cand.query,
+                        "stage": cand.stage,
+                        "label": cand.label,
+                    }
+                    for cand in executed_candidates
+                ],
                 raw_results=search_results if isinstance(search_results, dict) else {},
                 filtered_results=processed_results.get("results", []) or [],
                 credibility_scores=cred_map,
                 execution_metrics={
                     "processing_time_seconds": float(processing_time),
                     "final_results_count": len(processed_results.get("results", []) or []),
-                    "queries_executed": len(optimized_queries),
+                    "queries_executed": len(executed_candidates),
                 },
                 cost_breakdown=cost_breakdown,
                 status=ContractResearchStatus.OK,
@@ -1932,7 +1611,6 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     include_citations=bool(options.get("include_citations", True)),
                     tone=str(options.get("tone", "professional")),
                     metadata={"research_id": research_id},
-                    evidence_quotes=[],  # legacy field suppressed by unified bundle
                     evidence_bundle=eb,
                 )
             except Exception:
@@ -1967,7 +1645,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             pass
 
-        # Call the generator using the legacy signature for broad compatibility
+        # Invoke the answer orchestrator using the keyword-friendly signature
         assert answer_orchestrator is not None, "Answer generation not available"
         logger.info(f"Calling answer_orchestrator.generate_answer for research_id: {research_id}")
         answer = await answer_orchestrator.generate_answer(
@@ -2076,72 +1754,26 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             pass
         return defaults.get(role, 5)
 
-    def _compress_and_dedup_queries(self, queries: List[str]) -> List[str]:
-        optimized_list: List[str] = []
-        seen_set: Set[str] = set()
-        for q in queries or []:
-            try:
-                compressed = query_compressor.compress(q, preserve_keywords=True)
-            except Exception:
-                compressed = q
-            val = (compressed or q or "").strip()
-            if not val:
-                continue
-            if val not in seen_set:
-                seen_set.add(val)
-                optimized_list.append(val)
-        return optimized_list
+    def _build_planner_config(self, limit: int) -> PlannerConfig:
+        base = PlannerConfig(max_candidates=max(1, limit))
+        cfg = build_planner_config(base=base)
 
-    def _prioritize_queries(self, queries: List[str], limit: int, paradigm: HostParadigm | None) -> List[str]:
-        """Sort queries using simple heuristics; return top `limit` without arbitrary slice bias.
+        # Orchestrator-specific overrides
+        if os.getenv("SEARCH_DISABLE_AGENTIC", "0") == "1":
+            cfg.enable_agentic = False
 
-        Heuristics:
-        - Prefer quoted phrases (exact intent)
-        - Prefer moderate length (20–140 chars)
-        - Paradigm nudges (Bernard: academic terms; Dolores: accountability keywords)
-        """
-        if not queries:
-            return []
-        def score(q: str) -> float:
-            s = 0.0
-            ql = len(q or "")
-            if '"' in q:
-                s += 2.0
-            if 20 <= ql <= 140:
-                s += 1.0
-            low = (q or "").lower()
+        context_cap = os.getenv("SEARCH_PLANNER_CONTEXT_CAP")
+        if context_cap:
             try:
-                code = normalize_to_internal_code(paradigm) if paradigm else ""
+                cfg.per_stage_caps["context"] = max(0, int(context_cap))
             except Exception:
-                code = ""
-            if code == "bernard":
-                for kw in ("site:edu", "doi", "arxiv", "journal", "study", "evidence"):
-                    if kw in low:
-                        s += 0.5
-            elif code == "dolores":
-                for kw in ("systemic", "accountability", "investigation", "whistleblower", "lawsuit"):
-                    if kw in low:
-                        s += 0.5
-            elif code == "maeve":
-                for kw in ("roi", "market", "kpi", "growth", "benchmark"):
-                    if kw in low:
-                        s += 0.4
-            elif code == "teddy":
-                for kw in ("support", "resources", "mental health", "community"):
-                    if kw in low:
-                        s += 0.4
-            # Penalise very long (>220) or very short (<10)
-            if ql > 220:
-                s -= 0.5
-            if ql < 10:
-                s -= 0.5
-            return s
-        ordered = sorted(queries, key=score, reverse=True)
-        return ordered[: max(1, limit)]
+                pass
+
+        return cfg
 
     async def _execute_searches_deterministic(
         self,
-        optimized_queries: List[str],
+        planned_candidates: List[QueryCandidate],
         primary_paradigm: HostParadigm,
         user_context: Any,
         progress_callback: Optional[Any],
@@ -2151,10 +1783,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         cost_accumulator: Optional[Dict[str, float]] = None,
         metrics: Optional[SearchMetrics] = None,
     ) -> Dict[str, List[SearchResult]]:
-        """
-        Deterministically execute searches for V2 path. Returns {query_key: [SearchResult, ...]}.
-        """
+        """Execute the planner's candidates deterministically and collect results."""
         all_results: Dict[str, List[SearchResult]] = {}
+        if not planned_candidates:
+            return all_results
         max_results = int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())
         paradigm_code = normalize_to_internal_code(primary_paradigm)
         min_rel = bernard_min_relevance() if paradigm_code == "bernard" else 0.25
@@ -2176,15 +1808,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             concurrency = int(os.getenv("SEARCH_QUERY_CONCURRENCY", "4"))
         sem = asyncio.Semaphore(max(1, concurrency))
 
-        async def _run_query(idx: int, q: str) -> Tuple[str, List[SearchResult]]:
+        async def _run_query(idx: int, candidate: QueryCandidate) -> Tuple[str, List[SearchResult]]:
             if check_cancelled and await check_cancelled():
                 logger.info("Research cancelled before executing query #%d", idx + 1)
-                return q, []
+                return candidate.query, []
             # Honor per-request flag to disable real web search (frontend/user option)
             try:
                 if hasattr(user_context, "enable_real_search") and not bool(getattr(user_context, "enable_real_search")):
                     logger.info("Real web search disabled by user context; skipping query #%d", idx + 1)
-                    return q, []
+                    return candidate.query, []
             except Exception:
                 pass
             # Progress (started)
@@ -2192,17 +1824,21 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 try:
                     try:
                         await progress_callback.report_search_started(
-                            research_id, q, "multi", idx + 1, len(optimized_queries)
+                            research_id,
+                            candidate.query,
+                            f"{candidate.stage}:{candidate.label}",
+                            idx + 1,
+                            len(planned_candidates),
                         )
                     except Exception:
                         pass
                     await progress_callback.update_progress(
                         research_id,
                         phase="search",
-                        message=f"Searching: {q[:40]}...",
-                        progress=20 + int(((idx + 1) / max(1, len(optimized_queries))) * 35),
+                        message=f"Searching: {candidate.query[:40]}...",
+                        progress=20 + int(((idx + 1) / max(1, len(planned_candidates))) * 35),
                         items_done=idx + 1,
-                        items_total=len(optimized_queries),
+                        items_total=len(planned_candidates),
                     )
                 except Exception:
                     pass
@@ -2227,8 +1863,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             async with sem:
                 try:
                     results = await self._perform_search(
-                        q,
-                        "aggregate",
+                        candidate,
                         config,
                         check_cancelled=check_cancelled,
                         progress_callback=progress_callback,
@@ -2236,7 +1871,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         metrics=metrics,
                     )
                 except Exception as e:
-                    logger.error("Search failed for '%s': %s", q, e)
+                    logger.error("Search failed for '%s': %s", candidate.query, e)
                     results = []
 
             # Attribute cost only to providers observed in results (fallback: configured list)
@@ -2254,12 +1889,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     if cost_accumulator is not None:
                         cost_accumulator[name] = float(cost_accumulator.get(name, 0.0)) + float(c)
             except Exception:
-                logger.debug("Cost attribution failed for query '%s'", q, exc_info=True)
+                logger.debug(
+                    "Cost attribution failed for query '%s'",
+                    candidate.query,
+                    exc_info=True,
+                )
 
             # Progress (completed + sample sources)
             if progress_callback and research_id:
                 try:
-                    await progress_callback.report_search_completed(research_id, q, len(results))
+                    await progress_callback.report_search_completed(
+                        research_id,
+                        candidate.query,
+                        len(results),
+                    )
                     for r in results[:3]:
                         try:
                             await progress_callback.report_source_found(
@@ -2277,9 +1920,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 except Exception:
                     pass
 
-            return q, results
+            return candidate.query, results
 
-        tasks = [asyncio.create_task(_run_query(idx, q)) for idx, q in enumerate(optimized_queries)]
+        tasks = [
+            asyncio.create_task(_run_query(idx, candidate))
+            for idx, candidate in enumerate(planned_candidates)
+        ]
         try:
             for fut in asyncio.as_completed(tasks):
                 # Cooperative cancellation
@@ -2306,6 +1952,24 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 await asyncio.gather(*pending, return_exceptions=True)
 
         return all_results
+
+    def _collect_sources_for_coverage(
+        self,
+        batches: Dict[str, List[SearchResult]],
+    ) -> List[Dict[str, Any]]:
+        sources: List[Dict[str, Any]] = []
+        for res_list in (batches or {}).values():
+            for entry in res_list or []:
+                adapter = ResultAdapter(entry)
+                sources.append(
+                    {
+                        "title": adapter.title,
+                        "snippet": adapter.snippet,
+                        "url": adapter.url,
+                        "domain": adapter.domain,
+                    }
+                )
+        return sources
 
     async def _process_results(
         self,
@@ -2708,8 +2372,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
     async def _perform_search(
         self,
-        query: str,
-        api: str,
+        candidate: QueryCandidate,
         config: SearchConfig,
         check_cancelled: Optional[Any] = None,
         progress_callback: Optional[Any] = None,
@@ -2729,22 +2392,23 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 "Please ensure at least one of the following is configured: "
                 "BRAVE_SEARCH_API_KEY, GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX, "
                 "or academic search providers. "
-                f"Research ID: {research_id or 'N/A'}, Query: '{query[:100]}...'"
+                f"Research ID: {research_id or 'N/A'}, Query: '{candidate.query[:100]}...'"
             )
             logger.critical(error_msg)
             raise RuntimeError(error_msg)
 
         # Request-scoped metrics only (avoid shared-state mutation)
+        api_name = "aggregate"
         if metrics is not None:
             mcounts = dict(metrics.get("api_call_counts", {}))
             try:
-                if api == "aggregate" and self.search_manager is not None:
+                if self.search_manager is not None:
                     for name in getattr(self.search_manager, "apis", {}).keys():
                         mcounts[name] = int(mcounts.get(name, 0)) + 1
                 else:
-                    mcounts[api] = int(mcounts.get(api, 0)) + 1
+                    mcounts[api_name] = int(mcounts.get(api_name, 0)) + 1
             except Exception:
-                mcounts[api] = int(mcounts.get(api, 0)) + 1
+                mcounts[api_name] = int(mcounts.get(api_name, 0)) + 1
             metrics["api_call_counts"] = mcounts
 
         attempt = 0
@@ -2754,13 +2418,21 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         while attempt < self.retry_policy.max_attempts:
             # Cancellation gate before each retry attempt
             if check_cancelled and await check_cancelled():
-                logger.info("Search cancelled during retry phase for api=%s q='%s'", api, query[:80])
+                logger.info(
+                    "Search cancelled during retry phase for q='%s'",
+                    candidate.query[:80],
+                )
                 break
 
             attempt += 1
             try:
                 # Use search_all and emit per-provider progress updates
-                coro = sm.search_all(query, config, progress_callback=progress_callback, research_id=research_id)
+                coro = sm.search_all(
+                    [candidate],
+                    config,
+                    progress_callback=progress_callback,
+                    research_id=research_id,
+                )
                 task_result = await asyncio.wait_for(coro, timeout=self.search_task_timeout)
                 if isinstance(task_result, list):
                     results = task_result
@@ -2777,7 +2449,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     delay = min(delay * 2.0, self.retry_policy.max_delay_sec)
                     continue
                 else:
-                    logger.error("Search task timeout api=%s q='%s'", api, query[:120])
+                    logger.error(
+                        "Search task timeout q='%s'",
+                        candidate.query[:120],
+                    )
             except asyncio.CancelledError:
                 # Preserve cooperative cancellation semantics
                 raise
@@ -2786,13 +2461,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 if metrics is not None:
                     mex = dict(metrics.get("exceptions_by_api", {}))
                     try:
-                        if api == "aggregate" and self.search_manager is not None:
+                        if self.search_manager is not None:
                             for name in getattr(self.search_manager, "apis", {}).keys():
                                 mex[name] = int(mex.get(name, 0)) + 1
                         else:
-                            mex[api] = int(mex.get(api, 0)) + 1
+                            mex[api_name] = int(mex.get(api_name, 0)) + 1
                     except Exception:
-                        mex[api] = int(mex.get(api, 0)) + 1
+                        mex[api_name] = int(mex.get(api_name, 0)) + 1
                     metrics["exceptions_by_api"] = mex
                 if attempt < self.retry_policy.max_attempts:
                     if metrics is not None:
@@ -2801,7 +2476,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     delay = min(delay * 2.0, self.retry_policy.max_delay_sec)
                     continue
                 else:
-                    logger.error("Search failed api=%s err=%s q='%s'", api, str(e), query[:120])
+                    logger.error(
+                        "Search failed err=%s q='%s'",
+                        str(e),
+                        candidate.query[:120],
+                    )
 
         return results
 

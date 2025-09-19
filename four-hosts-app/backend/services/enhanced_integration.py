@@ -18,11 +18,26 @@ from .result_adapter import ResultListAdapter, adapt_results
 from contracts import (
     GeneratedAnswer as ContractAnswer,
     ResearchStatus as ContractStatus,
-    to_source as contract_to_source,
+    Source as ContractSource,
 )
 import asyncio
 
 logger = logging.getLogger(__name__)
+
+
+def _to_contract_source(obj: Any) -> ContractSource:
+    if isinstance(obj, ContractSource):
+        return obj
+    if isinstance(obj, dict):
+        return ContractSource.model_validate(obj)
+    data = {
+        "url": getattr(obj, "url", "http://invalid.local"),
+        "title": getattr(obj, "title", ""),
+        "snippet": getattr(obj, "snippet", None),
+        "score": getattr(obj, "credibility_score", None),
+        "metadata": getattr(obj, "metadata", {}),
+    }
+    return ContractSource.model_validate(data)
 
 
 class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
@@ -314,14 +329,12 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
 
             # Enforce non-null return (PR1)
             if primary_answer is None:
-                from contracts import GeneratedAnswer, ResearchStatus, Source, to_source
-
                 logger.warning("Generator returned None; substituting FAILED_NO_SOURCES answer")
 
-                minimal_sources = [to_source(r) for r in (context.search_results or [])][:3]
+                minimal_sources = [_to_contract_source(r) for r in (context.search_results or [])][:3]
 
-                primary_answer = GeneratedAnswer(
-                    status=ResearchStatus.FAILED_NO_SOURCES,
+                primary_answer = ContractAnswer(
+                    status=ContractStatus.FAILED_NO_SOURCES,
                     content_md="",
                     citations=minimal_sources,
                     diagnostics={"reason": "generator_returned_none"},
@@ -399,7 +412,7 @@ class EnhancedAnswerGenerationOrchestrator(AnswerGenerationOrchestrator):
             try:
                 adapted = context.search_results or []
                 for item in (adapted[:3] if isinstance(adapted, list) else []):
-                    citations.append(contract_to_source(item))
+                    citations.append(_to_contract_source(item))
             except Exception:
                 citations = []
 
@@ -485,7 +498,7 @@ For more information, please check these sources:
             citations = []
             for link in links[:3]:
                 try:
-                    citations.append(contract_to_source({"url": link, "title": link}))
+                    citations.append(_to_contract_source({"url": link, "title": link}))
                 except Exception:
                     continue
 

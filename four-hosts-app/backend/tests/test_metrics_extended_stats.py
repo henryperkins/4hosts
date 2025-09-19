@@ -1,3 +1,6 @@
+import asyncio
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -53,3 +56,34 @@ def test_extended_stats_shape():
 
     # Timestamp basic format check (ends with Z)
     assert data["timestamp"].endswith("Z")
+
+
+@pytest.mark.skipif(app is None, reason="App not available for metrics test")
+def test_search_metrics_endpoint_records():
+    from services.telemetry_pipeline import telemetry_pipeline
+
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "paradigm": "bernard",
+        "depth": "standard",
+        "total_queries": 3,
+        "total_results": 12,
+        "deduplication_rate": 0.25,
+        "apis_used": ["brave", "google"],
+        "provider_costs": {"brave": 0.01, "google": 0.02},
+        "processing_time_seconds": 42.0,
+        "stage_breakdown": {"rule_based": 2, "paradigm": 1},
+    }
+
+    asyncio.run(telemetry_pipeline.record_search_run(event))
+
+    client = TestClient(app)
+    resp = client.get("/system/search-metrics?window_minutes=1440")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["total_queries"] >= 3
+    assert data["runs"] >= 1
+    assert "timeline" in data and isinstance(data["timeline"], list)
+    assert data.get("provider_usage", {}).get("brave", 0) >= 1
+    assert data.get("total_cost_usd", 0) >= 0.03 - 1e-6

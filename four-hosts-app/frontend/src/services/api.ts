@@ -612,7 +612,13 @@ class APIService {
 
   async exportResearch(researchId: string, format: 'pdf' | 'json' | 'csv' | 'markdown' | 'excel' = 'pdf'): Promise<Blob> {
     const safeResearchId = encodeURIComponent(researchId)
-    const response = await this.fetchWithAuth(`/research/export/${safeResearchId}/${format}`)
+    const response = await this.fetchWithAuth(`/v1/export/research/${safeResearchId}`, {
+      method: 'POST',
+      body: JSON.stringify({ format }),
+      headers: {
+        Accept: 'application/octet-stream'
+      }
+    })
 
     if (!response.ok) {
       const error = await response.json()

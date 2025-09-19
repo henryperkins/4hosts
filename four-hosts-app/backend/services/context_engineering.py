@@ -19,6 +19,8 @@ from .classification_engine import (
 )
 from . import paradigm_search
 from services.search_apis import QueryOptimizer  # type: ignore
+from search.query_planner import QueryPlanner
+from services.query_planning import PlannerConfig, build_planner_config
 from services.llm_client import llm_client  # type: ignore
 try:
     from . import experiments  # Optional A/B helper
@@ -865,6 +867,34 @@ class OptimizeLayer(ContextLayer):
     def __init__(self):
         super().__init__("Optimize")
         self.optimizer = QueryOptimizer()
+        self._cached_planner: Optional[QueryPlanner] = None
+
+    def _planner_config(self) -> PlannerConfig:
+        max_candidates = int(os.getenv("CE_PLANNER_MAX_CANDIDATES", "10") or 10)
+        base = PlannerConfig(max_candidates=max(1, max_candidates))
+        cfg = build_planner_config(base=base)
+        cfg.enable_agentic = False
+        cfg.per_stage_caps["agentic"] = 0
+        cfg.per_stage_caps["context"] = min(cfg.per_stage_caps.get("context", 6), 4)
+        stage_order_env = os.getenv("CE_PLANNER_STAGE_ORDER")
+        if stage_order_env:
+            parts = [p.strip().lower() for p in stage_order_env.split(",") if p.strip()]
+            valid = [p for p in parts if p in cfg.per_stage_caps]
+            if valid:
+                cfg.stage_order = valid
+        dedup_env = os.getenv("CE_PLANNER_DEDUP_JACCARD")
+        if dedup_env:
+            try:
+                cfg.dedup_jaccard = float(dedup_env)
+            except Exception:
+                pass
+        rule_cap = os.getenv("CE_PLANNER_RULE_CAP")
+        if rule_cap:
+            try:
+                cfg.per_stage_caps["rule_based"] = max(1, int(rule_cap))
+            except Exception:
+                pass
+        return cfg
 
     async def process(
         self,
@@ -879,38 +909,68 @@ class OptimizeLayer(ContextLayer):
             rewritten = previous_outputs["rewrite"].get("rewritten")
         base_query = rewritten or original
 
-        variations = self.optimizer.generate_query_variations(base_query, paradigm)
-        primary = self.optimizer.optimize_query(base_query, paradigm)
+        planner_cfg = self._planner_config()
+        planner = self._cached_planner or QueryPlanner(planner_cfg)
+        self._cached_planner = planner
+
+        additional_queries: List[str] = []
+        try:
+            select_output = previous_outputs.get("select") if previous_outputs else None
+            if select_output and getattr(select_output, "search_queries", None):
+                for item in select_output.search_queries or []:
+                    if isinstance(item, dict):
+                        candidate = item.get("query")
+                    else:
+                        candidate = getattr(item, "query", None)
+                    if isinstance(candidate, str) and candidate.strip():
+                        additional_queries.append(candidate.strip())
+        except Exception:
+            additional_queries = []
+
         terms = self.optimizer.get_key_terms(base_query)
 
-        # Optional: LLM-powered semantic expansions
+        primary = base_query
+        variations: Dict[str, str] = {}
+
         try:
-            import os
-            if os.getenv("ENABLE_QUERY_LLM", "0").lower() in {"1", "true", "yes"}:
+            plan = await planner.initial_plan(
+                seed_query=base_query,
+                paradigm=paradigm,
+                additional_queries=additional_queries,
+            )
+        except Exception as exc:
+            logger.debug(f"Planner initial_plan failed in OptimizeLayer: {exc}")
+            plan = []
+
+        if plan:
+            primary = plan[0].query
+            for cand in plan:
+                if cand.stage == "rule_based":
+                    key = cand.label or "rule_based"
+                else:
+                    key = f"{cand.stage}:{cand.label}" if cand.label else cand.stage
+                key = key.lower()
+                if key not in variations:
+                    variations[key] = cand.query
+        else:
+            variations = self.optimizer.generate_query_variations(base_query, paradigm)
+            primary = self.optimizer.optimize_query(base_query, paradigm)
+            if planner_cfg.enable_llm:
                 try:
                     from services.llm_query_optimizer import propose_semantic_variations  # type: ignore
+
                     llm_vars = await propose_semantic_variations(
                         base_query,
                         paradigm,
-                        max_variants=4,
+                        max_variants=planner_cfg.per_stage_caps.get("llm", 4),
                         key_terms=terms[:8],
                     )
-                    if llm_vars:
-                        try:
-                            from services.metrics import metrics
-                            metrics.increment(
-                                "query_optimizer_llm_invocations"
-                            )
-                        except Exception:
-                            pass
                     for i, v in enumerate(llm_vars):
-                        key = f"llm_{i+1}"
+                        key = f"llm:{i+1}"
                         if key not in variations:
                             variations[key] = v
                 except Exception as e:
                     logger.debug(f"LLM query optimizer skipped: {e}")
-        except Exception:
-            pass
 
         output = {
             "primary_query": primary,

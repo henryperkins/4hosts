@@ -2,6 +2,7 @@
 import asyncio
 import pytest
 from types import SimpleNamespace
+pytest.importorskip("pydantic")
 
 from pathlib import Path
 import sys
@@ -15,6 +16,7 @@ from services.research_orchestrator import (
 )
 from services.search_apis import SearchConfig
 from models.context_models import HostParadigm
+from search.query_planner import QueryCandidate
 
 
 class DummySM:
@@ -28,9 +30,10 @@ class DummySM:
         pass
 
     async def search_all(
-        self, query, config, progress_callback=None, research_id=None
+        self, planned, config, progress_callback=None, research_id=None
     ):
         # two results from two providers
+        assert planned, "planner must supply candidates"
         return [
             SimpleNamespace(
                 title="A",
@@ -83,7 +86,13 @@ async def test_cost_attribution_counts_seen_providers(monkeypatch):
         return False
 
     _ = await o._execute_searches_deterministic(
-        ["hello"],
+        [
+            QueryCandidate(
+                query="hello",
+                stage="rule_based",
+                label="primary",
+            )
+        ],
         HostParadigm.BERNARD,
         user,
         None,
@@ -95,6 +104,7 @@ async def test_cost_attribution_counts_seen_providers(monkeypatch):
     # cost attribution should be called for 'google' and 'brave',
     # not 'aggregate'
     assert set([api for api, _ in seen]) == {"google", "brave"}
+    await o.cleanup()
 
 
 @pytest.mark.asyncio
@@ -110,8 +120,7 @@ async def test_cancelled_error_propagates(monkeypatch):
 
     with pytest.raises(asyncio.CancelledError):
         await o._perform_search(
-            "q",
-            "aggregate",
+            QueryCandidate(query="q", stage="rule_based", label="primary"),
             SearchConfig(
                 max_results=1,
                 language="en",
@@ -119,6 +128,7 @@ async def test_cancelled_error_propagates(monkeypatch):
                 min_relevance_score=0.1,
             ),
         )
+    await o.cleanup()
 
 
 def test_early_filter_keyword_path_no_nameerror():
@@ -130,3 +140,111 @@ def test_early_filter_keyword_path_no_nameerror():
         language="en",
     )
     assert f.is_relevant(R, "foo", "bernard") is True
+
+
+@pytest.mark.asyncio
+async def test_agentic_followups_trigger(monkeypatch):
+    o = ResearchOrchestrator()
+    o.search_manager = DummySM(["brave"])
+    o.agentic_config.update(
+        {
+            "enabled": True,
+            "max_iterations": 1,
+            "coverage_threshold": 0.9,
+            "max_new_queries_per_iter": 2,
+        }
+    )
+
+    base_candidate = QueryCandidate(
+        query="community mental health benefits",
+        stage="rule_based",
+        label="primary",
+    )
+    follow_candidate = QueryCandidate(
+        query="community support resources case study",
+        stage="agentic",
+        label="followup_1",
+    )
+
+    class DummyPlanner:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        async def initial_plan(self, **_kwargs):
+            return [base_candidate]
+
+        async def followups(self, **_kwargs):
+            return [follow_candidate]
+
+    monkeypatch.setattr("services.research_orchestrator.QueryPlanner", DummyPlanner)
+
+    calls: list[list[str]] = []
+
+    async def fake_execute(self, candidates, *args, **kwargs):
+        calls.append([cand.query for cand in candidates])
+        if len(calls) == 1:
+            return {
+                candidates[0].query: [
+                    SimpleNamespace(
+                        title="General overview",
+                        url="https://example.com/a",
+                        snippet="high level summary",
+                        source_api="brave",
+                        domain="example.com",
+                        content="",
+                    )
+                ]
+            }
+        return {
+            cand.query: [
+                SimpleNamespace(
+                    title="Community support resources",
+                    url=f"https://example.org/{idx}",
+                    snippet="community support resources success story",
+                    source_api="brave",
+                    domain="example.org",
+                    content="",
+                )
+            ]
+            for idx, cand in enumerate(candidates)
+        }
+
+    monkeypatch.setattr(
+        ResearchOrchestrator,
+        "_execute_searches_deterministic",
+        fake_execute,
+        raising=False,
+    )
+
+    classification = SimpleNamespace(
+        query="Community support expansion",
+        primary_paradigm=HostParadigm.TEDDY,
+        secondary_paradigm=None,
+        confidence=0.8,
+        reasoning={HostParadigm.TEDDY: ["community focus"]},
+    )
+
+    context_engineered = SimpleNamespace(
+        original_query="Community support expansion",
+        refined_queries=["Community support expansion"],
+        write_output=SimpleNamespace(key_themes=["community support resources"]),
+        isolate_output=SimpleNamespace(focus_areas=[]),
+    )
+
+    user_context = SimpleNamespace(role="PRO", source_limit=5)
+
+    result = await o.execute_research(
+        classification=classification,
+        context_engineered=context_engineered,
+        user_context=user_context,
+        progress_callback=None,
+        research_id="agentic-test",
+        enable_deep_research=False,
+        synthesize_answer=False,
+        answer_options={},
+    )
+
+    assert len(calls) == 2, "follow-up iteration should execute"
+    assert follow_candidate.query in calls[1]
+    assert result["metadata"]["queries_executed"] == 2
+    await o.cleanup()

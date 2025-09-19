@@ -141,10 +141,12 @@ async def lifespan(app: FastAPI):
             create_monitoring_middleware,
             HealthCheckService,
         )
+        from services.telemetry_pipeline import telemetry_pipeline
 
         if PROMETHEUS_AVAILABLE:
             metrics_registry = CollectorRegistry()
             prometheus = PrometheusMetrics(metrics_registry)
+            telemetry_pipeline.bind_prometheus(prometheus)
             insights = ApplicationInsights(prometheus)
             monitoring_middleware = create_monitoring_middleware(
                 prometheus, insights

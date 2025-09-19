@@ -124,6 +124,57 @@ class PrometheusMetrics:
             registry=self.registry,
         )
 
+        # Unified query planner metrics
+        self.search_runs_total = Counter(
+            "search_runs_total",
+            "Total research orchestrator runs recorded",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.search_queries_total = Counter(
+            "search_queries_total",
+            "Total search queries executed across runs",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.search_results_total = Counter(
+            "search_results_total",
+            "Total search results collected across runs",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.search_processing_time = Histogram(
+            "search_processing_time_seconds",
+            "Overall processing time per research run",
+            ["paradigm", "depth"],
+            buckets=[1, 5, 10, 30, 60, 120, 300, 600],
+            registry=self.registry,
+        )
+
+        self.search_deduplication_rate = Gauge(
+            "search_deduplication_rate",
+            "Observed deduplication rate per run",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.search_provider_usage = Counter(
+            "search_provider_queries_total",
+            "Queries executed per provider",
+            ["provider"],
+            registry=self.registry,
+        )
+
+        self.search_provider_cost = Counter(
+            "search_provider_cost_total",
+            "Total spend per provider in USD",
+            ["provider"],
+            registry=self.registry,
+        )
+
         # System Metrics
         self.cpu_usage = Gauge(
             "system_cpu_usage_percent", "CPU usage percentage", registry=self.registry

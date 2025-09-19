@@ -125,7 +125,7 @@ The frontend integrates with all backend endpoints:
 - GET `/research/history` - User research history
 
 ### Export & Analytics
-- GET `/export/{id}` - Export research results
+- POST `/v1/export/research/{id}` - Export research results (PDF/JSON/CSV/Markdown/Excel)
 - GET `/sources/credibility/{domain}` - Get source credibility
 - GET `/system/stats` - System statistics
 - GET `/metrics` - Prometheus metrics
