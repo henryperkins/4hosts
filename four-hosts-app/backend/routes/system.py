@@ -3,7 +3,8 @@ System routes for SSOTA telemetry and limits
 """
 
 from typing import Any, Dict, List, Optional
-import logging
+import structlog
+# pylint: disable=import-error
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -16,9 +17,10 @@ from services.llm_client import llm_client
 from models.base import ResearchStatus
 import json
 from fastapi import Request
+from utils.type_coercion import as_int
 
 router = APIRouter(prefix="/system", tags=["system"])
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @router.get("/context-metrics")
@@ -247,8 +249,8 @@ async def get_search_metrics(window_minutes: int = 60, limit: int = 720) -> Dict
 
         runs += 1
 
-        tq = _safe_int(event.get("total_queries"))
-        tr = _safe_int(event.get("total_results"))
+        tq = as_int(event.get("total_queries"))
+        tr = as_int(event.get("total_results"))
         total_queries += tq
         total_results += tr
 
@@ -323,8 +325,4 @@ async def get_search_metrics(window_minutes: int = 60, limit: int = 720) -> Dict
     }
 
 
-def _safe_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except Exception:
-        return 0
+# _safe_int moved to utils.type_coercion.as_int

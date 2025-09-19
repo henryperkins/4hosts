@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import structlog
 import os
 import time  # Moved to module level to resolve undefined variable
 from enum import Enum
@@ -37,8 +38,7 @@ if TYPE_CHECKING:
 # ────────────────────────────────────────────────────────────
 #  Logging
 # ────────────────────────────────────────────────────────────
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Throttle repetitive extraction warnings
 _EXTRACT_WARN_LAST_TS: float = 0.0

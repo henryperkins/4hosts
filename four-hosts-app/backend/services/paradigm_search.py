@@ -1,28 +1,23 @@
 """
-Paradigm-Specific Search Strategies for Four Hosts Research Application
-Implements specialized search approaches for each paradigm (Dolores, Teddy, Bernard, Maeve)
+Paradigm-Specific Search Strategies for Four Hosts Research
+Application.
+
+Implements specialized search approaches for each paradigm
+(Dolores, Teddy, Bernard, Maeve).
 """
 
 import asyncio
-import logging
-from typing import Dict, List, Any, Optional, Tuple, Union
+import structlog
+from typing import Dict, List, Any, Optional, Union, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
-from urllib.parse import quote_plus
-import re
 
-from .search_apis import (
-    SearchResult,
-    SearchConfig,
-    SearchAPIManager,
-    create_search_manager,
-)
-from .credibility import get_source_credibility, CredibilityScore
+from .search_apis import SearchResult
+from .credibility import get_source_credibility
 from models.paradigms import normalize_to_internal_code
-from .cache import cache_manager
+from models.paradigms_sources import PREFERRED_SOURCES
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -107,7 +102,40 @@ class BaseSearchStrategy:
             return "moderate"
 
 
-class DoloresSearchStrategy(BaseSearchStrategy):
+class StrategyFilterRankMixin:
+    """Mixin providing a unified filter_and_rank_results implementation.
+
+    Subclasses must implement _calculate_score(result, context) and may
+    adjust self.threshold (default 0.3). This removes duplicated
+    filter/rank code across paradigm strategies.
+    """
+
+    threshold: float = 0.3
+
+    async def _calculate_score(
+        self,
+        result: "SearchResult",
+        context: "SearchContext",
+    ) -> float:
+        raise NotImplementedError
+
+    async def filter_and_rank_results(
+        self,
+        results: List["SearchResult"],
+        context: "SearchContext",
+    ) -> List["SearchResult"]:
+        scored_results: List[Tuple["SearchResult", float]] = []
+        for result in results:
+            score = await self._calculate_score(result, context)
+            if score > getattr(self, "threshold", 0.3):
+                result.credibility_score = score
+                scored_results.append((result, score))
+
+        scored_results.sort(key=lambda x: x[1], reverse=True)
+        return [result for result, score in scored_results]
+
+
+class DoloresSearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
     """Revolutionary paradigm - Focuses on investigative journalism and activism"""
 
     def __init__(self):
@@ -135,21 +163,8 @@ class DoloresSearchStrategy(BaseSearchStrategy):
             "regulatory capture",
         ]
 
-        # Preferred source domains
-        self.preferred_sources = [
-            "propublica.org",
-            "theintercept.com",
-            "democracynow.org",
-            "jacobinmag.com",
-            "commondreams.org",
-            "truthout.org",
-            "motherjones.com",
-            "thenation.com",
-            "theguardian.com",
-            "washingtonpost.com",
-            "nytimes.com",
-            "icij.org",
-        ]
+        # Preferred source domains (centralized)
+        self.preferred_sources = PREFERRED_SOURCES["dolores"]
 
         # Search operators for finding hidden information
         self.search_operators = [
@@ -304,22 +319,10 @@ class DoloresSearchStrategy(BaseSearchStrategy):
         
         return patterns[:5]
 
-    async def filter_and_rank_results(
-        self, results: List[SearchResult], context: SearchContext
-    ) -> List[SearchResult]:
-        """Filter and rank results based on Dolores paradigm priorities"""
-        scored_results = []
-
-        for result in results:
-            score = await self._calculate_dolores_score(result, context)
-            if score > 0.3:  # Minimum threshold
-                result.credibility_score = score
-                scored_results.append((result, score))
-
-        # Sort by score (descending)
-        scored_results.sort(key=lambda x: x[1], reverse=True)
-
-        return [result for result, score in scored_results]
+    async def _calculate_score(
+        self, result: SearchResult, context: SearchContext
+    ) -> float:
+        return await self._calculate_dolores_score(result, context)
 
     async def _calculate_dolores_score(
         self, result: SearchResult, context: SearchContext
@@ -360,7 +363,7 @@ class DoloresSearchStrategy(BaseSearchStrategy):
         return min(1.0, score)
 
 
-class TeddySearchStrategy(BaseSearchStrategy):
+class TeddySearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
     """Devotion paradigm - Focuses on community support and care resources"""
 
     def __init__(self):
@@ -387,20 +390,8 @@ class TeddySearchStrategy(BaseSearchStrategy):
             "program",
         ]
 
-        self.preferred_sources = [
-            "npr.org",
-            "pbs.org",
-            "unitedway.org",
-            "redcross.org",
-            "who.int",
-            "unicef.org",
-            "doctorswithoutborders.org",
-            "goodwill.org",
-            "salvationarmy.org",
-            "feedingamerica.org",
-            "habitat.org",
-            "americanredcross.org",
-        ]
+        # Preferred source domains (centralized)
+        self.preferred_sources = PREFERRED_SOURCES["teddy"]
 
         self.search_operators = [
             '"support services"',
@@ -536,20 +527,10 @@ class TeddySearchStrategy(BaseSearchStrategy):
         
         return ""
 
-    async def filter_and_rank_results(
-        self, results: List[SearchResult], context: SearchContext
-    ) -> List[SearchResult]:
-        """Filter and rank results for Teddy paradigm"""
-        scored_results = []
-
-        for result in results:
-            score = await self._calculate_teddy_score(result, context)
-            if score > 0.3:
-                result.credibility_score = score
-                scored_results.append((result, score))
-
-        scored_results.sort(key=lambda x: x[1], reverse=True)
-        return [result for result, score in scored_results]
+    async def _calculate_score(
+        self, result: SearchResult, context: SearchContext
+    ) -> float:
+        return await self._calculate_teddy_score(result, context)
 
     async def _calculate_teddy_score(
         self, result: SearchResult, context: SearchContext
@@ -593,12 +574,13 @@ class TeddySearchStrategy(BaseSearchStrategy):
         return min(1.0, score)
 
 
-class BernardSearchStrategy(BaseSearchStrategy):
+class BernardSearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
     """Analytical paradigm - Focuses on academic research and data"""
 
     def __init__(self):
         super().__init__()
         self.paradigm = "bernard"
+        self.threshold = 0.4
 
         self.query_modifiers = [
             "research",
@@ -618,20 +600,8 @@ class BernardSearchStrategy(BaseSearchStrategy):
             "replication",
         ]
 
-        self.preferred_sources = [
-            "nature.com",
-            "science.org",
-            "arxiv.org",
-            "pubmed.ncbi.nlm.nih.gov",
-            "scholar.google.com",
-            "jstor.org",
-            "researchgate.net",
-            "springerlink.com",
-            "sciencedirect.com",
-            "wiley.com",
-            "tandfonline.com",
-            "cambridge.org",
-        ]
+        # Preferred source domains (centralized)
+        self.preferred_sources = PREFERRED_SOURCES["bernard"]
 
         self.search_operators = [
             '"peer reviewed"',
@@ -784,20 +754,10 @@ class BernardSearchStrategy(BaseSearchStrategy):
         query_lower = query.lower()
         return any(topic in query_lower for topic in established_topics)
 
-    async def filter_and_rank_results(
-        self, results: List[SearchResult], context: SearchContext
-    ) -> List[SearchResult]:
-        """Filter and rank results for Bernard paradigm"""
-        scored_results = []
-
-        for result in results:
-            score = await self._calculate_bernard_score(result, context)
-            if score > 0.4:  # Higher threshold for academic quality
-                result.credibility_score = score
-                scored_results.append((result, score))
-
-        scored_results.sort(key=lambda x: x[1], reverse=True)
-        return [result for result, score in scored_results]
+    async def _calculate_score(
+        self, result: SearchResult, context: SearchContext
+    ) -> float:
+        return await self._calculate_bernard_score(result, context)
 
     async def _calculate_bernard_score(
         self, result: SearchResult, context: SearchContext
@@ -844,7 +804,7 @@ class BernardSearchStrategy(BaseSearchStrategy):
         return min(1.0, score)
 
 
-class MaeveSearchStrategy(BaseSearchStrategy):
+class MaeveSearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
     """Strategic paradigm - Focuses on business intelligence and strategy"""
 
     def __init__(self):
@@ -868,22 +828,8 @@ class MaeveSearchStrategy(BaseSearchStrategy):
             "performance",
         ]
 
-        self.preferred_sources = [
-            "wsj.com",
-            "ft.com",
-            "bloomberg.com",
-            "forbes.com",
-            "hbr.org",
-            "mckinsey.com",
-            "bcg.com",
-            "strategy-business.com",
-            "bain.com",
-            "deloitte.com",
-            "pwc.com",
-            "kpmg.com",
-            "gartner.com",
-            "forrester.com",
-        ]
+        # Preferred source domains (centralized)
+        self.preferred_sources = PREFERRED_SOURCES["maeve"]
 
         self.search_operators = [
             '"business strategy"',
@@ -1017,20 +963,12 @@ class MaeveSearchStrategy(BaseSearchStrategy):
         
         return patterns[:7]
 
-    async def filter_and_rank_results(
-        self, results: List[SearchResult], context: SearchContext
-    ) -> List[SearchResult]:
-        """Filter and rank results for Maeve paradigm"""
-        scored_results = []
-
-        for result in results:
-            score = await self._calculate_maeve_score(result, context)
-            if score > 0.3:
-                result.credibility_score = score
-                scored_results.append((result, score))
-
-        scored_results.sort(key=lambda x: x[1], reverse=True)
-        return [result for result, score in scored_results]
+    async def _calculate_score(
+        self,
+        result: SearchResult,
+        context: SearchContext,
+    ) -> float:
+        return await self._calculate_maeve_score(result, context)
 
     async def _calculate_maeve_score(
         self, result: SearchResult, context: SearchContext

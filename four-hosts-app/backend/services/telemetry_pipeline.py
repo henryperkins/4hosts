@@ -1,23 +1,25 @@
 """Telemetry bridge for persisting orchestrator metrics.
 
-This module funnels per-run search metrics into durable storage (Redis via
-CacheManager) and optional Prometheus instrumentation so dashboards and alerting
-pipelines can consume a consistent feed.
+This module funnels per-run search metrics into durable storage
+(Redis via CacheManager) and optional Prometheus instrumentation so
+dashboards and alerting pipelines can consume a consistent feed.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, TYPE_CHECKING
 
 import structlog
 
-from services.cache import cache_manager
+# pylint: disable=import-error
 
-try:  # Optional dependency: prometheus client may be unavailable in some envs
-    from services.monitoring import PrometheusMetrics  # type: ignore
-except Exception:  # pragma: no cover - fallback for environments without prometheus
-    PrometheusMetrics = None  # type: ignore
+from services.cache import cache_manager
+from utils.type_coercion import as_int, as_float
+
+# Optional dependency: expose the type only for static type checkers.
+if TYPE_CHECKING:  # pragma: no cover
+    from services.monitoring import PrometheusMetrics  # noqa: F401
 
 
 logger = structlog.get_logger(__name__)
@@ -27,9 +29,12 @@ class TelemetryPipeline:
     """Coordinates metric persistence across supported backends."""
 
     def __init__(self) -> None:
-        self._prometheus: Optional[PrometheusMetrics] = None
+        # Prometheus backend is optional; bound at runtime.
+        # Prometheus backend is optional; use a generic Any to avoid runtime
+        # type errors when the dependency is unavailable.
+        self._prometheus: Optional[Any] = None
 
-    def bind_prometheus(self, prometheus: PrometheusMetrics) -> None:
+    def bind_prometheus(self, prometheus: Any) -> None:
         """Attach a Prometheus registry if available."""
 
         self._prometheus = prometheus
@@ -47,6 +52,27 @@ class TelemetryPipeline:
 
         # Always keep a copy for fallback storage to avoid mutation surprises
         safe_record = dict(record)
+
+        # Compute deduplication_rate if absent
+        # using dedup_stats when available
+        try:
+            if (
+                "deduplication_rate" not in safe_record
+                or safe_record.get("deduplication_rate") is None
+            ):
+                ds = safe_record.get("dedup_stats") or {}
+                if isinstance(ds, dict):
+                    orig = as_int(ds.get("original_count"))
+                    final = as_int(ds.get("final_count"))
+                    if orig > 0:
+                        rate = 1.0 - (float(final) / float(orig))
+                        # Clamp to [0.0, 1.0]
+                        safe_record["deduplication_rate"] = max(
+                            0.0, min(1.0, float(rate))
+                        )
+        except Exception:
+            # Best-effort; ignore failures
+            pass
 
         try:
             await cache_manager.record_search_metrics(safe_record)
@@ -70,50 +96,52 @@ class TelemetryPipeline:
         depth = str(record.get("depth") or "standard").lower()
         labels = {"paradigm": paradigm, "depth": depth}
 
-        total_queries = _as_int(record.get("total_queries"))
-        total_results = _as_int(record.get("total_results"))
-        processing_time = _as_float(record.get("processing_time_seconds"))
-        dedup_rate = _as_float(record.get("deduplication_rate"))
+        total_queries = as_int(record.get("total_queries"))
+        total_results = as_int(record.get("total_results"))
+        processing_time = as_float(record.get("processing_time_seconds"))
+        dedup_rate = as_float(record.get("deduplication_rate"))
 
         self._prometheus.search_runs_total.labels(**labels).inc(1)
 
         if total_queries:
-            self._prometheus.search_queries_total.labels(**labels).inc(total_queries)
+            self._prometheus.search_queries_total.labels(**labels).inc(
+                total_queries
+            )
 
         if total_results:
-            self._prometheus.search_results_total.labels(**labels).inc(total_results)
+            self._prometheus.search_results_total.labels(**labels).inc(
+                total_results
+            )
 
         if processing_time:
-            self._prometheus.search_processing_time.labels(**labels).observe(processing_time)
+            self._prometheus.search_processing_time.labels(**labels).observe(
+                processing_time
+            )
 
         if dedup_rate is not None:
             dedup_rate = max(0.0, min(1.0, dedup_rate))
-            self._prometheus.search_deduplication_rate.labels(**labels).set(dedup_rate)
+            self._prometheus.search_deduplication_rate.labels(**labels).set(
+                dedup_rate
+            )
 
         for provider in _coerce_iterable(record.get("apis_used")):
             provider_name = str(provider or "unknown").lower()
-            self._prometheus.search_provider_usage.labels(provider=provider_name).inc(1)
+            self._prometheus.search_provider_usage.labels(
+                provider=provider_name
+            ).inc(1)
 
         for provider, cost in _iter_costs(record.get("provider_costs")):
             provider_name = str(provider or "unknown").lower()
             if cost:
-                self._prometheus.search_provider_cost.labels(provider=provider_name).inc(cost)
+                self._prometheus.search_provider_cost.labels(
+                    provider=provider_name
+                ).inc(cost)
 
 
-def _as_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except Exception:
-        return 0
+# Coercion helpers moved to utils.type_coercion
 
 
-def _as_float(value: Any) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except Exception:
-        return None
+# (see above)
 
 
 def _coerce_iterable(value: Any) -> Iterable[Any]:

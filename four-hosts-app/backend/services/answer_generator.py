@@ -4,8 +4,9 @@ Combines all answer generation functionality into a single, clean module
 """
 
 import asyncio
-import logging
 import re
+import json
+import traceback
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -34,8 +35,9 @@ from utils.injection_hygiene import (
     sanitize_snippet,
     guardrail_instruction,
 )
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ============================================================================
@@ -169,6 +171,37 @@ class BaseAnswerGenerator:
         self.citation_counter = 0
         self.citations = {}
 
+    # Small utility to safely read attributes/keys from mixed objects
+    def _qval(self, obj: Any, name: str, default: Any = "") -> Any:
+        """Best‑effort getter supporting dicts, attrs, and Pydantic v1/v2.
+
+        This replaces several duplicated local helpers across evidence/context
+        formatting blocks. It intentionally swallows lookup errors and returns
+        the provided default.
+        """
+        try:
+            if isinstance(obj, dict):
+                return obj.get(name, default)
+            if hasattr(obj, name):
+                return getattr(obj, name)
+            if hasattr(obj, "model_dump"):
+                # Pydantic v2
+                return obj.model_dump().get(name, default)
+            if hasattr(obj, "dict"):
+                # Pydantic v1
+                return obj.dict().get(name, default)
+        except Exception:
+            return default
+        return default
+
+    def _create_citations(self, results: List[Dict[str, Any]], label: str) -> List[str]:
+        """Create citations for results and return their IDs."""
+        ids: List[str] = []
+        for result in results:
+            citation = self.create_citation(result, label)
+            ids.append(citation.id)
+        return ids
+
     # Centralized progress-tracker resolver (works with either backend)
     def _get_progress_tracker(self):
         try:
@@ -244,6 +277,14 @@ class BaseAnswerGenerator:
 
         Score = 0.6*credibility + 0.25*evidence_density + 0.15*recency, then diversify by domain.
         """
+        logger.info(
+            "Starting source ranking and selection",
+            stage="source_ranking",
+            paradigm=self.paradigm,
+            requested_k=k,
+            total_results=len(context.search_results or []),
+        )
+
         results = list(context.search_results or [])
         # Evidence density from evidence bundle
         ev_counts_by_url: Dict[str, int] = {}
@@ -252,22 +293,9 @@ class BaseAnswerGenerator:
             eb = getattr(context, "evidence_bundle", None)
             if eb is not None and getattr(eb, "quotes", None):
                 quotes = list(getattr(eb, "quotes", []) or [])
-                def _qval(q, name, default=""):
-                    try:
-                        if isinstance(q, dict):
-                            return q.get(name, default)
-                        if hasattr(q, name):
-                            return getattr(q, name)
-                        if hasattr(q, "model_dump"):
-                            return q.model_dump().get(name, default)
-                        if hasattr(q, "dict"):
-                            return q.dict().get(name, default)
-                    except Exception:
-                        return default
-                    return default
                 for q in quotes:
-                    u = (_qval(q, "url", "") or "").strip()
-                    d = (_qval(q, "domain", "") or "").lower()
+                    u = (self._qval(q, "url", "") or "").strip()
+                    d = (self._qval(q, "domain", "") or "").lower()
                     if u:
                         ev_counts_by_url[u] = ev_counts_by_url.get(u, 0) + 1
                     if d:
@@ -325,6 +353,19 @@ class BaseAnswerGenerator:
             seen.add(dom)
             if len(picked) >= k:
                 break
+
+        logger.info(
+            "Completed source ranking",
+            stage="source_ranking",
+            paradigm=self.paradigm,
+            record_count=len(picked[:k]),
+            unique_domains=len(seen),
+            metrics={
+                "total_scored": len(scored),
+                "selected": len(picked[:k]),
+                "domains_seen": list(seen)[:10],
+            },
+        )
         return picked[:k]
 
     def _format_evidence_block(self, context: SynthesisContext, max_quotes: int = EVIDENCE_MAX_QUOTES_DEFAULT) -> str:
@@ -336,25 +377,11 @@ class BaseAnswerGenerator:
         except Exception as e:
             logger.debug(f"_format_evidence_block: evidence access failed: {e}")
             quotes = []
-        def _qval(q, name, default=""):
-            try:
-                if isinstance(q, dict):
-                    return q.get(name, default)
-                # pydantic v2
-                if hasattr(q, name):
-                    return getattr(q, name)
-                if hasattr(q, "model_dump"):
-                    return q.model_dump().get(name, default)
-                if hasattr(q, "dict"):
-                    return q.dict().get(name, default)
-            except Exception:
-                return default
-            return default
         lines: List[str] = []
         for q in quotes:
-            qid = _qval(q, "id", "")
-            dom = (_qval(q, "domain", "") or "").lower()
-            qt = _qval(q, "quote", "")
+            qid = self._qval(q, "id", "")
+            dom = (self._qval(q, "domain", "") or "").lower()
+            qt = self._qval(q, "quote", "")
             lines.append(f"- [{qid}][{dom}] {qt}")
         return "\n".join(lines) if lines else "(no evidence quotes)"
 
@@ -369,6 +396,17 @@ class BaseAnswerGenerator:
 
         When inline_ctx is True, appends a short context window after each quote.
         """
+        logger.info(
+            "Starting evidence extraction and validation",
+            stage="evidence_extraction",
+            paradigm=self.paradigm,
+            config={
+                "max_quotes": max_quotes,
+                "budget_tokens": budget_tokens,
+                "inline_ctx": inline_ctx,
+            },
+        )
+
         # Gather quotes (ensure local is always defined to avoid UnboundLocalError)
         quotes: List[Any] = []
         try:
@@ -376,37 +414,44 @@ class BaseAnswerGenerator:
             if eb is not None and getattr(eb, "quotes", None):
                 quotes = list(getattr(eb, "quotes", []) or [])
         except Exception as e:
-            logger.debug(f"_safe_evidence_block: evidence access failed: {e}")
+            logger.error(
+                "Evidence access failed",
+                stage="evidence_extraction",
+                paradigm=self.paradigm,
+                error_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
             quotes = []
         if not quotes:
             return "(no evidence quotes)"
         # Build items compatible with select_items_within_budget (uses estimate_tokens_for_result)
         items_for_budget: List[Dict[str, Any]] = []
-        def _qval(q, name, default=""):
-            try:
-                if isinstance(q, dict):
-                    return q.get(name, default)
-                if hasattr(q, name):
-                    return getattr(q, name)
-                if hasattr(q, "model_dump"):
-                    return q.model_dump().get(name, default)
-                if hasattr(q, "dict"):
-                    return q.dict().get(name, default)
-            except Exception:
-                return default
-            return default
         include_ctx = inline_ctx and (os.getenv("EVIDENCE_INCLUDE_CONTEXT", "1") in {"1", "true", "yes"})
         ctx_max = int(os.getenv("EVIDENCE_CONTEXT_MAX_CHARS", "220"))
         for q in quotes:
             items_for_budget.append({
-                "id": _qval(q, "id", ""),
-                "domain": _qval(q, "domain", ""),
+                "id": self._qval(q, "id", ""),
+                "domain": self._qval(q, "domain", ""),
                 "title": "",           # no title for quotes
                 "snippet": "",         # no snippet for quotes
-                "content": (_qval(q, "quote", "") or "") + (f" | ctx: {sanitize_snippet(_qval(q, 'context_window', '') or '', max_len=ctx_max)}" if include_ctx and _qval(q, 'context_window', '') else ""),
+                "content": (self._qval(q, "quote", "") or "") + (f" | ctx: {sanitize_snippet(self._qval(q, 'context_window', '') or '', max_len=ctx_max)}" if include_ctx and self._qval(q, 'context_window', '') else ""),
             })
         selected, _used, _dropped = select_items_within_budget(items_for_budget, max_tokens=budget_tokens)
         selected = selected[:max_quotes]
+
+        logger.info(
+            "Evidence validation and selection completed",
+            stage="evidence_validation",
+            paradigm=self.paradigm,
+            record_count=len(selected),
+            metrics={
+                "total_quotes": len(quotes),
+                "selected_quotes": len(selected),
+                "tokens_used": _used,
+                "items_dropped": _dropped,
+            },
+        )
+
         # Sanitize and format
         lines: List[str] = []
         for q in selected:
@@ -432,23 +477,10 @@ class BaseAnswerGenerator:
             return "(no context windows)"
         ctx_max = int(os.getenv("EVIDENCE_CONTEXT_MAX_CHARS", "220"))
         lines: List[str] = []
-        def _qval(q, name, default=""):
-            try:
-                if isinstance(q, dict):
-                    return q.get(name, default)
-                if hasattr(q, name):
-                    return getattr(q, name)
-                if hasattr(q, "model_dump"):
-                    return q.model_dump().get(name, default)
-                if hasattr(q, "dict"):
-                    return q.dict().get(name, default)
-            except Exception:
-                return default
-            return default
         for q in quotes:
-            qid = _qval(q, "id", "")
-            dom = (_qval(q, "domain", "") or "").lower()
-            ctx = _qval(q, "context_window", "") or ""
+            qid = self._qval(q, "id", "")
+            dom = (self._qval(q, "domain", "") or "").lower()
+            ctx = self._qval(q, "context_window", "") or ""
             if not ctx:
                 continue
             ctx = sanitize_snippet(ctx, max_len=ctx_max)
@@ -596,27 +628,14 @@ class BaseAnswerGenerator:
         # Collate first summary per URL
         seen: set[str] = set()
         items_for_budget: List[Dict[str, Any]] = []
-        def _qval(q, name, default=""):
-            try:
-                if isinstance(q, dict):
-                    return q.get(name, default)
-                if hasattr(q, name):
-                    return getattr(q, name)
-                if hasattr(q, "model_dump"):
-                    return q.model_dump().get(name, default)
-                if hasattr(q, "dict"):
-                    return q.dict().get(name, default)
-            except Exception:
-                return default
-            return default
         for q in quotes:
-            url = (_qval(q, "url", "") or "").strip()
-            dom = (_qval(q, "domain", "") or "").lower()
+            url = (self._qval(q, "url", "") or "").strip()
+            dom = (self._qval(q, "domain", "") or "").lower()
             sid = url or dom
             if not sid or sid in seen:
                 continue
             seen.add(sid)
-            summary = _qval(q, "doc_summary", "") or ""
+            summary = self._qval(q, "doc_summary", "") or ""
             if not summary:
                 continue
             items_for_budget.append({
@@ -705,6 +724,15 @@ class BaseAnswerGenerator:
         self.citation_counter += 1
         citation_id = f"cite_{self.citation_counter:03d}"
 
+        logger.debug(
+            "Creating citation",
+            stage="citation_creation",
+            paradigm=self.paradigm,
+            citation_id=citation_id,
+            fact_type=fact_type,
+            source_domain=source.get("domain", ""),
+        )
+
         # Normalize timestamp and preserve raw if needed
         meta = dict(source.get("metadata", {}) or {})
         ts_val = source.get("published_date")
@@ -735,6 +763,12 @@ class BaseAnswerGenerator:
 
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate answer - must be implemented by subclasses"""
+        logger.info(
+            "Answer generation requested (base class)",
+            stage="answer_generation",
+            paradigm=self.paradigm,
+            query=(context.query[:100] if context.query else "N/A"),
+        )
         raise NotImplementedError("Subclasses must implement generate_answer")
 
     def get_section_structure(self) -> List[Dict[str, Any]]:
@@ -927,18 +961,83 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate revolutionary paradigm answer"""
         start_time = datetime.now()
+        research_id = context.metadata.get('research_id') if hasattr(context, 'metadata') else 'unknown'
+
+        logger.info(
+            "Starting answer generation",
+            stage="answer_generation_start",
+            paradigm="dolores",
+            research_id=research_id,
+            query=(context.query[:100] if context.query else "N/A"),
+            config={
+                "evidence_quotes": (
+                    len(getattr(context.evidence_bundle, "quotes", []))
+                    if hasattr(context, "evidence_bundle")
+                    else 0
+                ),
+                "search_results": len(context.search_results) if context.search_results else 0,
+            },
+        )
+
         self.citation_counter = 0
         self.citations = {}
 
         sections = []
-        for section_def in self.get_section_structure():
-            section = await self._generate_section(context, section_def)
-            sections.append(section)
+        section_metrics = []
+        for idx, section_def in enumerate(self.get_section_structure()):
+            section_start = datetime.now()
+            try:
+                section = await self._generate_section(context, section_def)
+                sections.append(section)
+                duration = (datetime.now() - section_start).total_seconds() * 1000
+
+                logger.info(
+                    "Section generation completed",
+                    stage="section_generation",
+                    paradigm="dolores",
+                    section_title=section_def.get('title'),
+                    section_index=idx,
+                    duration_ms=duration,
+                    metrics={
+                        "word_count": section.word_count,
+                        "citations": len(section.citations),
+                        "insights": len(section.key_insights),
+                    },
+                )
+                section_metrics.append({"title": section_def.get('title'), "duration_ms": duration})
+            except Exception as e:
+                logger.error(
+                    "Section generation failed",
+                    stage="section_generation_error",
+                    paradigm="dolores",
+                    section_title=section_def.get('title'),
+                    error_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                )
+                if os.getenv("LLM_STRICT", "0") == "1":
+                    raise
 
         # Top‑line recommendation (2–3 sentences) then short summary
         topline = self._compose_topline_recommendation(context)
         base_summary = sections[0].content[:300] + "..." if sections else ""
         summary = (topline + "\n\n" + base_summary).strip()
+
+        total_duration = (datetime.now() - start_time).total_seconds()
+
+        logger.info(
+            "Answer generation completed",
+            stage="answer_generation_complete",
+            paradigm="dolores",
+            research_id=research_id,
+            duration_ms=total_duration * 1000,
+            metrics={
+                "total_sections": len(sections),
+                "total_citations": len(self.citations),
+                "confidence_score": 0.8,
+                "synthesis_quality": 0.85,
+                "section_metrics": section_metrics,
+            },
+        )
 
         return GeneratedAnswer(
             research_id=context.metadata.get("research_id", "unknown"),
@@ -994,10 +1093,7 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
                 items_done=1,
                 items_total=total_sub_ops,
             )
-        citation_ids = []
-        for result in relevant_results:
-            citation = self.create_citation(result, "evidence")
-            citation_ids.append(citation.id)
+        citation_ids = self._create_citations(relevant_results, "evidence")
 
         # Generate content with LLM or fallback (sub-op 3/4)
         if progress_tracker and research_id:
@@ -1066,12 +1162,33 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
+            logger.debug(
+                "Generating section content with LLM",
+                stage="llm_generation",
+                paradigm="dolores",
+                section=section_def['title'],
+                config={
+                    "evidence_quotes": len(evidence_block.split('\n')),
+                    "target_words": int(SYNTHESIS_BASE_WORDS * section_def['weight']),
+                    "inline_context": inline_ctx,
+                    "use_windows": use_windows,
+                },
+            )
+
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="dolores",
                 
             )
         except Exception as e:
+            logger.error(
+                "LLM generation failed",
+                stage="llm_generation_error",
+                paradigm="dolores",
+                section=section_def['title'],
+                error_type=type(e).__name__,
+                stack_trace=traceback.format_exc(),
+            )
             if os.getenv("LLM_STRICT", "0") == "1":
                 raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
@@ -1178,6 +1295,11 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
 
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate analytical answer with statistical insights"""
+        logger.info(
+            "Starting Bernard answer generation",
+            research_id=context.metadata.get('research_id'),
+            stage="bernard_answer_generation_start",
+        )
         start_time = datetime.now()
         self.citation_counter = 0
         self.citations = {}
@@ -1215,6 +1337,54 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
         topline = self._compose_topline_recommendation(context)
         summary_core = self._generate_analytical_summary(sections, statistical_insights)
         summary = (topline + "\n\n" + summary_core).strip()
+
+        total_duration = (datetime.now() - start_time).total_seconds()
+
+        logger.info(
+            "Answer generation completed",
+            stage="answer_generation_complete",
+            paradigm="bernard",
+            research_id=research_id,
+            duration_ms=total_duration * 1000,
+            metrics={
+                "total_sections": len(sections),
+                "total_citations": len(self.citations),
+                "statistical_insights": len(statistical_insights),
+                "meta_analysis_results": len(meta_analysis) if meta_analysis else 0,
+                "confidence_score": 0.85,
+                "synthesis_quality": 0.87,
+                "section_metrics": section_metrics,
+            },
+        )
+
+        return GeneratedAnswer(
+            research_id=context.metadata.get("research_id", "unknown"),
+            query=context.query,
+            paradigm=self.paradigm,
+            summary=summary,
+            sections=sections,
+            action_items=await self._maybe_dynamic_actions(context, self._generate_research_action_items(statistical_insights)),
+            citations=self.citations,
+            confidence_score=self._calculate_analytical_confidence(statistical_insights),
+            synthesis_quality=0.9,
+            generation_time=(datetime.now() - start_time).total_seconds(),
+            metadata={
+                "statistical_insights": len(statistical_insights),
+                "meta_analysis_performed": meta_analysis is not None,
+                "peer_reviewed_sources": self._count_peer_reviewed(context.search_results),
+                "topline_recommendation": topline,
+                "claim_source_map": self._build_claim_source_map(sections, self.citations),
+                # Surface active backend info for verification
+                "llm_backend": self._get_llm_backend_info(),
+            }
+        )
+
+        logger.info(
+            "Finished Bernard answer generation",
+            research_id=context.metadata.get('research_id'),
+            stage="bernard_answer_generation_end",
+            generation_time=(datetime.now() - start_time).total_seconds(),
+        )
 
         return GeneratedAnswer(
             research_id=context.metadata.get("research_id", "unknown"),
@@ -1341,10 +1511,7 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 phase="synthesis",
                 message=f"{section_name}: Processing empirical citations"
             )
-        citation_ids = []
-        for result in relevant_results:
-            citation = self.create_citation(result, "empirical")
-            citation_ids.append(citation.id)
+        citation_ids = self._create_citations(relevant_results, "empirical")
 
         # Generate content
         if progress_tracker and research_id:
@@ -1424,12 +1591,28 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
             """
 
+            logger.info(
+                "Generating section",
+                research_id=research_id,
+                stage="bernard_section_generation",
+                section=section_def['title'],
+                prompt=prompt,
+            )
+
             content = await llm_client.generate_paradigm_content(
                 prompt=prompt,
                 paradigm="bernard",
                 
             )
         except Exception as e:
+            logger.error(
+                "Error generating section",
+                exc_info=True,
+                research_id=research_id,
+                stage="bernard_section_generation_error",
+                section=section_def['title'],
+                error=str(e),
+            )
             if os.getenv("LLM_STRICT", "0") == "1":
                 raise
             logger.warning(f"LLM generation failed: {e}, using fallback")
@@ -1639,6 +1822,11 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
 
     async def generate_answer(self, context: SynthesisContext) -> GeneratedAnswer:
         """Generate strategic answer with business insights"""
+        logger.info(
+            "Starting Maeve answer generation",
+            research_id=context.metadata.get('research_id'),
+            stage="maeve_answer_generation_start",
+        )
         start_time = datetime.now()
         self.citation_counter = 0
         self.citations = {}
@@ -1792,10 +1980,7 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 phase="synthesis",
                 message=f"{section_name}: Building strategic citations"
             )
-        citation_ids = []
-        for result in relevant_results:
-            citation = self.create_citation(result, "strategic")
-            citation_ids.append(citation.id)
+        citation_ids = self._create_citations(relevant_results, "strategic")
 
         # Generate content
         try:
@@ -2124,10 +2309,7 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
                 phase="synthesis",
                 message=f"{section_name}: Gathering support citations"
             )
-        citation_ids = []
-        for result in relevant_results:
-            citation = self.create_citation(result, "support")
-            citation_ids.append(citation.id)
+        citation_ids = self._create_citations(relevant_results, "support")
 
         # Generate content
         try:

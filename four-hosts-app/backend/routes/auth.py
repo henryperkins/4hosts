@@ -5,6 +5,7 @@ Authentication routes for the Four Hosts Research API
 import os
 import uuid
 import logging
+import structlog
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Response, Request, Depends
@@ -34,7 +35,7 @@ from core.config import is_production
 from middleware.security import get_csrf_token
 from sqlalchemy import select
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Create router
 router = APIRouter(prefix="/auth", tags=["authentication"])

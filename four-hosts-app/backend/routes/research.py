@@ -3,6 +3,7 @@ Research routes for the Four Hosts Research API
 """
 
 import logging
+import structlog
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional, cast, Dict
@@ -52,7 +53,7 @@ from services.webhook_manager import WebhookEvent, WebhookManager
 from services.rate_limiter import RateLimitExceeded
 from utils.error_handling import log_exception
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Create router
 router = APIRouter(prefix="/research", tags=["research"])
@@ -1003,16 +1004,8 @@ async def submit_research(
     x_experiment: str | None = Header(None, alias="X-Experiment"),
 ):
     """Submit a research query for paradigm-based analysis"""
-    # Check role requirements for research depth
-    if research.options.depth in [ResearchDepth.DEEP, ResearchDepth.DEEP_RESEARCH]:
-        # Deep research requires at least PRO role
-        if current_user.role not in [
-            UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN
-        ]:
-            raise HTTPException(
-                status_code=403,
-                detail="Deep research requires PRO subscription or higher",
-            )
+    # Deep research is now available to all users
+    # (Role check removed to enable deep research for all subscription tiers)
 
     # Per-user API rate-limit and concurrency enforcement (U-014)
     limiter = getattr(request.app.state, "rate_limiter", None)
@@ -1078,15 +1071,7 @@ async def submit_research(
                 # Preserve engine suggestion as secondary if not already set
                 if not classification.secondary or classification.secondary == override_ui:
                     classification.secondary = prev
-                logger.info(
-                    "classification.override_applied",
-                    extra={
-                        "research_id": research_id,
-                        "user_id": str(getattr(current_user, "user_id", "unknown")),
-                        "from": getattr(prev, "value", str(prev)),
-                        "to": getattr(override_ui, "value", str(override_ui)),
-                    },
-                )
+                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)), current=getattr(override_ui, "value", str(override_ui)))
         except Exception:
             pass
 
@@ -1348,12 +1333,8 @@ async def submit_deep_research(
     method and translates it into the canonical ResearchQuery + ResearchOptions
     used by the main pipeline.
     """
-    # Enforce subscription requirement (PRO+)
-    if current_user.role not in [UserRole.PRO, UserRole.ENTERPRISE, UserRole.ADMIN]:
-        raise HTTPException(
-            status_code=403,
-            detail="Deep research requires PRO subscription or higher",
-        )
+    # Deep research is now available to all users
+    # (Role check removed to enable deep research for all subscription tiers)
 
     # Build canonical request
     options = ResearchOptions(
@@ -1400,15 +1381,7 @@ async def submit_deep_research(
                 classification.primary = override_ui
                 if not classification.secondary or classification.secondary == override_ui:
                     classification.secondary = prev
-                logger.info(
-                    "classification.override_applied",
-                    extra={
-                        "research_id": research_id,
-                        "user_id": str(getattr(current_user, "user_id", "unknown")),
-                        "from": getattr(prev, "value", str(prev)),
-                        "to": getattr(override_ui, "value", str(override_ui)),
-                    },
-                )
+                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)), current=getattr(override_ui, "value", str(override_ui)))
         except Exception:
             pass
 
@@ -1604,15 +1577,7 @@ async def resume_deep_research(
                 classification.primary = override_ui
                 if not classification.secondary or classification.secondary == override_ui:
                     classification.secondary = prev
-                logger.info(
-                    "classification.override_applied",
-                    extra={
-                        "research_id": research_id,
-                        "user_id": str(getattr(current_user, "user_id", "unknown")),
-                        "from": getattr(prev, "value", str(prev)),
-                        "to": getattr(override_ui, "value", str(override_ui)),
-                    },
-                )
+                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)), current=getattr(override_ui, "value", str(override_ui)))
         except Exception:
             pass
         await research_store.update_field(research_id, "paradigm_classification", classification.dict())

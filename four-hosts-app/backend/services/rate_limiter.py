@@ -16,6 +16,7 @@ from utils.async_utils import run_in_thread
 from utils.security import ip_validator, token_validator
 import json
 import logging
+import structlog
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
@@ -44,8 +45,7 @@ except Exception:  # pragma: no cover - fallback for lightweight imports
         return {}
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class RateLimitExceeded(HTTPException):

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 import logging
+import structlog
 from enum import Enum
 
 # Re-export canonical helpers from submodules to avoid duplication
@@ -51,8 +52,7 @@ from database.connection import get_db
 UserRole = _DBUserRole
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Configuration (compat re-exports)
 ALGORITHM = _CFG_ALGORITHM

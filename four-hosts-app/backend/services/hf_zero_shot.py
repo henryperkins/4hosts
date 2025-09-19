@@ -1,11 +1,12 @@
 from functools import lru_cache
 from transformers import pipeline
 import logging
+import structlog
 import os
 from pathlib import Path
 import torch
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Paradigm labels matching the Four Hosts system
 LABELS = ["revolutionary", "devotion", "analytical", "strategic"]
@@ -37,8 +38,8 @@ def get_classifier(device: int | str = None):
     except Exception as e:
         logger.warning(f"Could not create HF cache dir {cache_dir}: {e}")
 
-    # Also propagate to TRANSFORMERS_CACHE so downstream library picks it up automatically
-    os.environ.setdefault("TRANSFORMERS_CACHE", cache_dir)
+    # Prefer HF_HOME over deprecated TRANSFORMERS_CACHE to avoid warnings in Transformers v5
+    os.environ.setdefault("HF_HOME", cache_dir)
 
     logger.info(
         f"Loading DeBERTa zero-shot classifier on device: {device} (cache_dir={cache_dir})"

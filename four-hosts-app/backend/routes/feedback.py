@@ -20,6 +20,7 @@ Events are shaped using models.feedback.* schemas.
 from __future__ import annotations
 
 import logging
+import structlog
 import uuid
 from datetime import datetime
 from typing import Any, Dict
@@ -44,7 +45,7 @@ from services.enhanced_integration import record_user_feedback
 from core.config import ENABLE_FEEDBACK_RATE_LIMIT
 from services.rate_limiter import RateLimitExceeded
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # NOTE:
 # Routers in this project are mounted under "/v1" in core.app.setup_routes.

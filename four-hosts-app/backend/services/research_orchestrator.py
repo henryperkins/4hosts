@@ -5,6 +5,7 @@ Combines all the best features from multiple orchestrator implementations
 
 import asyncio
 import logging
+import structlog
 import os
 from typing import List, Dict, Any, Optional, Tuple, cast, TypedDict
 from datetime import datetime, timezone
@@ -73,6 +74,7 @@ from services.query_planning.planning_utils import (
     SearchMetrics,
 )
 from services.metrics import metrics
+from utils.type_coercion import as_int, as_float
 # SearchContextSize import removed (unused)
 
 # Optional: answer generation integration
@@ -85,7 +87,7 @@ except Exception:
     answer_orchestrator = None  # type: ignore
     SynthesisContextModel = None  # type: ignore
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def bernard_min_relevance() -> float:
@@ -271,34 +273,18 @@ class UnifiedResearchOrchestrator:
         """Safely coerce metric to int for type checkers and runtime safety."""
         try:
             val = self._search_metrics.get(key, default)
-            if isinstance(val, bool):
-                return int(val)
-            if isinstance(val, (int, float)):
-                return int(val)
-            if isinstance(val, str):
-                sval = val.strip()
-                if sval:
-                    # Allow floats encoded as strings
-                    return int(float(sval))
-            return default
         except Exception:
             return default
+        return as_int(val, default)
 
     def _safe_metric_float(self, key: str, default: float = 0.0) -> float:
         """Safely coerce metric to float for type checkers and runtime safety."""
         try:
             val = self._search_metrics.get(key, default)
-            if isinstance(val, bool):
-                return float(val)
-            if isinstance(val, (int, float)):
-                return float(val)
-            if isinstance(val, str):
-                sval = val.strip()
-                if sval:
-                    return float(sval)
-            return default
         except Exception:
             return default
+        out = as_float(val, default)
+        return default if out is None else float(out)
 
     async def initialize(self):
         """Initialize the orchestrator. If a search_manager is already
@@ -382,28 +368,18 @@ class UnifiedResearchOrchestrator:
         else:
             apis_used = []
 
-        try:
-            total_queries = int(metrics_snapshot.get("total_queries", 0))
-        except Exception:
-            total_queries = 0
+        total_queries = as_int(metrics_snapshot.get("total_queries"))
         if not total_queries:
             total_queries = len(executed_candidates or [])
 
-        try:
-            total_results = int(metrics_snapshot.get("total_results", 0))
-        except Exception:
-            total_results = 0
+        total_results = as_int(metrics_snapshot.get("total_results"))
         if not total_results:
             try:
                 total_results = len(processed_results.get("results", []) or [])
             except Exception:
                 total_results = 0
 
-        try:
-            dedup_val_raw = metrics_snapshot.get("deduplication_rate")
-            dedup_value = float(dedup_val_raw) if isinstance(dedup_val_raw, (int, float)) else None
-        except Exception:
-            dedup_value = None
+        # deduplication_rate is computed centrally by telemetry_pipeline
 
         try:
             processing_time = float(
@@ -439,8 +415,17 @@ class UnifiedResearchOrchestrator:
             "stage_breakdown": dict(stage_breakdown),
         }
 
-        if dedup_value is not None:
-            record["deduplication_rate"] = dedup_value
+        # Forward deduplication stats for centralized computation
+        try:
+            ds = processed_results.get("dedup_stats", {}) or {}
+            if isinstance(ds, dict):
+                record["dedup_stats"] = {
+                    "original_count": as_int(ds.get("original_count")),
+                    "final_count": as_int(ds.get("final_count")),
+                    "duplicates_removed": as_int(ds.get("duplicates_removed")),
+                }
+        except Exception:
+            pass
 
         total_cost = sum(provider_costs.values())
         if total_cost:
@@ -493,6 +478,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         answer_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute research (pure V2 flow; legacy path removed)"""
+        logger.info(f"Starting research execution for research_id: {research_id}")
 
         async def check_cancelled():
             if not research_id:
@@ -537,6 +523,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 additional_queries=refined_queries,
             )
         except Exception as e:
+            logger.error(f"Query planning failed for research_id: {research_id}, error: {e}", exc_info=True)
             logger.warning(f"Query planning failed; using fallback. {e}")
             fallback_query = seed_query or original_query or getattr(classification, "query", "")
             planned_candidates = [
@@ -551,6 +538,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         if len(planned_candidates) > limited:
             planned_candidates = list(planned_candidates[:limited])
+
+        logger.info(
+            f"Planned {len(planned_candidates)} query candidates for research_id: {research_id}"
+        )
 
         logger.info(
             "Planned %d query candidates for %s",
@@ -1310,6 +1301,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             self.execution_history.append(exec_rec)
         except Exception:
             pass
+        logger.info(f"Finished research execution for research_id: {research_id}")
         return response
 
     def _llm_backend_info(self) -> Dict[str, Any]:
@@ -1332,6 +1324,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         evidence_bundle: Any | None = None,
     ) -> Any:
         """Build a SynthesisContext from research outputs and invoke answer generator."""
+        logger.info(f"Starting answer synthesis for research_id: {research_id}")
         logger.info(f"_synthesize_answer called for research_id: {research_id}, results count: {len(results)}")
         if not _ANSWER_GEN_AVAILABLE:
             error_msg = (
@@ -1737,6 +1730,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             pass
 
+        logger.info(f"Finished answer synthesis for research_id: {research_id}")
         logger.info(f"Answer generation completed for research_id: {research_id}")
         return answer
 
@@ -1784,6 +1778,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         metrics: Optional[SearchMetrics] = None,
     ) -> Dict[str, List[SearchResult]]:
         """Execute the planner's candidates deterministically and collect results."""
+        logger.info("Starting search execution", research_id=research_id, stage="search_start", planned_candidates_count=len(planned_candidates))
         all_results: Dict[str, List[SearchResult]] = {}
         if not planned_candidates:
             return all_results
@@ -1920,6 +1915,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 except Exception:
                     pass
 
+            logger.info(f"Query {candidate.query} for research_id: {research_id} returned {len(results)} results.")
             return candidate.query, results
 
         tasks = [
@@ -1951,6 +1947,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
 
+        logger.info("Finished search execution", research_id=research_id, stage="search_end", results_count=sum(len(v) for v in all_results.values()))
         return all_results
 
     def _collect_sources_for_coverage(
@@ -1986,6 +1983,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         Combine, validate, dedup, early-filter, rank, and score credibility.
         Returns a dict with keys: results, metadata, sources_used, credibility_summary, dedup_stats, contradictions.
         """
+        logger.info("Starting processing of search results", research_id=research_id, stage="processing_start", results_count=sum(len(v) for v in search_results.values()))
         # 1) Combine & basic validation/repairs (mirror legacy path)
         combined: List[SearchResult] = []
         to_backfill: List[Tuple[SearchResult, str]] = []
@@ -2070,6 +2068,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # 2) Dedup
         dedup = await self.deduplicator.deduplicate_results(combined)
         deduped: List[SearchResult] = list(dedup["unique_results"])
+        logger.info("Deduplicated results", research_id=research_id, stage="deduplication", original_count=len(combined), deduplicated_count=len(deduped), duplicates_removed=dedup.get("duplicates_removed", 0))
 
         # Update metrics (request-scoped when provided)
         if metrics is not None:
@@ -2079,6 +2078,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     metrics["deduplication_rate"] = 1.0 - (len(deduped) / len(combined))
                 except Exception:
                     metrics["deduplication_rate"] = 0.0
+
         # Report deduplication stats to UI
         try:
             if progress_callback and research_id:
@@ -2098,6 +2098,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             paradigm_code,
         )
 
+        logger.info("Early relevance filtering", research_id=research_id, stage="early_relevance_filtering", original_count=len(deduped), filtered_count=len(early))
+
         # 4) Paradigm strategy ranking
         strategy = get_search_strategy(paradigm_code)
 
@@ -2113,6 +2115,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             secondary_paradigm=secondary_code,
         )
         ranked: List[SearchResult] = await strategy.filter_and_rank_results(early, search_ctx)
+
+        logger.info("Ranking", research_id=research_id, stage="ranking", original_count=len(early), ranked_count=len(ranked))
 
         # 5) Credibility on top-N (batched with concurrency)
         cred_summary = {"average_score": 0.0}
@@ -2185,6 +2189,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 cred_summary["average_score"] = 0.0
 
+        logger.info("Credibility scoring", research_id=research_id, stage="credibility_scoring", scored_domains=len(creds), average_score=cred_summary["average_score"])
+
         # 6) Final limit by user context
         final_results: List[SearchResult] = ranked[: int(getattr(user_context, "source_limit", default_source_limit()) or default_source_limit())]
 
@@ -2205,6 +2211,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             "deep_research_enabled": False,
         }
 
+        logger.info("Finished processing of search results", research_id=research_id, stage="processing_end", final_results_count=len(final_results))
         return {
             "results": final_results,
             "metadata": meta,
@@ -2440,6 +2447,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     results = []
                 break  # success
             except asyncio.TimeoutError:
+                logger.error(
+                    f"Search task timeout for query: {candidate.query}, research_id: {research_id}"
+                )
                 if metrics is not None:
                     metrics["task_timeouts"] = int(metrics.get("task_timeouts", 0)) + 1
                 if attempt < self.retry_policy.max_attempts:
@@ -2454,9 +2464,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         candidate.query[:120],
                     )
             except asyncio.CancelledError:
+                logger.error(
+                    f"Search cancelled for query: {candidate.query}, research_id: {research_id}"
+                )
                 # Preserve cooperative cancellation semantics
                 raise
             except Exception as e:
+                logger.error(
+                    f"Search failed for query: {candidate.query}, research_id: {research_id}, error: {e}"
+                )
                 # Track exceptions by api (request-scoped)
                 if metrics is not None:
                     mex = dict(metrics.get("exceptions_by_api", {}))
@@ -2619,6 +2635,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 f"Query: '{context_engineered.original_query[:100]}...' "
                 f"Mode: {mode.value if mode else 'default'}"
             )
+            logger.error(error_msg, exc_info=True)
             logger.critical(error_msg)
             logger.critical(f"Deep Research traceback: ", exc_info=True)
             # Return empty list to allow fallback to standard search

@@ -68,14 +68,12 @@ RUN chown -R appuser:appuser /home/appuser/.cache
 # Configure runtime environment
 ENV NLTK_DATA=/app/nltk_data
 ENV PYTHONUNBUFFERED=1
-ENV TRANSFORMERS_CACHE=/app/model_cache
 
 # Switch to non-root user
 USER appuser
 
-# Explicitly set HF and transformers cache locations
+# Explicitly set HF and model cache locations
 ENV HF_HOME=/home/appuser/.cache/huggingface
-ENV TRANSFORMERS_CACHE=/app/model_cache
 ENV TORCH_HOME=/app/model_cache
 
 # Expose port

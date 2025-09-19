@@ -7,6 +7,7 @@ import asyncio
 import aiohttp
 # json unused
 import logging
+import structlog
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -19,7 +20,7 @@ from collections import defaultdict
 from .cache import cache_manager
 from .brave_grounding import brave_client
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -674,67 +675,33 @@ class SourceReputationDatabase:
         self.recency_modeler = RecencyModeler()
         self.agreement_calculator = CrossSourceAgreementCalculator()
 
-        # Paradigm-specific source preferences
+        # Paradigm-specific source preferences (centralized registry)
+        from models.paradigms_sources import PREFERRED_SOURCES  # local import to avoid early import cycles
+
         self.paradigm_preferences = {
             "dolores": {
-                # Revolutionary paradigm prefers investigative, alternative sources
-                "preferred_sources": [
-                    "propublica.org",
-                    "theintercept.com",
-                    "democracynow.org",
-                    "jacobinmag.com",
-                    "commondreams.org",
-                    "truthout.org",
-                ],
-                "bias_preference": "left",  # Slight preference for left-leaning sources
-                "factual_weight": 0.7,  # Facts important but narrative matters more
-                "authority_weight": 0.5,  # Less concerned with traditional authority
+                "preferred_sources": PREFERRED_SOURCES["dolores"],
+                "bias_preference": "left",
+                "factual_weight": 0.7,
+                "authority_weight": 0.5,
             },
             "teddy": {
-                # Devotion paradigm prefers community, care-focused sources
-                "preferred_sources": [
-                    "npr.org",
-                    "pbs.org",
-                    "unitedway.org",
-                    "redcross.org",
-                    "who.int",
-                    "unicef.org",
-                    "doctorswithoutborders.org",
-                ],
-                "bias_preference": "center",  # Neutral perspective preferred
-                "factual_weight": 0.8,  # High importance on factual accuracy
-                "authority_weight": 0.6,  # Moderate respect for authority
+                "preferred_sources": PREFERRED_SOURCES["teddy"],
+                "bias_preference": "center",
+                "factual_weight": 0.8,
+                "authority_weight": 0.6,
             },
             "bernard": {
-                # Analytical paradigm strongly prefers academic, research sources
-                "preferred_sources": [
-                    "nature.com",
-                    "science.org",
-                    "arxiv.org",
-                    "pubmed.ncbi.nlm.nih.gov",
-                    "scholar.google.com",
-                    "jstor.org",
-                    "researchgate.net",
-                ],
-                "bias_preference": "center",  # Strict neutrality required
-                "factual_weight": 0.95,  # Extremely high importance on facts
-                "authority_weight": 0.9,  # High respect for academic authority
+                "preferred_sources": PREFERRED_SOURCES["bernard"],
+                "bias_preference": "center",
+                "factual_weight": 0.95,
+                "authority_weight": 0.9,
             },
             "maeve": {
-                # Strategic paradigm prefers business, industry sources
-                "preferred_sources": [
-                    "wsj.com",
-                    "ft.com",
-                    "bloomberg.com",
-                    "forbes.com",
-                    "hbr.org",
-                    "mckinsey.com",
-                    "bcg.com",
-                    "strategy-business.com",
-                ],
-                "bias_preference": "center",  # Balanced perspective for strategy
-                "factual_weight": 0.8,  # Facts important for good strategy
-                "authority_weight": 0.8,  # Values established business authority
+                "preferred_sources": PREFERRED_SOURCES["maeve"],
+                "bias_preference": "center",
+                "factual_weight": 0.8,
+                "authority_weight": 0.8,
             },
         }
 
@@ -748,6 +715,7 @@ class SourceReputationDatabase:
         other_sources: Optional[List[Dict[str, Any]]] = None
     ) -> CredibilityScore:
         """Calculate comprehensive credibility score for a domain"""
+        logger.info("Calculating credibility", stage="credibility_start", domain=domain, paradigm=paradigm)
 
         # Check cache first (only for basic domain info)
         cache_key = f"cred:card:{domain}:{paradigm}"
@@ -943,21 +911,16 @@ class SourceReputationDatabase:
             else:
                 await cache_manager.set_source_credibility(cache_key, payload)
 
+            logger.info("Finished credibility calculation", stage="credibility_end", domain=domain, paradigm=paradigm, overall_score=overall_score, domain_authority=domain_authority, bias_score=bias_score, fact_check_rating=fact_check_rating, recency_score=recency_score, controversy_score=controversy_score, cross_source_agreement=cross_source_agreement)
+
             return credibility
     
     def _infer_category(self, domain: str) -> str:
-        """Infer source category from domain"""
-        if any(news in domain for news in ["news", "times", "post", "journal", "daily"]):
-            return "news"
-        elif any(academic in domain for academic in [".edu", "scholar", "research", "journal", "science"]):
-            return "academic"
-        elif domain.endswith(".gov"):
-            return "government"
-        elif any(social in domain for social in ["twitter", "facebook", "reddit", "youtube"]):
-            return "social"
-        elif "blog" in domain or "medium" in domain or "substack" in domain:
-            return "blog"
-        else:
+        """Infer source category from domain via shared categorizer."""
+        try:
+            from utils.domain_categorizer import categorize as _categorize
+            return _categorize(domain)
+        except Exception:
             return "general"
 
     def _calculate_paradigm_alignment(

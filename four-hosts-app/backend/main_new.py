@@ -5,6 +5,7 @@ Four Hosts Research API - Refactored Main Application
 
 import os
 import logging
+import structlog
 import uvicorn
 from dotenv import load_dotenv
 
@@ -20,9 +21,8 @@ else:
 
 from core.app import create_app
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure logging: structlog is set up centrally in services.monitoring
+logger = structlog.get_logger(__name__)
 
 
 def main():

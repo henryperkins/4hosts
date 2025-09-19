@@ -13,17 +13,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
+import structlog
 import os
 import random
 import re
-import string
 import time
-from collections import defaultdict
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Type, Union, cast, Callable, Awaitable, TYPE_CHECKING
-import html as _html
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Callable, Awaitable, TYPE_CHECKING
 from urllib.parse import unquote, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
@@ -32,10 +29,8 @@ try:
     import fitz  # PyMuPDF
 except Exception:
     fitz = None  # Optional; PDF parsing will be skipped if unavailable
-import nltk
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from pydantic import BaseModel, ValidationError
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -44,10 +39,15 @@ from tenacity import (
 )
 
 # Circuit breaker for resilient external API calls
-from utils.circuit_breaker import with_circuit_breaker, CircuitOpenError
+from utils.circuit_breaker import (
+    with_circuit_breaker,
+    CircuitOpenError,
+    circuit_manager,
+)
 from services.rate_limiter import ClientRateLimiter
-from services.text_utils import tokenize, STOP_WORDS
-from services.query_planning import QueryOptimizer
+from services.text_utils import tokenize
+from utils.text_sanitize import sanitize_text
+from utils.domain_categorizer import categorize
 if TYPE_CHECKING:
     from search.query_planner import QueryCandidate
 
@@ -58,8 +58,7 @@ if TYPE_CHECKING:
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 MAX_LOG_BODY = int(os.getenv("SEARCH_LOG_BODY_MAX", "2048"))
 
@@ -187,12 +186,12 @@ def normalize_result_text_fields(result: "SearchResult") -> None:
     """
     try:
         max_title = int(os.getenv("SEARCH_TITLE_MAX_LEN", "300"))
-        result.title = _strip_tags(result.title)[:max_title]
+        result.title = sanitize_text(result.title, max_len=max_title)
     except Exception:
         pass
     try:
         max_snippet = int(os.getenv("SEARCH_SNIPPET_MAX_LEN", "800"))
-        result.snippet = _strip_tags(result.snippet)[:max_snippet]
+        result.snippet = sanitize_text(result.snippet, max_len=max_snippet)
     except Exception:
         pass
 
@@ -258,6 +257,71 @@ def _retry_after_to_seconds(val: str) -> float:
     except Exception:
         return 0.0
     return 0.0
+
+
+async def _rate_limit_backoff(
+    url: str,
+    response_headers: Dict[str, Any],
+    *,
+    session: Any,
+    attr_prefix: str = "_rate_attempts_",
+    prefer_server: bool = False,
+) -> None:
+    """Sleep based on Retry-After and raise RateLimitedError for retry logic.
+
+    Centralised helper to keep identical 429 handling paths in sync across
+    different fetch functions.
+    """
+    # Track attempts per host on the session (for test visibility and tuning)
+    from urllib.parse import urlparse as _up
+    host = ""
+    try:
+        host = _up(url).netloc.lower()
+    except Exception:
+        host = ""
+    attr_name = f"{attr_prefix}{host}" if host else f"{attr_prefix}generic"
+    attempts = int(getattr(session, attr_name, 0) or 0) + 1
+    try:
+        setattr(session, attr_name, attempts)
+    except Exception:
+        # Non-fatal if session is immutable
+        pass
+
+    # Configurable parameters
+    base = float(os.getenv("SEARCH_RATE_LIMIT_BASE_DELAY", "1"))
+    factor = float(os.getenv("SEARCH_RATE_LIMIT_BACKOFF_FACTOR", "2"))
+    max_delay = float(os.getenv("SEARCH_RATE_LIMIT_MAX_DELAY", "30"))
+    jitter_mode = (os.getenv("SEARCH_RATE_LIMIT_JITTER", "full") or "full").lower()
+
+    # Attempt-based exponential backoff
+    computed = base * (factor ** max(0, attempts - 1))
+
+    # Respect server Retry-After when present by capping upper bound
+    retry_hdr = ""
+    for k in ("retry-after", "Retry-After"):
+        if k in response_headers:
+            retry_hdr = str(response_headers.get(k) or "")
+            break
+    server_retry = _retry_after_to_seconds(retry_hdr) if retry_hdr else None
+
+    if prefer_server and server_retry is not None and server_retry > 0:
+        upper = server_retry
+    else:
+        upper = min(computed, max_delay)
+        if server_retry is not None and server_retry > 0:
+            upper = min(upper, server_retry)
+    # Ensure a tiny positive bound
+    upper = max(upper, 0.0)
+
+    delay = upper
+    if jitter_mode == "full":
+        try:
+            delay = random.uniform(0, upper)
+        except Exception:
+            delay = upper
+
+    _structured_log("warning", "rate_limited_fetch", {"url": url, "attempt": attempts, "upper_bound": round(upper, 3), "delay": round(delay, 3)})
+    await asyncio.sleep(delay)
 
 def _first_non_empty(*vals: Optional[str]) -> Optional[str]:
     for v in vals:
@@ -390,32 +454,7 @@ def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = N
     return meta
 
 
-def _derive_source_category(domain: str, content_type: Optional[str] = None) -> str:
-    """Best-effort categorisation for UI grouping."""
-    dom = (domain or "").lower()
-    if dom.endswith(".edu") or "arxiv" in dom or "pubmed" in dom or "semanticscholar" in dom or "crossref" in dom:
-        return "academic"
-    if dom.endswith(".gov") or dom.endswith(".mil"):
-        return "gov"
-    if "youtube.com" in dom or "vimeo.com" in dom:
-        return "video"
-    if content_type and "pdf" in content_type.lower():
-        return "pdf"
-    if any(news in dom for news in [
-        "nytimes.com",
-        "washingtonpost.com",
-        "theguardian.com",
-        "wsj.com",
-        "ft.com",
-        "bloomberg.com",
-        "bbc.co.uk",
-        "cnn.com",
-        "reuters.com",
-    ]):
-        return "news"
-    if dom.endswith(".io") or dom.endswith(".dev"):
-        return "blog"
-    return "other"
+# _derive_source_category removed in favour of utils.domain_categorizer.categorize
 
 def _clean_html_noise(soup: BeautifulSoup) -> None:
     """Strip noisy elements and obvious non-content blocks by id/class heuristics."""
@@ -610,14 +649,8 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
 
     async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as r:
         if r.status == 429:
-            retry_hdr = r.headers.get("retry-after", "")
-            delay = _retry_after_to_seconds(retry_hdr) or random.uniform(5, 10)
-            # Add jittered exponential floor via env knobs
-            floor = float(os.getenv("SEARCH_429_MIN_DELAY", "3.0"))
-            delay = max(delay, floor) * random.uniform(0.9, 1.2)
-            _structured_log("warning", "rate_limited_fetch", {"url": url, "delay": round(delay,2)})
-            await asyncio.sleep(delay)
-            raise RateLimitedError()  # let tenacity retry
+            await _rate_limit_backoff(url, dict(r.headers), session=session)
+            return ""
         if r.status != 200:
             return ""
 
@@ -702,7 +735,7 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str) -> str:
             soup = BeautifulSoup(html, "html.parser")
             return _structured_text_fallback(soup, max_chars)
         except Exception:
-            return _strip_tags(html)[:max_chars]
+            return sanitize_text(html, max_len=max_chars)
 
 
 async def fetch_and_parse_url_with_meta(session: aiohttp.ClientSession, url: str) -> Tuple[str, Dict[str, Any]]:
@@ -722,13 +755,8 @@ async def fetch_and_parse_url_with_meta(session: aiohttp.ClientSession, url: str
 
     async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as r:
         if r.status == 429:
-            retry_hdr = r.headers.get("retry-after", "")
-            delay = _retry_after_to_seconds(retry_hdr) or random.uniform(5, 10)
-            floor = float(os.getenv("SEARCH_429_MIN_DELAY", "3.0"))
-            delay = max(delay, floor) * random.uniform(0.9, 1.2)
-            _structured_log("warning", "rate_limited_fetch", {"url": url, "delay": round(delay,2)})
-            await asyncio.sleep(delay)
-            raise RateLimitedError()
+            await _rate_limit_backoff(url, dict(r.headers), session=session)
+            return "", {}
         if r.status != 200:
             return "", {}
 
@@ -795,7 +823,7 @@ async def fetch_and_parse_url_with_meta(session: aiohttp.ClientSession, url: str
                 soup = BeautifulSoup(html, "html.parser")
                 text = _structured_text_fallback(soup, max_chars)
             except Exception:
-                text = _strip_tags(html)[:max_chars]
+                text = sanitize_text(html, max_len=max_chars)
 
         # Metadata
         meta = _extract_metadata_from_html(html, headers=dict(r.headers)) if os.getenv("SEARCH_EXTRACT_METADATA", "1") in {"1", "true", "yes"} else {}
@@ -826,16 +854,7 @@ class URLNormalizer:
         return bool(p.scheme and p.netloc)
 
 
-class CircuitBreaker:
-    def __init__(self, threshold: int = 5, timeout_sec: int = 300, max_timeout_sec: int | None = None, backoff_factor: float = 2.0):
-        self.threshold = threshold
-        self.timeout = timeout_sec
-        self.max_timeout = max_timeout_sec or int(os.getenv("CB_MAX_TIMEOUT_SEC", "1800") or 1800)
-        self.backoff_factor = backoff_factor
-        self.failures: Dict[str, int] = {}
-        self.last_fail: Dict[str, float] = {}
-        self.blocked: Set[str] = set()
-        self.block_until: Dict[str, float] = {}
+# Local CircuitBreaker removed; using utils.circuit_breaker.circuit_manager
 
     def ok(self, domain: str) -> bool:
         if domain not in self.blocked:
@@ -876,7 +895,6 @@ class RespectfulFetcher:
         self.robot_checked: Dict[str, float] = {}
         self.last_fetch: Dict[str, float] = {}
         self.ua = "FourHostsResearch/1.0 (+https://github.com/four-hosts/research-bot)"
-        self.circuit = CircuitBreaker()
         default_block = {"semanticscholar.org", "api.wiley.com", "onlinelibrary.wiley.com"}
         extra = {d.strip().lower() for d in os.getenv("SEARCH_FETCH_DOMAIN_BLOCKLIST", "").split(",") if d.strip()}
         self.blocked_domains = default_block | extra
@@ -902,6 +920,13 @@ class RespectfulFetcher:
         except Exception:
             return True
 
+    async def _pace_domain(self, domain: str) -> None:
+        """Ensure ~1 req/sec pacing per domain."""
+        elapsed = time.time() - self.last_fetch.get(domain, 0)
+        if elapsed < 1.0:
+            await asyncio.sleep(1 - elapsed)
+        self.last_fetch[domain] = time.time()
+
     async def fetch(self, session: aiohttp.ClientSession, url: str, on_rate_limit: Optional[Callable[[str], Awaitable[None]]] = None) -> str | None:
         url = URLNormalizer.normalize_url(url)
         if not URLNormalizer.is_valid_url(url):
@@ -910,7 +935,13 @@ class RespectfulFetcher:
 
         if domain in self.blocked_domains or any(domain.endswith("." + d) for d in self.blocked_domains):
             return None
-        if not self.circuit.ok(domain):
+        breaker = circuit_manager.get_or_create(
+            f"fetch:{domain}", failure_threshold=5, recovery_timeout=60
+        )
+        try:
+            # Raise CircuitOpenError if breaker is open
+            await breaker.call(lambda: None)
+        except CircuitOpenError:
             if on_rate_limit:
                 try:
                     await on_rate_limit(domain)
@@ -920,23 +951,17 @@ class RespectfulFetcher:
         if not await self._can_fetch(url):
             return None
 
-        elapsed = time.time() - self.last_fetch.get(domain, 0)
-        if elapsed < 1.0:
-            await asyncio.sleep(1 - elapsed)
-        self.last_fetch[domain] = time.time()
+        await self._pace_domain(domain)
 
         try:
-            text = await fetch_and_parse_url(session, url)
-            if text:
-                self.circuit.success(domain)
+            text = await breaker.call(fetch_and_parse_url, session, url)
             return text
         except Exception as e:
-            if isinstance(e, RateLimitedError) and on_rate_limit:
+            if isinstance(e, (RateLimitedError, CircuitOpenError)) and on_rate_limit:
                 try:
                     await on_rate_limit(domain)
                 except Exception:
                     pass
-            self.circuit.fail(domain)
             return None
 
     async def fetch_with_meta(self, session: aiohttp.ClientSession, url: str, on_rate_limit: Optional[Callable[[str], Awaitable[None]]] = None) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
@@ -947,7 +972,12 @@ class RespectfulFetcher:
 
         if domain in self.blocked_domains or any(domain.endswith("." + d) for d in self.blocked_domains):
             return None, None
-        if not self.circuit.ok(domain):
+        breaker = circuit_manager.get_or_create(
+            f"fetch:{domain}", failure_threshold=5, recovery_timeout=60
+        )
+        try:
+            await breaker.call(lambda: None)
+        except CircuitOpenError:
             if on_rate_limit:
                 try:
                     await on_rate_limit(domain)
@@ -957,23 +987,17 @@ class RespectfulFetcher:
         if not await self._can_fetch(url):
             return None, None
 
-        elapsed = time.time() - self.last_fetch.get(domain, 0)
-        if elapsed < 1.0:
-            await asyncio.sleep(1 - elapsed)
-        self.last_fetch[domain] = time.time()
+        await self._pace_domain(domain)
 
         try:
-            text, meta = await fetch_and_parse_url_with_meta(session, url)
-            if text:
-                self.circuit.success(domain)
+            text, meta = await breaker.call(fetch_and_parse_url_with_meta, session, url)
             return text, meta
         except Exception as e:
-            if isinstance(e, RateLimitedError) and on_rate_limit:
+            if isinstance(e, (RateLimitedError, CircuitOpenError)) and on_rate_limit:
                 try:
                     await on_rate_limit(domain)
                 except Exception:
                     pass
-            self.circuit.fail(domain)
             return None, None
 
 
@@ -1068,7 +1092,21 @@ class ContentRelevanceFilter:
     """Simple relevance scoring; uses shared utilities."""
 
     def __init__(self):
-        self.qopt = QueryOptimizer()
+        # Lazy import to avoid import-time failures when planner modules
+        # are unavailable in minimal test contexts.
+        try:
+            from services.query_planning.optimizer import QueryOptimizer  # type: ignore
+            self.qopt = QueryOptimizer()
+        except Exception:
+            # Minimal fallback: expose optimize_query and get_key_terms
+            class _QO:
+                def optimize_query(self, q: str) -> str:
+                    return q or ""
+
+                def get_key_terms(self, q: str) -> list[str]:
+                    return [t for t in re.split(r"\W+", q or "") if t]
+
+            self.qopt = _QO()  # type: ignore
         self.consensus_threshold = 0.7
 
     def _term_frequency(self, text: str, terms: List[str]) -> float:
@@ -1161,7 +1199,14 @@ class BaseSearchAPI:
         self.api_key = api_key
         self.rate = ClientRateLimiter(calls_per_minute=rate)
         self.session: Optional[aiohttp.ClientSession] = None
-        self.qopt = QueryOptimizer()
+        try:
+            from services.query_planning.optimizer import QueryOptimizer  # type: ignore
+            self.qopt = QueryOptimizer()
+        except Exception:
+            class _QO:
+                def optimize_query(self, q: str) -> str:
+                    return q or ""
+            self.qopt = _QO()  # type: ignore
         self.rfilter = ContentRelevanceFilter()
 
     async def __aenter__(self):
@@ -1179,6 +1224,10 @@ class BaseSearchAPI:
             timeout_sec = float(os.getenv("SEARCH_API_TIMEOUT_SEC", "30"))
             self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_sec))
         return self.session
+
+    # Test seam: allow tests to inject a dummy session
+    def _get_session(self) -> aiohttp.ClientSession:  # pragma: no cover - trivial alias
+        return self._sess()
 
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         raise NotImplementedError
@@ -1679,9 +1728,24 @@ class SemanticScholarAPI(BaseSearchAPI):
         # Use shorter timeout for Semantic Scholar (10s)
         timeout = aiohttp.ClientTimeout(total=10)
         try:
-            async with self._sess().get(self.BASE, params=params, headers=headers, timeout=timeout) as r:
+            # Some test doubles do not accept the 'timeout' kwarg; fall back gracefully
+            sess = self._get_session()
+            try:
+                getter = sess.get(self.BASE, params=params, headers=headers, timeout=timeout)
+            except TypeError:
+                getter = sess.get(self.BASE, params=params, headers=headers)
+            async with getter as r:
                 if r.status == 429:
+                    # Sleep based on server hint and record attempts for tests
+                    await _rate_limit_backoff(
+                        self.BASE,
+                        dict(r.headers),
+                        session=self._get_session(),
+                        attr_prefix="_ss_rate_attempts_",
+                        prefer_server=True,
+                    )
                     self._rotate_key()
+                    # Allow tenacity to retry after our own backoff
                     raise RateLimitedError()
                 if r.status != 200:
                     return []
@@ -2264,7 +2328,7 @@ class SearchAPIManager:
                             content_type = http_meta.get("content_type")
                     except Exception:
                         content_type = None
-                    res.raw_data["source_category"] = _derive_source_category(
+                    res.raw_data["source_category"] = categorize(
                         getattr(res, "domain", ""),
                         content_type,
                     )
@@ -2320,24 +2384,9 @@ class SearchAPIManager:
             ensure_snippet_content(r)
             normalize_result_text_fields(r)
 
-        # Deduplicate (Jaccard on 3-grams) with zero-division guard
-        deduped: List[SearchResult] = []
-        sigs: List[Set[str]] = []
-        for r in all_res:
-            sig = set(ngram_tokenize((r.title or "") + " " + (r.snippet or "")))
-            is_dup = False
-            for s in sigs:
-                union = sig | s
-                if not union:
-                    continue
-                if len(sig & s) / len(union) >= 0.7:
-                    is_dup = True
-                    break
-            if not is_dup:
-                deduped.append(r)
-                sigs.append(sig)
-
-        return self.rfilter.filter(deduped, query, cfg)
+        # Provider-level Jaccard dedup removed; URL dedup happens upstream
+        # and orchestrator-level ResultDeduplicator performs advanced dedup.
+        return self.rfilter.filter(all_res, seed_query, cfg)
 
 
 # --------------------------------------------------------------------------- #

@@ -5,6 +5,7 @@ SSOTA Search routes: paradigm-aware single-shot search
 from typing import Any, Dict, List, Optional
 from dataclasses import asdict
 import logging
+import structlog
 
 from fastapi import APIRouter, HTTPException, Depends
 
@@ -13,7 +14,7 @@ from core.dependencies import get_current_user
 from services.paradigm_search import get_search_strategy, SearchContext
 from services.search_apis import SearchConfig
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -131,4 +132,3 @@ async def paradigm_aware_search(
     except Exception as e:
         logger.error("paradigm_aware_search failed: %s", e)
         raise HTTPException(status_code=500, detail="search failed")
-

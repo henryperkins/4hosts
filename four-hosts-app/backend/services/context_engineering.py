@@ -5,6 +5,7 @@ W-S-C-I (Write-Select-Compress-Isolate) implementation
 # flake8: noqa: E501
 
 import logging
+import structlog
 import os
 from typing import Dict, List, Any, Optional, Set
 from dataclasses import dataclass, field
@@ -28,8 +29,7 @@ except Exception:
     experiments = None  # type: ignore
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # --- Data Models ---
 

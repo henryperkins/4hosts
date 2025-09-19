@@ -192,7 +192,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
   }, [])
 
   // Comprehensive Mode toggle — boosts coverage and analysis depth where allowed
-  const canUseDeep = ['pro', 'enterprise', 'admin'].includes(user?.role || 'free')
+  const canUseDeep = true // Deep research is now available to all users
   const handleComprehensiveToggle = useCallback(() => {
     const next = !state.comprehensive
     // When enabling, raise sensible limits; when disabling, restore defaults
@@ -293,34 +293,42 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
           </label>
           <div className="flex gap-3">
             {(() => {
-              const canUseDeep = ['pro', 'enterprise', 'admin'].includes(user?.role || 'free')
+              // Deep research is now available to all users (variable unused; keep comment for clarity)
               type DepthValue = ResearchFormState['depth']
               interface DepthOption { value: DepthValue; label: string; description: string; badge?: string }
               const depthOptions: DepthOption[] = [
                 { value: 'quick', label: 'Quick', description: 'Fast overview' },
                 { value: 'standard', label: 'Standard', description: 'Balanced analysis' },
-                { value: 'deep', label: 'Deep', description: 'Comprehensive research', badge: canUseDeep ? undefined : 'PRO' },
-                { value: 'deep_research', label: 'Deep AI', description: 'Advanced analysis', badge: 'PRO' },
+                { value: 'deep', label: 'Deep', description: 'Comprehensive research' },
+                { value: 'deep_research', label: 'Deep AI', description: 'Advanced analysis' },
               ]
               return depthOptions.map((option) => {
-                const isDeepTier = option.value === 'deep' || option.value === 'deep_research'
-                const disabled = isLoading || (isDeepTier && !canUseDeep)
+                const disabled = isLoading
+                const isSelected = state.depth === option.value
                 return (
                   <button
                     key={option.value}
                     type="button"
-                    onClick={() => dispatch({ type: 'SET_DEPTH', payload: option.value })}
+                    onClick={() => {
+                      console.log('Depth button clicked:', option.value)
+                      dispatch({ type: 'SET_DEPTH', payload: option.value })
+                    }}
                     disabled={disabled}
-                    className={`flex-1 p-3 rounded-lg border transition-colors
-                  ${state.depth === option.value
-                    ? 'border-primary bg-primary/10 shadow-md'
-                    : 'border-border hover:border-text-subtle bg-surface'
+                    className={`flex-1 p-3 rounded-lg border-2 transition-all duration-200
+                  ${isSelected
+                    ? 'border-primary bg-primary/20 shadow-lg scale-105 ring-2 ring-primary/50'
+                    : 'border-border hover:border-primary/50 bg-surface hover:bg-surface-hover'
                   }
-                  ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-lg'}`}
+                  ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-md'}`}
                   >
                     <div className="relative">
-                      <div className="font-medium text-text">{option.label}</div>
-                      <div className="text-xs text-text-muted mt-1">{option.description}</div>
+                      <div className={`font-medium ${isSelected ? 'text-primary' : 'text-text'}`}>
+                        {option.label}
+                        {isSelected && <span className="ml-2">✓</span>}
+                      </div>
+                      <div className={`text-xs mt-1 ${isSelected ? 'text-primary/80' : 'text-text-muted'}`}>
+                        {option.description}
+                      </div>
                       {option.badge && (
                         <span className="absolute -top-2 -right-2 px-1.5 py-0.5 text-xs font-bold bg-gradient-to-r from-orange-500 to-yellow-500 text-white rounded">
                           {option.badge}
@@ -393,9 +401,6 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                     <span className="ml-2 text-xs text-text-muted">broader coverage, larger context</span>
                   </span>
                 </label>
-                {!canUseDeep && state.comprehensive && (
-                  <p className="mt-1 text-xs text-amber-600">Deep depth requires PRO. We’ll still broaden sources.</p>
-                )}
               </div>
               <div>
                 <label className="block text-sm text-text mb-1">Search context size</label>

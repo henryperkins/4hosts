@@ -3,6 +3,7 @@ FastAPI application factory and configuration
 """
 
 import logging
+import structlog
 import uuid
 from contextlib import asynccontextmanager
 
@@ -18,7 +19,7 @@ try:
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
-    logger = logging.getLogger(__name__)
+    logger = structlog.get_logger(__name__)
     logger.warning("prometheus_client not installed - monitoring metrics will be unavailable")
 
 from core.config import TRUSTED_ORIGINS, get_allowed_hosts, is_production
@@ -61,7 +62,7 @@ from utils.custom_docs import (
     get_custom_redoc_html,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Global system state
 system_initialized = False

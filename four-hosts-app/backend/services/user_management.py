@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 from uuid import UUID
 import secrets
 import logging
+import structlog
 
 from sqlalchemy import select, update, delete, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,8 +29,7 @@ from database.connection import get_db_context
 from services.auth_service import hash_password, verify_password, create_access_token
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # --- User Profile Management ---
 

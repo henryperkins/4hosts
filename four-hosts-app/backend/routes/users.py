@@ -4,6 +4,7 @@ SSOTA User routes: preferences and history
 
 from typing import Any, Dict
 import logging
+import structlog
 
 from fastapi import APIRouter, HTTPException, Depends, Response
 import uuid
@@ -12,7 +13,7 @@ from core.dependencies import get_current_user
 from services.user_management import user_profile_service
 from services.research_store import research_store
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
 

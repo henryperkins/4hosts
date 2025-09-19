@@ -30,13 +30,13 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from pydantic import BaseModel, Field
 import logging
+import structlog
 from io import BytesIO
 import base64
 from utils.text_sanitize import sanitize_text
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # --- Export Models ---
 

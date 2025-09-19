@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, List, Callable
 from enum import Enum
 from pydantic import BaseModel, HttpUrl, Field
 import logging
+import structlog
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -23,8 +24,7 @@ from collections import defaultdict, deque
 import uuid
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # --- Data Models ---
 

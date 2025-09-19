@@ -5,7 +5,8 @@ Core implementation for paradigm classification with 85%+ accuracy target
 
 import re
 import json
-import logging
+import traceback
+import time
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,9 +15,9 @@ from datetime import datetime
 # Security utilities
 from utils.security import sanitize_user_input, pattern_validator
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # --- Structured Output Definitions ---
@@ -363,6 +364,15 @@ class ParadigmClassifier:
 
     async def classify(self, query: str, research_id: Optional[str] = None) -> ClassificationResult:
         """Perform complete classification with confidence scoring"""
+        start_time = time.time()
+
+        logger.info(
+            "Starting paradigm classification",
+            stage="paradigm_classification_start",
+            research_id=research_id,
+            query_preview=(query[:100] if query else ""),
+            config={"use_llm": self.use_llm, "query_length": len(query)},
+        )
         import asyncio
         
         # Get progress tracker if available
@@ -396,7 +406,20 @@ class ParadigmClassifier:
             llm_task = self._llm_classification(query, None)
         
         # Wait for features
+        feature_start = time.time()
         features = await features_task
+
+        logger.info(
+            "Feature extraction completed",
+            stage="feature_extraction",
+            research_id=research_id,
+            duration_ms=(time.time() - feature_start) * 1000,
+            metrics={
+                "intent_signals": len(features.intent_signals) if features else 0,
+                "themes": len(getattr(features, 'themes', []) or []),
+                "domain_indicators": len(getattr(features, 'domain_indicators', []) or []),
+            },
+        )
         
         # Run rule-based classification
         if progress_tracker and research_id:
@@ -407,7 +430,20 @@ class ParadigmClassifier:
                 items_done=1,
                 items_total=total_steps
             )
+
+        rule_start = time.time()
         rule_scores = self._rule_based_classification(query, features)
+
+        logger.info(
+            "Rule-based classification completed",
+            stage="rule_based_classification",
+            research_id=research_id,
+            duration_ms=(time.time() - rule_start) * 1000,
+            paradigm_scores={
+                p.value: {"score": s.score, "keywords": len(s.keyword_matches)}
+                for p, s in rule_scores.items()
+            },
+        )
         
         # Wait for LLM results if started
         llm_scores = {}
@@ -421,9 +457,26 @@ class ParadigmClassifier:
                     items_total=total_steps
                 )
             try:
+                llm_start = time.time()
                 llm_scores = await llm_task
+
+                logger.info(
+                    "LLM classification completed",
+                    stage="llm_classification",
+                    research_id=research_id,
+                    duration_ms=(time.time() - llm_start) * 1000,
+                    paradigm_scores={
+                        p.value: {"score": s.score} for p, s in (llm_scores or {}).items()
+                    },
+                )
             except Exception as e:
-                logger.warning(f"LLM classification failed, using rule-based only: {e}")
+                logger.error(
+                    "LLM classification failed",
+                    stage="llm_classification_error",
+                    research_id=research_id,
+                    error_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                )
                 llm_scores = {}
 
         if progress_tracker and research_id:
@@ -472,6 +525,26 @@ class ParadigmClassifier:
                 "intent_signals": list(features.intent_signals or []),
             }
 
+        total_duration = (time.time() - start_time) * 1000
+
+        logger.info(
+            "Classification completed",
+            stage="paradigm_classification_complete",
+            research_id=research_id,
+            duration_ms=total_duration,
+            paradigm_scores={
+                "primary": primary.value,
+                "secondary": secondary.value if secondary else None,
+                "confidence": confidence,
+                "distribution": {p.value: score for p, score in distribution.items()},
+            },
+            metrics={
+                "total_keywords_matched": sum(len(s.keyword_matches) for s in final_scores.values()),
+                "llm_used": bool(llm_scores),
+                "features_extracted": bool(features),
+            },
+        )
+
         return ClassificationResult(
             query=query,
             primary_paradigm=primary,
@@ -487,6 +560,12 @@ class ParadigmClassifier:
         self, query: str, features: QueryFeatures
     ) -> Dict[HostParadigm, ParadigmScore]:
         """Rule-based classification using keywords and patterns"""
+        logger.debug(
+            "Starting rule-based classification",
+            stage="rule_classification_detail",
+            query_length=len(query),
+        )
+
         scores = {}
         query_lower = query.lower()
 
@@ -750,6 +829,7 @@ Return as JSON with this structure:
             
 
             # Generate completion returns a string
+            logger.info(f"Sending prompt to LLM for classification, research_id: {features.research_id if features else None}")
             response_payload = await llm_client.generate_completion(
                 prompt=prompt,
                 paradigm="bernard",  # Use analytical paradigm for classification
@@ -761,7 +841,7 @@ Return as JSON with this structure:
                 preview = response_payload if isinstance(response_payload, str) else json.dumps(response_payload)
             except Exception:
                 preview = str(response_payload)
-            logger.debug(f"LLM raw response (truncated): {preview[:1024]}")
+            logger.info(f"LLM response for research_id: {features.research_id if features else None}, response: {preview[:1024]}")
 
             # Parse the JSON response with robust error handling/repair
             llm_result: Optional[Dict[str, Any]]
@@ -818,6 +898,7 @@ Return as JSON with this structure:
             return scores
 
         except Exception as e:
+            logger.error(f"Error in LLM classification for research_id: {features.research_id if features else None}, error: {e}", exc_info=True)
             logger.error(f"Error in LLM classification: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -859,18 +940,68 @@ class ClassificationEngine:
         if not query or len(query) > 10000:
             raise ValueError("Query must be between 1 and 10000 characters")
 
+        logger.info(
+            "Starting query classification",
+            stage="classification_start",
+            research_id=research_id,
+            query_length=len(query),
+            query_preview=(query[:100] if query else ""),
+            config={"use_llm": self.classifier.use_llm, "cache_enabled": self.cache_enabled},
+        )
+
         from time import perf_counter
         start = perf_counter()
         cache_hit = False
+
         if self.cache_enabled and query in self.cache:
-            logger.info(f"Cache hit for classification: {query[:50]}...")
+            logger.info(
+                "Classification cache hit",
+                stage="classification_cache",
+                research_id=research_id,
+                cache_hit=True,
+            )
             cache_hit = True
             result = self.cache[query]
         else:
-            result = await self.classifier.classify(query, research_id)
-            if self.cache_enabled:
-                self.cache[query] = result
+            logger.info(
+                "Performing new classification",
+                stage="classification_processing",
+                research_id=research_id,
+                method=("llm" if self.classifier.use_llm else "rule_based"),
+            )
+
+            try:
+                result = await self.classifier.classify(query, research_id)
+                if self.cache_enabled:
+                    self.cache[query] = result
+            except Exception as e:
+                logger.error(
+                    "Classification failed",
+                    stage="classification_error",
+                    research_id=research_id,
+                    error_type=type(e).__name__,
+                    stack_trace=traceback.format_exc(),
+                )
+                raise
+
         duration_ms = (perf_counter() - start) * 1000.0
+
+        logger.info(
+            "Classification completed",
+            stage="classification_complete",
+            research_id=research_id,
+            duration_ms=duration_ms,
+            cache_hit=cache_hit,
+            paradigm_scores={
+                "primary": result.primary_paradigm.value if result else None,
+                "secondary": (result.secondary_paradigm.value if (result and result.secondary_paradigm) else None),
+                "confidence": (result.confidence if result else None),
+            },
+            metrics={
+                "keywords_matched": (len(result.matched_keywords) if result else 0),
+                "themes_identified": (len(result.themes) if result else 0),
+            },
+        )
         # Metrics recording (best-effort, ignore failures)
         try:
             from .metrics import metrics

@@ -8,6 +8,7 @@ import os
 import contextlib
 import json
 import logging
+import structlog
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Set, Any, Optional, List
 from enum import Enum
@@ -22,8 +23,7 @@ from pydantic import BaseModel, Field
 from services.auth_service import decode_token, TokenData, UserRole
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # --- WebSocket Event Types ---
 

@@ -8,6 +8,7 @@ import redis.asyncio as redis
 import os
 import json
 import logging
+import structlog
 import hashlib
 from typing import Any, Optional, Dict, List
 from collections import deque
@@ -32,8 +33,7 @@ def research_status_cache_key(research_id: str) -> str:
 def research_results_cache_key(research_id: str) -> str:
     return f"research_results:{research_id}"
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class CacheManager:

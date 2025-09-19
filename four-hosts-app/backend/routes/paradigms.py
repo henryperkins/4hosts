@@ -3,6 +3,7 @@ Paradigm-related routes for the Four Hosts Research API
 """
 
 import logging
+import structlog
 from typing import Dict, Any
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
@@ -25,7 +26,7 @@ from services.enhanced_integration import (
     enhanced_classification_engine as classification_engine
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Create router
 router = APIRouter(prefix="/paradigms", tags=["paradigms"])

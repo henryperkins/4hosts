@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import re
+import logging
+import json
+import time
+import traceback
+from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..text_utils import _use_nltk, STOP_WORDS, tokenize
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 class QueryOptimizer:
     """
@@ -57,6 +65,14 @@ class QueryOptimizer:
         3.  Grab obvious proper nouns.           ->  OpenAI, Maeve
         Returns (protected_entities, remaining_text)
         """
+        start_time = time.time()
+
+        logger.debug(
+            "Starting entity extraction",
+            stage="entity_extraction",
+            query_length=len(query),
+        )
+
         protected: List[str] = []
         remainder = query
 
@@ -81,7 +97,22 @@ class QueryOptimizer:
 
         # Clean leftover text
         remainder = re.sub(r"\s+", " ", remainder).strip()
-        return list(dict.fromkeys(protected)), remainder  # dedup while preserving order
+        result = list(dict.fromkeys(protected))  # dedup while preserving order
+
+        logger.debug(
+            "Entity extraction completed",
+            stage="entity_extraction_complete",
+            duration_ms=(time.time() - start_time) * 1000,
+            entities=result[:10],  # Log first 10 entities
+            metrics={
+                "protected_count": len(result),
+                "quoted_phrases": len(re.findall(r'\"([^\"]+)\"', query)),
+                "known_entities_found": sum(1 for e in self.known_entities if e.lower() in query.lower()),
+                "proper_nouns_found": len(proper),
+            },
+        )
+
+        return result, remainder
 
     def _intelligent_stopword_removal(self, text: str) -> List[str]:
         tokens = tokenize(text)          # shared helper already removes stop-words
@@ -91,8 +122,31 @@ class QueryOptimizer:
     #                       Public helper methods                           #
     # --------------------------------------------------------------------- #
     def get_key_terms(self, query: str) -> List[str]:
+        start_time = time.time()
+
+        logger.info(
+            "Extracting key terms",
+            stage="key_terms_extraction",
+            query_preview=query[:100] if query else "",
+        )
+
         ents, left = self._extract_entities(query)
-        return [e.replace('"', "") for e in ents] + self._intelligent_stopword_removal(left)
+        terms = self._intelligent_stopword_removal(left)
+        result = [e.replace('"', "") for e in ents] + terms
+
+        logger.info(
+            "Key terms extraction completed",
+            stage="key_terms_complete",
+            duration_ms=(time.time() - start_time) * 1000,
+            terms=result[:20],  # Log first 20 terms
+            metrics={
+                "entity_count": len(ents),
+                "term_count": len(terms),
+                "total_count": len(result),
+            },
+        )
+
+        return result
 
     # --------------------------------------------------------------------- #
     #              Query-expansion / variation generation                   #
@@ -111,6 +165,18 @@ class QueryOptimizer:
             }
         We usually send only the first 2-3 variations to each provider.
         """
+        start_time = time.time()
+
+        logger.info(
+            "Starting query variation generation",
+            stage="query_variation_start",
+            paradigm=paradigm,
+            query_preview=query[:100] if query else "",
+            config={
+                "has_paradigm": paradigm is not None,
+            },
+        )
+
         ents, left = self._extract_entities(query)
         keywords = self._intelligent_stopword_removal(left)
 
@@ -179,6 +245,19 @@ class QueryOptimizer:
         # EXACT phrase ------------------------------------------------------
         if len(query.split()) <= 6:
             variations["exact_phrase"] = f'"{query.strip()}"'
+
+        logger.info(
+            "Query variation generation completed",
+            stage="query_variation_complete",
+            paradigm=paradigm,
+            duration_ms=(time.time() - start_time) * 1000,
+            metrics={
+                "variation_count": len(variations),
+                "entity_count": len(ents),
+                "keyword_count": len(keywords),
+                "variations_generated": list(variations.keys()),
+            },
+        )
 
         return variations
 

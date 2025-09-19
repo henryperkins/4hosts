@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence, Callable, Any, Dict
 
 from .optimizer import QueryOptimizer
 from services.agentic_process import (
@@ -11,6 +11,40 @@ from services.llm_query_optimizer import propose_semantic_variations
 
 from .types import PlannerConfig, QueryCandidate
 from .cleaner import canon_query
+
+
+def _emit_candidates(
+    items: Iterable[Any],
+    *,
+    stage: str,
+    cap: int,
+    to_query: Callable[[Any, int], Optional[str]],
+    make_label: Callable[[Any, int], str],
+    make_weight: Callable[[Any, int], float],
+    make_tags: Optional[Callable[[Any, int], Optional[Dict[str, str]]]] = None,
+    make_source_filter: Optional[Callable[[Any, int], Optional[str]]] = None,
+) -> List[QueryCandidate]:
+    out: List[QueryCandidate] = []
+    for idx, item in enumerate(items):
+        raw_q = to_query(item, idx)
+        q = canon_query(raw_q or "")
+        if not q:
+            continue
+        tags = make_tags(item, idx) if make_tags else None
+        source_filter = make_source_filter(item, idx) if make_source_filter else None
+        out.append(
+            QueryCandidate(
+                query=q,
+                stage=stage,  # type: ignore[arg-type]
+                label=make_label(item, idx),
+                weight=float(make_weight(item, idx)),
+                source_filter=source_filter,
+                tags=tags or {},
+            )
+        )
+        if len(out) >= cap:
+            break
+    return out
 
 
 class RuleBasedStage:
@@ -43,22 +77,15 @@ class RuleBasedStage:
             "broad": 0.72,
             "question": 0.7,
         }
-        out: List[QueryCandidate] = []
-        for label in priority:
-            query = variations.get(label)
-            if not query:
-                continue
-            out.append(
-                QueryCandidate(
-                    query=canon_query(query),
-                    stage="rule_based",
-                    label=label,
-                    weight=weights.get(label, 0.7),
-                )
-            )
-            if len(out) >= cfg.per_stage_caps.get("rule_based", len(priority)):
-                break
-        return out
+        cap = cfg.per_stage_caps.get("rule_based", len(priority))
+        return _emit_candidates(
+            priority,
+            stage="rule_based",
+            cap=cap,
+            to_query=lambda label, i: variations.get(label),
+            make_label=lambda label, i: str(label),
+            make_weight=lambda label, i: float(weights.get(label, 0.7)),
+        )
 
 
 class LLMVariationsStage:
@@ -81,17 +108,15 @@ class LLMVariationsStage:
             max_variants=cfg.per_stage_caps.get("llm", 4),
             key_terms=key_terms,
         )
-        out: List[QueryCandidate] = []
-        for idx, variation in enumerate(variations):
-            out.append(
-                QueryCandidate(
-                    query=canon_query(variation),
-                    stage="llm",
-                    label=f"semantic_{idx+1}",
-                    weight=0.8,
-                )
-            )
-        return out
+        cap = cfg.per_stage_caps.get("llm", 4)
+        return _emit_candidates(
+            variations,
+            stage="llm",
+            cap=cap,
+            to_query=lambda v, i: v,
+            make_label=lambda _v, i: f"semantic_{i+1}",
+            make_weight=lambda _v, i: 0.8,
+        )
 
 
 class ParadigmStage:
@@ -111,27 +136,16 @@ class ParadigmStage:
         )
         queries = await strategy.generate_search_queries(context)
         cap = cfg.per_stage_caps.get("paradigm", 6)
-        out: List[QueryCandidate] = []
-        for item in queries:
-            query = canon_query(item.get("query", ""))
-            if not query:
-                continue
-            label = item.get("type", "paradigm")
-            weight = float(item.get("weight", 0.9) or 0.9)
-            source_filter = item.get("source_filter")
-            out.append(
-                QueryCandidate(
-                    query=query,
-                    stage="paradigm",
-                    label=str(label),
-                    weight=weight,
-                    source_filter=source_filter,
-                    tags={"paradigm": paradigm},
-                )
-            )
-            if len(out) >= cap:
-                break
-        return out
+        return _emit_candidates(
+            queries,
+            stage="paradigm",
+            cap=cap,
+            to_query=lambda it, i: it.get("query", ""),
+            make_label=lambda it, i: str(it.get("type", "paradigm")),
+            make_weight=lambda it, i: float(it.get("weight", 0.9) or 0.9),
+            make_source_filter=lambda it, i: it.get("source_filter"),
+            make_tags=lambda it, i: {"paradigm": paradigm},
+        )
 
 
 class ContextStage:
@@ -141,22 +155,14 @@ class ContextStage:
         cfg: PlannerConfig,
     ) -> List[QueryCandidate]:
         cap = cfg.per_stage_caps.get("context", 6)
-        out: List[QueryCandidate] = []
-        for idx, raw in enumerate(additional_queries):
-            query = canon_query(raw)
-            if not query:
-                continue
-            out.append(
-                QueryCandidate(
-                    query=query,
-                    stage="context",
-                    label=f"context_{idx+1}",
-                    weight=0.88,
-                )
-            )
-            if len(out) >= cap:
-                break
-        return out
+        return _emit_candidates(
+            list(additional_queries),
+            stage="context",
+            cap=cap,
+            to_query=lambda raw, i: raw,
+            make_label=lambda _raw, i: f"context_{i+1}",
+            make_weight=lambda _raw, i: 0.88,
+        )
 
 
 class AgenticFollowupsStage:
@@ -183,15 +189,13 @@ class AgenticFollowupsStage:
             gap_counts=domain_gaps,
             max_new=cfg.per_stage_caps.get("agentic", 4),
         )
-        out: List[QueryCandidate] = []
-        for idx, proposal in enumerate(proposals):
-            out.append(
-                QueryCandidate(
-                    query=canon_query(proposal),
-                    stage="agentic",
-                    label=f"followup_{idx+1}",
-                    weight=0.75,
-                    tags={"missing_term": missing_terms[idx] if idx < len(missing_terms) else ""},
-                )
-            )
-        return out
+        cap = cfg.per_stage_caps.get("agentic", 4)
+        return _emit_candidates(
+            proposals,
+            stage="agentic",
+            cap=cap,
+            to_query=lambda p, i: p,
+            make_label=lambda _p, i: f"followup_{i+1}",
+            make_weight=lambda _p, i: 0.75,
+            make_tags=lambda _p, i: {"missing_term": missing_terms[i] if i < len(missing_terms) else ""},
+        )

@@ -9,6 +9,7 @@ from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
 import logging
+import structlog
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine
 from sqlalchemy.orm import sessionmaker
@@ -17,9 +18,8 @@ from sqlalchemy import event, text
 
 from database.models import Base
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure logging (structlog is configured centrally in services.monitoring)
+logger = structlog.get_logger(__name__)
 
 
 # Database configuration
@@ -40,9 +40,7 @@ class DatabaseConfig:
         )
 
         # Debug: Print the database URL (without password for security)
-        import logging
-
-        logging.info(
+        logger.info(
             f"Database URL: postgresql+asyncpg://{pguser}:****@{pghost}:{pgport}/{pgdatabase}"
         )
 
