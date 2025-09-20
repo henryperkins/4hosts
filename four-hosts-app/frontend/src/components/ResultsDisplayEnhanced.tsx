@@ -565,8 +565,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     const exportFormats = (results as unknown as { export_formats?: Record<string, string> }).export_formats || {}
                     const map: Record<string, string> = { ...exportFormats }
                     if (Object.keys(map).length === 0) {
+                      // Fallback for display only; actual export uses api.exportResearch()
                       allowed.forEach((f) => {
-                        map[f] = `/v1/research/${results.research_id}/export/${f}`
+                        map[f] = `/v1/export/research/${results.research_id}?format=${f}`
                       })
                     }
                     return allowed.filter((f) => f in map).map((fmt) => (

@@ -24,7 +24,7 @@ async def test_insufficient_data_gates_synthesis_and_tracks_query_effectiveness(
     async def fake_process_results(*args, **kwargs):
         return {
             "results": [],
-            "metadata": {"processing_time": 0.01, "agent_trace": []},
+            "metadata": {"processing_time_seconds": 0.01, "agent_trace": []},
             "sources_used": [],
             "credibility_summary": {"average_score": 0.0},
             "dedup_stats": {"original_count": 0, "final_count": 0, "duplicates_removed": 0},

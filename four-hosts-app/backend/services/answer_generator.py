@@ -2115,6 +2115,28 @@ class AnswerGenerationOrchestrator:
         from time import perf_counter
         start = perf_counter()
         generator = self._make_generator(paradigm)
+
+        # Emit synthesis context snapshot for observability
+        try:
+            unique_sources = len({(r.get("domain") or extract_domain(r.get("url", "") or "")) for r in (search_results or []) if (r.get("url") or r.get("domain"))})
+            # Attempt to resolve active prompt variant/strategy from generator
+            try:
+                strategy = generator._resolve_prompt_variant(context)  # type: ignore[attr-defined]
+            except Exception:
+                strategy = "v1"
+            logger.info(
+                "Synthesis context prepared",
+                stage="synthesis_context",
+                research_id=(options or {}).get("research_id"),
+                paradigm=paradigm,
+                evidence_quotes=len(context.evidence_quotes or []),
+                unique_sources=unique_sources,
+                token_budget=context.max_length,
+                synthesis_strategy=strategy,
+            )
+        except Exception:
+            pass
+
         answer = await generator.generate_answer(context)
         duration_ms = (perf_counter() - start) * 1000.0
         try:
@@ -2129,6 +2151,24 @@ class AnswerGenerationOrchestrator:
             )
         except Exception:
             pass
+        # Emit quality assessment summary for UI/debugging
+        try:
+            total_words = sum(int(getattr(sec, "word_count", 0) or 0) for sec in (answer.sections or []))
+            unique_cites = len(set((answer.citations or {}).keys())) if isinstance(answer.citations, dict) else 0
+            logger.info(
+                "Answer quality metrics",
+                stage="quality_assessment",
+                research_id=(options or {}).get("research_id"),
+                total_word_count=total_words,
+                sections_generated=len(answer.sections or []),
+                unique_citations=unique_cites,
+                paradigm_alignment_score=None,
+                coherence_score=None,
+                factual_density=None,
+            )
+        except Exception:
+            pass
+
         return answer
 
     async def generate_multi_paradigm_answer(
@@ -2330,4 +2370,3 @@ __all__ = [
 # Create aliases for enhanced generators (for backward compatibility)
 EnhancedBernardAnswerGenerator = BernardAnswerGenerator
 EnhancedMaeveAnswerGenerator = MaeveAnswerGenerator
-

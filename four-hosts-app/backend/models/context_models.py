@@ -3,7 +3,7 @@ Context Models for Four Hosts Research Application
 Defines data structures for context engineering and search results
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -313,7 +313,12 @@ class ResearchMetadataSchema(BaseModel):
     paradigm: Optional[str] = None
     context_layers: Optional[Dict[str, Any]] = None
     evidence_quotes: Optional[List[Dict[str, Any]]] = None
-    classification_details: Optional[ClassificationDetailsSchema] = None
+    # Allow either the strongly-typed schema or a plain dict, because
+    # orchestrator currently dumps the model to a raw dict for JSON
+    # serialization compatibility. Once all call-sites are migrated to use
+    # the Pydantic object directly we can tighten this back to the schema
+    # alone.
+    classification_details: Optional[Union[ClassificationDetailsSchema, Dict[str, Any]]] = None
 
 
 class ResearchResponseSchema(BaseModel):

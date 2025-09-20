@@ -7,6 +7,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.result_adapter import ResultAdapter
+try:
+    import structlog  # type: ignore
+    logger = structlog.get_logger(__name__)
+except Exception:  # pragma: no cover - fallback when structlog missing
+    import logging
+    logger = logging.getLogger(__name__)
 
 
 class ResultDeduplicator:
@@ -73,6 +79,29 @@ class ResultDeduplicator:
                 else:
                     kept.append((simhash, result))
                     unique.append(result)
+
+        # Emit structured metrics for observability
+        try:
+            unique_domains = set()
+            for r in unique:
+                try:
+                    d = ResultAdapter(r).domain
+                    if d:
+                        unique_domains.add(d)
+                except Exception:
+                    continue
+            logger.info(
+                "Result deduplication complete",
+                stage="deduplication",
+                input_count=len(results),
+                output_count=len(unique),
+                duplicates_removed=duplicates_removed,
+                dedup_methods=["url_norm", "simhash", "jaccard_title_snippet"],
+                unique_domains=len(unique_domains),
+                similarity_threshold=self.similarity_threshold,
+            )
+        except Exception:
+            pass
 
         return {
             "unique_results": unique,

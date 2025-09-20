@@ -565,7 +565,14 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         answer_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute research (pure V2 flow; legacy path removed)"""
-        logger.info(f"Starting research execution for research_id: {research_id}")
+        logger.info(
+            "Starting research execution",
+            research_id=research_id,
+            paradigm=getattr(classification, "primary_paradigm", "unknown"),
+            original_query=getattr(context_engineered, "original_query", ""),
+            enable_deep_research=enable_deep_research,
+            synthesize_answer=synthesize_answer
+        )
 
         async def check_cancelled():
             # Local cancellation check to avoid circular imports
@@ -593,6 +600,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         }
 
         # Unified query planner path
+        logger.info("Initializing query planning", research_id=research_id)
         limited = self._get_query_limit(user_context)
         refined_queries = list(getattr(context_engineered, "refined_queries", []) or [])
         original_query = getattr(context_engineered, "original_query", "") or getattr(classification, "query", "")
@@ -600,18 +608,37 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         if not seed_query:
             seed_query = getattr(classification, "query", "") or ""
 
+        logger.info(
+            "Query planning initialized",
+            research_id=research_id,
+            query_limit=limited,
+            refined_queries_count=len(refined_queries),
+            seed_query=seed_query[:100]
+        )
+
         planner_cfg = self._build_planner_config(limited)
         paradigm_code = normalize_to_internal_code(getattr(classification, "primary_paradigm", HostParadigm.BERNARD))
         planner = QueryPlanner(planner_cfg)
 
+        logger.info("Executing query planner", research_id=research_id, paradigm=paradigm_code)
         try:
             planned_candidates = await planner.initial_plan(
                 seed_query=seed_query,
                 paradigm=paradigm_code,
                 additional_queries=refined_queries,
             )
+            logger.info(
+                "Query planning successful",
+                research_id=research_id,
+                candidates_count=len(planned_candidates)
+            )
         except Exception as e:
-            logger.error(f"Query planning failed for research_id: {research_id}, error: {e}", exc_info=True)
+            logger.error(
+                "Query planning failed",
+                research_id=research_id,
+                error=str(e),
+                exc_info=True
+            )
             logger.warning(f"Query planning failed; using fallback. {e}")
             fallback_query = seed_query or original_query or getattr(classification, "query", "")
             planned_candidates = [
@@ -643,8 +670,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # Check for cancellation before executing searches
         # Check cancellation inline
         if research_id:
+            logger.info("Checking for cancellation", research_id=research_id)
             research_data = await self.research_store.get(research_id)
             if research_data and research_data.get("status") == RuntimeResearchStatus.CANCELLED:
+                logger.warning("Research cancelled before search execution", research_id=research_id)
                 return {"status": "cancelled", "message": "Research was cancelled"}
 
         # Fail fast if search manager is missing or empty (misconfiguration)
@@ -669,6 +698,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             pass
 
         # Execute searches with deterministic ordering and budget enforcement
+        logger.info(
+            "Starting search execution",
+            research_id=research_id,
+            candidates_count=len(executed_candidates)
+        )
         search_results = await self._execute_searches_with_budget(
             executed_candidates,
             classification.primary_paradigm,
@@ -679,9 +713,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             cost_accumulator=cost_breakdown,
             metrics=search_metrics_local,
         )
+        logger.info(
+            "Search execution completed",
+            research_id=research_id,
+            results_count=sum(len(results) for results in search_results.values())
+        )
 
         # Agentic follow-up loop based on coverage gaps (extracted)
         if self.agentic_config.get("enabled", True):
+            logger.info("Starting agentic follow-up loop", research_id=research_id)
             executed_queries = {cand.query for cand in executed_candidates}
             max_iters = max(0, int(self.agentic_config.get("max_iterations", 0)))
             coverage_threshold = float(self.agentic_config.get("coverage_threshold", 0.75))
@@ -911,7 +951,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         end_time = get_current_utc()
         processing_time = (end_time - start_time).total_seconds()
 
-        processed_results["metadata"]["processing_time"] = processing_time
+        # Store only the schema-compliant key; legacy "processing_time" removed
         processed_results["metadata"]["processing_time_seconds"] = float(processing_time)
 
         # Compute UI-facing metrics that depend on the final result set
@@ -939,14 +979,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     sources_for_analysis,
                     paradigm=normalize_to_internal_code(classification.primary_paradigm),
                 )
+                # Map credibility distribution into schema-conformant key
                 credibility_summary["average_score"] = float(stats.get("average_credibility", 0.0) or 0.0)
-                credibility_summary["distribution"] = stats.get("credibility_distribution", {})
+                credibility_summary["score_distribution"] = stats.get("credibility_distribution", {})
                 high_quality_sources = int(stats.get("high_credibility_sources", 0) or 0)
                 total_sources_analyzed = int(stats.get("total_sources", len(final_results)) or len(final_results))
                 if total_sources_analyzed > 0:
                     credibility_summary["high_credibility_ratio"] = high_quality_sources / float(total_sources_analyzed)
                 else:
                     credibility_summary["high_credibility_ratio"] = 0.0
+                # Explicitly surface the absolute count for UI consumers that expect it
+                credibility_summary["high_credibility_count"] = high_quality_sources
             else:
                 total_sources_analyzed = 0
                 high_quality_sources = 0
@@ -962,6 +1005,14 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         high_quality_sources += 1
                 except Exception:
                     continue
+
+            # Populate summary keys expected by the schema on fallback path as well
+            credibility_summary.setdefault("score_distribution", {})
+            credibility_summary["high_credibility_count"] = high_quality_sources
+            if total_sources_analyzed > 0:
+                credibility_summary["high_credibility_ratio"] = high_quality_sources / float(total_sources_analyzed)
+            else:
+                credibility_summary["high_credibility_ratio"] = 0.0
 
         # Category distribution will be computed from normalized_sources later using compute_category_distribution
 
@@ -1267,7 +1318,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 integrated_synthesis = None
 
-        apis_used = list(search_metrics_local.get("apis_used", []))
+        # Consolidate APIs used: prefer the list recorded in processed_results metadata
+        apis_used: List[str]
+        try:
+            apis_used = list(processed_results.get("metadata", {}).get("apis_used", []))
+        except Exception:
+            apis_used = []
+
+        # Fall back to query-time metrics if orchestrator path didn't record them yet
+        if not apis_used:
+            apis_used = list(search_metrics_local.get("apis_used", []))
+
+        # Ensure the top-level metadata also carries the same canonical list
+        if apis_used:
+            processed_results.setdefault("metadata", {})["apis_used"] = apis_used
 
         response = {
             "research_id": research_id or f"research_{int(start_time.timestamp())}",
@@ -1822,7 +1886,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             max_results=max_results,
             language=str(getattr(user_context, "language", "en") or "en"),
             region=str(getattr(user_context, "region", "us") or "us"),
-            min_relevance_score=0.5 if normalize_to_internal_code(primary_paradigm) == "bernard" else 0.25,
+            # Dynamically lower the relevance threshold to improve recall.
+            # A high value (≥0.5) was routinely eliminating *all* candidate
+            # results for some paradigms which in turn starved downstream
+            # evidence-building and answer synthesis stages.  A more lenient
+            # default strikes a better balance between quality and recall.
+            min_relevance_score=0.35 if normalize_to_internal_code(primary_paradigm) == "bernard" else 0.15,
         )
 
     async def _execute_searches_with_budget(
@@ -1851,8 +1920,18 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # Manager-level planned execution
         search_config = self._build_search_config(user_context, primary_paradigm)
 
+        logger.info(
+            "Executing search queries",
+            research_id=research_id,
+            queries=[c.query[:50] for c in planned_candidates[:3]]  # Log first 3 queries
+        )
         try:
             results_by_label = await self.search_manager.search_with_plan(planned_candidates, search_config)
+            logger.info(
+                "Search queries completed",
+                research_id=research_id,
+                labels=list(results_by_label.keys()) if results_by_label else []
+            )
 
             # Convert results (label -> results) back to query -> results
             all_results: Dict[str, List[SearchResult]] = {}
@@ -1917,7 +1996,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         default_limit = int(os.getenv("DEFAULT_SOURCE_LIMIT", "200"))
         max_results = int(getattr(user_context, "source_limit", default_limit) or default_limit)
         paradigm_code = normalize_to_internal_code(primary_paradigm)
-        min_rel = 0.5 if paradigm_code == "bernard" else 0.25
+        # Apply the same relaxed threshold that is now used in the budgeted
+        # search path so that both execution flows behave consistently.
+        min_rel = 0.35 if paradigm_code == "bernard" else 0.15
         # Depth-aware tweaks: allow slightly lower threshold for DEEP to broaden recall
         try:
             depth = str(getattr(user_context, "depth", "")).lower()
@@ -2261,6 +2342,28 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         logger.info("Credibility scoring", research_id=research_id, stage="credibility_scoring", scored_domains=len(creds), average_score=cred_summary["average_score"])
 
+        # Emit additional distribution metrics for observability
+        try:
+            highs = sum(1 for v in creds.values() if v > 0.7)
+            lows = sum(1 for v in creds.values() if v < 0.3)
+            # Build a simple histogram with 0.1 bins
+            buckets = {f"{i/10:.1f}-{(i+1)/10:.1f}": 0 for i in range(0, 10)}
+            for v in creds.values():
+                idx = min(9, max(0, int(v * 10)))
+                key = f"{idx/10:.1f}-{(idx+1)/10:.1f}"
+                buckets[key] += 1
+            logger.info(
+                "Credibility analysis complete",
+                stage="credibility_analysis",
+                research_id=research_id,
+                high_credibility_count=highs,
+                low_credibility_count=lows,
+                avg_score=cred_summary.get("average_score", 0.0),
+                score_distribution=buckets,
+            )
+        except Exception:
+            pass
+
         # 6) Final limit by user context
         default_limit = int(os.getenv("DEFAULT_SOURCE_LIMIT", "200"))
         final_results: List[SearchResult] = ranked[: int(getattr(user_context, "source_limit", default_limit) or default_limit)]
@@ -2277,7 +2380,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 metrics["apis_used"] = list(apis)
 
         meta = {
-            "processing_time": None,  # caller fills
+            "processing_time_seconds": None,  # caller fills
             "paradigm": getattr(classification.primary_paradigm, "value", paradigm_code),
             "deep_research_enabled": False,
         }

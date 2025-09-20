@@ -23,8 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 def _enabled() -> bool:
+    """Unified flag: prefer UNIFIED_QUERY_ENABLE_LLM; fallback to legacy."""
     try:
-        return os.getenv("ENABLE_QUERY_LLM", "0").lower() in {"1", "true", "yes"}
+        unified = os.getenv("UNIFIED_QUERY_ENABLE_LLM")
+        if unified is not None:
+            return unified.lower() in {"1", "true", "yes"}
+        legacy = os.getenv("ENABLE_QUERY_LLM", "0")
+        return legacy.lower() in {"1", "true", "yes"}
     except Exception:
         return False
 
@@ -66,8 +71,10 @@ async def propose_semantic_variations(
         hints = f"\nKey terms to preserve: {', '.join(key_terms[:8])}"
 
     prompt = (
-        "Rewrite the user query into semantically different, search-effective variations. "
-        "Preserve the original intent, quote proper names/phrases, and avoid hallucinating facts.\n\n"
+        "Rewrite the user query into semantically different, "
+        "search-effective variations. "
+        "Preserve the original intent, quote proper names/phrases, "
+        "and avoid hallucinating facts.\n\n"
         f"Query: {query}{hints}\n\n"
         f"Return {max_variants} concise variations (6-14 words)."
     )
@@ -78,10 +85,18 @@ async def propose_semantic_variations(
             schema=schema,
             paradigm=paradigm,
         )
-        vars: List[str] = [v.strip() for v in (data.get("variations") or []) if isinstance(v, str) and v.strip()]
+        raw_vars = (data.get("variations") or [])
+        vars: List[str] = [
+            v.strip()
+            for v in raw_vars
+            if isinstance(v, str) and v.strip()
+        ]
         # Deduplicate while preserving order
         seen: set[str] = set()
-        out = [v for v in vars if not (v in seen or seen.add(v))][:max_variants]
+        out = [
+            v for v in vars
+            if not (v in seen or seen.add(v))
+        ][:max_variants]
         return out
     except Exception as e:
         logger.debug(f"LLM query variations failed: {e}")

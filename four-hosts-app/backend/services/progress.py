@@ -8,7 +8,7 @@ can `await progress.update_progress(...)` safely in tests and CLIs.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 
 
 class _NoOpProgress:
@@ -48,6 +48,32 @@ def _resolve_progress() -> Any:
 # Singleton-like facade used by services
 progress: Any = _resolve_progress()
 
+async def update_progress_detailed(
+    research_id: str,
+    phase: str,
+    step: int,
+    total_steps: int,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Enhanced progress updates with step counting and % completion.
 
-__all__ = ["progress"]
+    Safe no-op when websocket layer is unavailable.
+    """
+    try:
+        await progress.update_progress(
+            research_id=research_id,
+            phase=phase,
+            message=f"[{step}/{total_steps}] {message}",
+            custom_data={
+                "step": step,
+                "total_steps": total_steps,
+                "percentage": (step / max(total_steps, 1)) * 100.0,
+                **(details or {}),
+            },
+        )
+    except Exception:
+        return None
 
+
+__all__ = ["progress", "update_progress_detailed"]

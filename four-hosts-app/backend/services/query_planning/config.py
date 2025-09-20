@@ -21,12 +21,18 @@ def build_planner_config(
     )
 
     if stage_order is not None:
-        validated = [stage for stage in stage_order if stage in cfg.per_stage_caps]
+        validated = [
+            stage for stage in stage_order
+            if stage in cfg.per_stage_caps
+        ]
         if validated:
             cfg.stage_order = validated
 
     # Environment overrides
     max_candidates_env = os.getenv("UNIFIED_QUERY_MAX_VARIATIONS")
+    if not max_candidates_env:
+        # Legacy fallback
+        max_candidates_env = os.getenv("SEARCH_QUERY_VARIATIONS_LIMIT")
     if max_candidates_env:
         try:
             cfg.max_candidates = max(1, int(max_candidates_env))
@@ -34,17 +40,36 @@ def build_planner_config(
             pass
 
     llm_flag = os.getenv("UNIFIED_QUERY_ENABLE_LLM")
-    if llm_flag:
+    if llm_flag is not None:
         cfg.enable_llm = llm_flag.lower() in {"1", "true", "yes"}
+    else:
+        # Legacy fallback
+        legacy_llm = os.getenv("ENABLE_QUERY_LLM")
+        if legacy_llm is not None:
+            cfg.enable_llm = legacy_llm.lower() in {"1", "true", "yes"}
 
     follow_flag = os.getenv("UNIFIED_QUERY_ENABLE_FOLLOW_UP")
-    if follow_flag:
+    if follow_flag is not None:
         cfg.enable_agentic = follow_flag.lower() not in {"0", "false", "no"}
+    else:
+        # Legacy fallback (disable flag)
+        legacy_disable = os.getenv("SEARCH_DISABLE_AGENTIC")
+        if legacy_disable is not None:
+            cfg.enable_agentic = legacy_disable.lower() not in {
+                "1", "true", "yes"
+            }
 
     stage_order_env = os.getenv("UNIFIED_QUERY_STAGE_ORDER")
     if stage_order_env:
-        parts = [p.strip().lower() for p in stage_order_env.split(",") if p.strip()]
-        validated = [stage for stage in parts if stage in cfg.per_stage_caps]
+        parts = [
+            p.strip().lower()
+            for p in stage_order_env.split(",")
+            if p.strip()
+        ]
+        validated = [
+            stage for stage in parts
+            if stage in cfg.per_stage_caps
+        ]
         if validated:
             cfg.stage_order = validated
 

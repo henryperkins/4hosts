@@ -119,12 +119,21 @@ class LLMClient:
 
         if azure_key and azure_endpoint and azure_deployment:
             self._azure_endpoint = azure_endpoint.rstrip("/")
+            # Use OpenAI v1-compatible path with explicit api-version for Azure
+            azure_base = f"{self._azure_endpoint}/openai/v1"
+            if self._azure_api_version:
+                azure_base = f"{azure_base}?api-version={self._azure_api_version}"
             self.azure_client = AsyncOpenAI(
                 api_key=azure_key,
-                base_url=f"{self._azure_endpoint}/openai",
+                base_url=azure_base,
                 timeout=120
             )
-            logger.info(f"✓ Azure OpenAI client initialized (endpoint: {self._azure_endpoint})")
+            logger.info(
+                "✓ Azure OpenAI client initialized",
+                _type="azure",
+                endpoint=self._azure_endpoint,
+                api_version=self._azure_api_version,
+            )
 
         # OpenAI Cloud
         openai_key = os.getenv("OPENAI_API_KEY")
@@ -198,6 +207,11 @@ class LLMClient:
             )
 
         # For non-o models, use Chat Completions
+        logger.info(
+            "Using Chat Completions API",
+            model=model,
+            paradigm_key=paradigm_key
+        )
         messages = [
             {"role": "system", "content": _get_system_prompt(paradigm_key)},
             {"role": "user", "content": prompt}
@@ -206,10 +220,16 @@ class LLMClient:
         # Select client (prefer Azure)
         client = self.azure_client or self.openai_client
         if not client:
+            logger.error("No LLM client available")
             raise RuntimeError("No LLM client available")
 
         # Make the request
         try:
+            logger.info(
+                "Sending request to LLM",
+                client_type="azure" if client == self.azure_client else "openai",
+                model=self._get_deployment_name(model)
+            )
             response = await client.chat.completions.create(
                 model=self._get_deployment_name(model),
                 messages=messages,
@@ -223,15 +243,29 @@ class LLMClient:
             )
 
             if stream:
+                logger.info("Streaming response initiated")
                 return self._stream_chat_response(response)
 
             # Extract content from response
             if hasattr(response, 'choices') and response.choices:
-                return response.choices[0].message.content or ""
+                result = response.choices[0].message.content or ""
+                logger.info(
+                    "Completion received successfully",
+                    response_length=len(result),
+                    model=model
+                )
+                return result
+            logger.warning("Empty response received from LLM")
             return ""
 
         except Exception as e:
-            logger.error(f"LLM request failed: {e}")
+            logger.error(
+                "LLM request failed",
+                error=str(e),
+                model=model,
+                paradigm_key=paradigm_key,
+                exc_info=True
+            )
             raise
 
     async def generate_structured_output(
@@ -243,6 +277,12 @@ class LLMClient:
         paradigm: Union[str, HostParadigm] = "bernard",
     ) -> Dict[str, Any]:
         """Generate JSON output matching the provided schema."""
+        logger.info(
+            "Generating structured output",
+            paradigm=paradigm,
+            model=model,
+            schema_keys=list(schema.keys()) if isinstance(schema, dict) else None
+        )
         raw = await self.generate_completion(
             prompt,
             model=model,

@@ -878,6 +878,34 @@ class SearchConfig:
     longitude: Optional[float] = None
     units: Optional[str] = None
     goggles: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # Dynamic overrides
+    # ------------------------------------------------------------------
+
+    def __post_init__(self):
+        """Allow environment variables to override relevance threshold.
+
+        Administrators can fine-tune recall/precision trade-offs at runtime
+        without redeploying code by setting `SEARCH_MIN_RELEVANCE` in the
+        environment (e.g. `export SEARCH_MIN_RELEVANCE=0.12`).  The value is
+        clamped to the range 0–1 to avoid accidental misconfiguration.
+        """
+        try:
+            env_val = os.getenv("SEARCH_MIN_RELEVANCE")
+            if env_val is not None:
+                v = float(env_val)
+                # Clamp between 0.0 and 1.0
+                v = max(0.0, min(1.0, v))
+                self.min_relevance_score = v
+                logger.debug(
+                    "SearchConfig: min_relevance_score overridden via env",
+                    new_value=v,
+                )
+        except Exception as exc:  # pragma: no cover – defensive
+            logger.warning(
+                "Invalid SEARCH_MIN_RELEVANCE value '%s': %s", env_val, exc
+            )
     extra_snippets: bool = False
     summary: bool = False
 
@@ -996,6 +1024,24 @@ class ContentRelevanceFilter:
             # Mark these as below threshold for transparency
             for r in filtered:
                 r.raw_data["below_relevance_threshold"] = True
+
+        # Emit debug diagnostics about the filtering step (always executed)
+        try:
+            top_scores = [r.relevance_score for r in sorted_results[:5]]
+        except Exception:
+            top_scores = []
+
+        _structured_log(
+            "debug",
+            "relevance_filter_complete",
+            {
+                "query": query[:120],
+                "results_in": len(results),
+                "results_passed": len(filtered),
+                "threshold": cfg.min_relevance_score,
+                "top_scores": top_scores,
+            },
+        )
 
         return filtered
 
@@ -1719,6 +1765,21 @@ class SearchAPIManager:
         now_ts = time.time()
         min_results = int(os.getenv("SEARCH_MIN_RESULTS_THRESHOLD", "5"))
 
+        # Emit strategy selection details for observability
+        try:
+            logger.info(
+                "Search strategy selection",
+                stage="search_strategy",
+                research_id=research_id,
+                primary_api=self.primary_api,
+                available_apis=list(self.apis.keys()),
+                fallback_order=list(self.fallback_apis),
+                min_results_threshold=min_results,
+                plan_size=len(planned),
+            )
+        except Exception:
+            pass
+
         # Step 1: Try primary API (Brave) first
         if self.primary_api and self.primary_api in self.apis:
             if self.quota_blocked.get(self.primary_api, 0) <= now_ts:
@@ -1728,6 +1789,7 @@ class SearchAPIManager:
                     len(planned),
                 )
                 try:
+                    _t0 = time.time()
                     results = await self._search_single_provider(
                         self.primary_api,
                         self.apis[self.primary_api],
@@ -1738,22 +1800,73 @@ class SearchAPIManager:
                     )
                     if results:
                         all_results.extend(results)
-                        logger.info(f"Primary provider {self.primary_api} returned {len(results)} results")
+                        try:
+                            resp_ms = int((time.time() - _t0) * 1000)
+                            unique_domains = len({extract_domain(r.url) for r in results if getattr(r, "url", "")})
+                            avg_cred = (
+                                sum(getattr(r, "credibility_score", 0.0) for r in results) / len(results)
+                                if results else 0.0
+                            )
+                            logger.info(
+                                "API search complete",
+                                stage="api_search_result",
+                                research_id=research_id,
+                                api_name=self.primary_api,
+                                results_count=len(results),
+                                unique_domains=unique_domains,
+                                avg_credibility=round(avg_cred, 3),
+                                response_time_ms=resp_ms,
+                                used_cache=False,
+                            )
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.warning(f"Primary provider {self.primary_api} failed: {e}")
+                    try:
+                        logger.warning(
+                            "Search fallback triggered",
+                            stage="search_fallback",
+                            research_id=research_id,
+                            primary_api=self.primary_api,
+                            primary_results=len(all_results),
+                            fallback_api=(self.fallback_apis[0] if self.fallback_apis else None),
+                            reason="api_error",
+                        )
+                    except Exception:
+                        pass
             else:
                 logger.warning(f"Primary provider {self.primary_api} is rate-limited")
+                try:
+                    logger.warning(
+                        "Search fallback triggered",
+                        stage="search_fallback",
+                        research_id=research_id,
+                        primary_api=self.primary_api,
+                        primary_results=len(all_results),
+                        fallback_api=(self.fallback_apis[0] if self.fallback_apis else None),
+                        reason="rate_limited",
+                    )
+                except Exception:
+                    pass
 
         # Step 2: If primary didn't return enough results, try fallbacks (Google)
         if len(all_results) < min_results:
             for fallback_name in self.fallback_apis:
                 if fallback_name in self.apis and self.quota_blocked.get(fallback_name, 0) <= now_ts:
-                    logger.info(
-                        "Insufficient results (%d), trying fallback: %s",
-                        len(all_results),
-                        fallback_name,
-                    )
                     try:
+                        logger.info(
+                            "Insufficient results, trying fallback",
+                            stage="search_fallback",
+                            research_id=research_id,
+                            primary_api=self.primary_api,
+                            primary_results=len(all_results),
+                            fallback_api=fallback_name,
+                            reason="insufficient_results",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        _t1 = time.time()
                         fallback_results = await self._search_single_provider(
                             fallback_name,
                             self.apis[fallback_name],
@@ -1764,7 +1877,26 @@ class SearchAPIManager:
                         )
                         if fallback_results:
                             all_results.extend(fallback_results)
-                            logger.info(f"Fallback {fallback_name} added {len(fallback_results)} results")
+                            try:
+                                resp_ms = int((time.time() - _t1) * 1000)
+                                unique_domains = len({extract_domain(r.url) for r in fallback_results if getattr(r, "url", "")})
+                                avg_cred = (
+                                    sum(getattr(r, "credibility_score", 0.0) for r in fallback_results) / len(fallback_results)
+                                    if fallback_results else 0.0
+                                )
+                                logger.info(
+                                    "API search complete",
+                                    stage="api_search_result",
+                                    research_id=research_id,
+                                    api_name=fallback_name,
+                                    results_count=len(fallback_results),
+                                    unique_domains=unique_domains,
+                                    avg_credibility=round(avg_cred, 3),
+                                    response_time_ms=resp_ms,
+                                    used_cache=False,
+                                )
+                            except Exception:
+                                pass
                     except Exception as e:
                         logger.warning(f"Fallback provider {fallback_name} failed: {e}")
 
@@ -1886,10 +2018,31 @@ class SearchAPIManager:
         seed_query = planned[0].query
         try:
             timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
-            return await asyncio.wait_for(
+            _t0 = time.time()
+            results = await asyncio.wait_for(
                 api.search_with_variations(seed_query, cfg, planned=planned),
                 timeout=timeout,
             )
+            try:
+                resp_ms = int((time.time() - _t0) * 1000)
+                unique_domains = len({extract_domain(r.url) for r in (results or []) if getattr(r, "url", "")})
+                avg_cred = (
+                    sum(getattr(r, "credibility_score", 0.0) for r in (results or [])) / len(results)
+                    if results else 0.0
+                )
+                logger.info(
+                    "API search complete",
+                    stage="api_search_result",
+                    api_name=name,
+                    results_count=len(results) if results else 0,
+                    unique_domains=unique_domains,
+                    avg_credibility=round(avg_cred, 3),
+                    response_time_ms=resp_ms,
+                    used_cache=False,
+                )
+            except Exception:
+                pass
+            return results
         except Exception as e:
             logger.debug(f"Academic provider {name} failed: {e}")
             return []
@@ -1910,6 +2063,19 @@ class SearchAPIManager:
         # Limit to max results
         if cfg.max_results:
             unique_results = unique_results[:cfg.max_results]
+
+        try:
+            logger.info(
+                "Result deduplication complete",
+                stage="deduplication",
+                input_count=len(results),
+                output_count=len(unique_results),
+                duplicates_removed=(len(results) - len(unique_results)),
+                dedup_methods=["url_norm"],
+                unique_domains=len({getattr(r, 'domain', '') for r in unique_results if getattr(r, 'domain', '')}),
+            )
+        except Exception:
+            pass
 
         return unique_results
 
@@ -2197,7 +2363,13 @@ class SearchAPIManager:
         - Returns a dict[label] -> List[SearchResult]
         - Ensures keys exist for all candidate labels (possibly with empty lists)
         """
+        logger.info(
+            "Starting search_with_plan execution",
+            planned_count=len(planned) if planned else 0,
+            queries=[getattr(c, "query", "")[:50] for c in (planned or [])[:3]]  # Log first 3 queries
+        )
         if not planned:
+            logger.warning("No planned queries provided, returning empty results")
             return {}
 
         if config is None:
@@ -2210,9 +2382,22 @@ class SearchAPIManager:
 
         try:
             # Single call to priority path as expected by integration tests
+            logger.info(
+                "Executing search with priority",
+                config_paradigm=getattr(config, "paradigm", None) if config else None
+            )
             stage_results = await self.search_with_priority(planned, config)
-        except Exception:
+            logger.info(
+                "Search with priority completed",
+                results_count=len(stage_results) if stage_results else 0
+            )
+        except Exception as e:
             # On any error, return empty mapping
+            logger.error(
+                "Search with priority failed",
+                error=str(e),
+                exc_info=True
+            )
             return {}
 
         # Organize results by candidate label
@@ -2225,6 +2410,11 @@ class SearchAPIManager:
             if isinstance(label, str) and isinstance(stage, str):
                 result.raw_data["stage_label"] = f"{stage}:{label}"
 
+        logger.info(
+            "Search with plan completed",
+            labels_with_results=list(results_by_label.keys()),
+            total_results=sum(len(r) for r in results_by_label.values())
+        )
         return results_by_label
 
 

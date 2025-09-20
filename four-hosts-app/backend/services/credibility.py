@@ -954,6 +954,13 @@ class SourceReputationDatabase:
 
             logger.info("Finished credibility calculation", stage="credibility_end", domain=domain, paradigm=paradigm, overall_score=overall_score, domain_authority=domain_authority, bias_score=bias_score, fact_check_rating=fact_check_rating, recency_score=recency_score, controversy_score=controversy_score, cross_source_agreement=cross_source_agreement)
 
+            # Emit a verbose debug entry with the full CredibilityScore payload
+            logger.debug(
+                "Credibility score details",
+                domain=domain,
+                payload=payload,
+            )
+
             return credibility
     
     def _infer_category(self, domain: str) -> str:

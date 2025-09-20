@@ -57,10 +57,13 @@ async def start_background(req: StartBackgroundRequest):
 
 
 @router.get("/{response_id}")
-async def get_response(response_id: str):
+async def get_response(
+    response_id: str,
+    include: Optional[List[str]] = Query(None, alias="include[]"),
+):
     client = get_responses_client()
     try:
-        resp = await client.retrieve_response(response_id)
+        resp = await client.retrieve_response(response_id, include=include)
         return JSONResponse(resp)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to retrieve response: {e}")
@@ -77,11 +80,19 @@ async def cancel_response(response_id: str):
 
 
 @router.get("/{response_id}/stream")
-async def stream_response(response_id: str, starting_after: Optional[int] = Query(None)):
+async def stream_response(
+    response_id: str,
+    starting_after: Optional[int] = Query(None),
+    include: Optional[List[str]] = Query(None, alias="include[]"),
+):
     client = get_responses_client()
     try:
         async def event_gen() -> AsyncIterator[bytes]:
-            async for event in client.stream_response(response_id, starting_after=starting_after):
+            async for event in client.stream_response(
+                response_id,
+                starting_after=starting_after,
+                include=include,
+            ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")

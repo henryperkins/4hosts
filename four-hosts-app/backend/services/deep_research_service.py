@@ -398,6 +398,10 @@ class DeepResearchService:
             # Record stage1 metrics
             try:
                 from .metrics import metrics
+                # Capture model used in stage1 if present
+                stage1_model = (
+                    stage1.get("model") if isinstance(stage1, dict) else None
+                )
                 metrics.record_stage(
                     stage="deep_research_stage1",
                     duration_ms=(perf_counter() - stage1_start) * 1000.0,
@@ -407,7 +411,7 @@ class DeepResearchService:
                         else None
                     ),
                     success=True,
-                    model=stage_model,
+                    model=stage1_model,
                     prompt_version=(config.prompt_variant or None),
                 )
             except Exception:

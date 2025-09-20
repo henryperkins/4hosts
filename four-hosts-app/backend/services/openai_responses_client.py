@@ -178,18 +178,18 @@ class OpenAIResponsesClient:
         Used by routes/responses.py and background_llm.py for polling.
         """
         async with httpx.AsyncClient() as client:
+            base = f"{self.base_url}/responses/{response_id}"
             if self.is_azure:
                 headers = {"api-key": self.api_key}
-                url = f"{self.base_url}/responses/{response_id}?api-version={self.azure_api_version}"
-                if include:
-                    for item in include:
-                        url += f"&include={item}"
+                qp = [("api-version", self.azure_api_version)]
             else:
                 headers = {"Authorization": f"Bearer {self.api_key}"}
-                url = f"{self.base_url}/responses/{response_id}"
-                if include:
-                    params = "&".join(f"include={item}" for item in include)
-                    url += f"?{params}"
+                qp = []
+
+            if include:
+                qp.extend([("include[]", item) for item in include])
+
+            url = f"{base}?{httpx.QueryParams(qp)}" if qp else base
 
             response = await client.get(url, headers=headers)
             response.raise_for_status()
@@ -216,7 +216,8 @@ class OpenAIResponsesClient:
     async def stream_response(
         self,
         response_id: str,
-        starting_after: Optional[int] = None
+        starting_after: Optional[int] = None,
+        include: Optional[List[str]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Stream events from a background response.
@@ -224,17 +225,23 @@ class OpenAIResponsesClient:
         Used by routes/responses.py for SSE streaming.
         """
         if self.is_azure:
-            url = f"{self.base_url}/responses/{response_id}?stream=true&api-version={self.azure_api_version}"
+            qp: List[tuple[str, str]] = [("stream", "true"), ("api-version", self.azure_api_version)]
             if starting_after is not None:
-                url += f"&starting_after={starting_after}"
+                qp.append(("starting_after", str(starting_after)))
+            if include:
+                qp.extend(("include[]", item) for item in include)
+            url = f"{self.base_url}/responses/{response_id}?{httpx.QueryParams(qp)}"
             headers = {
                 "api-key": self.api_key,
                 "Accept": "text/event-stream",
             }
         else:
-            url = f"{self.base_url}/responses/{response_id}?stream=true"
+            qp = [("stream", "true")]
             if starting_after is not None:
-                url += f"&starting_after={starting_after}"
+                qp.append(("starting_after", str(starting_after)))
+            if include:
+                qp.extend(("include[]", item) for item in include)
+            url = f"{self.base_url}/responses/{response_id}?{httpx.QueryParams(qp)}"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Accept": "text/event-stream",

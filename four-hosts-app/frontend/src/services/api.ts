@@ -970,6 +970,21 @@ class APIService {
     return response.json()
   }
 
+  // Responses API (debug/util)
+  async getResponseDetails(responseId: string, include?: string[]): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams()
+    if (Array.isArray(include)) {
+      include.forEach((i) => params.append('include[]', i))
+    }
+    const query = params.toString() ? `?${params.toString()}` : ''
+    const response = await this.fetchWithAuth(`/responses/${encodeURIComponent(responseId)}${query}`)
+    if (!response.ok) {
+      const error = await response.json().catch(() => null)
+      throw new Error((error && (error.detail || error.error)) || 'Failed to get response details')
+    }
+    return response.json()
+  }
+
   // Source credibility
   async getSourceCredibility(domain: string, paradigm: Paradigm): Promise<Record<string, unknown>> {
     const response = await this.fetchWithAuth(`/sources/credibility/${domain}?paradigm=${paradigm}`)

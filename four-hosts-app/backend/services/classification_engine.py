@@ -4,6 +4,7 @@ Core implementation for paradigm classification with 85%+ accuracy target
 """
 
 import re
+import hashlib
 import json
 import traceback
 import time
@@ -387,6 +388,19 @@ class ParadigmClassifier:
         # Track classification steps
         total_steps = 4  # features, rule-based, LLM (optional), combination
         
+        # Structured input snapshot (sanitized later in analyzer)
+        try:
+            logger.info(
+                "Query classification input",
+                stage="classification_input",
+                research_id=research_id,
+                query_length=len(query or ""),
+                has_special_chars=bool(re.search(r"[^\w\s]", query or "")),
+                query_hash=hashlib.md5((query or "").encode("utf-8", errors="ignore")).hexdigest()[:8],
+            )
+        except Exception:
+            pass
+
         # Run feature extraction in executor to avoid blocking
         if progress_tracker and research_id:
             await progress_tracker.update_progress(
@@ -408,6 +422,24 @@ class ParadigmClassifier:
         # Wait for features
         feature_start = time.time()
         features = await features_task
+
+        # Emit a compact, structured features snapshot to aid debugging
+        try:
+            qwords = [w for w in (features.tokens or []) if w in {"who", "what", "when", "where", "why", "how", "which"}][:6]
+            actions = [s.replace("action_", "") for s in (features.intent_signals or []) if s.startswith("action_")][:6]
+            logger.info(
+                "Feature extraction complete",
+                stage="features_extracted",
+                research_id=research_id,
+                features={
+                    "question_words": qwords,
+                    "action_verbs": actions,
+                    "domain_indicators": [features.domain] if getattr(features, "domain", None) else [],
+                    "sentiment": round(float(getattr(features, "emotional_valence", 0.0) or 0.0), 3),
+                },
+            )
+        except Exception:
+            pass
 
         logger.info(
             "Feature extraction completed",
@@ -478,6 +510,25 @@ class ParadigmClassifier:
                     stack_trace=traceback.format_exc(),
                 )
                 llm_scores = {}
+
+        # Surface disagreement between rule-based and LLM tops (if any)
+        try:
+            if llm_scores:
+                rule_top, rule_top_score = max(((p, s.score) for p, s in rule_scores.items()), key=lambda x: x[1])
+                llm_top, llm_top_score = max(((p, s.score) for p, s in llm_scores.items()), key=lambda x: x[1])
+                if rule_top != llm_top:
+                    # Normalize to 0..1 for a comparable delta
+                    delta = abs((rule_top_score/10.0) - (llm_top_score/10.0))
+                    logger.warning(
+                        "Paradigm classification disagreement",
+                        stage="classification_conflict",
+                        research_id=research_id,
+                        rule_based=rule_top.value,
+                        llm_based=llm_top.value,
+                        confidence_delta=round(delta, 3),
+                    )
+        except Exception:
+            pass
 
         if progress_tracker and research_id:
             await progress_tracker.update_progress(

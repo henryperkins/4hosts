@@ -652,7 +652,7 @@ async def execute_real_research(
             "total_sources_analyzed": len(sources_payload),
             "high_quality_sources": sum(1 for s in sources_payload if s.get("credibility_score", 0) >= 0.7),
             "search_queries_executed": context_layers["search_queries_count"],
-            "processing_time_seconds": float(exec_meta.get("processing_time", 0.0) or 0.0),
+            "processing_time_seconds": float(exec_meta.get("processing_time_seconds", 0.0) or 0.0),
             "synthesis_quality": getattr(answer_obj, "synthesis_quality", None),
             "paradigms_used": [paradigm_analysis["primary"]["paradigm"]],
             "research_depth": research.options.depth.value if hasattr(research, "options") else "standard",

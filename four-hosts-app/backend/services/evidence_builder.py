@@ -245,6 +245,9 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
 
     return out
 
+    # NOTE: unreachable code below (return above) – ensure we log **before**
+    # returning.  (Kept as comment for clarity.)
+
 
 def _pick_docs(
     results: List[Dict[str, Any]],
@@ -452,6 +455,16 @@ async def build_evidence_bundle(
 
     logger = logging.getLogger(__name__)
 
+    logger.debug(
+        "Evidence builder invoked", 
+        query=(query[:120] if query else ""),
+        incoming_results=len(results),
+        max_docs=max_docs,
+        quotes_per_doc=quotes_per_doc,
+        include_full_content=include_full_content,
+        full_text_budget=full_text_budget,
+    )
+
     if not results:
         logger.debug("Evidence builder: No input results provided")
         return EvidenceBundle()
@@ -463,6 +476,12 @@ async def build_evidence_bundle(
         )
 
     docs = _pick_docs(results, max_docs=max_docs)
+
+    logger.debug(
+        "Evidence builder selected documents", 
+        selected_docs=len(docs),
+        candidate_results=len(results),
+    )
 
     # FALLBACK: If no docs pass the picking criteria, use top N results
     if not docs and results:

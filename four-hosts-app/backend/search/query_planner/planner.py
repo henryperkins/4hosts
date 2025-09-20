@@ -4,7 +4,7 @@ import time
 import traceback
 from typing import Iterable, List, Optional, Sequence, TYPE_CHECKING
 
-from services.query_planning import (
+from services.query_planning import (  # pylint: disable=import-error
     QueryCandidate,
     PlannerConfig,
     StageName,
@@ -20,6 +20,7 @@ from services.query_planning import (
 if TYPE_CHECKING:
     from services.search_apis import QueryOptimizer
 
+import os
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -48,7 +49,8 @@ class QueryPlanner:
     ) -> List[QueryCandidate]:
         start_time = time.time()
 
-        # Materialize additional_queries only if needed to avoid exhausting generators
+        # Materialize additional_queries only if needed
+        # to avoid exhausting generators
         aq_for_stage: Optional[Iterable[str]] = None
         aq_count = 0
         if additional_queries is not None:
@@ -124,6 +126,9 @@ class QueryPlanner:
                     error_type=type(e).__name__,
                     stack_trace=traceback.format_exc(),
                 )
+                val = os.getenv("PLANNER_STRICT_EXCEPTIONS", "0")
+                if str(val).lower() in {"1", "true", "yes", "on"}:
+                    raise
         if aq_for_stage:
             context_start = time.time()
             context_candidates = await self.context_stage.generate(
@@ -139,6 +144,20 @@ class QueryPlanner:
                 record_count=len(context_candidates),
             )
 
+        # Emit summary after expansion and before ranking for visibility
+        try:
+            strategies_used = list({c.stage for c in bag})
+        except Exception:
+            strategies_used = []
+        logger.info(
+            "Query planning summary",
+            stage="query_planning",
+            paradigm=paradigm,
+            original_query=seed_query[:100],
+            candidates_generated=len(bag),
+            strategies_used=strategies_used,
+        )
+
         result = self._merge_and_rank(bag)
 
         logger.info(
@@ -151,7 +170,7 @@ class QueryPlanner:
                 "final_candidates": len(result),
                 "deduplication_removed": len(bag) - len(result),
             },
-            queries=[c.query[:100] for c in result[:5]],  # first 5 queries only
+            queries=[c.query[:100] for c in result[:5]],
         )
 
         return result
@@ -173,9 +192,22 @@ class QueryPlanner:
         )
         return self._merge_and_rank(followup_candidates)
 
-    def _merge_and_rank(self, items: Iterable[QueryCandidate]) -> List[QueryCandidate]:
+    def _merge_and_rank(
+        self, items: Iterable[QueryCandidate]
+    ) -> List[QueryCandidate]:
         start_time = time.time()
-        initial_count = len(list(items)) if hasattr(items, "__len__") else 0
+
+        # Materialize once to avoid consuming generators/iterators
+        # during counting
+        if hasattr(items, "__len__"):
+            if isinstance(items, list):
+                seq = items
+            else:
+                seq = list(items)
+            initial_count = len(seq)
+        else:
+            seq = list(items)
+            initial_count = len(seq)
 
         logger.debug(
             "Starting deduplication and ranking",
@@ -185,7 +217,7 @@ class QueryPlanner:
 
         seen: List[str] = []
         out: List[QueryCandidate] = []
-        for cand in items:
+        for cand in seq:
             query = canon_query(cand.query)
             if not query:
                 continue
@@ -214,6 +246,26 @@ class QueryPlanner:
             reverse=True,
         )
 
+        # Emit candidate ranking preview with scores
+        try:
+            preview = [
+                {
+                    "query": c.query[:100],
+                    "label": c.label,
+                    "stage": c.stage,
+                    "score": round(stage_prior.get(c.stage, 0.8) * c.weight, 3),
+                }
+                for c in out[:5]
+            ]
+            logger.debug(
+                "Query candidate ranking",
+                stage="query_ranking",
+                candidates=preview,
+                total=len(out),
+            )
+        except Exception:
+            pass
+
         logger.debug(
             "Deduplication and ranking completed",
             stage="deduplication_complete",
@@ -223,5 +275,12 @@ class QueryPlanner:
                 "final_count": min(len(out), self.cfg.max_candidates),
             },
         )
-        
+
+        # Emit final candidate preview (up to 5) at debug level
+        logger.debug(
+            "QueryPlanner final candidates",
+            top_queries=[c.query[:120] for c in out[:5]],
+            total=len(out),
+        )
+
         return out[: self.cfg.max_candidates]

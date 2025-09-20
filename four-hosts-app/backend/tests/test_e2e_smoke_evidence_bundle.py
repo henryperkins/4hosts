@@ -41,7 +41,7 @@ async def test_e2e_smoke_evidence_bundle(monkeypatch):
     async def fake_process_results(*args, **kwargs):
         return {
             "results": [],
-            "metadata": {"processing_time": 0.01, "agent_trace": []},
+            "metadata": {"processing_time_seconds": 0.01, "agent_trace": []},
             "sources_used": [],
             "credibility_summary": {},
             "dedup_stats": {},
