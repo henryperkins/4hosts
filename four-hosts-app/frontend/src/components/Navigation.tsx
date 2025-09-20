@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { FiHome, FiClock, FiUser, FiBarChart2, FiMenu, FiX } from 'react-icons/fi'
+import { FiHome, FiClock, FiUser, FiBarChart2, FiMenu, FiX, FiLayers } from 'react-icons/fi'
 import { ToggleSwitch } from './ui/ToggleSwitch'
 import { Button } from './ui/Button'
 import { useAuth } from '../hooks/useAuth'
-import { useDarkMode, useToggleDarkMode } from '../store/themeStore'
+import { useThemeStore, useDarkMode } from '../store/themeStore'
 
 export const Navigation = () => {
   const { isAuthenticated, user, logout } = useAuth()
@@ -12,7 +12,7 @@ export const Navigation = () => {
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const darkMode = useDarkMode()
-  const toggleDarkMode = useToggleDarkMode()
+  const { setDarkMode } = useThemeStore()
 
   if (!isAuthenticated) return null
 
@@ -47,18 +47,29 @@ export const Navigation = () => {
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 bg-primary text-white px-4 py-2 rounded-md z-50">
         Skip to main content
       </a>
-      <nav className="bg-surface shadow-lg border-b border-border animate-slide-down transition-all duration-300 backdrop-blur-sm bg-opacity-95 dark:bg-opacity-95">
+      {/*
+        Include mobile safe-area padding to ensure the navigation bar does not
+        collide with device notches / rounded corners on modern phones. The
+        utility is defined globally in `index.css`.
+      */}
+      <nav className="bg-surface shadow-lg border-b border-border animate-slide-down transition-all duration-300 backdrop-blur-sm bg-opacity-95 dark:bg-opacity-95 mobile-safe-area">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
-          <div className="flex items-center gap-8">
+          {/*
+            Use a smaller horizontal gap on very small screens to avoid the
+            logo + hamburger wrapping when viewport width is ≤ 375 px. The
+            default gap is reduced to `gap-4`; we restore the previous spacing
+            from the `sm:` breakpoint upwards.
+          */}
+          <div className="flex items-center gap-4 sm:gap-8 min-w-0">
             <Link
               to="/"
-              className="text-xl font-bold text-text hover:text-primary transition-all duration-300 flex items-center gap-2 group touch-target"
+              className="text-xl font-bold text-text hover:text-primary transition-all duration-300 flex items-center gap-2 group touch-target min-w-0 overflow-hidden"
               onClick={closeMobileMenu}
             >
-              <span className="text-2xl group-hover:rotate-12 transition-transform duration-300 inline-block" role="img" aria-label="Theater masks">🎭</span>
+              <FiLayers className="h-6 w-6 group-hover:rotate-12 transition-transform duration-300" aria-hidden="true" />
               <span className="hidden sm:inline gradient-brand text-responsive-xl">Four Hosts Research</span>
-              <span className="sm:hidden gradient-brand text-responsive-lg">4H Research</span>
+              <span className="sm:hidden gradient-brand text-responsive-lg truncate">4H Research</span>
             </Link>
             <div className="hidden md:flex items-center gap-2">
               {navItems.map(({ path, icon: Icon, label, paradigm }) => {
@@ -89,7 +100,7 @@ export const Navigation = () => {
             {/* Dark mode toggle */}
             <ToggleSwitch
               checked={darkMode}
-              onChange={toggleDarkMode}
+              onChange={(v) => setDarkMode(v)}
               aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
               size="sm"
               className="hidden md:inline-flex"
@@ -145,7 +156,7 @@ export const Navigation = () => {
                 <span className="text-sm text-text-muted">Dark Mode</span>
                 <ToggleSwitch
                   checked={darkMode}
-                  onChange={toggleDarkMode}
+                  onChange={(v) => setDarkMode(v)}
                   size="sm"
                 />
               </div>

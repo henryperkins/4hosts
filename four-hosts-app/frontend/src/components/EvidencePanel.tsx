@@ -44,8 +44,25 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
       <CardContent>
         <ul className="space-y-3">
           {list.map((q, idx) => {
-            // Generate stable unique key based on quote content
-            const stableKey = q.id || `quote-${btoa((q.quote || '').slice(0, 30) + (q.url || '')).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10)}-${idx}`
+            // Generate a reasonably stable but safe key.  We attempt to base-64
+            // encode the first ~30 chars of the quote + URL, but `btoa` only
+            // supports Latin1 input.  If the quote contains non-ASCII
+            // characters we fall back to `encodeURIComponent` -> `btoa` to
+            // ensure the operation does not throw.  If *that* still fails, we
+            // degrade gracefully to a simple incremental key.
+
+            const rawKey = (q.quote || '').slice(0, 30) + (q.url || '')
+            let encoded: string
+            try {
+              encoded = btoa(rawKey)
+            } catch {
+              try {
+                encoded = btoa(unescape(encodeURIComponent(rawKey)))
+              } catch {
+                encoded = `fallback-${idx}`
+              }
+            }
+            const stableKey = q.id || `quote-${encoded.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10)}-${idx}`
             return (
             <li key={stableKey} className="rounded-md border border-border p-3 bg-surface">
               <div className="flex items-start justify-between gap-3">

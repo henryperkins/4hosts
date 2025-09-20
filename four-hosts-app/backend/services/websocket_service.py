@@ -1110,18 +1110,11 @@ class ResearchProgressTracker(ProgressTracker):
 
     async def report_search_completed(self, research_id: str, query: str, results_count: int):
         """Report that a search has completed"""
-        await self.connection_manager.broadcast_to_research(
-            research_id,
-            WSMessage(
-                type=WSEventType.SEARCH_COMPLETED,
-                data={
-                    "research_id": research_id,
-                    "query": query[:50] + "..." if len(query) > 50 else query,
-                    "results_count": results_count,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-        )
+        # Calculate up-to-date search counters before broadcasting so the
+        # frontend receives a self-contained payload with the latest metrics.
+        completed: Optional[int] = None
+        total_value: Optional[int] = None
+
         if research_id in self.research_progress:
             try:
                 progress_state = self.research_progress[research_id]
@@ -1131,15 +1124,38 @@ class ResearchProgressTracker(ProgressTracker):
             except Exception:
                 completed = None
                 total_value = None
-            if completed is not None:
-                try:
-                    await self.update_progress(
-                        research_id,
-                        searches_completed=completed,
-                        total_searches=total_value,
-                    )
-                except Exception:
-                    pass
+
+        # Broadcast search completion event including derived counters so the
+        # frontend can update its UI without inferring state.
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.SEARCH_COMPLETED,
+                data={
+                    "research_id": research_id,
+                    "query": query[:50] + "..." if len(query) > 50 else query,
+                    "results_count": results_count,
+                    # Provide running counters for UI synchronisation.
+                    "searches_completed": completed,
+                    "total_searches": total_value,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+
+        # Persist counters via a regular progress update so downstream
+        # consumers (e.g., other WebSocket clients, database snapshots) stay in
+        # sync with the event we just emitted.
+        if completed is not None:
+            try:
+                await self.update_progress(
+                    research_id,
+                    searches_completed=completed,
+                    total_searches=total_value,
+                )
+            except Exception:
+                # Intentionally ignore to avoid breaking the primary event flow.
+                pass
 
     async def report_credibility_check(self, research_id: str, domain: str, score: float):
         """Report credibility check progress"""

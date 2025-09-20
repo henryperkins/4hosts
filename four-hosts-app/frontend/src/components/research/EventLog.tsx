@@ -1,9 +1,15 @@
-import React, { memo, useMemo, useLayoutEffect, useRef } from 'react'
+import React, { memo, useMemo, useLayoutEffect, useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { Button } from '../ui/Button'
 import { SwipeableTabs } from '../ui/SwipeableTabs'
 import { CollapsibleEvent } from '../ui/CollapsibleEvent'
-import { FiSearch, FiCheckCircle, FiDatabase } from 'react-icons/fi'
+import {
+  FiSearch,
+  FiCheckCircle,
+  FiDatabase,
+  FiMaximize2,
+  FiMinimize2,
+} from 'react-icons/fi'
 
 export type StatusType = 'pending' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
 export type Priority = 'low' | 'medium' | 'high' | 'critical'
@@ -57,6 +63,8 @@ const getMessageStyle = (p?: Priority) => {
 
 export const EventLog = memo(function EventLog({ updates, isMobile, showVerbose, activeCategory, onCategoryChange }: EventLogProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  // Allow users to toggle between compact and expanded views for easier scrolling
+  const [logExpanded, setLogExpanded] = useState(false)
 
   // Auto-scroll on new updates
   useLayoutEffect(() => {
@@ -76,6 +84,8 @@ export const EventLog = memo(function EventLog({ updates, isMobile, showVerbose,
       .filter(u => showVerbose || !isNoisy(u.message))
       .filter(u => (activeCategory === 'all' ? true : categorize(u) === activeCategory))
   , [updates, showVerbose, activeCategory])
+
+  const sizeClass = logExpanded ? 'max-h-[80vh]' : 'max-h-72 sm:max-h-[32rem]'
 
   const renderEvents = () => (
     filtered.map((update, index) => {
@@ -112,7 +122,13 @@ export const EventLog = memo(function EventLog({ updates, isMobile, showVerbose,
         activeTab={activeCategory}
         onTabChange={(key) => onCategoryChange(key as CategoryKey)}
       >
-        <div ref={containerRef} className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto" role="log" aria-label="Research progress updates" aria-live="polite">
+        <div
+          ref={containerRef}
+          className={`space-y-2 overflow-y-auto ${sizeClass}`}
+          role="log"
+          aria-label="Research progress updates"
+          aria-live="polite"
+        >
           {renderEvents()}
         </div>
       </SwipeableTabs>
@@ -121,7 +137,7 @@ export const EventLog = memo(function EventLog({ updates, isMobile, showVerbose,
 
   return (
     <>
-      <div className="mb-2 flex flex-wrap gap-2 text-xs">
+      <div className="mb-2 flex flex-wrap gap-2 text-xs items-center">
         {([
           { key: 'all', label: `All (${categoryCounts.all})` },
           { key: 'search', label: `Search (${categoryCounts.search})` },
@@ -140,8 +156,32 @@ export const EventLog = memo(function EventLog({ updates, isMobile, showVerbose,
             {tab.label}
           </Button>
         ))}
+
+        {/* Spacer pushes expand toggle to the far right */}
+        <span className="flex-1" />
+
+        {/* Expand / collapse log height */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setLogExpanded(!logExpanded)}
+          aria-label={logExpanded ? 'Collapse log' : 'Expand log'}
+          className="p-1"
+        >
+          {logExpanded ? (
+            <FiMinimize2 className="h-4 w-4" />
+          ) : (
+            <FiMaximize2 className="h-4 w-4" />
+          )}
+        </Button>
       </div>
-      <div ref={containerRef} className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto" role="log" aria-label="Research progress updates" aria-live="polite">
+      <div
+        ref={containerRef}
+        className={`space-y-2 overflow-y-auto ${sizeClass}`}
+        role="log"
+        aria-label="Research progress updates"
+        aria-live="polite"
+      >
         {renderEvents()}
       </div>
     </>
@@ -149,4 +189,3 @@ export const EventLog = memo(function EventLog({ updates, isMobile, showVerbose,
 })
 
 export default EventLog
-

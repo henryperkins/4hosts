@@ -186,10 +186,13 @@ export const ResearchHistory: React.FC = () => {
                     </span>
 
                     {paradigm && (
-                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${getParadigmClass(item.paradigm!)} flex items-center gap-1 animate-fade-in`}>
-                        <span>{paradigm.icon}</span>
-                        {paradigm.shortDescription}
-                      </span>
+                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${getParadigmClass(item.paradigm!)} flex items-center gap-1 animate-fade-in`}>
+                          {paradigm.icon && (() => {
+                            const Icon = paradigm.icon
+                            return <Icon className="h-3 w-3" aria-hidden="true" />
+                          })()}
+                          {paradigm.shortDescription}
+                        </span>
                     )}
 
                     {item.processing_time && (

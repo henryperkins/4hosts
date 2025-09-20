@@ -1,5 +1,6 @@
 import React, { useReducer, useEffect, useCallback, useMemo } from 'react'
-import { FiSettings, FiUsers } from 'react-icons/fi'
+import { FiSettings, FiUsers, FiAperture, FiShield, FiCpu, FiHeart, FiTrendingUp } from 'react-icons/fi'
+import type { IconType } from 'react-icons'
 import { useAuth } from '../hooks/useAuth'
 import type { ResearchOptions, Paradigm } from '../types'
 import { Button } from './ui/Button'
@@ -153,12 +154,20 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
     onSubmit(trimmedQuery, optionsToSend)
   }, [state.query, state.options, state.paradigm, onSubmit])
 
-  const paradigmOptions = useMemo(() => [
-    { value: 'auto', label: 'Auto', icon: '🔮', description: 'Let AI choose', colorClass: 'text-purple-600 dark:text-purple-400' },
-    { value: 'dolores', label: 'Dolores', icon: '🛡️', description: 'Truth & Justice', colorClass: 'text-paradigm-dolores' },
-    { value: 'bernard', label: 'Bernard', icon: '🧠', description: 'Analysis & Logic', colorClass: 'text-paradigm-bernard' },
-    { value: 'teddy', label: 'Teddy', icon: '❤️', description: 'Care & Support', colorClass: 'text-paradigm-teddy' },
-    { value: 'maeve', label: 'Maeve', icon: '📈', description: 'Strategy & Power', colorClass: 'text-paradigm-maeve' }
+  interface ParadigmOption {
+    value: string
+    label: string
+    icon: IconType
+    description: string
+    colorClass: string
+  }
+
+  const paradigmOptions: ParadigmOption[] = useMemo(() => [
+    { value: 'auto', label: 'Auto', icon: FiAperture, description: 'Let AI choose', colorClass: 'text-purple-600 dark:text-purple-400' },
+    { value: 'dolores', label: 'Dolores', icon: FiShield, description: 'Truth & Justice', colorClass: 'text-paradigm-dolores' },
+    { value: 'bernard', label: 'Bernard', icon: FiCpu, description: 'Analysis & Logic', colorClass: 'text-paradigm-bernard' },
+    { value: 'teddy', label: 'Teddy', icon: FiHeart, description: 'Care & Support', colorClass: 'text-paradigm-teddy' },
+    { value: 'maeve', label: 'Maeve', icon: FiTrendingUp, description: 'Strategy & Power', colorClass: 'text-paradigm-maeve' }
   ], [])
 
   // Currently not used - for future deep research feature
@@ -248,7 +257,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
           <div className="block text-sm font-medium text-text mb-3" role="group" aria-label="Paradigm Selection">
             Paradigm Selection
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 xs:grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
             {paradigmOptions.map((option) => (
               <button
                 key={option.value}
@@ -266,11 +275,10 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                 aria-label={`${option.label}: ${option.description}`}
               >
                 <div className="text-center">
-                  <div className={`text-2xl mb-1 ${
-                    state.paradigm === option.value ? 'animate-fade-in' : ''
-                  }`}>
-                    {option.icon}
-                  </div>
+                <div className={`mb-1 ${state.paradigm === option.value ? 'animate-fade-in' : ''}`}>
+                  {/* Icon size scales with text for consistency */}
+                  <option.icon className="h-6 w-6 mx-auto" aria-hidden="true" />
+                </div>
                   <div className={`font-medium text-sm ${option.colorClass || 'text-text'}`}>
                     {option.label}
                   </div>
@@ -291,7 +299,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
           <label className="block text-sm font-medium text-text mb-3">
             Research Depth
           </label>
-          <div className="flex gap-3">
+          <div className="flex gap-3 flex-wrap">
             {(() => {
               // Deep research is now available to all users (variable unused; keep comment for clarity)
               type DepthValue = ResearchFormState['depth']

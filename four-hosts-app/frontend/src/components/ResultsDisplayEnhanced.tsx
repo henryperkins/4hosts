@@ -656,7 +656,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           <p className="text-text">{integrated_synthesis?.integrated_summary || summary}</p>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-sm">
           <div className="bg-surface-subtle rounded-lg p-3 transition-colors duration-200">
             <p className="text-text-muted">Sources Analyzed</p>
             <p className="font-semibold text-lg text-text">{Number(metadata?.total_sources_analyzed ?? 0)}</p>
@@ -860,7 +860,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               </div>
             </div>
             {contextLayers.layer_times ? (
-              <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 {Object.entries(contextLayers.layer_times).map(([k, v]) => {
                   const label = k.charAt(0).toUpperCase() + k.slice(1)
                   const value = typeof v === 'number' ? v : Number(v)
@@ -955,7 +955,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         {results.cost_info && (
           <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800 transition-colors duration-200">
             <h4 className="text-sm font-semibold text-amber-900 dark:text-amber-100 mb-2">Research costs</h4>
-            <div className="grid grid-cols-3 gap-3 text-sm">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
               {results.cost_info.search_api_costs !== undefined && (
                 <div>
                   <p className="text-amber-700 dark:text-amber-300">Search API</p>
@@ -1354,12 +1354,20 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
       )}
 
-      <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.55s' }}>
-        <h3 className="text-lg font-semibold text-text mb-4">Feedback</h3>
-        <div className="grid grid-cols-1">
-          <AnswerFeedback researchId={results.research_id} />
+      {/* Show feedback block only when we have at least some answer content to evaluate */}
+      {(
+        baseAnswer && (
+          typeof baseAnswer.summary === 'string' && baseAnswer.summary.trim() !== '' ||
+          Array.isArray(baseAnswer.sections) && baseAnswer.sections.length > 0
+        )
+      ) && (
+        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.55s' }}>
+          <h3 className="text-lg font-semibold text-text mb-4">Feedback</h3>
+          <div className="grid grid-cols-1">
+            <AnswerFeedback researchId={results.research_id} />
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.6s' }}>
         <h3 className="text-lg font-semibold text-text mb-4">Answer citations</h3>

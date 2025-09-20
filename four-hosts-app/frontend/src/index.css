@@ -600,22 +600,38 @@
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
-  }
+}
 
-  /* Smooth scrolling on mobile */
+/* Smooth scrolling on mobile */
   .mobile-scroll-smooth {
     -webkit-overflow-scrolling: touch;
     scroll-behavior: smooth;
   }
 
-  /* Hide scrollbar on mobile */
-  .scrollbar-hide-mobile {
-    scrollbar-width: none;
-    -ms-overflow-style: none;
+  /*
+    Respect user preference for reduced motion. Freeze continuous animations
+    such as Tailwind's `animate-shimmer`, `animate-pulse`, and `animate-spin`
+    when the user has requested less motion.
+  */
+  @media (prefers-reduced-motion: reduce) {
+    .animate-shimmer, .animate-pulse, .animate-spin {
+      animation: none !important;
+    }
   }
 
-  .scrollbar-hide-mobile::-webkit-scrollbar {
-    display: none;
+  /*
+    Hide scrollbars only on devices that have a hover-capable, fine pointer
+    (i.e. desktop/laptop). Mobile/touch users keep the scrollbar for feedback.
+  */
+  @media (hover: hover) and (pointer: fine) {
+    .scrollbar-hide-mobile {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    .scrollbar-hide-mobile::-webkit-scrollbar {
+      display: none;
+    }
   }
 
   /* Hide scrollbar universally */

@@ -28,6 +28,8 @@ export const getParadigmColorValue = (paradigm: Paradigm): string => {
 }
 
 // Extended paradigm information
+import { FiShield, FiHeart, FiCpu, FiTrendingUp } from 'react-icons/fi'
+
 export const paradigmInfo = {
   dolores: {
     name: 'Dolores (Revolutionary)',
@@ -38,7 +40,7 @@ export const paradigmInfo = {
     bgLight: 'paradigm-bg-dolores',
     description: 'Exposing systemic injustices and power imbalances',
     shortDescription: 'Truth & Justice',
-    icon: '⚔️',
+    icon: FiShield,
     focus: 'Revolutionary perspective focused on exposing hidden truths'
   },
   teddy: {
@@ -50,7 +52,7 @@ export const paradigmInfo = {
     bgLight: 'paradigm-bg-teddy',
     description: 'Protecting and supporting vulnerable communities',
     shortDescription: 'Care & Support',
-    icon: '🛡️',
+    icon: FiHeart,
     focus: 'Compassionate approach emphasizing community care'
   },
   bernard: {
@@ -62,7 +64,7 @@ export const paradigmInfo = {
     bgLight: 'paradigm-bg-bernard',
     description: 'Providing objective analysis and empirical evidence',
     shortDescription: 'Analysis & Logic',
-    icon: '🔬',
+    icon: FiCpu,
     focus: 'Data-driven analysis with empirical foundations'
   },
   maeve: {
@@ -74,7 +76,7 @@ export const paradigmInfo = {
     bgLight: 'paradigm-bg-maeve',
     description: 'Delivering actionable strategies and competitive advantage',
     shortDescription: 'Strategy & Power',
-    icon: '♟️',
+    icon: FiTrendingUp,
     focus: 'Strategic planning for sustainable power dynamics'
   }
 } as const

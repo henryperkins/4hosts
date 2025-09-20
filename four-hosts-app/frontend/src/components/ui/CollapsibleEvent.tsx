@@ -89,7 +89,7 @@ export const CollapsibleEvent: React.FC<CollapsibleEventProps> = ({
 
         {hasDetails && (
           <button
-            className="p-1 hover:bg-surface-muted rounded transition-colors"
+            className="p-1 hover:bg-surface-muted rounded transition-colors touch-target"
             onClick={(e) => {
               e.stopPropagation()
               setIsExpanded(!isExpanded)

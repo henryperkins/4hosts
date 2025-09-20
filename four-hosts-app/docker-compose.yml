@@ -229,7 +229,7 @@ services:
     labels:
       com.fourhosts.service: "frontend"
       com.fourhosts.description: "React frontend for Four Hosts research interface"
-      com.fourhosts.url: "http://localhost:5173"
+      com.fourhosts.url: "http://localhost"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80"]
       interval: 30s
@@ -265,11 +265,11 @@ networks:
 # 5. Rebuild after code changes: docker-compose up -d --build
 #
 # ACCESS POINTS:
-# - Frontend:      http://localhost:5173
+# - Frontend:      http://localhost
 # - Backend API:   http://localhost:8001 (default, avoids Portainer on 8000)
 # - API Docs:      http://localhost:8001/docs
 # - PostgreSQL:    localhost:5433 (user/password/fourhosts)
-# - Redis:         localhost:6380
+# - Redis:         (internal only) redis:6379 inside Docker network
 #
 # MONITORING:
 # - Check service health:  docker-compose ps

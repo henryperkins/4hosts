@@ -88,7 +88,14 @@ const WebhooksPage: React.FC = () => {
 
       {loading && <p>Loading…</p>}
 
-      <table className="w-full text-left border">
+      {/*
+        On narrow viewports long IDs/URLs can force the screen to scroll
+        horizontally. Wrapping the table in an `overflow-x-auto` container
+        lets the table remain intact while enabling horizontal scroll only
+        when necessary, preventing viewport overflow.
+      */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border min-w-[640px]">
         <thead>
           <tr>
             <th className="border px-2 py-1">ID</th>
@@ -112,6 +119,7 @@ const WebhooksPage: React.FC = () => {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }

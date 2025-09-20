@@ -105,7 +105,7 @@ export const ClassificationFeedback: React.FC<Props> = ({ researchId, query, cla
           variant="primary"
           size="sm"
           loading={submitting}
-          disabled={submitting || (agree === false && !correction)}
+          disabled={submitting || agree === null || (agree === false && !correction)}
           icon={submitting ? FiEdit2 : FiSend}
           onClick={submit}
         >
@@ -120,4 +120,3 @@ export const ClassificationFeedback: React.FC<Props> = ({ researchId, query, cla
 }
 
 export default ClassificationFeedback
-

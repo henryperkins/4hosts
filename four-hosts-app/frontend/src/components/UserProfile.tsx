@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { FiUser, FiSettings, FiSave, FiLogOut, FiMoon, FiSun, FiDatabase, FiCpu } from 'react-icons/fi'
+import { FiUser, FiSettings, FiSave, FiLogOut, FiMoon, FiSun, FiDatabase, FiCpu, FiCrosshair } from 'react-icons/fi'
 import { useAuth } from '../hooks/useAuth'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
@@ -83,7 +83,8 @@ export const UserProfile: React.FC = () => {
         {user.role === 'free' && (
           <div className="mt-4 p-3 bg-primary/10 border border-primary/30 rounded-lg">
             <p className="text-sm text-primary">
-              🎯 Upgrade to unlock deep research, export features, and advanced analytics!
+              <FiCrosshair className="inline-block mr-1" aria-hidden="true" />
+              Upgrade to unlock deep research, export features, and advanced analytics!
             </p>
           </div>
         )}

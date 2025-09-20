@@ -173,7 +173,8 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [stats, setStats] = useState<ResearchStats>(() => createInitialStats())
   const [sourcePreviews, setSourcePreviews] = useState<SourcePreview[]>([])
   const [showSourcePreviews, setShowSourcePreviews] = useState(true)
-  const [sourcesCollapsed, setSourcesCollapsed] = useState(true)
+  const initialMobile = typeof window !== 'undefined' ? window.innerWidth < 640 : false
+  const [sourcesCollapsed, setSourcesCollapsed] = useState(initialMobile)
   const [startTime, setStartTime] = useState<number | null>(null)
   const [elapsedSec, setElapsedSec] = useState<number>(0)
   // Track granular layer progress within Context-Engineering (Write/Rewrite/Select/Optimize/Compress/Isolate)
@@ -589,6 +590,38 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           statusUpdate = {
             message: results !== null ? `Found ${results} results` : 'Search completed'
           }
+          // Update searches completed metric. Prefer an explicit count from the
+          // backend if provided; otherwise assume each `search.completed` event
+          // represents the completion of a single search and increment the
+          // existing counter.  We also ensure we never exceed the configured
+          // totalSearches so the “X / Y” display remains accurate.
+
+          const completedCount = toNonNegativeInt(data.searches_completed)
+
+          setStats(prev => {
+            // Clone mutable members to avoid state mutations.
+            const next = { ...prev, apisQueried: new Set(prev.apisQueried) }
+
+            if (completedCount !== null) {
+              // If the backend explicitly tells us how many searches have been
+              // completed so far, trust that value.
+              if (completedCount === prev.searchesCompleted) {
+                return prev
+              }
+              next.searchesCompleted = completedCount
+            } else {
+              // Otherwise, increment by one for this event.
+              const incremented = prev.searchesCompleted + 1
+              // Bound by totalSearches when we know that number.
+              const bounded = prev.totalSearches > 0 ? Math.min(incremented, prev.totalSearches) : incremented
+              if (bounded === prev.searchesCompleted) {
+                return prev
+              }
+              next.searchesCompleted = bounded
+            }
+
+            return next
+          })
           break
         }
         case 'credibility.check': {

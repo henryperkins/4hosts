@@ -35,7 +35,7 @@ export const PhaseTracker = memo(function PhaseTracker({ currentPhase, currentSt
   const showCELayers = currentPhase === 'context_engineering' && (currentStatus === 'processing' || currentStatus === 'in_progress')
 
   return (
-    <>
+    <div className="overflow-x-auto scrollbar-hide-mobile">
       {showCELayers && (
         <div className="mb-3 flex items-center gap-2">
           {CE_LAYERS.map((label, idx) => {
@@ -55,8 +55,8 @@ export const PhaseTracker = memo(function PhaseTracker({ currentPhase, currentSt
         </div>
       )}
 
-      <div className="mb-4 bg-surface-subtle rounded-lg p-4">
-        <div className="flex justify-between items-center gap-2">
+      <div className="mb-4 bg-surface-subtle rounded-lg p-4 min-w-[320px]">
+        <div className="flex justify-center sm:justify-between items-center gap-2 flex-wrap">
           {phases.map((phase, index) => (
             <div key={phase.name} className="flex items-center flex-1">
               <div className="flex flex-col items-center flex-1">
@@ -79,9 +79,8 @@ export const PhaseTracker = memo(function PhaseTracker({ currentPhase, currentSt
           ))}
         </div>
       </div>
-    </>
+    </div>
   )
 })
 
 export default PhaseTracker
-
