@@ -15,14 +15,23 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+class ResponseStatus(Enum):
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+class SearchContextSize(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
 from .openai_responses_client import (
     OpenAIResponsesClient,
     WebSearchTool,
     CodeInterpreterTool,
     MCPTool,
     Citation,
-    ResponseStatus,
-    SearchContextSize,
 )
 from .llm_client import (
     responses_deep_research,

@@ -19,7 +19,7 @@ from .classification_engine import (
     ClassificationResult,
 )
 from . import paradigm_search
-from services.search_apis import QueryOptimizer  # type: ignore
+from services.query_planning.optimizer import QueryOptimizer  # type: ignore
 from search.query_planner import QueryPlanner
 from services.query_planning import PlannerConfig, build_planner_config
 from services.llm_client import llm_client  # type: ignore

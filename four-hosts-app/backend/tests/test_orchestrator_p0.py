@@ -104,7 +104,6 @@ async def test_cost_attribution_counts_seen_providers(monkeypatch):
     # cost attribution should be called for 'google' and 'brave',
     # not 'aggregate'
     assert set([api for api, _ in seen]) == {"google", "brave"}
-    await o.cleanup()
 
 
 @pytest.mark.asyncio
@@ -128,7 +127,6 @@ async def test_cancelled_error_propagates(monkeypatch):
                 min_relevance_score=0.1,
             ),
         )
-    await o.cleanup()
 
 
 def test_early_filter_keyword_path_no_nameerror():
@@ -247,4 +245,3 @@ async def test_agentic_followups_trigger(monkeypatch):
     assert len(calls) == 2, "follow-up iteration should execute"
     assert follow_candidate.query in calls[1]
     assert result["metadata"]["queries_executed"] == 2
-    await o.cleanup()

@@ -19,10 +19,28 @@ class CostMonitor:
         }
 
     async def track_search_cost(self, api_name: str, queries_count: int) -> float:
-        cost = self.cost_per_call.get(api_name, 0.0) * queries_count
+        """Track cost for a given API and number of calls.
+
+        - API name is normalized to lowercase.
+        - Call counts are treated as whole numbers (floored) and min-clamped to 0.
+        - Unknown APIs default to 0 cost.
+        """
         try:
-            await cache_manager.track_api_cost(api_name, cost, queries_count)
+            name = str(api_name or "").strip().lower()
         except Exception:
+            name = ""
+        try:
+            calls = int(queries_count)
+        except Exception:
+            calls = 0
+        calls = max(0, calls)
+
+        unit_cost = self.cost_per_call.get(name, 0.0)
+        cost = unit_cost * calls
+        try:
+            await cache_manager.track_api_cost(name, cost, calls)
+        except Exception:
+            # Cache tracking is best-effort; never fail cost computation
             pass
         return cost
 
@@ -96,13 +114,23 @@ class Plan:
     started_at: datetime = field(default_factory=datetime.now)
 
     def can_spend(self, additional_cost_usd: float, additional_tokens: int) -> bool:
-        within_cost = (self.consumed_cost_usd + additional_cost_usd) <= self.budget.max_cost_usd
-        within_tokens = (self.consumed_tokens + additional_tokens) <= self.budget.max_tokens
+        """Strict budget gating with clamping and precision-safe comparison.
+
+        - Cost: strictly less than max_cost_usd (equality not allowed)
+        - Tokens: less-than-or-equal allowed
+        - Negative inputs are clamped to zero
+        """
+        add_cost = max(0.0, float(additional_cost_usd or 0.0))
+        add_tokens = max(0, int(additional_tokens or 0))
+        # Strictly less for cost to avoid edge-case equality approvals
+        within_cost = (self.consumed_cost_usd + add_cost) < self.budget.max_cost_usd
+        within_tokens = (self.consumed_tokens + add_tokens) <= self.budget.max_tokens
         return within_cost and within_tokens
 
     def spend(self, cost_usd: float, tokens: int) -> None:
-        self.consumed_cost_usd += max(0.0, cost_usd)
-        self.consumed_tokens += max(0, tokens)
+        # Clamp and round to mitigate floating point accumulation
+        self.consumed_cost_usd = round(self.consumed_cost_usd + max(0.0, float(cost_usd or 0.0)), 6)
+        self.consumed_tokens += max(0, int(tokens or 0))
 
 
 class BudgetAwarePlanner:
@@ -119,8 +147,14 @@ class BudgetAwarePlanner:
         return tools
 
     def estimate_cost(self, tool_name: str, calls: int = 1) -> float:
+        """Estimate cost for a given tool; negative/float calls handled gracefully."""
         cap = self.registry.get(tool_name)
-        return (cap.cost_per_call_usd * calls) if cap else 0.0
+        try:
+            n_calls = int(calls)
+        except Exception:
+            n_calls = 0
+        n_calls = max(0, n_calls)
+        return round((cap.cost_per_call_usd * n_calls), 6) if cap else 0.0
 
     def record_tool_spend(self, plan: Plan, tool_name: str, calls: int, tokens: int = 0) -> bool:
         cost = self.estimate_cost(tool_name, calls)

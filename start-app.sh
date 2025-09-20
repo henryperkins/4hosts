@@ -59,6 +59,37 @@ PY
     fi
 fi
 
+# Ensure Redis is available on localhost:6379
+REDIS_HOST="127.0.0.1"
+REDIS_PORT=6379
+
+if ! (echo > /dev/tcp/$REDIS_HOST/$REDIS_PORT) >/dev/null 2>&1; then
+    echo "📦 Redis not reachable on $REDIS_PORT. Attempting to launch a local Redis container..."
+
+    if command -v docker >/dev/null 2>&1; then
+        # Run a detached Redis container with host port mapping. Reuse if already created.
+        if ! docker ps -a --format '{{.Names}}' | grep -q '^fourhosts-redis-local$'; then
+            echo "   Creating new Redis container fourhosts-redis-local..."
+            docker run -d --name fourhosts-redis-local -p 6379:6379 --restart unless-stopped redis:7-alpine >/dev/null 2>&1
+        else
+            echo "   Starting existing Redis container fourhosts-redis-local..."
+            docker start fourhosts-redis-local >/dev/null 2>&1
+        fi
+
+        echo -n "   Waiting for Redis to become ready"
+        for i in {1..20}; do
+            if (echo > /dev/tcp/$REDIS_HOST/$REDIS_PORT) >/dev/null 2>&1; then
+                echo " - ready"
+                break
+            fi
+            echo -n "."
+            sleep 1
+        done
+    else
+        echo "⚠️  Docker not available; please install and run Redis manually or set REDIS_URL appropriately."
+    fi
+fi
+
 # Source nvm to ensure npm is available when running with sudo
 if [ -f "/home/azureuser/.nvm/nvm.sh" ]; then
     export NVM_DIR="/home/azureuser/.nvm"
@@ -307,7 +338,12 @@ pip install -r requirements.txt > /dev/null 2>&1
 
 # Provide default DATABASE_URL if none is set
 if [ -z "${DATABASE_URL:-}" ]; then
-    export DATABASE_URL="postgresql+asyncpg://user:password@$DB_HOST:$DB_PORT_PRIMARY/fourhosts"
+export DATABASE_URL="postgresql+asyncpg://user:password@$DB_HOST:$DB_PORT_PRIMARY/fourhosts"
+fi
+
+# Provide default REDIS_URL if none is set (so backend can reach the local Redis)
+if [ -z "${REDIS_URL:-}" ]; then
+    export REDIS_URL="redis://$REDIS_HOST:$REDIS_PORT"
 fi
 
 # Run Alembic migrations before launching backend

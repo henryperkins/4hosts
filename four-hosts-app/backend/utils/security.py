@@ -33,6 +33,31 @@ REDOS_PATTERNS = [
 ]
 
 
+def validate_and_sanitize_url(url: str) -> str:
+    """Validate and sanitize a URL.
+
+    Args:
+        url: The URL string to validate and sanitize
+
+    Returns:
+        The sanitized URL string
+    """
+    if not url:
+        return ""
+
+    # Remove any dangerous characters and truncate to max length
+    url = url.strip()[:MAX_URL_LENGTH]
+
+    # Basic URL validation - ensure it starts with http/https
+    if not url.startswith(('http://', 'https://')):
+        return ""
+
+    # Remove any control characters or non-printable characters
+    url = ''.join(char for char in url if ord(char) >= 32)
+
+    return url
+
+
 class InputSanitizer:
     """Centralized input sanitization to prevent injection attacks."""
 

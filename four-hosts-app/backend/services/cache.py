@@ -16,6 +16,9 @@ from datetime import datetime
 from dataclasses import asdict
 import asyncio
 from contextlib import asynccontextmanager
+import subprocess
+import shutil
+import time
 
 from .search_apis import SearchResult
 from services.metrics import metrics
@@ -42,7 +45,17 @@ class CacheManager:
     def __init__(self, redis_url: str | None = None):
         # Respect REDIS_URL env when not explicitly provided
         self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
-        self.redis_pool = None
+        self.redis_pool = None  # Populated after successful `initialize()`
+
+        # Track whether we've already attempted to establish the Redis
+        # connection. Without this guard each call to `get_client()` would keep
+        # retrying (and logging) on every cache access which overwhelms the
+        # log stream when Redis is intentionally unavailable during local
+        # development.  Once an attempt has been made we remember the outcome
+        # and avoid spamming further error logs.
+        self._initialization_attempted: bool = False
+
+
         self.hit_count = 0
         self.miss_count = 0
         self.search_metrics_fallback = deque(maxlen=2000)
@@ -63,17 +76,71 @@ class CacheManager:
 
     async def initialize(self):
         """Initialize Redis connection pool"""
+        # Prevent repeated attempts that would flood the logs when Redis is
+        # down.  We only try once per process lifetime.
+        if self._initialization_attempted:
+            return self.redis_pool is not None
+
+        self._initialization_attempted = True
+
         try:
             self.redis_pool = redis.ConnectionPool.from_url(
                 self.redis_url, max_connections=20, decode_responses=True
             )
+
             # Test connection
             redis_client = redis.Redis(connection_pool=self.redis_pool)
             await redis_client.ping()
+
             logger.info("Redis connection established successfully")
             return True
         except Exception as e:
             logger.error(f"Failed to connect to Redis: {str(e)}")
+
+            # Attempt to auto-launch a local Redis container if Docker exists
+            if shutil.which("docker") and os.getenv("DISABLE_AUTO_REDIS", "0") != "1":
+                try:
+                    container_name = "fourhosts-redis-auto"
+                    # Start container if not already running
+                    subprocess.run(
+                        [
+                            "docker",
+                            "run",
+                            "-d",
+                            "--name",
+                            container_name,
+                            "-p",
+                            "6379:6379",
+                            "--restart",
+                            "unless-stopped",
+                            "redis:7-alpine",
+                        ],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+
+                    # Give Redis a moment to start
+                    time.sleep(2)
+
+                    # Retry connection once
+                    try:
+                        self.redis_pool = redis.ConnectionPool.from_url(
+                            self.redis_url, max_connections=20, decode_responses=True
+                        )
+                        redis_client = redis.Redis(connection_pool=self.redis_pool)
+                        await redis_client.ping()
+                        logger.info("Redis auto-started via Docker and connected successfully")
+                        return True
+                    except Exception as inner_err:
+                        logger.error(
+                            "Auto-started Redis container but still failed to connect: %s",
+                            inner_err,
+                        )
+                except Exception as docker_err:
+                    logger.error("Failed to auto-start Redis via Docker: %s", docker_err)
+
+            self.redis_pool = None
             return False
 
     async def close(self):
@@ -84,10 +151,16 @@ class CacheManager:
     @asynccontextmanager
     async def get_client(self):
         """Context manager for Redis client"""
-        if not self.redis_pool:
+        # Attempt to initialise once if we haven't already.
+        if self.redis_pool is None and not self._initialization_attempted:
             await self.initialize()
 
+        if self.redis_pool is None:
+            # Redis is required now; raise explicit error so callers can react.
+            raise ConnectionError("Redis connection pool unavailable. Did initialization fail?")
+
         client = redis.Redis(connection_pool=self.redis_pool)
+
         try:
             yield client
         finally:

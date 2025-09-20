@@ -3,8 +3,11 @@ Result Normalizer Utility
 Consolidates result normalization logic from research_orchestrator
 """
 
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, List, Tuple
 from datetime import date, datetime
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def normalize_result(
@@ -67,3 +70,79 @@ def normalize_result(
         normalized["source_category"] = metadata["source_category"]
 
     return normalized
+
+
+def repair_and_filter_results(
+    search_results: Dict[str, List[Any]],
+    *,
+    enforce_url_presence: bool = True,
+    metrics: Optional[Dict[str, Any]] = None,
+    diag_samples: Optional[Dict[str, List]] = None,
+    progress_callback: Optional[Any] = None,
+    research_id: Optional[str] = None
+) -> Tuple[List[Any], List[Tuple[Any, str]]]:
+    """
+    Repair and filter search results, ensuring they have valid URLs and content.
+
+    Args:
+        search_results: Dictionary of search results by query key
+        enforce_url_presence: Whether to drop results without URLs
+        metrics: Optional metrics dictionary to track dropped results
+        diag_samples: Optional diagnostics samples dictionary
+        progress_callback: Optional progress callback
+        research_id: Optional research ID for progress tracking
+
+    Returns:
+        Tuple of (combined valid results, results needing content backfill)
+    """
+    combined: List[Any] = []
+    to_backfill: List[Tuple[Any, str]] = []
+
+    for qkey, batch in (search_results or {}).items():
+        if not batch:
+            continue
+        for r in batch:
+            if r is None:
+                continue
+
+            # Enforce URL presence when enabled
+            url_val = getattr(r, "url", None)
+            if not url_val or not isinstance(url_val, str) or not url_val.strip():
+                try:
+                    if enforce_url_presence:
+                        if metrics is not None:
+                            metrics["dropped_no_url"] = int(metrics.get("dropped_no_url", 0)) + 1
+                        if diag_samples is not None:
+                            diag_samples.setdefault("no_url", []).append(getattr(r, "title", "") or "")
+                        continue
+                except Exception:
+                    pass
+
+            # Minimal repair mirroring legacy behavior
+            content = getattr(r, "content", "") or ""
+            if not str(content).strip():
+                try:
+                    sn = getattr(r, "snippet", "") or ""
+                    tt = getattr(r, "title", "") or ""
+                    if sn.strip():
+                        r.content = f"Summary from search results: {sn.strip()}"
+                    elif tt.strip():
+                        r.content = tt.strip()
+                except Exception:
+                    pass
+
+            # Stage a second-chance fetch for empty content
+            if not str(getattr(r, "content", "") or "").strip() and getattr(r, "url", None):
+                to_backfill.append((r, getattr(r, "url")))
+
+            # Require content non-empty after repair/fetch
+            if not str(getattr(r, "content", "") or "").strip():
+                try:
+                    logger.debug("[repair_and_filter_results] Dropping empty-content result: %s", getattr(r, "url", ""))
+                except Exception:
+                    pass
+                continue
+
+            combined.append(r)
+
+    return combined, to_backfill

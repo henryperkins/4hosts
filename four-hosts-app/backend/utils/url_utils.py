@@ -318,3 +318,30 @@ def is_same_domain(url1: str, url2: str) -> bool:
         True if same domain, False otherwise
     """
     return extract_domain(url1) == extract_domain(url2)
+
+
+def canonicalize_url(url: str) -> Optional[str]:
+    """
+    Canonicalize a URL by cleaning and normalizing it.
+    Combines clean_url + normalize_url for consistent URL handling.
+
+    Args:
+        url: URL string to canonicalize
+
+    Returns:
+        Canonicalized URL or None if invalid
+    """
+    if not url:
+        return None
+
+    try:
+        # First clean the URL (remove tracking params, etc.)
+        cleaned = clean_url(url, remove_tracking=True)
+        # Then normalize it (lowercase domain, handle DOIs, etc.)
+        normalized = normalize_url(cleaned)
+        # Validate the result
+        if is_valid_url(normalized):
+            return normalized
+        return None
+    except Exception:
+        return None

@@ -1150,7 +1150,7 @@ credibility_system = SourceReputationDatabase()
 
 
 async def get_source_credibility(
-    domain: str, 
+    domain: str,
     paradigm: str = "bernard",
     content: Optional[str] = None,
     search_terms: Optional[List[str]] = None,
@@ -1166,6 +1166,40 @@ async def get_source_credibility(
         published_date=published_date,
         other_sources=other_sources
     )
+
+
+async def get_source_credibility_safe(
+    domain: str,
+    paradigm: str,
+    credibility_enabled: bool = True,
+    log_failures: bool = True
+) -> Tuple[float, str, str]:
+    """Get source credibility with non-blocking error handling
+
+    Returns: (overall_score, explanation, status)
+    where status is one of: 'success', 'failed', 'skipped'
+    """
+    try:
+        if not credibility_enabled:
+            return 0.5, "Credibility checking disabled", "skipped"
+
+        credibility = await get_source_credibility(domain, paradigm)
+        # Prefer structured to_dict if available; fall back to attribute
+        explanation = ""
+        if hasattr(credibility, "to_dict"):
+            card = credibility.to_dict()
+            explanation = (
+                f"bias={card.get('bias_rating')}, "
+                f"fact={card.get('fact_check_rating')}, "
+                f"cat={card.get('source_category')}"
+            )
+        elif hasattr(credibility, "explanation"):
+            explanation = getattr(credibility, "explanation") or ""
+        return getattr(credibility, "overall_score", 0.5), explanation, "success"
+    except Exception as e:
+        if log_failures:
+            logger.warning("Credibility check failed for %s: %s", domain, str(e))
+        return 0.5, f"Credibility check failed: {str(e)}", "failed"
 
 
 # Example usage and testing

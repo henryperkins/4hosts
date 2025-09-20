@@ -79,7 +79,6 @@ async def test_classification_details_and_metrics_shapes():
         synthesize_answer=False,
         answer_options={},
     )
-    await orch.cleanup()
 
     # Assert: response container
     assert isinstance(resp, dict)

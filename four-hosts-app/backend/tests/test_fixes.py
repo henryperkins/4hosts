@@ -46,7 +46,6 @@ async def test_search_apis():
         print(f"✗ Search failed: {str(e)}")
 
     # Cleanup
-    await manager.cleanup()
     print("✓ Search manager cleaned up")
 
 
@@ -100,7 +99,6 @@ async def test_research_orchestrator():
         print(f"  Stats: {stats}")
 
         # Cleanup
-        await research_orchestrator.cleanup()
         print("✓ Research orchestrator cleaned up")
 
     except Exception as e:

@@ -1053,6 +1053,39 @@ def get_search_strategy(paradigm: Union[str, Any]):
     return strategies.get(key, BernardSearchStrategy())  # Default to Bernard
 
 
+def get_paradigm_focus(paradigm: Optional[Union[str, Any]]) -> Optional[str]:
+    """Get the search focus text for a paradigm
+
+    Args:
+        paradigm: The paradigm (HostParadigm enum or string)
+
+    Returns:
+        Focus text for the paradigm or None if not applicable
+    """
+    # Import here to avoid circular dependency
+    from models.context_models import HostParadigm
+
+    # Handle None case
+    if paradigm is None:
+        return None
+
+    # Convert to HostParadigm if it's a string
+    if isinstance(paradigm, str):
+        try:
+            paradigm = HostParadigm[paradigm.upper()]
+        except (KeyError, AttributeError):
+            return None
+
+    mapping = {
+        HostParadigm.BERNARD: "Provide data-backed evidence, recent studies, and quantitative context.",
+        HostParadigm.MAEVE: "Highlight strategic implications, competitive dynamics, and actionable levers.",
+        HostParadigm.DOLORES: "Surface investigative findings, equity impacts, and accountability angles.",
+        HostParadigm.TEDDY: "Emphasize community outcomes, practitioner guidance, and support resources.",
+    }
+
+    return mapping.get(paradigm)
+
+
 # Example usage and testing
 async def test_paradigm_strategies():
     """Test all paradigm search strategies"""

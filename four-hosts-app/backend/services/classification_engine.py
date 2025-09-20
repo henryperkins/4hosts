@@ -998,8 +998,8 @@ class ClassificationEngine:
                 "confidence": (result.confidence if result else None),
             },
             metrics={
-                "keywords_matched": (len(result.matched_keywords) if result else 0),
-                "themes_identified": (len(result.themes) if result else 0),
+                "signals_count": (len(result.signals) if result else 0),
+                "reasoning_count": (sum(len(r) for r in result.reasoning.values()) if result else 0),
             },
         )
         # Metrics recording (best-effort, ignore failures)

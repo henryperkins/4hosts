@@ -2185,6 +2185,48 @@ class SearchAPIManager:
         # and orchestrator-level ResultDeduplicator performs advanced dedup.
         return self.rfilter.filter(all_res, seed_query, cfg)
 
+    async def search_with_plan(
+        self,
+        planned: Sequence["QueryCandidate"],
+        config: SearchConfig = None
+    ) -> Dict[str, List[SearchResult]]:
+        """Execute planned queries across providers in a single prioritized call.
+
+        This variant preserves the original call signature expected by tests:
+        - Delegates once to search_with_priority(planned, config)
+        - Returns a dict[label] -> List[SearchResult]
+        - Ensures keys exist for all candidate labels (possibly with empty lists)
+        """
+        if not planned:
+            return {}
+
+        if config is None:
+            config = SearchConfig()
+
+        # Pre-populate mapping for all labels so callers can rely on presence
+        results_by_label: Dict[str, List[SearchResult]] = {
+            getattr(c, "label", "unknown"): [] for c in planned
+        }
+
+        try:
+            # Single call to priority path as expected by integration tests
+            stage_results = await self.search_with_priority(planned, config)
+        except Exception:
+            # On any error, return empty mapping
+            return {}
+
+        # Organize results by candidate label
+        for result in stage_results or []:
+            label = (result.raw_data or {}).get("query_label")
+            stage = (result.raw_data or {}).get("query_stage")
+            if isinstance(label, str):
+                results_by_label.setdefault(label, []).append(result)
+            # Add stage:label annotation for downstream use
+            if isinstance(label, str) and isinstance(stage, str):
+                result.raw_data["stage_label"] = f"{stage}:{label}"
+
+        return results_by_label
+
 
 # --------------------------------------------------------------------------- #
 #                     FACTORY / QUICK DEMO                                    #

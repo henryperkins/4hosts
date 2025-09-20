@@ -5,9 +5,11 @@ Select high-salience, quoted evidence from top web results to ground
 the model's synthesis. Lightweight and dependency‑minimal.
 
 Exports helpers:
-    - build_evidence_bundle(query, results, max_docs=100, quotes_per_doc=10, include_full_content=True)
+    - build_evidence_bundle(query, results, max_docs=100, quotes_per_doc=10,
+      include_full_content=True)
       -> EvidenceBundle
-    - build_evidence_quotes(query, results, max_docs=100, quotes_per_doc=10) -> List[EvidenceQuote]
+    - build_evidence_quotes(query, results, max_docs=100, quotes_per_doc=10)
+      -> List[EvidenceQuote]
     - convert_quote_dicts_to_typed(quotes_raw) -> List[EvidenceQuote]
     - quotes_to_plain_dicts(quotes_typed) -> List[Dict]
 
@@ -30,7 +32,9 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any, Dict, List, Tuple
+
 from utils.url_utils import extract_domain
+from utils.source_normalization import dedupe_by_url
 from models.evidence import EvidenceQuote, EvidenceBundle, EvidenceDocument
 
 from utils.injection_hygiene import sanitize_snippet, flag_suspicious_snippet
@@ -44,7 +48,12 @@ from core.config import (
 
 # Reuse existing fetcher that handles HTML and PDFs
 from services.search_apis import fetch_and_parse_url  # type: ignore
-from utils.token_budget import estimate_tokens, trim_text_to_tokens
+from services.rate_limiter import ClientRateLimiter  # type: ignore
+from utils.token_budget import (
+    estimate_tokens,
+    trim_text_to_tokens,
+    select_items_within_budget,
+)
 
 
 def _item_get(data: Any, key: str, default: Any = None) -> Any:
@@ -54,15 +63,18 @@ def _item_get(data: Any, key: str, default: Any = None) -> Any:
     return getattr(data, key, default)
 
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[\.!?])\s+(?=[A-Z0-9])|"
-                             r"\u2022|\u2023|\u25E6|\u2043|\u2219|\n|\r",
-                             re.VERBOSE)
+_SENTENCE_SPLIT = re.compile(
+    r"(?<=[\.!?])\s+(?=[A-Z0-9])|"
+    r"\u2022|\u2023|\u25E6|\u2043|\u2219|\n|\r",
+    re.VERBOSE,
+)
 _TOKEN = re.compile(r"[A-Za-z0-9]+")
 
 try:
     # Optional semantic ranking using TF‑IDF cosine similarity
     from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
     from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+
     _SK_OK = True
 except Exception:
     _SK_OK = False
@@ -70,6 +82,42 @@ except Exception:
 
 def _tokens(text: str) -> List[str]:
     return [t.lower() for t in _TOKEN.findall(text or "") if len(t) > 2]
+
+
+class EvidenceCircuitBreaker:
+    """Simple circuit breaker for evidence fetching to prevent cascading failures."""
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.state = "closed"  # closed, open, half-open
+
+    def call_success(self):
+        """Record a successful call."""
+        self.failure_count = 0
+        self.state = "closed"
+
+    def call_failure(self):
+        """Record a failed call."""
+        import time
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            self.state = "open"
+
+    def allow_request(self) -> bool:
+        """Check if request is allowed."""
+        import time
+        if self.state == "closed":
+            return True
+        elif self.state == "open":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "half-open"
+                return True
+            return False
+        else:  # half-open
+            return True
 
 
 def _score_sentence(qtoks: set[str], sent: str) -> float:
@@ -109,14 +157,25 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     logger = logging.getLogger(__name__)
 
     out: Dict[str, str] = {}
-    fetch_failures = []
+    fetch_failures: List[str] = []
 
     # Use individual timeouts per URL for better success rate
-    per_url_timeout = float(os.getenv("EVIDENCE_PER_URL_TIMEOUT", "10"))
+    per_url_timeout = float(os.getenv("EVIDENCE_PER_URL_TIMEOUT", "15"))
 
     # Bounded concurrency to avoid overwhelming servers and improve stability
-    max_concurrent = int(os.getenv("EVIDENCE_FETCH_CONCURRENCY", "10"))
+    max_concurrent = int(os.getenv("EVIDENCE_FETCH_CONCURRENCY", "5"))
     semaphore = asyncio.Semaphore(max_concurrent)
+
+    # Initialize rate limiter and circuit breaker if enabled
+    enable_rate_limiting = os.getenv("EVIDENCE_ENABLE_RATE_LIMITING", "1") == "1"
+    if enable_rate_limiting:
+        rate_limiter = ClientRateLimiter(calls_per_minute=60)  # 60 calls per minute
+    else:
+        rate_limiter = None
+
+    circuit_threshold = int(os.getenv("EVIDENCE_CIRCUIT_BREAKER_THRESHOLD", "5"))
+    circuit_timeout = int(os.getenv("EVIDENCE_CIRCUIT_BREAKER_TIMEOUT", "60"))
+    circuit_breaker = EvidenceCircuitBreaker(circuit_threshold, circuit_timeout)
 
     # Don't apply a session-wide timeout - let each URL have its own timeout
     headers = {"User-Agent": "FourHostsResearch/1.0 (+evidence-builder)"}
@@ -124,24 +183,44 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
         # Create individual fetch tasks with their own timeouts
         async def fetch_single(url: str) -> None:
             async with semaphore:  # Limit concurrent fetches
+                # Check circuit breaker
+                if not circuit_breaker.allow_request():
+                    out[url] = ""
+                    fetch_failures.append(f"{url}: circuit breaker open")
+                    return
+
+                # Apply rate limiting if enabled
+                if rate_limiter:
+                    await rate_limiter.acquire(url)
+
                 try:
                     # Apply timeout using asyncio.wait_for for per-URL control
                     txt = await asyncio.wait_for(
                         fetch_and_parse_url(session, url),
-                        timeout=per_url_timeout
+                        timeout=per_url_timeout,
                     )
                     out[url] = txt or ""
                     if not txt:
                         fetch_failures.append(f"{url}: empty content")
+                        circuit_breaker.call_failure()
+                    else:
+                        circuit_breaker.call_success()
                 except asyncio.TimeoutError:
                     out[url] = ""
-                    fetch_failures.append(f"{url}: timeout after {per_url_timeout}s")
+                    fetch_failures.append(
+                        f"{url}: timeout after {per_url_timeout}s"
+                    )
+                    circuit_breaker.call_failure()
                 except aiohttp.ClientError as e:
                     out[url] = ""
-                    fetch_failures.append(f"{url}: network error - {type(e).__name__}")
-                except Exception as e:
+                    fetch_failures.append(
+                        f"{url}: network error - {type(e).__name__}"
+                    )
+                    circuit_breaker.call_failure()
+                except Exception as e:  # noqa: F841
                     out[url] = ""
                     fetch_failures.append(f"{url}: {type(e).__name__}")
+                    circuit_breaker.call_failure()
 
         # Run all fetches in parallel with bounded concurrency via semaphore
         tasks = [asyncio.create_task(fetch_single(u)) for u in urls]
@@ -151,16 +230,26 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     # Log fetch failures summary
     if fetch_failures:
         logger.warning(
-            f"Evidence fetch failures for {len(fetch_failures)}/{len(urls)} URLs. "
-            f"First 3 failures: {fetch_failures[:3]}"
+            "Evidence fetch failures for %d/%d URLs. First 3 failures: %s",
+            len(fetch_failures),
+            len(urls),
+            fetch_failures[:3],
         )
     elif urls:
-        logger.debug(f"Successfully fetched content from {len([v for v in out.values() if v])}/{len(urls)} URLs")
+        _success_count = sum(1 for v in out.values() if v)
+        logger.debug(
+            "Successfully fetched content from %d/%d URLs",
+            _success_count,
+            len(urls),
+        )
 
     return out
 
 
-def _pick_docs(results: List[Dict[str, Any]], max_docs: int) -> List[Dict[str, Any]]:
+def _pick_docs(
+    results: List[Dict[str, Any]],
+    max_docs: int,
+) -> List[Dict[str, Any]]:
     # Prefer high credibility and diversify by domain
     sorted_results = sorted(
         results or [],
@@ -182,7 +271,7 @@ def _pick_docs(results: List[Dict[str, Any]], max_docs: int) -> List[Dict[str, A
 
         # More forgiving domain diversity rules
         domain_count = domain_counts.get(dom, 0)
-        # Allow up to 3 results per domain in first half, unlimited in second half
+        # Allow up to 3 per domain early; unlimited later
         if domain_count >= 3 and len(picked) < max_docs // 2:
             continue  # Skip this result in early rounds
 
@@ -204,6 +293,7 @@ def _best_quotes_for_text(
     use_semantic: bool = EVIDENCE_SEMANTIC_SCORING,
 ) -> List[Tuple[str, int, int]]:
     import logging
+
     logger = logging.getLogger(__name__)
 
     if not text:
@@ -220,12 +310,20 @@ def _best_quotes_for_text(
 
     # Break into sentences / list items
     try:
-        parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p and len(p.strip()) > 20]
+        parts = [
+            p.strip()
+            for p in _SENTENCE_SPLIT.split(text)
+            if p and len(p.strip()) > 20
+        ]
     except Exception as e:
         logger.debug(f"Failed to split text into sentences: {e}")
+    # Fall back to empty
         parts = []
-    scored = []
-    sem = _semantic_scores(query, parts) if use_semantic else [0.0] * len(parts)
+    scored: List[Tuple[str, int, int, float]] = []
+    if use_semantic:
+        sem = _semantic_scores(query, parts)
+    else:
+        sem = [0.0] * len(parts)
     for idx, p in enumerate(parts):
         # Trim long parts to a focused window around query terms when possible
         p_clean = sanitize_snippet(p, max_len=max_len * 2)
@@ -248,20 +346,42 @@ def _best_quotes_for_text(
     top = [(q, s, e) for (q, s, e, _sc) in scored[:max_quotes]]
     return top
 
-def _context_window_around(text: str, start: int, end: int, max_chars: int = 320) -> str:
+
+def _context_window_around(
+    text: str,
+    start: int,
+    end: int,
+    max_chars: int = 320,
+) -> str:
     """Return a short context window (prev/next sentences) around a span.
 
-    If sentence bounds are ambiguous, fall back to a fixed +/- window. Sanitized.
+    If sentence bounds are ambiguous, fall back to a fixed +/- window.
+    Sanitized.
     """
-    if not text or start is None or end is None or start < 0 or end < 0 or start >= len(text):
+    if (
+        not text
+        or start is None
+        or end is None
+        or start < 0
+        or end < 0
+        or start >= len(text)
+    ):
         return ""
     try:
         # Search nearest sentence boundaries
-        left = max(text.rfind('.', 0, start), text.rfind('!', 0, start), text.rfind('?', 0, start))
+        left = max(
+            text.rfind(".", 0, start),
+            text.rfind("!", 0, start),
+            text.rfind("?", 0, start),
+        )
     except Exception:
         left = -1
     try:
-        right_candidates = [text.find('.', end), text.find('!', end), text.find('?', end)]
+        right_candidates = [
+            text.find(".", end),
+            text.find("!", end),
+            text.find("?", end),
+        ]
         right_candidates = [c for c in right_candidates if c != -1]
         right = min(right_candidates) if right_candidates else -1
     except Exception:
@@ -272,27 +392,48 @@ def _context_window_around(text: str, start: int, end: int, max_chars: int = 320
         right = min(len(text), end + max_chars // 2)
     window = text[left:right].strip()
     if len(window) > max_chars:
-        window = window[: max_chars - 1] + '…'
+        window = window[: max_chars - 1] + "…"
     return sanitize_snippet(window, max_len=max_chars)
 
 
-def _summarize_text(query: str, text: str, max_sentences: int = 3, max_len: int = 500) -> str:
+def _summarize_text(
+    query: str,
+    text: str,
+    max_sentences: int = 3,
+    max_len: int = 500,
+) -> str:
     """Lightweight extractive summary using TF‑IDF similarity to the query.
 
-    Falls back to the first few sentences when semantic scoring is unavailable.
+    Falls back to the first few sentences when semantic scoring is
+    unavailable.
     """
     if not text:
         return ""
-    parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p and len(p.strip()) > 20]
+    parts = [
+        p.strip()
+        for p in _SENTENCE_SPLIT.split(text)
+        if p and len(p.strip()) > 20
+    ]
     if not parts:
         return sanitize_snippet(text[:max_len], max_len=max_len)
     sem = _semantic_scores(query, parts)
     idxs = list(range(len(parts)))
+
+    def _sort_key(i: int) -> float:
+        base = sem[i] if i < len(sem) else 0.0
+        length_bonus = min(len(parts[i]) / 200.0, 0.5)
+        return base + length_bonus
+
     # Rank by semantic score then length (prefer informative)
-    idxs.sort(key=lambda i: (sem[i] if i < len(sem) else 0.0) + min(len(parts[i]) / 200.0, 0.5), reverse=True)
-    picked = []
+    idxs.sort(key=_sort_key, reverse=True)
+    picked: List[str] = []
     for i in idxs[:max_sentences]:
-        picked.append(sanitize_snippet(parts[i], max_len=max_len // max(1, max_sentences)))
+        picked.append(
+            sanitize_snippet(
+                parts[i],
+                max_len=max_len // max(1, max_sentences),
+            )
+        )
     out = " ".join(picked)
     return sanitize_snippet(out, max_len=max_len)
 
@@ -306,8 +447,9 @@ async def build_evidence_bundle(
     include_full_content: bool = True,
     full_text_budget: int = EVIDENCE_BUDGET_TOKENS_DEFAULT,
 ) -> EvidenceBundle:
-    """Build comprehensive evidence bundle including quotes and (optionally) full documents."""
+    """Build comprehensive evidence bundle including quotes and documents."""
     import logging
+
     logger = logging.getLogger(__name__)
 
     if not results:
@@ -315,22 +457,36 @@ async def build_evidence_bundle(
         return EvidenceBundle()
 
     if not query:
-        logger.warning("Evidence builder: No query provided for evidence extraction")
+        logger.warning(
+            "Evidence builder: No query provided for evidence "
+            "extraction"
+        )
 
     docs = _pick_docs(results, max_docs=max_docs)
 
-    # FALLBACK: If no docs pass the picking criteria, use top N results anyway
+    # FALLBACK: If no docs pass the picking criteria, use top N results
     if not docs and results:
-        logger.warning(f"Evidence builder: No documents met selection criteria from {len(results)} results. Using top {min(max_docs, len(results))} as fallback.")
+        logger.warning(
+            "Evidence builder: No documents met selection criteria from "
+            "%d results. Using top %d as fallback.",
+            len(results),
+            min(max_docs, len(results)),
+        )
         # Sort by credibility score if available, otherwise take first N
-        sorted_results = sorted(
-            results,
-            key=lambda r: float(_item_get(r, "credibility_score", 0.0) or 0.0),
-            reverse=True
-        ) if any(_item_get(r, "credibility_score") for r in results) else results
+        has_cred = any(_item_get(r, "credibility_score") for r in results)
+        if has_cred:
+            sorted_results = sorted(
+                results,
+                key=lambda r: float(
+                    _item_get(r, "credibility_score", 0.0) or 0.0
+                ),
+                reverse=True,
+            )
+        else:
+            sorted_results = results
 
         # Take top N and mark them as fallback results
-        docs = sorted_results[:min(max_docs, len(results))]
+        docs = sorted_results[: min(max_docs, len(results))]
         for doc in docs:
             # Mark these as fallback docs for transparency
             metadata = _item_get(doc, "metadata", {})
@@ -342,12 +498,23 @@ async def build_evidence_bundle(
                 doc["metadata"] = metadata
 
     if not docs:
-        logger.warning(f"Evidence builder: No valid documents selected from {len(results)} results")
+        logger.warning(
+            "Evidence builder: No valid documents selected from %d results",
+            len(results),
+        )
         return EvidenceBundle()
 
-    logger.debug(f"Evidence builder: Processing {len(docs)} documents from {len(results)} search results")
+    logger.debug(
+        "Evidence builder: Processing %d documents from %d search results",
+        len(docs),
+        len(results),
+    )
 
-    urls = [(_item_get(d, "url", "") or "").strip() for d in docs if (_item_get(d, "url", "") or "").strip()]
+    urls = [
+        (_item_get(d, "url", "") or "").strip()
+        for d in docs
+        if (_item_get(d, "url", "") or "").strip()
+    ]
     texts = await _fetch_texts(urls)
 
     quotes: List[EvidenceQuote] = []
@@ -365,30 +532,49 @@ async def build_evidence_bundle(
         title = _item_get(raw_doc, "title", "") or ""
         metadata_raw = _item_get(raw_doc, "metadata", {}) or {}
         metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
-        domain = metadata.get("domain") or (_item_get(raw_doc, "domain", "") or _domain_from(url))
+        domain = metadata.get("domain") or _item_get(raw_doc, "domain", "")
+        if not domain:
+            domain = _domain_from(url)
         snippet = _item_get(raw_doc, "snippet", "") or ""
         text = texts.get(url, "")
-        doc_summary = _summarize_text(query, text) if text else (sanitize_snippet(snippet, max_len=300) if snippet else "")
-        triples = _best_quotes_for_text(query, text, max_quotes=quotes_per_doc)
-        if not triples:
-            if snippet:
-                triples = [(sanitize_snippet(snippet, 200), -1, -1)]
+        doc_summary = (
+            _summarize_text(query, text)
+            if text
+            else (sanitize_snippet(snippet, max_len=300) if snippet else "")
+        )
+        triples = _best_quotes_for_text(
+            query,
+            text,
+            max_quotes=quotes_per_doc,
+        )
+        if not triples and snippet:
+            triples = [(sanitize_snippet(snippet, 200), -1, -1)]
 
         credibility_val = _item_get(raw_doc, "credibility_score", None)
         try:
-            credibility_score = float(credibility_val) if credibility_val is not None else None
+            credibility_score = (
+                float(credibility_val) if credibility_val is not None else None
+            )
         except Exception:
             credibility_score = None
 
-        source_type = metadata.get("result_type") or _item_get(raw_doc, "result_type", "web") or "web"
+        source_type = (
+            metadata.get("result_type")
+            or _item_get(raw_doc, "result_type", "web")
+            or "web"
+        )
 
         for quote, start, end in triples:
-            ctx = _context_window_around(
-                text,
-                start,
-                end,
-                max_chars=min(380, EVIDENCE_QUOTE_MAX_CHARS * 2),
-            ) if text and isinstance(start, int) and start >= 0 else ""
+            ctx = (
+                _context_window_around(
+                    text,
+                    start,
+                    end,
+                    max_chars=min(380, EVIDENCE_QUOTE_MAX_CHARS * 2),
+                )
+                if text and isinstance(start, int) and start >= 0
+                else ""
+            )
             quotes.append(
                 EvidenceQuote(
                     id=f"q{qid:03d}",
@@ -415,15 +601,27 @@ async def build_evidence_bundle(
             if remaining_tokens > 0 and base_content:
                 allocation = min(
                     remaining_tokens,
-                    max(200, (remaining_tokens // docs_left) or remaining_tokens),
+                    max(
+                        200,
+                        (remaining_tokens // docs_left) or remaining_tokens,
+                    ),
                 )
 
             if allocation > 0 and base_content:
                 content_for_doc = trim_text_to_tokens(base_content, allocation)
                 truncated = len(content_for_doc) < len(base_content)
             else:
-                fallback_candidates = [doc_summary, snippet, base_content, title, url]
-                content_for_doc = next((c for c in fallback_candidates if c), "")
+                fallback_candidates = [
+                    doc_summary,
+                    snippet,
+                    base_content,
+                    title,
+                    url,
+                ]
+                content_for_doc = next(
+                    (c for c in fallback_candidates if c),
+                    "",
+                )
                 truncated = False
 
             token_count = estimate_tokens(content_for_doc) if content_for_doc else 0
@@ -484,7 +682,6 @@ async def build_evidence_quotes(
     quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
 ) -> List[EvidenceQuote]:
     """Retained wrapper for legacy callers returning only evidence quotes."""
-
     bundle = await build_evidence_bundle(
         query,
         results,
@@ -502,20 +699,22 @@ def convert_quote_dicts_to_typed(quotes_raw: List[Dict[str, Any]]) -> List[Evide
             out.append(EvidenceQuote.model_validate(q))
         except Exception:
             try:
-                out.append(EvidenceQuote(
-                    id=str(q.get("id", f"q{len(out)+1:03d}")),
-                    url=q.get("url", ""),
-                    title=q.get("title", ""),
-                    domain=q.get("domain", ""),
-                    quote=q.get("quote", ""),
-                    start=q.get("start"),
-                    end=q.get("end"),
-                    published_date=q.get("published_date"),
-                    credibility_score=q.get("credibility_score"),
-                    suspicious=q.get("suspicious"),
-                    doc_summary=q.get("doc_summary"),
-                    source_type=q.get("source_type"),
-                ))
+                out.append(
+                    EvidenceQuote(
+                        id=str(q.get("id", f"q{len(out)+1:03d}")),
+                        url=q.get("url", ""),
+                        title=q.get("title", ""),
+                        domain=q.get("domain", ""),
+                        quote=q.get("quote", ""),
+                        start=q.get("start"),
+                        end=q.get("end"),
+                        published_date=q.get("published_date"),
+                        credibility_score=q.get("credibility_score"),
+                        suspicious=q.get("suspicious"),
+                        doc_summary=q.get("doc_summary"),
+                        source_type=q.get("source_type"),
+                    )
+                )
             except Exception:
                 continue
     return out
@@ -523,3 +722,52 @@ def convert_quote_dicts_to_typed(quotes_raw: List[Dict[str, Any]]) -> List[Evide
 
 def quotes_to_plain_dicts(quotes_typed: List[EvidenceQuote]) -> List[Dict[str, Any]]:
     return [q.model_dump() for q in quotes_typed or []]
+
+
+async def build_evidence_pipeline(
+    query: str,
+    results: List[Dict[str, Any]],
+    *,
+    max_docs: int = EVIDENCE_MAX_DOCS_DEFAULT,
+    quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
+    include_full_content: bool = True,
+    full_text_budget: int = EVIDENCE_BUDGET_TOKENS_DEFAULT,
+) -> tuple[EvidenceBundle, List[Dict[str, Any]]]:
+    """
+    Build end-to-end evidence bundle with centralized dedupe and budgeting.
+
+    - Dedupe sources by canonical URL while preserving order
+    - Select within token budget using utils.token_budget
+    - Delegate quote extraction and (optional) full text to build_evidence_bundle
+    - Return typed EvidenceBundle and plain quote dicts for payload embedding
+    """
+    # Fast path: nothing to do
+    if not results:
+        return EvidenceBundle(), []
+
+    try:
+        deduped = dedupe_by_url(results)
+    except Exception:
+        deduped = list(results)
+
+    try:
+        selected, _used, _dropped = select_items_within_budget(
+            deduped,
+            max_tokens=int(full_text_budget or 0),
+        )
+    except Exception:
+        selected = list(deduped)
+
+    bundle = await build_evidence_bundle(
+        query,
+        selected,
+        max_docs=max_docs,
+        quotes_per_doc=quotes_per_doc,
+        include_full_content=include_full_content,
+        full_text_budget=full_text_budget,
+    )
+
+    quotes_plain: List[Dict[str, Any]] = quotes_to_plain_dicts(
+        list(getattr(bundle, "quotes", []) or [])
+    )
+    return bundle, quotes_plain
