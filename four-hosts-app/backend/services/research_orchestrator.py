@@ -1032,13 +1032,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         processed_results["metadata"].setdefault("agent_trace", [])
 
         normalized_sources: List[Dict[str, Any]] = []
-        try:
-            for result in final_results:
+        failed_normalizations = 0
+        for result in final_results:
+            try:
                 ns = normalize_source_fields(result)
                 if ns.get("url"):
                     normalized_sources.append(ns)
-        except Exception:
-            normalized_sources = []
+            except Exception as e:
+                # Don't clear all sources if one fails - just skip the problematic one
+                failed_normalizations += 1
+                logger.debug(f"Failed to normalize result: {e}", exc_info=True)
+                continue
+
+        if failed_normalizations > 0:
+            logger.warning(f"Failed to normalize {failed_normalizations} out of {len(final_results)} results")
 
         # Compute category distribution from normalized sources and update metadata
         try:
@@ -1093,10 +1100,40 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                             f"Evidence builder skipped - No search results to process. "
                             f"Research ID: {research_id or 'N/A'}"
                         )
+                        # Mark in metadata so the FE can render a helpful notice
+                        try:
+                            processed_results.setdefault("metadata", {})["evidence_builder_skipped"] = True
+                        except Exception:
+                            pass
+                        # Emit a dedicated WS event so progress UI can transition cleanly
+                        if progress_callback and research_id:
+                            try:
+                                from services.progress import progress as _pt
+                                if _pt and hasattr(_pt, "report_evidence_builder_skipped"):
+                                    await _pt.report_evidence_builder_skipped(research_id, reason="no_results")
+                            except Exception:
+                                pass
                         evidence_quotes = []
                         evidence_bundle = None
                         evidence_quotes_payload = []
                     else:
+                        # Pre-evidence snapshot for diagnostics/metrics
+                        try:
+                            snapshot = {
+                                "final_results_count": len(final_results),
+                                "normalized_sources_count": len(normalized_sources),
+                                "apis_used": list((processed_results.get("metadata", {}) or {}).get("apis_used", []) or []),
+                            }
+                            processed_results.setdefault("metadata", {})["pre_evidence"] = snapshot
+                            logger.info(
+                                "Pre-evidence snapshot",
+                                research_id=research_id,
+                                final_results_count=snapshot["final_results_count"],
+                                normalized_sources_count=snapshot["normalized_sources_count"],
+                                apis_used=snapshot["apis_used"],
+                            )
+                        except Exception:
+                            pass
                         max_docs = min(
                             EVIDENCE_MAX_DOCS_DEFAULT,
                             int(getattr(user_context, "source_limit", int(os.getenv("DEFAULT_SOURCE_LIMIT", "200")))),
@@ -2261,6 +2298,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             secondary_paradigm=secondary_code,
         )
         ranked: List[SearchResult] = await strategy.filter_and_rank_results(early, search_ctx)
+
+        # Safeguard: if ranking/filtering eliminates all results, fall back
+        # progressively to earlier stages to avoid starving downstream phases.
+        if not ranked:
+            if early:
+                logger.warning("Ranking produced 0 results; falling back to early-filtered set")
+                ranked = list(early)
+            elif deduped:
+                logger.warning("Ranking produced 0 results; falling back to deduplicated set")
+                ranked = list(deduped)
 
         logger.info("Ranking", research_id=research_id, stage="ranking", original_count=len(early), ranked_count=len(ranked))
 

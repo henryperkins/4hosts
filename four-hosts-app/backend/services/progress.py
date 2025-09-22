@@ -36,6 +36,9 @@ class _NoOpProgress:
     async def report_synthesis_completed(self, *args: Any, **kwargs: Any):
         return None
 
+    async def report_evidence_builder_skipped(self, *args: Any, **kwargs: Any):
+        return None
+
 
 def _resolve_progress() -> Any:
     try:

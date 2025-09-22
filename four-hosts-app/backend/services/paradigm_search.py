@@ -124,15 +124,78 @@ class StrategyFilterRankMixin:
         results: List["SearchResult"],
         context: "SearchContext",
     ) -> List["SearchResult"]:
-        scored_results: List[Tuple["SearchResult", float]] = []
-        for result in results:
-            score = await self._calculate_score(result, context)
-            if score > getattr(self, "threshold", 0.3):
-                result.credibility_score = score
-                scored_results.append((result, score))
+        import os
 
-        scored_results.sort(key=lambda x: x[1], reverse=True)
-        return [result for result, score in scored_results]
+        # Determine threshold with optional env overrides
+        thr = getattr(self, "threshold", 0.3)
+        try:
+            # Paradigm-specific override takes precedence (e.g., RANK_MIN_SCORE_BERNARD=0.35)
+            pkey = f"RANK_MIN_SCORE_{(context.paradigm or '').upper()}"
+            env_p = os.getenv(pkey)
+            if env_p is not None:
+                thr = float(env_p)
+            else:
+                env_g = os.getenv("RANK_MIN_SCORE")
+                if env_g is not None:
+                    thr = float(env_g)
+        except Exception:
+            pass
+
+        # Score all results first to enable graceful fallback
+        scored_all: List[Tuple["SearchResult", float]] = []
+        for result in results:
+            try:
+                score = await self._calculate_score(result, context)
+            except Exception:
+                score = 0.0
+            # Preserve rank score separately to avoid conflating with credibility
+            try:
+                if isinstance(getattr(result, "raw_data", None), dict):
+                    result.raw_data.setdefault("rank_score", float(score))
+                else:
+                    setattr(result, "raw_data", {"rank_score": float(score)})
+            except Exception:
+                pass
+            if float(score) >= float(thr):
+                scored_all.append((result, float(score)))
+
+        # If nothing meets the threshold, keep the top few anyway for recall
+        if not scored_all:
+            # Select top-k by score (k between 3 and 10, ~25% of input)
+            fallback_sorted: List[Tuple["SearchResult", float]] = []
+            try:
+                # Recompute sorted list from the cached rank_score
+                tmp = []
+                for result in results:
+                    rs = 0.0
+                    try:
+                        rs = float((getattr(result, "raw_data", {}) or {}).get("rank_score", 0.0))
+                    except Exception:
+                        rs = 0.0
+                    tmp.append((result, rs))
+                fallback_sorted = sorted(tmp, key=lambda x: x[1], reverse=True)
+            except Exception:
+                fallback_sorted = []
+
+            k = 5
+            try:
+                k = min(10, max(3, int(0.25 * len(results)) or 3))
+            except Exception:
+                k = 5
+            picked = fallback_sorted[:k]
+            # Mark below-threshold picks for transparency
+            for r, s in picked:
+                try:
+                    if isinstance(getattr(r, "raw_data", None), dict):
+                        r.raw_data["below_rank_threshold"] = True
+                    else:
+                        setattr(r, "raw_data", {"below_rank_threshold": True})
+                except Exception:
+                    pass
+            scored_all = picked
+
+        scored_all.sort(key=lambda x: x[1], reverse=True)
+        return [result for result, score in scored_all]
 
 
 class DoloresSearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):

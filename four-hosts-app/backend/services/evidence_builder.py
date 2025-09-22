@@ -529,11 +529,28 @@ async def build_evidence_bundle(
         len(results),
     )
 
-    urls = [
+    # Collect candidate URLs and drop unsupported schemes (e.g., exa://)
+    urls_all = [
         (_item_get(d, "url", "") or "").strip()
         for d in docs
         if (_item_get(d, "url", "") or "").strip()
     ]
+    urls = [u for u in urls_all if u.lower().startswith(("http://", "https://"))]
+
+    # Log how many were skipped due to non-http schemes
+    try:
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        skipped = len(urls_all) - len(urls)
+        if skipped > 0:
+            _log.debug(
+                "Evidence builder: skipped %d non-http(s) URLs (of %d)",
+                skipped,
+                len(urls_all),
+            )
+    except Exception:
+        pass
+
     texts = await _fetch_texts(urls)
 
     quotes: List[EvidenceQuote] = []

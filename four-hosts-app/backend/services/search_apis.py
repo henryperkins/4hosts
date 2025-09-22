@@ -908,6 +908,9 @@ class SearchConfig:
             )
     extra_snippets: bool = False
     summary: bool = False
+    # Optional per-call timeout override (seconds). When set, manager/provider
+    # timeouts will honor this value instead of environment defaults.
+    timeout: Optional[float] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -1207,12 +1210,14 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
     @get_api_retry_decorator()
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
         await self.rate.wait()
+        # Map safe search to Google's accepted values: 'active' or 'off'
+        safe_level = "off" if str(getattr(cfg, "safe_search", "moderate")).lower() == "off" else "active"
         params = {
             "key": self.api_key,
             "cx": self.cx,
             "q": self.qopt.optimize_query(query),
             "num": min(cfg.max_results, 10),
-            "safe": "active" if cfg.safe_search == "strict" else "off" if cfg.safe_search == "off" else "medium",
+            "safe": safe_level,
             "hl": cfg.language,
         }
         # Use a reasonable timeout for Google Search
@@ -1760,6 +1765,20 @@ class SearchAPIManager:
         """Search with priority: Try primary provider first, then fallbacks."""
         if not planned:
             return []
+        # If neither a primary provider (e.g., Brave) nor any fallback providers
+        # (e.g., Google CSE) are configured, switch to the parallel mode which
+        # emits per-provider progress events. This avoids a "0%" progress UI when
+        # only academic/open providers are available.
+        if not self.primary_api and not self.fallback_apis:
+            try:
+                logger.info(
+                    "No primary/fallback providers configured; using parallel mode",
+                    stage="search_strategy",
+                    available_apis=list(self.apis.keys()),
+                )
+            except Exception:
+                pass
+            return await self.search_all_parallel(planned, cfg, progress_callback, research_id)
         seed_query = planned[0].query
         all_results = []
         now_ts = time.time()
@@ -1933,7 +1952,11 @@ class SearchAPIManager:
             except Exception:
                 pass
 
-        timeout = float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
+        # Prefer config.timeout if provided; otherwise fall back to env variable.
+        try:
+            timeout = float(cfg.timeout) if getattr(cfg, "timeout", None) else float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
+        except Exception:
+            timeout = float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
         try:
             results = await asyncio.wait_for(
                 api.search_with_variations(seed_query, cfg, planned=planned),
@@ -1977,20 +2000,50 @@ class SearchAPIManager:
         academic_providers = ['arxiv', 'crossref', 'semanticscholar', 'pubmed']
         tasks = {}
         now_ts = time.time()
+        seed_query = planned[0].query
 
+        # Identify enabled academic providers
+        enabled_academic: List[str] = []
         for name in academic_providers:
             if name in self.apis and self.quota_blocked.get(name, 0) <= now_ts:
                 api = self.apis[name]
+                enabled_academic.append(name)
                 tasks[name] = asyncio.create_task(
-                    self._search_provider_silent(name, api, planned, cfg)
+                    self._search_provider_silent(name, api, planned, cfg,
+                                                  progress_callback=progress_callback,
+                                                  research_id=research_id,
+                                                  seed_query=seed_query)
                 )
+
+        # Emit provider-level start events so UI reflects progress during
+        # academic-only search runs.
+        if progress_callback and research_id and enabled_academic:
+            try:
+                total = len(enabled_academic)
+                for idx, pname in enumerate(enabled_academic, start=1):
+                    await progress_callback.report_search_started(
+                        research_id,
+                        seed_query,
+                        pname,
+                        idx,
+                        total,
+                    )
+            except Exception:
+                pass
 
         if not tasks:
             return []
 
         results = []
-        timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
+        # Prefer per-call timeout if provided
+        try:
+            timeout = float(cfg.timeout) if getattr(cfg, "timeout", None) else float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
+        except Exception:
+            timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
         done, pending = await asyncio.wait(tasks.values(), timeout=timeout, return_when=asyncio.ALL_COMPLETED)
+
+        # Map tasks back to provider names for progress completion events
+        name_by_task = {task: name for name, task in tasks.items()}
 
         for task in done:
             try:
@@ -1999,9 +2052,26 @@ class SearchAPIManager:
                     results.extend(task_results)
             except Exception:
                 pass
+            # Emit completion for finished providers
+            if progress_callback and research_id:
+                try:
+                    pname = name_by_task.get(task)
+                    if pname:
+                        count = len(task_results) if isinstance(task_results, list) else 0
+                        await progress_callback.report_search_completed(research_id, seed_query, count)
+                except Exception:
+                    pass
 
         for task in pending:
             task.cancel()
+            # Optionally report completion with zero results for timeouts
+            if progress_callback and research_id:
+                try:
+                    pname = name_by_task.get(task)
+                    if pname:
+                        await progress_callback.report_search_completed(research_id, seed_query, 0)
+                except Exception:
+                    pass
 
         return results
 
@@ -2011,11 +2081,15 @@ class SearchAPIManager:
         api: BaseSearchAPI,
         planned: Sequence["QueryCandidate"],
         cfg: SearchConfig,
+        *,
+        progress_callback: Optional[Any] = None,
+        research_id: Optional[str] = None,
+        seed_query: Optional[str] = None,
     ) -> List[SearchResult]:
         """Search without progress reporting (for parallel academic searches)."""
         if not planned:
             return []
-        seed_query = planned[0].query
+        seed_query = seed_query or planned[0].query
         try:
             timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
             _t0 = time.time()
@@ -2042,6 +2116,17 @@ class SearchAPIManager:
                 )
             except Exception:
                 pass
+            # Emit completion for this provider (even in silent mode) when a
+            # progress callback is available – helps avoid a stuck 0% UI.
+            if progress_callback and research_id:
+                try:
+                    await progress_callback.report_search_completed(
+                        research_id,
+                        seed_query,
+                        len(results) if results else 0,
+                    )
+                except Exception:
+                    pass
             return results
         except Exception as e:
             logger.debug(f"Academic provider {name} failed: {e}")
@@ -2129,7 +2214,10 @@ class SearchAPIManager:
         # Resolve per-provider timeout; prefer explicit env, then fall back to overall task timeout
         import os as _os
         try:
-            _per_provider_to = float(_os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC") or 0.0)
+            # Configured timeout overrides env defaults when provided
+            _per_provider_to = float(getattr(cfg, "timeout", 0.0) or 0.0)
+            if not _per_provider_to:
+                _per_provider_to = float(_os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC") or 0.0)
             if not _per_provider_to:
                 _per_provider_to = float(_os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC") or 0.0)
             if not _per_provider_to:
@@ -2431,8 +2519,9 @@ def create_search_manager() -> SearchAPIManager:
         mgr.add_api("brave", BraveSearchAPI(brave_key), is_primary=True)
 
     # Google as FALLBACK provider
-    g_key = os.getenv("GOOGLE_CSE_API_KEY")
-    g_cx = os.getenv("GOOGLE_CSE_CX")
+    # Support both canonical and legacy env var names for Google CSE
+    g_key = os.getenv("GOOGLE_CSE_API_KEY") or os.getenv("GOOGLE_SEARCH_API_KEY")
+    g_cx = os.getenv("GOOGLE_CSE_CX") or os.getenv("GOOGLE_SEARCH_ENGINE_ID")
     if g_key and g_cx and os.getenv("SEARCH_DISABLE_GOOGLE", "0") not in {"1", "true", "yes"}:
         mgr.add_api("google_cse", GoogleCustomSearchAPI(g_key, g_cx), is_fallback=True)
 

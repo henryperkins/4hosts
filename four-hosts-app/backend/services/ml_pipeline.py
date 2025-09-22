@@ -6,21 +6,19 @@ Trains and updates models based on user feedback and system performance
 import asyncio
 import logging
 import json
-import pickle
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # ML imports (assuming scikit-learn is available)
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-    from sklearn.model_selection import train_test_split, cross_val_score
+    from sklearn.ensemble import GradientBoostingClassifier
+    from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-    from sklearn.preprocessing import StandardScaler
     import joblib
     ML_AVAILABLE = True
 except ImportError:
@@ -92,7 +90,7 @@ class MLPipeline:
         self.model_dir.mkdir(exist_ok=True)
         
         # Training configuration
-        self.min_training_samples = 1000
+        self.min_training_samples = 100
         self.retrain_interval = timedelta(days=7)
         self.performance_threshold = 0.85
         self.improvement_threshold = 0.02  # 2% improvement required
@@ -115,6 +113,21 @@ class MLPipeline:
         
         # Feature engineering
         self.feature_generators = self._initialize_feature_generators()
+        self.engineered_feature_keys = [
+            "urgency_score",
+            "complexity_score",
+            "num_entities",
+            "num_intent_signals",
+            "domain_encoded",
+            "confidence_score",
+            "user_satisfaction",
+            "synthesis_quality",
+        ]
+        self.additional_feature_keys = list(self.feature_generators.keys()) + self.engineered_feature_keys
+
+        # Concurrency for retraining
+        self._retrain_lock = asyncio.Lock()
+        self._retraining = False
         
         # Load existing model if available
         self._load_existing_model()
@@ -149,9 +162,16 @@ class MLPipeline:
                 if perf_path.exists():
                     with open(perf_path, "r") as f:
                         data = json.load(f)
-                        self.model_performance_history = [
-                            ModelPerformance(**perf) for perf in data
-                        ]
+                        loaded: List[ModelPerformance] = []
+                        for perf in data:
+                            try:
+                                if isinstance(perf.get("training_date"), str):
+                                    perf["training_date"] = datetime.fromisoformat(perf["training_date"])
+                            except Exception:
+                                # Keep original if parsing fails
+                                pass
+                            loaded.append(ModelPerformance(**perf))
+                        self.model_performance_history = loaded
                 
                 logger.info(f"Loaded existing model {self.current_model_version}")
             except Exception as e:
@@ -170,7 +190,8 @@ class MLPipeline:
                 min_df=2,
             )
             
-            self.scaler = StandardScaler()
+            # StandardScaler is unnecessary for tree-based models; omit to reduce memory/CPU
+            self.scaler = None
             
             # Use ensemble of classifiers
             self.paradigm_classifier = GradientBoostingClassifier(
@@ -228,7 +249,10 @@ class MLPipeline:
                 self.last_training_date is None or
                 datetime.now() - self.last_training_date > self.retrain_interval
             ):
-                asyncio.create_task(self._retrain_model())
+                # Serialize retraining to avoid overlapping tasks
+                if not self._retraining:
+                    self._retraining = True
+                    asyncio.create_task(self._retrain_model())
 
     async def _retrain_model(self) -> None:
         """Retrain the classification model with accumulated examples"""
@@ -236,62 +260,78 @@ class MLPipeline:
             logger.info("ML libraries not available - skipping retraining")
             return
         
-        logger.info(f"Starting model retraining with {len(self.training_examples)} examples")
-        
-        try:
-            # Prepare training data
-            X_text = [ex.query_text for ex in self.training_examples]
-            X_features = self._extract_additional_features(self.training_examples)
-            y = [ex.true_paradigm.value for ex in self.training_examples]
+        async with self._retrain_lock:
+            logger.info(f"Starting model retraining with {len(self.training_examples)} examples")
             
-            # Split data
-            X_text_train, X_text_val, X_feat_train, X_feat_val, y_train, y_val = train_test_split(
-                X_text, X_features, y, test_size=0.2, random_state=42, stratify=y
-            )
-            
-            # Vectorize text
-            X_text_train_vec = self.vectorizer.fit_transform(X_text_train)
-            X_text_val_vec = self.vectorizer.transform(X_text_val)
-            
-            # Combine text and additional features
-            X_train = self._combine_features(X_text_train_vec, X_feat_train)
-            X_val = self._combine_features(X_text_val_vec, X_feat_val)
-            
-            # Scale features
-            X_train = self.scaler.fit_transform(X_train)
-            X_val = self.scaler.transform(X_val)
-            
-            # Train new model
-            new_classifier = GradientBoostingClassifier(
-                n_estimators=150,
-                learning_rate=0.1,
-                max_depth=6,
-                random_state=42,
-            )
-            
-            new_classifier.fit(X_train, y_train)
-            
-            # Evaluate new model
-            y_pred = new_classifier.predict(X_val)
-            accuracy = accuracy_score(y_val, y_pred)
-            
-            # Compare with current model
-            should_update = await self._should_update_model(
-                new_classifier, accuracy, X_val, y_val
-            )
-            
-            if should_update:
-                await self._update_model(new_classifier, accuracy, y_val, y_pred)
-            else:
-                logger.info(
-                    f"New model accuracy ({accuracy:.3f}) not sufficient improvement. "
-                    f"Keeping current model."
+            try:
+                # Prepare training data
+                X_text = [ex.query_text for ex in self.training_examples]
+                X_features = self._extract_additional_features(self.training_examples)
+                y = [ex.true_paradigm.value for ex in self.training_examples]
+                
+                # Split data
+                # Use stratify only if each class has at least 2 samples to avoid ValueError
+                class_counts = Counter(y)
+                can_stratify = all(cnt >= 2 for cnt in class_counts.values())
+                X_text_train, X_text_val, X_feat_train, X_feat_val, y_train, y_val = train_test_split(
+                    X_text, X_features, y, test_size=0.2, random_state=42, stratify=y if can_stratify else None
                 )
+                
+                # Vectorize text
+                X_text_train_vec = self.vectorizer.fit_transform(X_text_train)
+                X_text_val_vec = self.vectorizer.transform(X_text_val)
+                
+                # Combine text and additional features
+                X_train = self._combine_features(X_text_train_vec, X_feat_train)
+                X_val = self._combine_features(X_text_val_vec, X_feat_val)
+                
+                # Scaling omitted for tree-based model to reduce memory and CPU
+                # (GradientBoosting handles unscaled numeric features adequately)
+                
+                # Train new model
+                new_classifier = GradientBoostingClassifier(
+                    n_estimators=150,
+                    learning_rate=0.1,
+                    max_depth=6,
+                    random_state=42,
+                )
+                
+                # Class balancing via sample weights (inverse frequency)
+                class_counts_train = Counter(y_train)
+                n_classes_train = max(1, len(class_counts_train))
+                total_train = len(y_train)
+                class_weights = {
+                    cls: (total_train / (n_classes_train * cnt))
+                    for cls, cnt in class_counts_train.items()
+                }
+                sample_weight = np.array([class_weights[label] for label in y_train], dtype=float)
+                
+                new_classifier.fit(X_train, y_train, sample_weight=sample_weight)
+                
+                # Evaluate new model
+                y_pred = new_classifier.predict(X_val)
+                accuracy = accuracy_score(y_val, y_pred)
+                
+                # Compare with current model
+                should_update = await self._should_update_model(
+                    new_classifier, accuracy, X_val, y_val
+                )
+                
+                if should_update:
+                    await self._update_model(new_classifier, accuracy, y_val, y_pred)
+                else:
+                    logger.info(
+                        f"New model accuracy ({accuracy:.3f}) not sufficient improvement. "
+                        f"Keeping current model."
+                    )
+                
+                self.last_training_date = datetime.now()
             
-            self.last_training_date = datetime.now()
-            
-        except Exception as e:
-            logger.error(f"Error during model retraining: {e}")
+            except Exception as e:
+                logger.error(f"Error during model retraining: {e}")
+            finally:
+                # Ensure flag is cleared even if errors occur
+                self._retraining = False
 
     def _extract_additional_features(
         self, examples: List[TrainingExample]
@@ -300,35 +340,57 @@ class MLPipeline:
         features = []
         
         for ex in examples:
-            feat_dict = {}
-            
-            # Query-based features
-            for name, func in self.feature_generators.items():
-                feat_dict[name] = func(ex.query_text)
-            
+            feat_dict: Dict[str, float] = {}
+
+            # Query-based features in deterministic order
+            for name in self.feature_generators.keys():
+                try:
+                    feat_dict[name] = float(self.feature_generators[name](ex.query_text))
+                except Exception:
+                    feat_dict[name] = 0.0
+
             # Features from QueryFeatures object
             if ex.features:
-                feat_dict["urgency_score"] = ex.features.urgency_score
-                feat_dict["complexity_score"] = ex.features.complexity_score
-                feat_dict["num_entities"] = len(ex.features.entities)
-                feat_dict["num_intent_signals"] = len(ex.features.intent_signals)
-                
+                try:
+                    feat_dict["urgency_score"] = float(ex.features.urgency_score)
+                    feat_dict["complexity_score"] = float(ex.features.complexity_score)
+                    feat_dict["num_entities"] = float(len(ex.features.entities))
+                    feat_dict["num_intent_signals"] = float(len(ex.features.intent_signals))
+                except Exception:
+                    feat_dict.setdefault("urgency_score", 0.0)
+                    feat_dict.setdefault("complexity_score", 0.0)
+                    feat_dict.setdefault("num_entities", 0.0)
+                    feat_dict.setdefault("num_intent_signals", 0.0)
+
                 # Domain features
-                if ex.features.domain:
-                    domain_map = {
-                        "technical": 0, "business": 1, "social": 2, 
-                        "personal": 3, "academic": 4, "other": 5
-                    }
-                    feat_dict["domain_encoded"] = domain_map.get(ex.features.domain, 5)
-            
-            # Performance features
-            feat_dict["confidence_score"] = ex.confidence_score
-            feat_dict["user_satisfaction"] = ex.user_satisfaction or 0.5
-            feat_dict["synthesis_quality"] = ex.synthesis_quality or 0.5
-            
-            features.append(list(feat_dict.values()))
-        
-        return np.array(features)
+                domain_map = {
+                    "technical": 0, "business": 1, "social": 2,
+                    "personal": 3, "academic": 4, "other": 5
+                }
+                try:
+                    dom = ex.features.domain or "other"
+                except Exception:
+                    dom = "other"
+                feat_dict["domain_encoded"] = float(domain_map.get(dom, 5))
+            else:
+                # Initialize engineered features when features are missing
+                feat_dict.update({
+                    "urgency_score": 0.0,
+                    "complexity_score": 0.0,
+                    "num_entities": 0.0,
+                    "num_intent_signals": 0.0,
+                    "domain_encoded": 5.0,
+                })
+
+            # Performance features (always present)
+            feat_dict["confidence_score"] = float(ex.confidence_score)
+            feat_dict["user_satisfaction"] = float(ex.user_satisfaction or 0.5)
+            feat_dict["synthesis_quality"] = float(ex.synthesis_quality or 0.5)
+
+            # Build row in deterministic order aligned with self.additional_feature_keys
+            features.append([feat_dict.get(k, 0.0) for k in self.additional_feature_keys])
+
+        return np.array(features, dtype=float)
 
     def _combine_features(
         self, text_features: Any, additional_features: np.ndarray
@@ -398,10 +460,20 @@ class MLPipeline:
         self, new_model: Any, accuracy: float, y_true: List[str], y_pred: List[str]
     ) -> None:
         """Update the current model with the new one"""
-        # Generate new version number
-        version_parts = self.current_model_version.split(".")
-        version_parts[-1] = str(int(version_parts[-1]) + 1)
-        new_version = ".".join(version_parts)
+        # Generate new version number (robust semver patch bump, preserving leading 'v')
+        current = self.current_model_version or "v1.0.0"
+        has_v = current.startswith("v")
+        core = current[1:] if has_v else current
+        parts = core.split(".")
+        while len(parts) < 3:
+            parts.append("0")
+        try:
+            major, minor, patch = (int(parts[0]), int(parts[1]), int(parts[2]))
+        except Exception:
+            major, minor, patch = 1, 0, 0
+        patch += 1
+        new_core = f"{major}.{minor}.{patch}"
+        new_version = f"v{new_core}" if has_v else new_core
         
         # Calculate detailed metrics
         report = classification_report(y_true, y_pred, output_dict=True)
@@ -412,9 +484,9 @@ class MLPipeline:
         if hasattr(new_model, "feature_importances_"):
             # Get feature names from vectorizer
             feature_names = []
-            if self.vectorizer:
+            if self.vectorizer is not None:
                 feature_names.extend(self.vectorizer.get_feature_names_out())
-            feature_names.extend(self.feature_generators.keys())
+            feature_names.extend(self.additional_feature_keys)
             
             # Map importance to names
             for idx, importance in enumerate(new_model.feature_importances_):
@@ -454,8 +526,8 @@ class MLPipeline:
             previous_version=self.current_model_version,
             new_version=new_version,
             improvement=accuracy - (
-                self.model_performance_history[-1].accuracy 
-                if self.model_performance_history else 0.5
+                self.model_performance_history[-1].accuracy
+                if self.model_performance_history else 0.0
             ),
             changes=changes,
         )
@@ -542,8 +614,16 @@ class MLPipeline:
             for p in self.model_performance_history
         ]
         
-        with open(self.model_dir / "performance_history.json", "w") as f:
+        tmp_path = self.model_dir / "performance_history.json.tmp"
+        final_path = self.model_dir / "performance_history.json"
+        with open(tmp_path, "w") as f:
             json.dump(perf_data, f, indent=2)
+        try:
+            tmp_path.replace(final_path)
+        except Exception:
+            # Fallback to regular write if atomic replace fails
+            with open(final_path, "w") as f:
+                json.dump(perf_data, f, indent=2)
 
     async def _training_loop(self) -> None:
         """Background loop for periodic model evaluation and retraining"""
@@ -680,7 +760,8 @@ class MLPipeline:
             
             # Combine features
             X = self._combine_features(X_text, X_features)
-            X = self.scaler.transform(X)
+            if self.scaler is not None:
+                X = self.scaler.transform(X)
             
             # Predict
             prediction = self.paradigm_classifier.predict(X)[0]
@@ -789,7 +870,8 @@ class MLPipeline:
                 )
                 stats["paradigm_accuracy"][paradigm.value] = correct / len(paradigm_examples)
         
-        return dict(stats)
+        stats["examples_by_paradigm"] = dict(stats["examples_by_paradigm"])
+        return stats
 
 
 # Create singleton instance

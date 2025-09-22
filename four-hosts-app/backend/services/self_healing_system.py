@@ -5,13 +5,12 @@ Monitors performance and automatically switches paradigms for better results
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
-import json
 
-from .classification_engine import HostParadigm, ClassificationResult
+from .classification_engine import HostParadigm
 from models.synthesis_models import GeneratedAnswer
 from .monitoring import monitoring_service
 
@@ -309,19 +308,25 @@ class SelfHealingSystem:
             f"for query {record.query_id}. Expected improvement: {decision.expected_improvement:.2f}"
         )
         
+        # Debounce overlapping switches for the same query_id
+        if self.switch_history and self.switch_history[-1].get("query_id") == record.query_id:
+            logger.debug(f"Debounced duplicate switch for query {record.query_id}")
+            return
+
         # Record the switch
         record.switched_paradigm = decision.recommended_paradigm
         
         # Store switch history
         self.switch_history.append({
             "query_id": record.query_id,
-            "timestamp": datetime.now(),
+            "timestamp": datetime.now().isoformat(),
             "original": decision.original_paradigm.value,
             "switched_to": decision.recommended_paradigm.value,
             "confidence": decision.confidence,
             "reasons": decision.reasons,
             "expected_improvement": decision.expected_improvement,
             "risk_score": decision.risk_score,
+            "manual": False,
         })
         
         # Notify monitoring service
@@ -364,7 +369,9 @@ class SelfHealingSystem:
             recent_avg_quality = sum(s["quality"] for s in metrics.recent_scores) / len(metrics.recent_scores)
             
             recent_score = (recent_avg_confidence + recent_avg_quality) / 2
-            score = score * 0.7 + recent_score * 0.3
+            # Scale recency weight by data volume (stabilize until ~30 recent samples)
+            recency_factor = min(1.0, len(metrics.recent_scores) / 30.0)
+            score = score * (1 - 0.3 * recency_factor) + recent_score * (0.3 * recency_factor)
         
         return score
 
@@ -547,10 +554,13 @@ class SelfHealingSystem:
         total_errors = sum(m.failed_queries for m in self.performance_metrics.values())
         system_error_rate = total_errors / total_queries
         
+        denom = (total_queries - total_errors)
+        if denom <= 0:
+            denom = 1
         avg_confidence = sum(
-            m.avg_confidence_score * m.successful_queries 
+            m.avg_confidence_score * m.successful_queries
             for m in self.performance_metrics.values()
-        ) / (total_queries - total_errors)
+        ) / denom
         
         # Log system health
         logger.info(

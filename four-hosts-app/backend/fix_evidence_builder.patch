@@ -1,0 +1,26 @@
+--- a/services/research_orchestrator.py
++++ b/services/research_orchestrator.py
+@@ -1033,12 +1033,18 @@ class UnifiedResearchOrchestrator:
+         processed_results["metadata"].setdefault("agent_trace", [])
+
+         normalized_sources: List[Dict[str, Any]] = []
+-        try:
+-            for result in final_results:
++        failed_normalizations = 0
++        for result in final_results:
++            try:
+                 ns = normalize_source_fields(result)
+                 if ns.get("url"):
+                     normalized_sources.append(ns)
+-        except Exception:
+-            normalized_sources = []
++            except Exception as e:
++                # Don't clear all sources if one fails - just skip the problematic one
++                failed_normalizations += 1
++                logger.debug(f"Failed to normalize result: {e}", exc_info=True)
++                continue
++
++        if failed_normalizations > 0:
++            logger.warning(f"Failed to normalize {failed_normalizations} out of {len(final_results)} results")
+
+         # Compute category distribution from normalized sources and update metadata

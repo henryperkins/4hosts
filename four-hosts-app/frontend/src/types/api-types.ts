@@ -145,6 +145,15 @@ export interface WebSocketMessage {
     items_done?: number
     items_total?: number
     eta_seconds?: number
+    // Extended progress metrics (mirrors backend research_progress payload)
+    sources_found?: number
+    sources_analyzed?: number
+    searches_completed?: number
+    total_searches?: number
+    high_quality_sources?: number
+    mcp_tools_used?: number
+    // Heartbeat flag
+    heartbeat?: boolean
   }
   timestamp: string
 }

@@ -8,7 +8,7 @@ import hashlib
 import json
 import traceback
 import time
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
@@ -260,7 +260,7 @@ class QueryAnalyzer:
             "technology": [
                 "technology",
                 "software",
-                " ai ",
+                "ai",
                 "digital",
                 "cyber",
                 "machine learning",
@@ -288,8 +288,12 @@ class QueryAnalyzer:
         # Check for exact matches first
         for domain, keywords in domain_keywords.items():
             for kw in keywords:
-                if kw in query_lower:
-                    return domain
+                if kw == "ai":
+                    if re.search(r"\bai\b", query_lower):
+                        return domain
+                else:
+                    if kw in query_lower:
+                        return domain
         return None
 
     def _score_urgency(self, query: str, tokens: List[str]) -> float:
@@ -371,7 +375,7 @@ class ParadigmClassifier:
             "Starting paradigm classification",
             stage="paradigm_classification_start",
             research_id=research_id,
-            query_preview=(query[:100] if query else ""),
+            query_preview="[redacted]",
             config={"use_llm": self.use_llm, "query_length": len(query)},
         )
         import asyncio
@@ -413,15 +417,16 @@ class ParadigmClassifier:
         loop = asyncio.get_event_loop()
         features_task = loop.run_in_executor(None, self.analyzer.analyze, query)
         
-        # Start LLM classification early if enabled
+        # Start LLM classification later after features are available
         llm_task = None
-        if self.use_llm:
-            # Create a placeholder features for LLM (it doesn't need full features)
-            llm_task = self._llm_classification(query, None)
         
         # Wait for features
         feature_start = time.time()
         features = await features_task
+
+        # Start LLM classification now that features are available
+        if self.use_llm:
+            llm_task = self._llm_classification(query, features)
 
         # Emit a compact, structured features snapshot to aid debugging
         try:
@@ -464,7 +469,8 @@ class ParadigmClassifier:
             )
 
         rule_start = time.time()
-        rule_scores = self._rule_based_classification(query, features)
+        # Use sanitized text from features to ensure consistent inputs
+        rule_scores = self._rule_based_classification(features.text, features)
 
         logger.info(
             "Rule-based classification completed",
@@ -880,7 +886,7 @@ Return as JSON with this structure:
             
 
             # Generate completion returns a string
-            logger.info(f"Sending prompt to LLM for classification, research_id: {features.research_id if features else None}")
+            logger.info(f"Sending prompt to LLM for classification, research_id: {getattr(features, 'research_id', None)}")
             response_payload = await llm_client.generate_completion(
                 prompt=prompt,
                 paradigm="bernard",  # Use analytical paradigm for classification
@@ -892,7 +898,7 @@ Return as JSON with this structure:
                 preview = response_payload if isinstance(response_payload, str) else json.dumps(response_payload)
             except Exception:
                 preview = str(response_payload)
-            logger.info(f"LLM response for research_id: {features.research_id if features else None}, response: {preview[:1024]}")
+            logger.info(f"LLM response for research_id: {getattr(features, 'research_id', None)}, response: {preview[:1024]}")
 
             # Parse the JSON response with robust error handling/repair
             llm_result: Optional[Dict[str, Any]]
@@ -949,7 +955,7 @@ Return as JSON with this structure:
             return scores
 
         except Exception as e:
-            logger.error(f"Error in LLM classification for research_id: {features.research_id if features else None}, error: {e}", exc_info=True)
+            logger.error(f"Error in LLM classification for research_id: {getattr(features, 'research_id', None)}, error: {e}", exc_info=True)
             logger.error(f"Error in LLM classification: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -996,7 +1002,7 @@ class ClassificationEngine:
             stage="classification_start",
             research_id=research_id,
             query_length=len(query),
-            query_preview=(query[:100] if query else ""),
+            query_preview="[redacted]",
             config={"use_llm": self.classifier.use_llm, "cache_enabled": self.cache_enabled},
         )
 

@@ -3,6 +3,8 @@ FastAPI application factory and configuration
 """
 
 import logging
+import os
+import asyncio
 import structlog
 import uuid
 from contextlib import asynccontextmanager
@@ -68,6 +70,37 @@ logger = structlog.get_logger(__name__)
 system_initialized = False
 
 
+def _timeout(name: str, default_sec: float) -> float:
+    """Resolve per-step init timeouts from env.
+
+    Example: INIT_DB_TIMEOUT_SEC=30
+    """
+    try:
+        val = os.getenv(name)
+        if not val:
+            return float(default_sec)
+        return float(val)
+    except Exception:
+        return float(default_sec)
+
+
+async def _run_with_timeout(coro, *, step: str, timeout_sec: float) -> bool:
+    """Await a coroutine with a timeout and structured logging.
+
+    Returns True on success, False on timeout/exception.
+    """
+    try:
+        await asyncio.wait_for(coro, timeout=timeout_sec)
+        logger.info("init step completed", step=step, timeout_sec=timeout_sec)
+        return True
+    except asyncio.TimeoutError:
+        logger.error("init step timed out", step=step, timeout_sec=timeout_sec)
+        return False
+    except Exception as e:
+        logger.error("init step failed", step=step, error=str(e))
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
@@ -79,28 +112,45 @@ async def lifespan(app: FastAPI):
     try:
         # Initialize database
         from database.connection import init_database
-        await init_database()
-        logger.info("✓ Database initialized")
+        await _run_with_timeout(
+            init_database(),
+            step="database",
+            timeout_sec=_timeout("INIT_DB_TIMEOUT_SEC", 30),
+        )
 
         # Initialize research store
         from services.research_store import research_store
-        await research_store.initialize()
-        logger.info("✓ Research store initialized")
+        await _run_with_timeout(
+            research_store.initialize(),
+            step="research_store",
+            timeout_sec=_timeout("INIT_RESEARCH_STORE_TIMEOUT_SEC", 20),
+        )
 
         # Initialize cache system
         from services.cache import initialize_cache
-        cache_success = await initialize_cache()
+        cache_success = await _run_with_timeout(
+            initialize_cache(),
+            step="cache",
+            timeout_sec=_timeout("INIT_CACHE_TIMEOUT_SEC", 20),
+        )
         if cache_success:
             logger.info("✓ Cache system initialized")
 
         # Initialize research system
         from services.research_orchestrator import initialize_research_system
-        await initialize_research_system()
-        logger.info("✓ Research orchestrator initialized")
+        await _run_with_timeout(
+            initialize_research_system(),
+            step="research_orchestrator",
+            timeout_sec=_timeout("INIT_ORCHESTRATOR_TIMEOUT_SEC", 90),
+        )
 
         # Initialize LLM client
         from services.llm_client import initialise_llm_client
-        llm_ok = await initialise_llm_client()
+        llm_ok = await _run_with_timeout(
+            initialise_llm_client(),
+            step="llm_client",
+            timeout_sec=_timeout("INIT_LLM_TIMEOUT_SEC", 30),
+        )
         # Record status for health endpoint and accurate logs
         try:
             app.state.llm_initialized = bool(llm_ok)
@@ -117,15 +167,23 @@ async def lifespan(app: FastAPI):
         # Initialize search manager with cache integration
         from services.search_apis import create_search_manager
         search_manager = create_search_manager()
-        # SearchAPIManager uses context manager protocol, enter it
-        await search_manager.__aenter__()
+        # SearchAPIManager uses context manager protocol, enter it with timeout
+        await _run_with_timeout(
+            search_manager.__aenter__(),
+            step="search_manager",
+            timeout_sec=_timeout("INIT_SEARCH_MANAGER_TIMEOUT_SEC", 30),
+        )
         app.state.search_manager = search_manager
         logger.info("✓ Search manager initialized with cache")
 
         # Preload Hugging Face model to avoid cold start
         try:
             from services.hf_zero_shot import get_classifier
-            get_classifier()
+            await _run_with_timeout(
+                asyncio.to_thread(get_classifier),
+                step="hf_zero_shot_preload",
+                timeout_sec=_timeout("INIT_HF_CLASSIFIER_TIMEOUT_SEC", 20),
+            )
             logger.info("✓ Hugging Face zero-shot classifier preloaded")
         except Exception as e:
             logger.warning("Failed to preload HF model: %s", e)

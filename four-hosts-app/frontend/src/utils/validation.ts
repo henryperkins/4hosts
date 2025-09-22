@@ -80,6 +80,8 @@ export const WebSocketMessageSchema = z.object({
     // Search and analysis events
     'search.started', 'search.completed', 'credibility.check', 'deduplication.progress'
   ]),
+  // Accept known fields, but allow extra keys to pass through so
+  // backend schema changes don’t silently strip useful metrics.
   data: z.object({
     status: z.string().optional(),
     progress: z.number().optional(),
@@ -116,8 +118,22 @@ export const WebSocketMessageSchema = z.object({
     results_count: z.number().optional(),
     domain: z.string().optional(),
     score: z.number().optional(),
-    removed: z.number().optional()
-  }),
+    removed: z.number().optional(),
+    // Extended progress metrics surfaced by the backend 'research_progress'
+    // payloads. These were previously stripped by validation.
+    sources_found: z.number().optional(),
+    sources_analyzed: z.number().optional(),
+    searches_completed: z.number().optional(),
+    total_searches: z.number().optional(),
+    high_quality_sources: z.number().optional(),
+    mcp_tools_used: z.number().optional(),
+    // Determinate progress / ETA
+    items_done: z.number().optional(),
+    items_total: z.number().optional(),
+    eta_seconds: z.number().optional(),
+    // Heartbeat flag used to avoid log noise
+    heartbeat: z.boolean().optional(),
+  }).passthrough(),
   timestamp: z.string()
 })
 

@@ -74,6 +74,8 @@ class WSEventType(str, Enum):
     # System events
     RATE_LIMIT_WARNING = "rate_limit.warning"
     SYSTEM_NOTIFICATION = "system.notification"
+    # Evidence events
+    EVIDENCE_BUILDER_SKIPPED = "evidence_builder.skipped"
 
 
 class WSMessage(BaseModel):
@@ -471,6 +473,8 @@ class ConnectionManager:
             WSEventType.DEDUPLICATION: "deduplication.progress",
             WSEventType.MCP_TOOL_EXECUTING: "system.notification",
             WSEventType.MCP_TOOL_COMPLETED: "system.notification",
+            # Evidence events → explicit frontend hook
+            WSEventType.EVIDENCE_BUILDER_SKIPPED: "evidence_builder_skipped",
         }
 
         # Clone data and, if cancelled event, include explicit status for UI hooks
@@ -510,11 +514,12 @@ class ProgressTracker:
         self._phase_stats: Dict[str, List[float]] = {}
 
         # Weighted progress model (sums to 1.0)
+        # Align keys with frontend PhaseTracker: classification → context_engineering → search → analysis → synthesis
         self._phase_weights: Dict[str, float] = {
             "classification": 0.10,
-            "context": 0.15,
+            "context_engineering": 0.15,
             "search": 0.45,
-            "processing": 0.10,  # dedup/credibility/filtering
+            "analysis": 0.10,  # dedup/credibility/filtering
             "synthesis": 0.20,
         }
 
@@ -526,10 +531,13 @@ class ProgressTracker:
         if not phase:
             return None
         p = str(phase).lower()
+        # Normalize to frontend-visible phase names
         if p in {"context_engineering", "contextualization", "context"}:
-            return "context"
-        if p in {"deduplication", "credibility", "filtering", "agentic_loop", "processing"}:
-            return "processing"
+            return "context_engineering"
+        if p in {"deduplication", "credibility", "filtering", "processing"}:
+            return "analysis"
+        if p in {"agentic_loop"}:
+            return "agentic_loop"
         if p in {"classification", "search", "synthesis", "complete", "initialization"}:
             return p
         return p
@@ -607,14 +615,21 @@ class ProgressTracker:
 
         # Back-compat: allow old positional pattern
         phase_enum_values = {
-            "initialization",
+            # Frontend-visible canonical phases
+            "classification",
+            "context_engineering",
             "search",
-            "deduplication",
-            "filtering",
-            "credibility",
+            "analysis",
             "agentic_loop",
             "synthesis",
             "complete",
+            # Back-compat synonyms
+            "initialization",
+            "deduplication",
+            "filtering",
+            "credibility",
+            "context",
+            "processing",
         }
 
         phase_from_pos: Optional[str] = None
@@ -699,7 +714,8 @@ class ProgressTracker:
         overall: Optional[int] = None
         try:
             weights = self._phase_weights
-            canonical_order = ["classification", "context", "search", "processing", "synthesis"]
+            # Compute overall progress in the same order as the frontend PhaseTracker
+            canonical_order = ["classification", "context_engineering", "search", "analysis", "synthesis"]
             cset = progress_data.get("completed_phases") or set()
             units = progress_data.get("phase_units") or {}
             current = self._canonical_phase(progress_data.get("phase"))
@@ -1201,6 +1217,20 @@ class ResearchProgressTracker(ProgressTracker):
                     )
                 except Exception:
                     pass
+
+    async def report_evidence_builder_skipped(self, research_id: str, reason: str | None = None):
+        """Notify frontend that evidence builder was skipped (no sources)."""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.EVIDENCE_BUILDER_SKIPPED,
+                data={
+                    "research_id": research_id,
+                    "reason": (reason or "no_search_results"),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
 
 
 # --- WebSocket Authentication ---
