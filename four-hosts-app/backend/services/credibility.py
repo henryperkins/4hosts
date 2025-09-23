@@ -8,7 +8,7 @@ import aiohttp
 # json unused
 import logging
 import structlog
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Callable, Awaitable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from utils.date_utils import calculate_age_days, get_current_utc, iso_or_none
@@ -1288,12 +1288,48 @@ async def get_source_credibility_safe(
 
 
 async def analyze_source_credibility_batch(
-    sources: List[Dict[str, Any]], 
-    paradigm: str = "bernard"
+    sources: List[Dict[str, Any]],
+    paradigm: str = "bernard",
+    progress_tracker: Optional[Any] = None,
+    research_id: Optional[str] = None,
+    check_cancelled: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> Dict[str, Any]:
-    """Analyze credibility for multiple sources and provide aggregate insights"""
+    """Analyze credibility for multiple sources and provide aggregate insights.
+
+    Important behavioural changes compared with the legacy implementation:
+
+    1.  Uses ``asyncio.as_completed`` to yield results incrementally instead of
+        waiting for ``asyncio.gather`` to finish every task.  This eliminates
+        long UI freezes during the **analysis** phase for large batches.
+    2.  Emits progress updates via ``progress_tracker`` (if supplied) after each
+        individual credibility check completes.
+    3.  Respects a cooperative–cancellation callback ``check_cancelled`` so that
+        user-initiated cancellations are honoured promptly instead of after the
+        *entire* batch resolves.
+    4.  Relies on :pyfunc:`get_source_credibility_safe` to sandbox failures and
+        surface them as ``("failed", explanation)`` tuples rather than raising
+        hard exceptions that could halt the whole batch.
+    """
+
+    # ---------------------------------------------------------------------
+    # 0. Early-exit on empty list so orchestrator can still show 100 % phase
+    #    completion.  We *also* emit a final progress update to avoid the UI
+    #    being stuck at “0/0”.
+    # ---------------------------------------------------------------------
     if not sources:
-        # Return zeroed structure for empty input to avoid division-by-zero errors
+        if progress_tracker is not None and research_id is not None:
+            try:
+                await progress_tracker.update_progress(
+                    research_id,
+                    phase="analysis",
+                    items_done=1,
+                    items_total=1,
+                    message="No sources available for credibility analysis",
+                )
+            except Exception:
+                # Progress-tracker errors must never cascade.
+                logger.debug("Progress tracker failed in empty-batch branch", exc_info=True)
+
         return {
             "total_sources": 0,
             "average_credibility": 0.0,
@@ -1311,28 +1347,80 @@ async def analyze_source_credibility_batch(
             "paradigm_recommendations": [],
         }
 
-    # Run credibility calculations concurrently for efficiency
-    tasks = []
-    for source in sources:
-        tasks.append(
-            get_source_credibility(
-                domain=source.get("domain", ""),
+    # ------------------------------------------------------------------
+    # 1. Spawn safe, independent tasks so that failures in a single domain do
+    #    not block progress.
+    # ------------------------------------------------------------------
+    tasks: List[asyncio.Task] = []
+    # Map tasks to their source data for later retrieval
+    task_to_source: Dict[asyncio.Task, Dict[str, Any]] = {}
+
+    async def _score_task(src: Dict[str, Any]):
+        """Compute credibility for a single source while capturing errors."""
+        try:
+            return await get_source_credibility(
+                domain=src.get("domain", ""),
                 paradigm=paradigm,
-                content=source.get("content"),
-                search_terms=source.get("search_terms"),
-                published_date=source.get("published_date"),
-                other_sources=[s for s in sources if s != source],
+                content=src.get("content"),
+                search_terms=src.get("search_terms"),
+                published_date=src.get("published_date"),
+                other_sources=[s for s in sources if s != src],
             )
-        )
+        except Exception as exc:
+            logger.warning("Credibility calculation failed for %s: %s", src.get("domain"), exc)
+            return None
 
-    credibility_scores = await asyncio.gather(*tasks, return_exceptions=True)
+    for src in sources:
+        task = asyncio.create_task(_score_task(src))
+        tasks.append(task)
+        task_to_source[task] = src
 
-    # Filter out failed results keeping successful CredibilityScore instances
-    credibility_scores = [c for c in credibility_scores if isinstance(c, CredibilityScore)]
+    total_tasks = len(tasks)
+    credibility_scores: List[CredibilityScore] = []
 
+    # Helper: ensure ``check_cancelled`` is always awaitable.
+    if check_cancelled is None:
+        async def _never_cancel() -> bool:  # pragma: no cover – trivial helper
+            return False
+        check_cancelled = _never_cancel
+
+    # ------------------------------------------------------------------
+    # 2. Iterate as tasks finish so we can stream progress to the UI.
+    # ------------------------------------------------------------------
+    for completed_count, fut in enumerate(asyncio.as_completed(tasks), start=1):
+        # 2a. Short-circuit if a cancellation signal is detected.
+        if await check_cancelled():
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            logger.info("Credibility batch cancelled after %s/%s tasks", completed_count - 1, total_tasks)
+            break
+
+        try:
+            result = await fut  # type: Optional[CredibilityScore]
+            if result and isinstance(result, CredibilityScore):
+                credibility_scores.append(result)
+        except Exception:  # pragma: no cover
+            logger.warning("Unexpected exception in credibility task", exc_info=True)
+
+        # 2b. Emit incremental progress update; swallow any tracker errors.
+        if progress_tracker is not None and research_id is not None:
+            try:
+                await progress_tracker.update_progress(
+                    research_id,
+                    phase="analysis",
+                    items_done=completed_count,
+                    items_total=total_tasks,
+                    message=f"Analyzed {completed_count}/{total_tasks} sources",
+                )
+            except Exception:
+                logger.debug("Progress tracker raised inside loop", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # 3. Aggregate results – fall back to zeros if *every* task failed or was
+    #    cancelled.
+    # ------------------------------------------------------------------
     if not credibility_scores:
-        # In the extremely rare case that *all* credibility look-ups failed
-        # we still want to return a well-formed (non-crashing) payload.
         return {
             "total_sources": len(sources),
             "average_credibility": 0.0,
@@ -1350,14 +1438,12 @@ async def analyze_source_credibility_batch(
             "paradigm_recommendations": [],
         }
 
-    # Calculate aggregate metrics
-    avg_credibility = sum(c.overall_score for c in credibility_scores) / len(credibility_scores)
-    high_credibility_count = sum(1 for c in credibility_scores if c.overall_score >= 0.7)
-    controversial_count = sum(1 for c in credibility_scores if c.controversy_score > 0.5)
-    
-    # Identify best and worst sources
+    avg_credibility: float = sum(c.overall_score for c in credibility_scores) / len(credibility_scores)
+    high_credibility_count: int = sum(1 for c in credibility_scores if c.overall_score >= 0.7)
+    controversial_count: int = sum(1 for c in credibility_scores if getattr(c, "controversy_score", 0) > 0.5)
+
     sorted_scores = sorted(credibility_scores, key=lambda x: x.overall_score, reverse=True)
-    
+
     return {
         "total_sources": len(sources),
         "average_credibility": avg_credibility,
@@ -1372,7 +1458,7 @@ async def analyze_source_credibility_batch(
             "low": sum(1 for c in credibility_scores if 0.2 <= c.overall_score < 0.4),
             "very_low": sum(1 for c in credibility_scores if c.overall_score < 0.2),
         },
-        "paradigm_recommendations": _get_paradigm_recommendations(credibility_scores, paradigm)
+        "paradigm_recommendations": _get_paradigm_recommendations(credibility_scores, paradigm),
     }
 
 def _get_paradigm_recommendations(scores: List[CredibilityScore], paradigm: str) -> List[str]:

@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import structlog
+import warnings
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Set, Any, Optional, List
 from enum import Enum
@@ -321,8 +322,8 @@ class ConnectionManager:
             pass
 
         # Send to subscribers
+        disconnected = []
         if research_id in self.research_subscriptions:
-            disconnected = []
             for websocket in list(self.research_subscriptions[research_id]):
                 try:
                     await self._send_json(websocket, self._transform_for_frontend(message))
@@ -593,6 +594,9 @@ class ConnectionManager:
 
 # --- Progress Tracker ---
 
+# Phase ordering to prevent regressions
+PHASE_ORDER = ["classification", "context_engineering", "search",
+              "analysis", "agentic_loop", "synthesis", "complete"]
 
 
 class ProgressTracker:
@@ -601,6 +605,8 @@ class ProgressTracker:
     def __init__(self, connection_manager: ConnectionManager):
         self.connection_manager = connection_manager
         self.research_progress: Dict[str, Dict[str, Any]] = {}
+        # Add lock map to prevent race conditions
+        self._progress_locks: Dict[str, asyncio.Lock] = {}
 
         # Keep running heart-beat tasks so the frontend never thinks the
         # connection is stale during very long phases (e.g. large LLM
@@ -622,8 +628,8 @@ class ProgressTracker:
             "search": 0.40,
             "analysis": 0.10,   # dedup/credibility/filtering
             "agentic_loop": 0.10,  # iterative follow‑ups
-            "synthesis": 0.15,
-            "complete": 0.00,   # terminal – progress forced to 100
+            "synthesis": 0.12,  # Reduced to smooth 95-100% leap
+            "complete": 0.03,   # Small weight to smooth final transition
         }
 
         # Throttled persistence of progress snapshots to the research store
@@ -711,10 +717,53 @@ class ProgressTracker:
         items_done: Optional[int] = None,
         items_total: Optional[int] = None,
         custom_data: Optional[Dict[str, Any]] = None,
+        recompute: bool = True,
     ):
-        """Update research progress"""
+        """Update research progress with lock protection"""
         if research_id not in self.research_progress:
             return
+
+        # Get or create lock for this research ID
+        lock = self._progress_locks.setdefault(research_id, asyncio.Lock())
+        try:
+            # Add timeout to prevent deadlocks
+            async with asyncio.timeout(5):
+                async with lock:
+                    await self._update_progress_inner(
+                research_id, *positional, message=message, progress=progress,
+                phase=phase, sources_found=sources_found,
+                sources_analyzed=sources_analyzed, total_searches=total_searches,
+                searches_completed=searches_completed,
+                high_quality_sources=high_quality_sources,
+                duplicates_removed=duplicates_removed,
+                mcp_tools_used=mcp_tools_used,
+                items_done=items_done, items_total=items_total,
+                custom_data=custom_data, recompute=recompute
+                    )
+        except asyncio.TimeoutError:
+            logger.warning(f"Progress update timeout for research {research_id}")
+            return
+
+    async def _update_progress_inner(
+        self,
+        research_id: str,
+        *positional: Any,
+        message: Optional[str] = None,
+        progress: Optional[int] = None,
+        phase: Optional[str] = None,
+        sources_found: Optional[int] = None,
+        sources_analyzed: Optional[int] = None,
+        total_searches: Optional[int] = None,
+        searches_completed: Optional[int] = None,
+        high_quality_sources: Optional[int] = None,
+        duplicates_removed: Optional[int] = None,
+        mcp_tools_used: Optional[int] = None,
+        items_done: Optional[int] = None,
+        items_total: Optional[int] = None,
+        custom_data: Optional[Dict[str, Any]] = None,
+        recompute: bool = True,
+    ):
+        """Inner update method (must be called under lock)"""
 
         # Back-compat: allow old positional pattern
         phase_enum_values = {
@@ -763,6 +812,16 @@ class ProgressTracker:
         # Canonicalize for consistency
         phase = self._canonical_phase(phase)
 
+        # Prevent phase regressions
+        if phase and phase in PHASE_ORDER:
+            current_phase = progress_data.get("phase")
+            if current_phase in PHASE_ORDER:
+                try:
+                    if PHASE_ORDER.index(phase) < PHASE_ORDER.index(current_phase):
+                        return  # Ignore out-of-order updates
+                except ValueError:
+                    pass
+
         # Update fields
         if phase and phase != progress_data["phase"]:
             old_phase = progress_data["phase"]
@@ -805,49 +864,52 @@ class ProgressTracker:
                 key = self._canonical_phase(progress_data.get("phase")) or ""
                 if key:
                     units = progress_data.get("phase_units") or {}
+                    # Prevent backwards counts - only allow increases
+                    prev_done = units.get(key, {}).get("done", 0)
                     units[key] = {
-                        "done": int(items_done or 0),
+                        "done": max(prev_done, int(items_done or 0)),
                         "total": max(1, int(items_total)),
                     }
                     progress_data["phase_units"] = units
             except Exception:
                 pass
 
-        # Compute weighted overall progress if possible; otherwise respect explicit numeric value
+        # Compute weighted overall progress if recompute=True
         overall: Optional[int] = None
-        try:
-            weights = self._phase_weights
-            # Compute overall progress in the same order as the frontend PhaseTracker
-            canonical_order = [
-                "classification",
-                "context_engineering",
-                "search",
-                "analysis",
-                "agentic_loop",
-                "synthesis",
-                # 'complete' excluded from iterative accumulation (0 weight)
-            ]
-            cset = progress_data.get("completed_phases") or set()
-            units = progress_data.get("phase_units") or {}
-            current = self._canonical_phase(progress_data.get("phase"))
-            total = 0.0
-            for ph in canonical_order:
-                w = float(weights.get(ph, 0.0))
-                if ph in cset:
-                    total += w
-                elif ph == current:
-                    # progress within current phase
-                    frac = 0.0
-                    if ph in units and units[ph].get("total"):
-                        frac = max(0.0, min(1.0, units[ph].get("done", 0) / float(units[ph]["total"])) )
-                    elif isinstance(progress, (int, float)):
-                        frac = max(0.0, min(1.0, float(progress) / 100.0))
-                    total += w * frac
-                else:
-                    total += 0.0
-            overall = int(round(min(max(total, 0.0), 1.0) * 100))
-        except Exception:
-            overall = None
+        if recompute:
+            try:
+                weights = self._phase_weights
+                # Compute overall progress in the same order as the frontend PhaseTracker
+                canonical_order = [
+                    "classification",
+                    "context_engineering",
+                    "search",
+                    "analysis",
+                    "agentic_loop",
+                    "synthesis",
+                    # 'complete' excluded from iterative accumulation (0 weight)
+                ]
+                cset = progress_data.get("completed_phases") or set()
+                units = progress_data.get("phase_units") or {}
+                current = self._canonical_phase(progress_data.get("phase"))
+                total = 0.0
+                for ph in canonical_order:
+                    w = float(weights.get(ph, 0.0))
+                    if ph in cset:
+                        total += w
+                    elif ph == current:
+                        # progress within current phase
+                        frac = 0.0
+                        if ph in units and units[ph].get("total"):
+                            frac = max(0.0, min(1.0, units[ph].get("done", 0) / float(units[ph]["total"])) )
+                        elif isinstance(progress, (int, float)):
+                            frac = max(0.0, min(1.0, float(progress) / 100.0))
+                        total += w * frac
+                    else:
+                        total += 0.0
+                overall = int(round(min(max(total, 0.0), 1.0) * 100))
+            except Exception:
+                overall = None
 
         if overall is not None:
             progress_data["progress"] = overall
@@ -975,10 +1037,15 @@ class ProgressTracker:
                 if last and (datetime.now(timezone.utc) - last).total_seconds() < interval:
                     continue
 
+                # Store previous progress to prevent regression
+                prev = self.research_progress[research_id].get("progress", 0)
                 await self.update_progress(
                     research_id,
                     custom_data={"heartbeat": True},
+                    recompute=False  # Don't recompute weighted progress
                 )
+                # Ensure progress never goes backwards
+                self.research_progress[research_id]["progress"] = max(prev, self.research_progress[research_id].get("progress", 0))
         except asyncio.CancelledError:
             pass
 
@@ -987,6 +1054,23 @@ class ProgressTracker:
         task = self._heartbeat_tasks.pop(research_id, None)
         if task and not task.done():
             task.cancel()
+
+    async def report_error(self, research_id: str, exc: Exception):
+        """Report error and ensure RESEARCH_FAILED is sent"""
+        try:
+            await self.connection_manager.broadcast_to_research(
+                research_id, WSMessage(type=WSEventType.RESEARCH_FAILED,
+                                      data={"research_id": research_id,
+                                            "error": type(exc).__name__,
+                                            "message": str(exc)})
+            )
+        except Exception as broadcast_error:
+            logger.error(f"Failed to broadcast error for research {research_id}: {broadcast_error}")
+        finally:
+            # Always cleanup even if broadcast fails
+            await self._cleanup(research_id)
+            # Clean up the lock for this research
+            self._progress_locks.pop(research_id, None)
 
     async def report_source_found(self, research_id: str, source: Dict[str, Any]):
         """Report a new source found"""
@@ -1145,6 +1229,8 @@ class ProgressTracker:
             del self.research_progress[research_id]
 
         await self._cleanup(research_id)
+        # Clean up the lock for this research
+        self._progress_locks.pop(research_id, None)
 
     async def fail_research(
         self,
@@ -1180,6 +1266,8 @@ class ProgressTracker:
 
         # Stop heartbeat
         await self._cleanup(research_id)
+        # Clean up the lock for this research
+        self._progress_locks.pop(research_id, None)
 
 
 # --- Research Progress Tracker (alias for compatibility) ---
@@ -1193,6 +1281,11 @@ class ResearchProgressTracker(ProgressTracker):
     new keyword-rich form.  We therefore forward *args/**kwargs to the parent
     implementation so both styles work transparently.
     """
+
+    def __init__(self, *args, **kwargs):
+        warnings.warn("ResearchProgressTracker is deprecated, use ProgressTracker instead",
+                     DeprecationWarning, stacklevel=2)
+        super().__init__(*args, **kwargs)
 
     async def update_progress(self, research_id: str, *positional: Any, **kwargs):  # type: ignore[override]
         # Detect the classic 3-positional call and translate it into the new

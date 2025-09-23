@@ -284,6 +284,14 @@ async def run_followups(
         or coverage_ratio >= coverage_threshold
         or not missing_terms
     ):
+        # Report agentic loop complete even when skipped
+        if progress_callback and research_id:
+            await progress_callback.update_progress(
+                research_id,
+                phase="agentic_loop",
+                items_done=max_iterations, items_total=max_iterations,
+                message="Agentic loop skipped – coverage met"
+            )
         return (
             new_candidates,
             followup_results,

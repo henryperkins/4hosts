@@ -1113,11 +1113,40 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
 
         sections = []
         section_metrics = []
+        sections_total = len(self.get_section_structure())
+
+        # Report synthesis started
+        progress_tracker = self._get_progress_tracker()
+        if progress_tracker and context.research_id:
+            await progress_tracker.update_progress(
+                context.research_id, phase="synthesis",
+                message="Starting answer synthesis",
+                items_done=0, items_total=sections_total
+            )
+
         for idx, section_def in enumerate(self.get_section_structure()):
             section_start = datetime.now()
+
+            # Report section being drafted
+            if progress_tracker and context.research_id:
+                section_title = section_def.get('title', 'Section')[:40]
+                await progress_tracker.update_progress(
+                    context.research_id, phase="synthesis",
+                    message=f"Drafting {section_title}",
+                    items_done=idx, items_total=sections_total
+                )
+
             try:
                 section = await self._generate_section(context, section_def)
                 sections.append(section)
+
+                # Report section completed
+                if progress_tracker and context.research_id:
+                    await progress_tracker.update_progress(
+                        context.research_id, phase="synthesis",
+                        items_done=idx+1, items_total=sections_total
+                    )
+
                 duration = (datetime.now() - section_start).total_seconds() * 1000
 
                 logger.info(

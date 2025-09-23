@@ -1157,8 +1157,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 })
             if sources_for_analysis:
                 stats = await analyze_source_credibility_batch(
-                    sources_for_analysis,
+                    sources=sources_for_analysis,
                     paradigm=normalize_to_internal_code(classification.primary_paradigm),
+                    progress_tracker=progress_callback,
+                    research_id=research_id,
+                    check_cancelled=check_cancelled,
                 )
                 # Map credibility distribution into schema-conformant key
                 credibility_summary["average_score"] = float(stats.get("average_credibility", 0.0) or 0.0)
@@ -2494,6 +2497,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     before_count=len(combined),
                     after_count=len(deduped),
                 )
+                # Mark deduplication as first step of analysis
+                await progress_callback.update_progress(
+                    research_id,
+                    phase="analysis",
+                    message="Deduplication complete",
+                    items_done=0, items_total=3  # Start of analysis phase
+                )
         except Exception:
             pass
 
@@ -2544,6 +2554,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 ranked = list(deduped)
 
         logger.info("Ranking", research_id=research_id, stage="ranking", original_count=len(early), ranked_count=len(ranked))
+
+        # Add progress update after ranking
+        if progress_callback and research_id:
+            await progress_callback.update_progress(
+                research_id,
+                phase="analysis",
+                message="Ranking results",
+                items_done=1, items_total=3  # 0 = dedup, 1 = ranking, 2 = credibility, 3 = duplicates
+            )
 
         # 5) Credibility on top-N (batched with concurrency)
         cred_summary = {"average_score": 0.0}
@@ -2623,6 +2642,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         logger.info("Credibility scoring", research_id=research_id, stage="credibility_scoring", scored_domains=len(creds), average_score=cred_summary["average_score"])
 
+        # Update progress after credibility
+        if progress_callback and research_id:
+            await progress_callback.update_progress(
+                research_id,
+                phase="analysis",
+                message="Credibility analysis complete",
+                items_done=2, items_total=3  # 0 = dedup, 1 = ranking, 2 = credibility, 3 = duplicates
+            )
+
         # Emit additional distribution metrics for observability
         try:
             highs = sum(1 for v in creds.values() if v > 0.7)
@@ -2667,6 +2695,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         }
 
         logger.info("Finished processing of search results", research_id=research_id, stage="processing_end", final_results_count=len(final_results))
+
+        # Mark analysis phase as complete
+        if progress_callback and research_id:
+            await progress_callback.update_progress(
+                research_id,
+                phase="analysis",
+                message="Analysis complete",
+                items_done=3, items_total=3  # All analysis steps done
+            )
         return {
             "results": final_results,
             "metadata": meta,

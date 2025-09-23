@@ -1052,6 +1052,17 @@ class ContentRelevanceFilter:
 
 
 # --------------------------------------------------------------------------- #
+#                       PROGRESS REPORTING HELPER                             #
+# --------------------------------------------------------------------------- #
+
+async def _report_provider_progress(pt, rid, msg, done, total):
+    """Helper function to report provider-level search progress"""
+    if pt and rid:
+        await pt.update_progress(rid, phase="search",
+                                 message=msg,
+                                 items_done=done, items_total=total)
+
+# --------------------------------------------------------------------------- #
 #                       BASE SEARCH API                                       #
 # --------------------------------------------------------------------------- #
 
