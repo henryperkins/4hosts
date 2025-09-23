@@ -9,6 +9,9 @@ import os
 import json
 import logging
 import structlog
+from logging_config import configure_logging
+
+configure_logging()
 import hashlib
 from typing import Any, Optional, Dict, List
 from collections import deque
@@ -619,12 +622,12 @@ async def cache_search_results(
 # Example usage and testing
 async def test_cache_system():
     """Test the cache system"""
-    print("Testing cache system...")
+logger.info("Testing cache system...")
 
     # Initialize cache
     success = await initialize_cache()
     if not success:
-        print("Cache initialization failed")
+        logger.error("Cache initialization failed")
         return
 
     # Test paradigm classification caching
@@ -636,7 +639,7 @@ async def test_cache_system():
         "distribution": {"maeve": 0.4, "dolores": 0.25, "bernard": 0.2, "teddy": 0.15},
     }
 
-    print("Testing paradigm classification cache...")
+logger.info("Testing paradigm classification cache...")
 
     # Set classification
     await cache_manager.set_paradigm_classification(test_query, test_classification)
@@ -645,14 +648,14 @@ async def test_cache_system():
     cached_classification = await cache_manager.get_paradigm_classification(test_query)
 
     if cached_classification:
-        print("✓ Paradigm classification cached successfully")
-        print(f"  Primary: {cached_classification['primary']}")
-        print(f"  Confidence: {cached_classification['confidence']}")
+        logger.info("Paradigm classification cached successfully", \
+                    primary=cached_classification['primary'], \
+                    confidence=cached_classification['confidence'])
     else:
-        print("✗ Failed to retrieve cached classification")
+        logger.warning("Failed to retrieve cached classification")
 
     # Test search results caching
-    print("\nTesting search results cache...")
+logger.info("Testing search results cache...")
 
     test_results = [
         SearchResult(
@@ -684,32 +687,30 @@ async def test_cache_system():
     )
 
     if cached_results and len(cached_results) == 2:
-        print("✓ Search results cached successfully")
-        print(f"  Cached {len(cached_results)} results")
-        print(f"  First result: {cached_results[0].title}")
+        logger.info("Search results cached successfully", \
+                    cached_count=len(cached_results), \
+                    first_title=cached_results[0].title)
     else:
-        print("✗ Failed to retrieve cached search results")
+        logger.warning("Failed to retrieve cached search results")
 
     # Test cost tracking
-    print("\nTesting cost tracking...")
+logger.info("Testing cost tracking...")
     await cache_manager.track_api_cost("google", 0.05, 1)
     await cache_manager.track_api_cost("bing", 0.03, 1)
 
     costs = await cache_manager.get_daily_api_costs()
     if costs:
-        print("✓ Cost tracking working")
+        logger.info("Cost tracking working")
         for api, data in costs.items():
-            print(f"  {api}: ${data.get('cost', 0):.3f} ({data.get('calls', 0)} calls)")
+            logger.info("api cost", api=api, cost=data.get('cost', 0), calls=data.get('calls', 0))
 
     # Get cache stats
     stats = await cache_manager.get_cache_stats()
-    print(f"\nCache Stats:")
-    print(f"  Hit rate: {stats['hit_rate_percent']}%")
-    print(f"  Memory used: {stats.get('memory_used', 'Unknown')}")
+    logger.info("cache stats", hit_rate_percent=stats['hit_rate_percent'], memory_used=stats.get('memory_used', 'Unknown'))
 
     # Cleanup
     await cleanup_cache()
-    print("\nCache test completed")
+    logger.info("Cache test completed")
 
 
 if __name__ == "__main__":

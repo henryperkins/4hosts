@@ -876,6 +876,14 @@ class OptimizeLayer(ContextLayer):
         cfg.enable_agentic = False
         cfg.per_stage_caps["agentic"] = 0
         cfg.per_stage_caps["context"] = min(cfg.per_stage_caps.get("context", 6), 4)
+        # Ensure context stage appears in order if we allow any context items
+        if cfg.per_stage_caps.get("context", 0) > 0 and "context" not in cfg.stage_order:
+            # Insert after paradigm (or at end) for relevance
+            try:
+                idx = cfg.stage_order.index("paradigm") + 1
+                cfg.stage_order.insert(idx, "context")
+            except Exception:
+                cfg.stage_order.append("context")
         stage_order_env = os.getenv("CE_PLANNER_STAGE_ORDER")
         if stage_order_env:
             parts = [p.strip().lower() for p in stage_order_env.split(",") if p.strip()]

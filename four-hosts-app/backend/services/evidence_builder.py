@@ -155,11 +155,14 @@ def _domain_from(url: str) -> str:
 
 async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     import aiohttp  # local import to avoid hard dependency at import time
-    import logging
+import structlog
     import os
     import time as _time
 
-    logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
     out: Dict[str, str] = {}
     fetch_failures: List[str] = []
@@ -419,7 +422,7 @@ def _best_quotes_for_text(
 ) -> List[Tuple[str, int, int]]:
     import logging
 
-    logger = logging.getLogger(__name__)
+    # Use module-level structured logger
 
     if not text:
         return []
@@ -575,7 +578,7 @@ async def build_evidence_bundle(
     """Build comprehensive evidence bundle including quotes and documents."""
     import logging
 
-    logger = logging.getLogger(__name__)
+    # Use module-level structured logger
 
     logger.debug(
         "Evidence builder invoked", 
@@ -662,7 +665,8 @@ async def build_evidence_bundle(
     # Log how many were skipped due to non-http schemes
     try:
         import logging as _logging
-        _log = _logging.getLogger(__name__)
+        # Module-level structured logger available as `logger`
+        _log = logger  # reuse
         skipped = len(urls_all) - len(urls)
         if skipped > 0:
             _log.debug(

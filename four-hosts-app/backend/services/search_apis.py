@@ -2631,8 +2631,9 @@ async def _demo():
             )
         ]
         res = await mgr.search_all(planned, cfg)
+        logger = structlog.get_logger(__name__)
         for r in res[:5]:
-            print(r.title, "—", r.url)
+            logger.info("demo result", title=r.title, url=r.url)
 
 
 if __name__ == "__main__":

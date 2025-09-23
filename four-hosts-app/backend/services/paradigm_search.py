@@ -1152,14 +1152,19 @@ def get_paradigm_focus(paradigm: Optional[Union[str, Any]]) -> Optional[str]:
 # Example usage and testing
 async def test_paradigm_strategies():
     """Test all paradigm search strategies"""
-    print("Testing Paradigm Search Strategies...")
-    print("=" * 60)
+    import structlog
+    from logging_config import configure_logging
+
+    configure_logging()
+    logger = structlog.get_logger(__name__)
+    logger.info("Testing Paradigm Search Strategies...")
+    logger.info("=" * 60)
 
     test_query = "climate change solutions"
 
     for paradigm in ["dolores", "teddy", "bernard", "maeve"]:
-        print(f"\n{paradigm.upper()} PARADIGM:")
-        print("-" * 40)
+        logger.info("paradigm", paradigm=paradigm.upper())
+        logger.info("-" * 40)
 
         strategy = get_search_strategy(paradigm)
         context = SearchContext(
@@ -1168,12 +1173,11 @@ async def test_paradigm_strategies():
 
         queries = await strategy.generate_search_queries(context)
 
-        print(f"Generated {len(queries)} search queries:")
+        logger.info("generated search queries", count=len(queries))
         for i, query in enumerate(queries[:3], 1):
-            print(f"  {i}. {query['query'][:60]}...")
-            print(f"     Type: {query['type']}, Weight: {query['weight']}")
+            logger.info("query", index=i, query=query['query'][:60], type=query['type'], weight=query['weight'])
 
-        print()
+        logger.info("")
 
 
 if __name__ == "__main__":

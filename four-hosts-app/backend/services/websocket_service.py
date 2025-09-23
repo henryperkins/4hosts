@@ -514,13 +514,18 @@ class ProgressTracker:
         self._phase_stats: Dict[str, List[float]] = {}
 
         # Weighted progress model (sums to 1.0)
-        # Align keys with frontend PhaseTracker: classification → context_engineering → search → analysis → synthesis
+        # Align with frontend PhaseTracker which now exposes 7 phases:
+        # classification → context_engineering → search → analysis → agentic_loop → synthesis → complete
+        # We treat the terminal 'complete' phase as zero weight (it flips to 100%).
+        # The agentic loop previously had no explicit weight causing overall progress to stall.
         self._phase_weights: Dict[str, float] = {
             "classification": 0.10,
             "context_engineering": 0.15,
-            "search": 0.45,
-            "analysis": 0.10,  # dedup/credibility/filtering
-            "synthesis": 0.20,
+            "search": 0.40,
+            "analysis": 0.10,   # dedup/credibility/filtering
+            "agentic_loop": 0.10,  # iterative follow‑ups
+            "synthesis": 0.15,
+            "complete": 0.00,   # terminal – progress forced to 100
         }
 
         # Throttled persistence of progress snapshots to the research store
@@ -536,7 +541,7 @@ class ProgressTracker:
             return "context_engineering"
         if p in {"deduplication", "credibility", "filtering", "processing"}:
             return "analysis"
-        if p in {"agentic_loop"}:
+        if p in {"agentic_loop", "agentic", "followups", "followup_loop"}:
             return "agentic_loop"
         if p in {"classification", "search", "synthesis", "complete", "initialization"}:
             return p
@@ -715,7 +720,15 @@ class ProgressTracker:
         try:
             weights = self._phase_weights
             # Compute overall progress in the same order as the frontend PhaseTracker
-            canonical_order = ["classification", "context_engineering", "search", "analysis", "synthesis"]
+            canonical_order = [
+                "classification",
+                "context_engineering",
+                "search",
+                "analysis",
+                "agentic_loop",
+                "synthesis",
+                # 'complete' excluded from iterative accumulation (0 weight)
+            ]
             cset = progress_data.get("completed_phases") or set()
             units = progress_data.get("phase_units") or {}
             current = self._canonical_phase(progress_data.get("phase"))
@@ -997,7 +1010,9 @@ class ProgressTracker:
         progress_data = self.research_progress[research_id]
         # Ensure progress shows 100 and phase is complete
         try:
-            progress_data["completed_phases"] = set(self._phase_weights.keys())
+            # Mark all weighted (non-terminal) phases complete then force final state
+            weighted = {k for k, v in self._phase_weights.items() if v > 0}
+            progress_data["completed_phases"] = weighted
             progress_data["phase"] = "complete"
             progress_data["progress"] = 100
         except Exception:
@@ -1031,9 +1046,6 @@ class ProgressTracker:
         if research_id in self.research_progress:
             del self.research_progress[research_id]
 
-        await self._cleanup(research_id)
-
-        # Stop heartbeat
         await self._cleanup(research_id)
 
     async def fail_research(

@@ -5,7 +5,7 @@ Enables the Four Hosts system to connect to remote MCP servers for extended capa
 
 import asyncio
 import json
-import logging
+import structlog
 from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -14,7 +14,10 @@ from pydantic import BaseModel, HttpUrl
 from datetime import datetime, timezone
 from services.websocket_service import WSMessage, WSEventType, progress_tracker  # type: ignore
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 class MCPCapability(str, Enum):

@@ -83,13 +83,11 @@ class QueryPlanner:
 
         bag: List[QueryCandidate] = []
         stage_order: Sequence[StageName] = self.cfg.stage_order
-        generators = {
+        # Build stage generator mapping dynamically so overrides in
+        # cfg.stage_order (incl. context/agentic) are honored.  Missing
+        # earlier entries caused flags like enable_agentic to be no‑ops.
+        generators: dict[str, callable] = {
             "rule_based": lambda: self.rule_stage.generate(
-                seed_query=seed_query,
-                paradigm=paradigm,
-                cfg=self.cfg,
-            ),
-            "llm": lambda: self.llm_stage.generate(
                 seed_query=seed_query,
                 paradigm=paradigm,
                 cfg=self.cfg,
@@ -100,6 +98,30 @@ class QueryPlanner:
                 cfg=self.cfg,
             ),
         }
+        if self.cfg.enable_llm and self.cfg.per_stage_caps.get("llm", 0) > 0:
+            generators["llm"] = lambda: self.llm_stage.generate(
+                seed_query=seed_query,
+                paradigm=paradigm,
+                cfg=self.cfg,
+            )
+        # Context stage surfaces caller-provided additional queries. Only
+        # construct generator if there are any and it's requested.
+        if additional_queries is not None and self.cfg.per_stage_caps.get("context", 0) > 0:
+            generators["context"] = lambda: self.context_stage.generate(
+                aq_for_stage or [],  # type: ignore[arg-type]
+                self.cfg,
+            )
+        if self.cfg.enable_agentic and self.cfg.per_stage_caps.get("agentic", 0) > 0:
+            # Agentic followups during initial plan currently operate on
+            # the seed query with empty missing_terms (bootstrap). Real
+            # followups with gaps happen in followups().
+            generators["agentic"] = lambda: self.agentic_stage.generate(
+                seed_query=seed_query,
+                paradigm=paradigm,
+                missing_terms=(),
+                cfg=self.cfg,
+                coverage_sources=None,
+            )
         for stage_name in stage_order:
             generator = generators.get(stage_name)
             if not generator:
@@ -134,20 +156,8 @@ class QueryPlanner:
                 val = os.getenv("PLANNER_STRICT_EXCEPTIONS", "0")
                 if str(val).lower() in {"1", "true", "yes", "on"}:
                     raise
-        if aq_for_stage:
-            context_start = time.time()
-            context_candidates = await self.context_stage.generate(
-                aq_for_stage, self.cfg
-            )
-            bag.extend(context_candidates)
-
-            logger.info(
-                "Context queries processed",
-                stage="context_queries",
-                paradigm=paradigm,
-                duration_ms=(time.time() - context_start) * 1000,
-                record_count=len(context_candidates),
-            )
+        # (Legacy path removed) – context queries are now handled as a
+        # first-class stage when present in stage_order.
 
         # Emit summary after expansion and before ranking for visibility
         try:
