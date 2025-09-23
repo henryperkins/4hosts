@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Tuple
 from utils.url_utils import extract_domain
 from utils.source_normalization import dedupe_by_url
 from models.evidence import EvidenceQuote, EvidenceBundle, EvidenceDocument
+from utils.otel import otel_span as _otel_span
 
 from utils.injection_hygiene import sanitize_snippet, flag_suspicious_snippet
 from core.config import (
@@ -180,23 +181,8 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     # Don't apply a session-wide timeout - let each URL have its own timeout
     headers = {"User-Agent": "FourHostsResearch/1.0 (+evidence-builder)"}
     async with aiohttp.ClientSession(headers=headers) as session:
-        # Batch span for URL fetches (defensive: no-op if OTel unavailable)
-        try:
-            from opentelemetry import trace as _trace
-            _tracer = _trace.get_tracer("four-hosts-research-api")
-        except Exception:
-            _tracer = None
-        from contextlib import nullcontext as _nullcontext
         import time as _time
-
-        _span_cm = (
-            _tracer.start_as_current_span(
-                "evidence.fetch.batch", attributes={"urls.count": len(urls)}
-            )
-            if _tracer
-            else _nullcontext()
-        )
-        with _span_cm as _sp:
+        with _otel_span("evidence.fetch.batch", {"urls": len(urls)}) as _sp:
             _t0 = _time.time()
 
             # Create individual fetch tasks with their own timeouts

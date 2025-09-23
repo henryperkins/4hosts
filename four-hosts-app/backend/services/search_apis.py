@@ -73,14 +73,7 @@ load_dotenv()
 
 logger = structlog.get_logger(__name__)
 
-def _otel_span(name: str, attributes: Dict[str, Any] | None = None):
-    try:
-        from opentelemetry import trace as _trace
-        tracer = _trace.get_tracer("four-hosts-research-api")
-        return tracer.start_as_current_span(name, attributes=attributes or {})
-    except Exception:
-        from contextlib import nullcontext as _nullcontext
-        return _nullcontext()
+from utils.otel import otel_span as _otel_span
 
 MAX_LOG_BODY = int(os.getenv("SEARCH_LOG_BODY_MAX", "2048"))
 
