@@ -8,7 +8,6 @@ import asyncio
 from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
-import logging
 import structlog
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine
@@ -18,7 +17,7 @@ from sqlalchemy import event, text
 
 from database.models import Base
 
-# Configure logging (structlog is configured centrally in services.monitoring)
+# Use structlog for consistent logging
 logger = structlog.get_logger(__name__)
 
 
@@ -39,10 +38,12 @@ class DatabaseConfig:
             f"postgresql+asyncpg://{pguser}:{pgpassword}@{pghost}:{pgport}/{pgdatabase}",
         )
 
-        # Debug: Print the database URL (without password for security)
-        logger.info(
-            f"Database URL: postgresql+asyncpg://{pguser}:****@{pghost}:{pgport}/{pgdatabase}"
-        )
+        # Debug: Log the database URL (without password for security)
+        logger.info("Database configuration loaded",
+                   host=pghost,
+                   port=pgport,
+                   database=pgdatabase,
+                   user=pguser)
 
         # Connection pool settings
         self.pool_size = int(os.getenv("DB_POOL_SIZE", "20"))
@@ -161,13 +162,13 @@ class DatabaseManager:
         """Create all database tables"""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("All database tables created")
+        logger.info("Database tables created successfully")
 
     async def drop_all_tables(self):
         """Drop all database tables (use with caution!)"""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
-        logger.warning("All database tables dropped")
+        logger.warning("Database tables dropped", action="drop_all_tables")
 
     async def check_connection(self) -> bool:
         """Check if database is accessible"""
@@ -176,7 +177,7 @@ class DatabaseManager:
                 await conn.execute(text("SELECT 1"))
             return True
         except Exception as e:
-            logger.error(f"Database connection check failed: {e}")
+            logger.error("Database connection check failed", error=str(e))
             return False
 
     async def get_table_sizes(self) -> dict:
@@ -204,10 +205,10 @@ class DatabaseManager:
         async with self.engine.connect() as conn:
             if table_name:
                 await conn.execute(text(f"VACUUM ANALYZE {table_name}"))
-                logger.info(f"VACUUM ANALYZE completed for {table_name}")
+                logger.info("VACUUM ANALYZE completed", table=table_name)
             else:
                 await conn.execute(text("VACUUM ANALYZE"))
-                logger.info("VACUUM ANALYZE completed for all tables")
+                logger.info("VACUUM ANALYZE completed", table="all")
 
     async def get_slow_queries(self, min_duration_ms: int = 1000) -> list:
         """Get slow queries from pg_stat_statements"""
@@ -233,7 +234,7 @@ class DatabaseManager:
                 )
                 return [dict(row._mapping) for row in result]
         except Exception as e:
-            logger.error(f"Failed to get slow queries: {e}")
+            logger.error("Failed to get slow queries", error=str(e))
             return []
 
 
@@ -337,7 +338,7 @@ class ConnectionPoolMonitor:
     async def reset_pool(self):
         """Reset connection pool"""
         await self.engine.dispose()
-        logger.info("Database connection pool reset")
+        logger.info("Database connection pool reset successfully")
 
 
 # Create global pool monitor
@@ -364,7 +365,7 @@ async def run_migrations():
         command.upgrade(alembic_cfg, "head")
 
     await asyncio.to_thread(_upgrade_head)
-    logger.info("Alembic migrations applied to head")
+    logger.info("Database migrations completed", tool="alembic", target="head")
 
 
 # --- Health Checks ---

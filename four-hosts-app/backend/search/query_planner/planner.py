@@ -248,13 +248,14 @@ class QueryPlanner:
                     tags=dict(cand.tags),
                 )
             )
-        stage_prior = {
+        stage_prior = getattr(self.cfg, "stage_prior", {}) or {
             "paradigm": 1.0,
             "rule_based": 0.96,
             "llm": 0.9,
             "context": 0.88,
             "agentic": 0.86,
         }
+
         out.sort(
             key=lambda c: stage_prior.get(c.stage, 0.8) * c.weight,
             reverse=True,

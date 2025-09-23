@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import contextvars
 import os
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Union, TYPE_CHECKING
@@ -104,6 +105,30 @@ class LLMClient:
         self._initialized = False
         self._azure_endpoint: Optional[str] = None
         self._azure_api_version: str = "preview"
+
+        # Context-local token usage so concurrent requests don't overwrite
+        # each other's statistics.  Backwards-compatibility: we still publish
+        # the *_last_usage* attribute so existing code keeps working, but it
+        # now simply mirrors the value stored in the *ContextVar*.
+        self._usage_var: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = (
+            contextvars.ContextVar("llm_last_usage", default=None)
+        )
+        self._last_usage: Optional[Dict[str, Any]] = None  # deprecated shim
+
+    # ------------------------------------------------------------------
+    # Public helpers
+    # ------------------------------------------------------------------
+
+    def get_last_usage(self) -> Optional[Dict[str, Any]]:
+        """Return LLM usage for the *current* request context.
+
+        This replaces the old ``_last_usage`` attribute which was prone to
+        data races when the service handled concurrent requests.  Callers that
+        still access ``_last_usage`` will continue to receive the same object
+        (for now), but they should migrate to this method.
+        """
+
+        return self._usage_var.get()
 
         # Try to initialize clients
         try:
@@ -281,14 +306,35 @@ class LLMClient:
                 return self._stream_chat_response(response)
 
             # Extract content from response
-            if hasattr(response, 'choices') and response.choices:
-                result = response.choices[0].message.content or ""
-                logger.info(
-                    "Completion received successfully",
-                    response_length=len(result),
-                    model=model
-                )
-                return result
+                if hasattr(response, 'choices') and response.choices:
+                    result = response.choices[0].message.content or ""
+
+                    # --------------------------------------------------
+                    # Capture token usage so orchestration can attribute
+                    # cost and performance metrics without another import.
+                    # --------------------------------------------------
+                    try:
+                        usage = getattr(response, "usage", None)
+                        if usage and isinstance(usage, dict):
+                            snapshot = {
+                                "model": self._get_deployment_name(model),
+                                "prompt_tokens": usage.get("prompt_tokens"),
+                                "completion_tokens": usage.get("completion_tokens"),
+                                "total_tokens": usage.get("total_tokens"),
+                            }
+                            # Store per-context for concurrency safety
+                            self._usage_var.set(snapshot)
+                            # Deprecated attribute (kept for legacy access)
+                            self._last_usage = snapshot
+                    except Exception:
+                        pass
+
+                    logger.info(
+                        "Completion received successfully",
+                        response_length=len(result),
+                        model=model
+                    )
+                    return result
             logger.warning("Empty response received from LLM")
             return ""
 
@@ -454,6 +500,26 @@ class LLMClient:
 
         if stream:
             return self._stream_responses(result)
+
+        # --------------------------------------------------------------
+        # Capture usage tokens from Responses API – may be nested inside
+        # the final event payload under `usage` or similar.
+        # --------------------------------------------------------------
+        try:
+            usage = None
+            if isinstance(result, dict):
+                usage = result.get("usage") or result.get("token_usage")
+            if usage and isinstance(usage, dict):
+                snapshot = {
+                    "model": model,
+                    "prompt_tokens": usage.get("prompt_tokens"),
+                    "completion_tokens": usage.get("completion_tokens"),
+                    "total_tokens": usage.get("total_tokens"),
+                }
+                self._usage_var.set(snapshot)
+                self._last_usage = snapshot  # compatibility
+        except Exception:
+            pass
 
         # Extract text from response
         return extract_text_from_any(result)

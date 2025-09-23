@@ -10,10 +10,10 @@ import bleach
 import hashlib
 import secrets
 from typing import Optional, List, Pattern
-import logging
+import structlog
 from .url_utils import MAX_URL_LENGTH
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Configuration constants
 MAX_QUERY_LENGTH = 5000
@@ -117,7 +117,8 @@ class PatternValidator:
         # Check for dangerous patterns
         for dangerous in REDOS_PATTERNS:
             if dangerous.search(pattern):
-                logger.warning(f"Potentially dangerous regex pattern detected: {pattern[:50]}...")
+                logger.warning("Potentially dangerous regex pattern detected",
+                              pattern_preview=pattern[:50])
                 return False
 
         # Try to compile with timeout (would need subprocess for true timeout)
@@ -136,7 +137,7 @@ class PatternValidator:
         try:
             return re.compile(pattern, flags)
         except re.error as e:
-            logger.error(f"Failed to compile pattern: {e}")
+            logger.error("Failed to compile pattern", error=str(e))
             return None
 
 

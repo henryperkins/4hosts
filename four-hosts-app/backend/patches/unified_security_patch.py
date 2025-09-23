@@ -14,6 +14,14 @@ import sys
 import argparse
 import shutil
 from pathlib import Path
+import structlog
+
+# Setup logging
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from logging_config import configure_logging
+configure_logging()
+
+logger = structlog.get_logger(__name__)
 
 
 def apply_classification_engine_patch(dry_run=False):
@@ -46,9 +54,11 @@ def _compile_patterns(self) -> Dict[HostParadigm, List[re.Pattern]]:
 """
 
     if not dry_run:
-        print("✓ Applied classification_engine.py sanitization patch")
+        logger.info("Applied patch", file="classification_engine.py",
+                   patch_type="sanitization")
     else:
-        print("Would apply classification_engine.py patch")
+        logger.info("Dry run: would apply patch", file="classification_engine.py",
+                   patch_type="sanitization")
 
     return patch
 
@@ -88,9 +98,11 @@ async def get_api_key_info(api_key: str, db: Optional[AsyncSession] = None) -> O
 """
 
     if not dry_run:
-        print("✓ Applied auth_service.py API key indexing patch")
+        logger.info("Applied patch", file="auth_service.py",
+                   patch_type="api_key_indexing")
     else:
-        print("Would apply auth_service.py patch")
+        logger.info("Dry run: would apply patch", file="auth_service.py",
+                   patch_type="api_key_indexing")
 
     return patch
 
@@ -137,9 +149,11 @@ if token:
 """
 
     if not dry_run:
-        print("✓ Applied rate_limiter.py validation patch")
+        logger.info("Applied patch", file="rate_limiter.py",
+                   patch_type="validation")
     else:
-        print("Would apply rate_limiter.py patch")
+        logger.info("Dry run: would apply patch", file="rate_limiter.py",
+                   patch_type="validation")
 
     return patch
 
@@ -166,9 +180,11 @@ async def search_arxiv(self, query: str, **kwargs):
 """
 
     if not dry_run:
-        print("✓ Applied search_apis.py circuit breaker patch")
+        logger.info("Applied patch", file="search_apis.py",
+                   patch_type="circuit_breaker")
     else:
-        print("Would apply search_apis.py patch")
+        logger.info("Dry run: would apply patch", file="search_apis.py",
+                   patch_type="circuit_breaker")
 
     return patch
 
@@ -186,9 +202,11 @@ from utils.security import pattern_validator
 """
 
     if not dry_run:
-        print("✓ Applied context_engineering.py pattern safety patch")
+        logger.info("Applied patch", file="context_engineering.py",
+                   patch_type="pattern_safety")
     else:
-        print("Would apply context_engineering.py patch")
+        logger.info("Dry run: would apply patch", file="context_engineering.py",
+                   patch_type="pattern_safety")
 
     return patch
 
@@ -219,9 +237,10 @@ def main():
             if src.exists():
                 dst = backup_dir / file_path.replace("/", "_")
                 shutil.copy2(src, dst)
-                print(f"Backed up {file_path}")
+                logger.info("Backed up file", file=file_path, destination=str(dst))
 
-    print("\n🔧 Applying security patches using centralized utilities...\n")
+    logger.info("Starting security patch application",
+               mode="dry_run" if args.dry_run else "live")
 
     # Apply patches
     apply_classification_engine_patch(args.dry_run)
@@ -231,14 +250,17 @@ def main():
     apply_context_engineering_patch(args.dry_run)
 
     if not args.dry_run:
-        print("\n✅ All patches applied successfully!")
-        print("\n📝 Next steps:")
-        print("1. Run database migration: alembic upgrade head")
-        print("2. Update requirements.txt with: bleach==6.1.0")
-        print("3. Run tests: pytest tests/test_security.py")
-        print("4. Review changes and commit")
+        logger.info("All patches applied successfully")
+        logger.info("Next steps",
+                   steps=[
+                       "Run database migration: alembic upgrade head",
+                       "Update requirements.txt with: bleach==6.1.0",
+                       "Run tests: pytest tests/test_security.py",
+                       "Review changes and commit"
+                   ])
     else:
-        print("\n📋 Dry run complete. Use without --dry-run to apply patches.")
+        logger.info("Dry run complete",
+                   message="Use without --dry-run to apply patches")
 
 
 if __name__ == "__main__":

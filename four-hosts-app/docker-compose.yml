@@ -9,6 +9,24 @@
 # - React frontend for user interaction
 # ============================================================================
 
+# Reusable env anchors
+x-backend-exa-env: &backend-exa-env
+  EXA_API_KEY: ${EXA_API_KEY:-}
+  SEARCH_DISABLE_EXA: ${SEARCH_DISABLE_EXA:-0}
+  EXA_INCLUDE_TEXT: ${EXA_INCLUDE_TEXT:-0}
+  EXA_SEARCH_AS_PRIMARY: ${EXA_SEARCH_AS_PRIMARY:-0}
+  EXA_BASE_URL: ${EXA_BASE_URL:-https://api.exa.ai}
+  EXA_TIMEOUT_SEC: ${EXA_TIMEOUT_SEC:-15}
+
+# Optional: Unified Query Planner knobs (safe to leave unset)
+x-backend-planner-env: &backend-planner-env
+  UNIFIED_QUERY_MAX_VARIATIONS: ${UNIFIED_QUERY_MAX_VARIATIONS:-}
+  UNIFIED_QUERY_STAGE_ORDER: ${UNIFIED_QUERY_STAGE_ORDER:-}
+  UNIFIED_QUERY_STAGE_PRIORS: ${UNIFIED_QUERY_STAGE_PRIORS:-}
+  UNIFIED_QUERY_ENABLE_LLM: ${UNIFIED_QUERY_ENABLE_LLM:-}
+  UNIFIED_QUERY_ENABLE_FOLLOW_UP: ${UNIFIED_QUERY_ENABLE_FOLLOW_UP:-}
+  UNIFIED_QUERY_DEDUP_JACCARD: ${UNIFIED_QUERY_DEDUP_JACCARD:-}
+
 services:
   # ==========================================================================
   # DATABASE SERVICE - PostgreSQL
@@ -113,13 +131,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEEP_RESEARCH_MODEL: ${DEEP_RESEARCH_MODEL:-o3}
 
-      # Exa Search provider toggles
-      EXA_API_KEY: ${EXA_API_KEY:-}
-      SEARCH_DISABLE_EXA: ${SEARCH_DISABLE_EXA:-0}
-      EXA_INCLUDE_TEXT: ${EXA_INCLUDE_TEXT:-0}
-      EXA_SEARCH_AS_PRIMARY: ${EXA_SEARCH_AS_PRIMARY:-0}
-      EXA_BASE_URL: ${EXA_BASE_URL:-https://api.exa.ai}
-      EXA_TIMEOUT_SEC: ${EXA_TIMEOUT_SEC:-15}
+      # Exa and Planner env from anchors
+      <<: [*backend-exa-env, *backend-planner-env]
 
       # Feature flags
       ENABLE_QUERY_LLM: ${ENABLE_QUERY_LLM:-1}
@@ -199,7 +212,8 @@ services:
       com.fourhosts.description: "FastAPI backend with paradigm research engine"
       com.fourhosts.endpoints: "http://localhost:8000/docs"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # Container-internal check; uses container port 8000, not the host-mapped BACKEND_PORT
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -219,7 +233,8 @@ services:
         condition: service_started  # Frontend can start once backend is running
     ports:
       - "80:80"
-      - "443:443"
+    # Expose 443 only after TLS certificates are provisioned to avoid handshake errors
+    # - "443:443"
     volumes:
       - ./frontend/certs:/etc/nginx/certs:ro
       - ./frontend/certbot:/var/www/certbot:ro
@@ -252,8 +267,7 @@ volumes:
 # ==========================================================================
 networks:
   fourhosts-network:
-    external: true
-    name: fourhosts-network
+    driver: bridge
 
 # ==========================================================================
 # USAGE INSTRUCTIONS

@@ -7,16 +7,16 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple, Optional
 import json
-import logging
 import os
 import asyncio
+import structlog
 from utils.url_utils import extract_base_domain
 
 from .llm_client import llm_client
 from .credibility import get_source_credibility
 from pydantic import BaseModel, ValidationError
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 CRITIC_SCHEMA = {
@@ -130,7 +130,7 @@ async def llm_coverage_and_claims(
                         if score < 0.3 or (factual == "low") or contr > 0.8:
                             flagged_low_cred.append(url)
                 except Exception as e:
-                    logger.debug("credibility precheck failed: %s", e)
+                    logger.debug("Credibility precheck failed", error=str(e))
 
         prompt = _build_prompt(query, paradigm, themes or [], focus or [], sources or [], cred_hints if cred_hints else None)
         raw = await llm_client.generate_completion(
@@ -150,9 +150,10 @@ async def llm_coverage_and_claims(
                     model = CoverageCritiqueModel.model_validate(obj)
                     data = model.model_dump()
                 except ValidationError as ve:
-                    logger.debug("critic validation failed: %s", ve)
+                    logger.debug("Critic validation failed", error=str(ve))
                     data = default_payload
-                except Exception:
+                except Exception as e:
+                    logger.debug("Critic parsing failed", error=str(e))
                     data = default_payload
         else:
             data = {"coverage_score": 0.5, "missing_facets": [], "flagged_sources": [], "warnings": ["critic_non_string_output"]}
@@ -175,5 +176,5 @@ async def llm_coverage_and_claims(
             data["warnings"] = list({*warns, "low_credibility_sources_detected"})
         return data
     except Exception as e:
-        logger.warning("LLM critic failed: %s", e)
+        logger.warning("LLM critic failed", error=str(e))
         return {"coverage_score": 0.5, "missing_facets": [], "flagged_sources": [], "warnings": ["critic_failed"]}

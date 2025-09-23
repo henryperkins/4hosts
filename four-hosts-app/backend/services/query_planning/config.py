@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
-from typing import Iterable
+from typing import Iterable, Dict
+
+import structlog
 
 from .types import PlannerConfig, StageName
+
+
+logger = structlog.get_logger(__name__)
 
 
 def build_planner_config(
@@ -18,6 +24,7 @@ def build_planner_config(
         stage_order=list(base.stage_order),
         per_stage_caps=dict(base.per_stage_caps),
         dedup_jaccard=base.dedup_jaccard,
+        stage_prior=dict(base.stage_prior),
     )
 
     if stage_order is not None:
@@ -36,8 +43,12 @@ def build_planner_config(
     if max_candidates_env:
         try:
             cfg.max_candidates = max(1, int(max_candidates_env))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Invalid UNIFIED_QUERY_MAX_VARIATIONS override ignored",
+                raw_value=max_candidates_env,
+                error=str(exc),
+            )
 
     llm_flag = os.getenv("UNIFIED_QUERY_ENABLE_LLM")
     if llm_flag is not None:
@@ -80,14 +91,61 @@ def build_planner_config(
             continue
         try:
             cfg.per_stage_caps[stage] = max(0, int(cap))
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Invalid per-stage cap override ignored",
+                env_key=env_key,
+                raw_value=cap,
+                error=str(exc),
+            )
             continue
 
     dedup_env = os.getenv("UNIFIED_QUERY_DEDUP_JACCARD")
-    if dedup_env:
+    if dedup_env is not None:
         try:
-            cfg.dedup_jaccard = float(dedup_env)
-        except Exception:
-            pass
+            cfg.dedup_jaccard = max(0.0, min(1.0, float(dedup_env)))
+        except Exception as exc:
+            logger.warning(
+                "Invalid UNIFIED_QUERY_DEDUP_JACCARD override ignored",
+                raw_value=dedup_env,
+                error=str(exc),
+            )
+
+    # ------------------------------------------------------------------
+    # Stage-prior weight overrides
+    #   Accepted formats (env: UNIFIED_QUERY_STAGE_PRIORS):
+    #     1) JSON string: '{"rule_based":0.9,"llm":0.8}'
+    #     2) Comma list : 'rule_based:0.9,llm:0.8'
+    # ------------------------------------------------------------------
+    priors_raw = os.getenv("UNIFIED_QUERY_STAGE_PRIORS")
+    if priors_raw:
+        candidate: Dict[str, float] = {}
+        try:
+            if priors_raw.strip().startswith("{"):
+                candidate = json.loads(priors_raw)
+            else:
+                for pair in priors_raw.split(","):
+                    if ":" not in pair:
+                        continue
+                    k, v = pair.split(":", 1)
+                    candidate[k.strip().lower()] = float(v)
+        except Exception as exc:  # pragma: no cover – config error path
+            logger.warning(
+                "Invalid UNIFIED_QUERY_STAGE_PRIORS override ignored",
+                raw_value=priors_raw,
+                error=str(exc),
+            )
+            candidate = {}
+
+        if candidate:
+            # Only apply known stages and sane weight bounds (0..1.5)
+            for stage, weight in candidate.items():
+                if stage not in cfg.stage_prior:
+                    continue
+                try:
+                    w = float(weight)
+                    cfg.stage_prior[stage] = max(0.0, min(1.5, w))
+                except Exception:
+                    continue
 
     return cfg

@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 from dotenv import load_dotenv
 import structlog
+from logging_config import configure_logging
 
 # Load environment variables
 load_dotenv()
@@ -16,16 +17,10 @@ load_dotenv()
 # Add backend directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.dev.ConsoleRenderer(),
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-)
+# Force pretty console logs for this diagnostic if LOG_PRETTY not set
+# Ensure pretty logs for developer diagnostics but avoid double configuration
+os.environ.setdefault("LOG_PRETTY", "1")
+configure_logging()
 
 logger = structlog.get_logger(__name__)
 
@@ -172,17 +167,19 @@ async def test_orchestrator_search():
 async def main():
     success = await test_orchestrator_search()
 
-    print("\n" + "=" * 60)
+    banner = "=" * 60
+    logger.info(banner)
     if success:
-        print("✅ TEST PASSED - Search phase is working")
+        logger.info("Search phase diagnostic passed")
     else:
-        print("❌ TEST FAILED - Search phase has issues")
-        print("\nPossible causes:")
-        print("1. Query planning is generating invalid queries")
-        print("2. Search manager is not properly initialized")
-        print("3. Timeout values are too restrictive")
-        print("4. There's a deadlock in the async execution")
-    print("=" * 60)
+        logger.error("Search phase diagnostic failed",
+                     possible_causes=[
+                        "Invalid generated queries",
+                        "Search manager not initialized",
+                        "Timeout too restrictive",
+                        "Async deadlock",
+                     ])
+    logger.info(banner)
 
 if __name__ == "__main__":
     asyncio.run(main())

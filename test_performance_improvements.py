@@ -45,6 +45,7 @@ def test_adaptive_deduplication():
         {"type": "web", "domain": "example.com", "expected_threshold": 3},
     ]
 
+    all_passed = True
     for case in test_cases:
         # Determine threshold based on type/domain
         if case["type"] == "academic" or ".edu" in case["domain"] or "arxiv" in case["domain"]:
@@ -58,7 +59,10 @@ def test_adaptive_deduplication():
         status = "✅" if passed else "❌"
         print(f"{status} {case['type']}/{case['domain']}: threshold={threshold} (expected={case['expected_threshold']})")
 
-    return True
+        if not passed:
+            all_passed = False
+
+    return all_passed
 
 # Test 3: Dynamic query generation
 def test_dynamic_query_generation():
@@ -72,6 +76,7 @@ def test_dynamic_query_generation():
         {"query": "comprehensive analysis of machine learning algorithms in healthcare diagnostics", "words": 9, "expected_limit": 6},
     ]
 
+    all_passed = True
     for test in test_queries:
         word_count = test["words"]
 
@@ -87,7 +92,10 @@ def test_dynamic_query_generation():
         status = "✅" if passed else "❌"
         print(f"{status} '{test['query'][:30]}...' ({word_count} words): limit={limit} (expected={test['expected_limit']})")
 
-    return True
+        if not passed:
+            all_passed = False
+
+    return all_passed
 
 # Test 4: Content fetch budget
 def test_content_fetch_budget():
@@ -100,6 +108,7 @@ def test_content_fetch_budget():
         {"result_count": 80, "expected_budget": 30.0},  # min(30, max(10, 0.5*80)) = 30
     ]
 
+    all_passed = True
     for case in test_cases:
         # Calculate budget: min(30.0, max(10.0, 0.5 * result_count))
         budget = min(30.0, max(10.0, 0.5 * case["result_count"]))
@@ -108,7 +117,10 @@ def test_content_fetch_budget():
         status = "✅" if passed else "❌"
         print(f"{status} {case['result_count']} results: budget={budget:.1f}s (expected={case['expected_budget']:.1f}s)")
 
-    return True
+        if not passed:
+            all_passed = False
+
+    return all_passed
 
 # Main test runner
 async def main():

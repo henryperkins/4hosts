@@ -6,14 +6,14 @@ and other services that may experience temporary failures.
 
 import asyncio
 import time
-import logging
+import structlog
 from typing import Callable, Any, Optional, Dict, List
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import functools
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class CircuitState(Enum):
@@ -123,9 +123,10 @@ class CircuitBreaker:
         self.state = new_state
         self.stats.state_changes.append((time.time(), old_state, new_state))
 
-        logger.info(
-            f"Circuit breaker '{self.name}' changed state: {old_state.value} -> {new_state.value}"
-        )
+        logger.info("Circuit breaker state changed",
+                   breaker_name=self.name,
+                   old_state=old_state.value,
+                   new_state=new_state.value)
 
         if new_state == CircuitState.HALF_OPEN:
             self._half_open_calls = 0

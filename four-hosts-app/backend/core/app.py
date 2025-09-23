@@ -2,7 +2,6 @@
 FastAPI application factory and configuration
 """
 
-import logging
 import os
 import asyncio
 import structlog
@@ -17,7 +16,7 @@ from fastapi.responses import HTMLResponse
 
 # Try to import prometheus_client, but allow graceful degradation
 try:
-    from prometheus_client import generate_latest, CollectorRegistry
+    from prometheus_client import generate_latest
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
@@ -194,38 +193,32 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Self-healing system started")
 
         # Initialize monitoring
-        from services.monitoring import (
-            PrometheusMetrics,
-            ApplicationInsights,
-            create_monitoring_middleware,
-            HealthCheckService,
-        )
+        from services.monitoring import MonitoringConfig, create_monitoring_stack
         from services.telemetry_pipeline import telemetry_pipeline
 
-        if PROMETHEUS_AVAILABLE:
-            metrics_registry = CollectorRegistry()
-            prometheus = PrometheusMetrics(metrics_registry)
-            telemetry_pipeline.bind_prometheus(prometheus)
-            insights = ApplicationInsights(prometheus)
-            monitoring_middleware = create_monitoring_middleware(
-                prometheus, insights
-            )
-        else:
-            # Fallback: monitoring without prometheus
-            prometheus = None
-            insights = None
-            monitoring_middleware = None
-            logger.warning("Prometheus monitoring disabled - install prometheus_client to enable")
+        # Build the full monitoring stack (Prometheus + OTLP + health + perf)
+        monitoring_cfg = MonitoringConfig(
+            enable_prometheus=PROMETHEUS_AVAILABLE,
+            enable_opentelemetry=bool(os.getenv("ENABLE_OTEL", "1") != "0"),
+        )
 
-        health_service = HealthCheckService()
+        mon = create_monitoring_stack(monitoring_cfg)
 
-        app.state.monitoring = {
-            "prometheus": prometheus,
-            "insights": insights,
-            "middleware": monitoring_middleware,
-            "health": health_service,
-        }
-        logger.info("✓ Monitoring systems initialized" if PROMETHEUS_AVAILABLE else "✓ Health service initialized (prometheus disabled)")
+        # Wire Prometheus into telemetry pipeline if available
+        if mon.get("prometheus"):
+            telemetry_pipeline.bind_prometheus(mon["prometheus"])  # type: ignore[arg-type]
+
+        # Start performance monitor in background
+        perf = mon.get("performance")
+        if perf is not None:
+            try:
+                await perf.start_monitoring()
+            except Exception as exc:
+                logger.warning("performance_monitor_start_failed", error=str(exc))
+
+        app.state.monitoring = mon
+
+        logger.info("✓ Monitoring stack initialized", components=list(mon.keys()))
 
         # Start WebSocket keepalive pings to prevent idle proxy drops
         try:
@@ -287,36 +280,41 @@ async def lifespan(app: FastAPI):
             async def _db_check():
                 return await database_health_check()
 
-            health_service.register_check("database", _db_check)
+            health_service = getattr(app.state, "monitoring", {}).get("health")
+            if health_service:
+                health_service.register_check("database", _db_check)
 
-            # Register Redis check only if cache initialized
-            if cache_success:
-                async def _redis_check():
-                    from services.cache import cache_manager
-                    async with cache_manager.get_client() as client:
-                        pong = await client.ping()
-                    return {"redis": "ok" if pong else "unresponsive"}
+                # Register Redis check only if cache initialized
+                if cache_success:
+                    async def _redis_check():
+                        from services.cache import cache_manager
+                        async with cache_manager.get_client() as client:
+                            pong = await client.ping()
+                        return {"redis": "ok" if pong else "unresponsive"}
 
-                health_service.register_check("redis", _redis_check)
+                    health_service.register_check("redis", _redis_check)
 
-            # Lightweight auth check
-            def _auth_check():
-                return {"loaded": True}
+                # Lightweight auth check
+                def _auth_check():
+                    return {"loaded": True}
 
-            health_service.register_check("auth_service", _auth_check)
-            
-            # LLM readiness check: only report ready when Azure/OpenAI clients are initialized
-            try:
-                def _llm_check():
-                    try:
-                        ready = bool(getattr(app.state, "llm_initialized", False))
-                    except Exception:
-                        ready = False
-                    return {"initialized": ready}
-                health_service.register_check("llm", _llm_check)
-            except Exception:
-                pass
-            logger.info("✓ Readiness health checks registered")
+                health_service.register_check("auth_service", _auth_check)
+
+                # LLM readiness check: only report ready when Azure/OpenAI clients are initialized
+                try:
+                    def _llm_check():
+                        try:
+                            ready = bool(getattr(app.state, "llm_initialized", False))
+                        except Exception:
+                            ready = False
+                        return {"initialized": ready}
+                    health_service.register_check("llm", _llm_check)
+                except Exception:
+                    pass
+
+                logger.info("✓ Readiness health checks registered")
+            else:
+                logger.warning("Health monitoring service not available; readiness checks skipped")
         except Exception as e:
             logger.warning("Health check registration failed: %s", e)
 
@@ -574,6 +572,11 @@ def setup_custom_endpoints(app: FastAPI):
                 "timestamp": datetime.utcnow().isoformat(),
             }
 
+    @app.get("/healthz")
+    async def healthz():
+        # Lightweight alias for container health probes
+        return await health_check()
+
     # Custom documentation endpoints
     @app.get("/openapi.json", include_in_schema=False)
     async def get_openapi():
@@ -617,4 +620,8 @@ def setup_custom_endpoints(app: FastAPI):
             )
         except Exception as e:
             logger.error("Failed to render /metrics: %s", e)
-            return Response(status_code=500)
+            return Response(
+                content=f"# metrics render error: {str(e)}\n",
+                media_type="text/plain; charset=utf-8",
+                status_code=500
+            )

@@ -34,6 +34,13 @@ class TelemetryPipeline:
         # type errors when the dependency is unavailable.
         self._prometheus: Optional[Any] = None
 
+        # Concurrency guard so bursts of requests don't overwhelm Redis or
+        # block the event-loop – make the limit configurable via env-var.
+        import asyncio, os  # local to avoid top-level import for tests
+
+        max_concurrent = int(os.getenv("TELEMETRY_MAX_PARALLEL", "8"))
+        self._sem: "asyncio.Semaphore" = asyncio.Semaphore(max(1, max_concurrent))
+
     def bind_prometheus(self, prometheus: Any) -> None:
         """Attach a Prometheus registry if available."""
 
@@ -74,10 +81,15 @@ class TelemetryPipeline:
             # Best-effort; ignore failures
             pass
 
-        try:
-            await cache_manager.record_search_metrics(safe_record)
-        except Exception:
-            logger.warning("telemetry_cache_record_failed", exc_info=True)
+        # Prevent unbounded concurrent writes that could saturate Redis under
+        # high QPS.  We purposely keep the critical section small – only the
+        # IO-bound cache write – so that we do not serialise the entire
+        # function.
+        async with self._sem:
+            try:
+                await cache_manager.record_search_metrics(safe_record)
+            except Exception:
+                logger.warning("telemetry_cache_record_failed", exc_info=True)
 
         try:
             self._record_prometheus_metrics(safe_record)
@@ -101,6 +113,14 @@ class TelemetryPipeline:
         processing_time = as_float(record.get("processing_time_seconds"))
         dedup_rate = as_float(record.get("deduplication_rate"))
 
+        # New optional fields
+        grounding_cov = as_float(record.get("grounding_coverage"))
+        agent_iterations = as_int(record.get("agent_iterations"))
+        agent_new_queries = as_int(record.get("agent_new_queries"))
+        evidence_quotes_cnt = as_int(record.get("evidence_quotes_count"))
+        evidence_docs_cnt = as_int(record.get("evidence_documents_count"))
+        evidence_tokens = as_int(record.get("evidence_total_tokens"))
+
         self._prometheus.search_runs_total.labels(**labels).inc(1)
 
         if total_queries:
@@ -122,6 +142,41 @@ class TelemetryPipeline:
             dedup_rate = max(0.0, min(1.0, dedup_rate))
             self._prometheus.search_deduplication_rate.labels(**labels).set(
                 dedup_rate
+            )
+
+        # ------------------------------------------------------------------ #
+        # New Metrics Recording
+        # ------------------------------------------------------------------ #
+
+        if grounding_cov is not None:
+            grounding_cov = max(0.0, min(1.0, grounding_cov))
+            self._prometheus.grounding_coverage_ratio.labels(**labels).set(
+                grounding_cov
+            )
+
+        if agent_iterations:
+            self._prometheus.agent_iterations_total.labels(**labels).inc(
+                agent_iterations
+            )
+
+        if agent_new_queries:
+            self._prometheus.agent_new_queries_total.labels(**labels).inc(
+                agent_new_queries
+            )
+
+        if evidence_quotes_cnt:
+            self._prometheus.evidence_quotes_total.labels(**labels).inc(
+                evidence_quotes_cnt
+            )
+
+        if evidence_docs_cnt:
+            self._prometheus.evidence_documents_total.labels(**labels).inc(
+                evidence_docs_cnt
+            )
+
+        if evidence_tokens:
+            self._prometheus.evidence_tokens_total.labels(**labels).inc(
+                evidence_tokens
             )
 
         for provider in coerce_iterable(record.get("apis_used")):
@@ -160,4 +215,3 @@ def _iter_costs(value: Any) -> Iterable[tuple[str, float]]:
 
 
 telemetry_pipeline = TelemetryPipeline()
-

@@ -2,12 +2,12 @@
 Error handlers for the Four Hosts Research API
 """
 
-import logging
+import structlog
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def validation_exception_handler(
@@ -83,7 +83,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle general exceptions"""
-    logger.error("Unhandled exception: %s", str(exc), exc_info=True)
+    logger.error("Unhandled exception",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                path=request.url.path,
+                request_id=getattr(request.state, "request_id", "unknown"))
 
     # Track errors in monitoring if available
     try:

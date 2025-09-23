@@ -6,11 +6,18 @@ import os
 import sys
 from sqlalchemy import select, update
 from dotenv import load_dotenv
+import structlog
 
 # Add the current directory to the Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 load_dotenv()
+
+# Import logging config to ensure consistent logging
+from logging_config import configure_logging
+configure_logging()
+
+logger = structlog.get_logger(__name__)
 
 # Conditional imports to handle different SQLAlchemy versions
 try:
@@ -48,11 +55,10 @@ async def _update_role(db, email: str):
     user = result.scalars().first()
 
     if not user:
-        print(f"❌ User with email {email} not found")
+        logger.error("User not found", email=email)
         return False
 
-    print(f"Found user: {user.username} ({user.email})")
-    print(f"Current role: {user.role}")
+    logger.info("Found user", username=user.username, email=user.email, current_role=user.role)
 
     # Update role to PRO
     await db.execute(
@@ -62,7 +68,7 @@ async def _update_role(db, email: str):
 
     # Verify update
     await db.refresh(user)
-    print(f"✅ Updated role to: {user.role}")
+    logger.info("Updated user role successfully", email=user.email, new_role=user.role)
     return True
 
 
@@ -71,5 +77,10 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         email = sys.argv[1]
 
-    print(f"Updating role for user: {email}")
-    asyncio.run(update_user_role_to_pro(email))
+    logger.info("Starting role update", target_email=email, target_role="PRO")
+    result = asyncio.run(update_user_role_to_pro(email))
+    if result:
+        logger.info("Role update completed successfully")
+    else:
+        logger.error("Role update failed")
+        sys.exit(1)

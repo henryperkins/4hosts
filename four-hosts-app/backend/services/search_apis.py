@@ -1160,18 +1160,29 @@ class BraveSearchAPI(BaseSearchAPI):
     @with_circuit_breaker("brave_search", failure_threshold=3, recovery_timeout=30)
     @get_search_retry_decorator()
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
-        await self.rate.wait()
-        q_limit = int(os.getenv("SEARCH_PROVIDER_Q_LIMIT", "400"))
-        params = {
-            "q": _safe_truncate_query(self.qopt.optimize_query(query), q_limit),
-            "count": min(cfg.max_results, 20),
-            "search_lang": cfg.language,
-        }
-        headers = {"X-Subscription-Token": self.api_key, "Accept": "application/json"}
-        async with self._sess().get(self.base, params=params, headers=headers) as r:
-            if r.status != 200:
-                return []
-            data = await r.json()
+        from utils.otel import otel_span  # local import to avoid optional dep
+        import time
+
+        start = time.perf_counter()
+        attrs = {"provider": "brave", "success": False}
+
+        with otel_span("rag.provider.search", attrs):
+            await self.rate.wait()
+            q_limit = int(os.getenv("SEARCH_PROVIDER_Q_LIMIT", "400"))
+            params = {
+                "q": _safe_truncate_query(self.qopt.optimize_query(query), q_limit),
+                "count": min(cfg.max_results, 20),
+                "search_lang": cfg.language,
+            }
+            headers = {"X-Subscription-Token": self.api_key, "Accept": "application/json"}
+            async with self._sess().get(self.base, params=params, headers=headers) as r:
+                if r.status != 200:
+                    attrs["http_status"] = r.status
+                    return []
+                data = await r.json()
+            attrs["http_status"] = 200
+            attrs["success"] = True
+            attrs["latency_ms"] = int((time.perf_counter() - start) * 1000)
         results: List[SearchResult] = []
         for item in data.get("web", {}).get("results", []):
             # Best-effort published date
@@ -1211,41 +1222,52 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
     @with_circuit_breaker("google_search", failure_threshold=3, recovery_timeout=30)
     @get_api_retry_decorator()
     async def search(self, query: str, cfg: SearchConfig) -> List[SearchResult]:
-        await self.rate.wait()
-        # Map safe search to Google's accepted values: 'active' or 'off'
-        safe_level = "off" if str(getattr(cfg, "safe_search", "moderate")).lower() == "off" else "active"
-        params = {
-            "key": self.api_key,
-            "cx": self.cx,
-            "q": self.qopt.optimize_query(query),
-            "num": min(cfg.max_results, 10),
-            "safe": safe_level,
-            "hl": cfg.language,
-        }
-        # Use a reasonable timeout for Google Search
-        timeout = aiohttp.ClientTimeout(total=15)
-        try:
-            async with self._sess().get(self.BASE, params=params, timeout=timeout) as r:
-                if r.status == 429:
-                    # Honour rate limiting and let tenacity back off
-                    raise RateLimitedError()
-                if 500 <= r.status <= 599:
-                    # Server errors – retryable
-                    raise aiohttp.ClientError(f"Google CSE {r.status}")
-                if r.status != 200:
-                    # Non-OK without retry – return empty
-                    return []
-                data = await r.json()
-                # Some Google CSE errors come back as 200 with an 'error' body
-                if isinstance(data, dict) and data.get("error"):
-                    err = data.get("error", {})
-                    reasons = ",".join([e.get("reason", "?") for e in err.get("errors", []) if isinstance(e, dict)])
-                    if "rateLimitExceeded" in reasons or "dailyLimitExceeded" in reasons:
+        from utils.otel import otel_span
+        import time
+
+        start = time.perf_counter()
+        attrs = {"provider": "google_cse", "success": False}
+
+        with otel_span("rag.provider.search", attrs):
+            await self.rate.wait()
+            # Map safe search to Google's accepted values: 'active' or 'off'
+            safe_level = "off" if str(getattr(cfg, "safe_search", "moderate")).lower() == "off" else "active"
+            params = {
+                "key": self.api_key,
+                "cx": self.cx,
+                "q": self.qopt.optimize_query(query),
+                "num": min(cfg.max_results, 10),
+                "safe": safe_level,
+                "hl": cfg.language,
+            }
+            # Use a reasonable timeout for Google Search
+            timeout = aiohttp.ClientTimeout(total=15)
+            try:
+                async with self._sess().get(self.BASE, params=params, timeout=timeout) as r:
+                    if r.status == 429:
                         raise RateLimitedError()
-                    return []
-        except asyncio.TimeoutError:
-            logger.warning(f"Google Search timeout for query: {query[:50]}")
-            return []
+                    if 500 <= r.status <= 599:
+                        raise aiohttp.ClientError(f"Google CSE {r.status}")
+                    if r.status != 200:
+                        attrs["http_status"] = r.status
+                        return []
+                    data = await r.json()
+                    if isinstance(data, dict) and data.get("error"):
+                        err = data.get("error", {})
+                        reasons = ",".join(
+                            [e.get("reason", "?") for e in err.get("errors", []) if isinstance(e, dict)]
+                        )
+                        if "rateLimitExceeded" in reasons or "dailyLimitExceeded" in reasons:
+                            raise RateLimitedError()
+                        return []
+            except asyncio.TimeoutError:
+                attrs["timeout"] = True
+                logger.warning(f"Google Search timeout for query: {query[:50]}")
+                return []
+
+            attrs["http_status"] = 200
+            attrs["success"] = True
+            attrs["latency_ms"] = int((time.perf_counter() - start) * 1000)
         items = data.get("items", []) or []
         results: List[SearchResult] = []
         for it in items:

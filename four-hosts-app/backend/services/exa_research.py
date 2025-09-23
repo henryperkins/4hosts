@@ -9,15 +9,15 @@ summaries without altering the existing provider orchestration.
 from __future__ import annotations
 
 import json
-import logging
 import os
+import structlog
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 DEFAULT_BASE_URL = "https://api.exa.ai"
@@ -63,7 +63,7 @@ class ExaResearchClient:
         """
 
         if not self.is_configured():
-            logger.debug("Exa research client skipped: API key not configured")
+            logger.debug("Exa research client skipped", reason="API key not configured")
             return None
 
         if not query:
@@ -86,14 +86,14 @@ class ExaResearchClient:
                 resp = await client.post(url, headers=headers, json=payload)
                 resp.raise_for_status()
         except Exception as exc:
-            logger.warning("Exa research request failed: %s", exc)
+            logger.warning("Exa research request failed", error=str(exc))
             return None
 
         data: Dict[str, Any]
         try:
             data = resp.json()
         except Exception as exc:
-            logger.warning("Failed to decode Exa response JSON: %s", exc)
+            logger.warning("Failed to decode Exa response JSON", error=str(exc))
             return None
 
         text = self._extract_output_text(data)
@@ -103,7 +103,8 @@ class ExaResearchClient:
 
         parsed = self._parse_json_payload(text)
         if not parsed:
-            logger.debug("Exa research output was not valid JSON; raw text truncated=%s", text[:200])
+            logger.debug("Exa research output was not valid JSON",
+                        raw_text_preview=text[:200])
             return None
 
         return ExaResearchOutput(

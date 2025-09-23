@@ -37,11 +37,18 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import List, Dict, Any
+import structlog
 
 # Adjust path so we can import project modules when executed directly
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# Import logging config to ensure consistent logging
+from logging_config import configure_logging
+configure_logging()
+
+logger = structlog.get_logger(__name__)
 
 from services.search_apis import create_search_manager, SearchConfig  # type: ignore
 from search.query_planner import QueryCandidate
@@ -164,7 +171,7 @@ async def run(query: str, paradigm: str, max_results: int, disable_filter: bool,
                     planned=planned,
                 )
             except Exception as e:
-                print(f"[WARN] provider {name} failed: {e}")
+                logger.warning("Provider failed", provider=name, error=str(e))
                 res = []
             per_provider[name] = res
             all_results.extend(res)
@@ -235,13 +242,19 @@ async def run(query: str, paradigm: str, max_results: int, disable_filter: bool,
             "kept_urls": [r.url for r in kept if getattr(r, "url", "")],
         }
 
-        print("\n=== SUMMARY ===")
-        print(json.dumps(report, indent=2))
+        # Log structured output for analysis & emit JSON for CLI
+        logger.info(
+            "Search debug report generated",
+            query=query,
+            paradigm=paradigm,
+            total_raw=len(all_results),
+            kept=len(kept),
+            keep_rate=round(keep_rate, 4),
+        )
+        logger.info("summary", report=report)
 
         if drop_records:
-            print("\nTop drop reasons:")
-            for reason, count in sorted(reason_hist.items(), key=lambda x: x[1], reverse=True):
-                print(f"  {reason:25s} -> {count}")
+            logger.info("Drop reasons summary", reasons=reason_hist)
 
         return report
 
@@ -264,7 +277,8 @@ def main():
     # Require either --query or --queries
     if not args.query and not args.queries:
         parser.print_usage()
-        print("error: one of --query or --queries is required", file=sys.stderr)
+        logger.error("Argument validation failed: missing query input", \
+                     provided_query=args.query, provided_queries=args.queries)
         sys.exit(2)
 
     thr_env = os.getenv("EARLY_THEME_OVERLAP_MIN")
@@ -287,21 +301,26 @@ def main():
         os.environ["EARLY_FILTER_BLOCK_DOMAINS"] = "0"
 
     # Notice when flags are moot due to full filter disable
-    if args.disable_early_filter and (args.theme_threshold is not None or getattr(args, "no_domain_block", False)):
-        print("[WARN] --disable-early-filter is set; --theme-threshold/--no-domain-block have no effect.", file=sys.stderr)
+    if args.disable_early_filter and (args.theme_threshold is not None or
+                                      getattr(args, "no_domain_block", False)):
+        logger.warning("Conflicting flags",
+                      message="--disable-early-filter is set; "
+                              "--theme-threshold/--no-domain-block have no effect")
 
     # Multi-query aggregated path
     if args.queries:
         all_reports: List[Dict[str, Any]] = []
         errors: List[Dict[str, Any]] = []
         for q in args.queries:
-            print(f"\n##### QUERY: {q}")
+            logger.info("Processing query", query=q, paradigm=args.paradigm)
+            logger.info("\n##### QUERY", query=q)
             try:
-                rep = asyncio.run(run(q, args.paradigm, args.max_results, args.disable_early_filter, threshold))
+                rep = asyncio.run(run(q, args.paradigm, args.max_results,
+                                    args.disable_early_filter, threshold))
             except Exception as e:
                 err = {"query": q, "error": str(e)}
                 errors.append(err)
-                print(f"[WARN] query failed: {q} error={e}", file=sys.stderr)
+                logger.error("Query failed", query=q, error=str(e))
                 if args.fail_fast:
                     sys.exit(1)
                 continue
@@ -377,12 +396,13 @@ def main():
             try:
                 with open(args.out, "w") as f:
                     json.dump(agg, f, indent=2)
-                print(f"\nAggregated JSON written to: {args.out}")
+                logger.info("Aggregated results written", output_file=args.out)
+                logger.info("Aggregated JSON written", path=args.out)
             except Exception as e:
-                print(f"[WARN] failed to write aggregated output: {e}", file=sys.stderr)
+                logger.error("Failed to write output", file=args.out, error=str(e))
 
-        print("\n=== AGGREGATED ===")
-        print(json.dumps(agg, indent=2))
+        logger.info("\n=== AGGREGATED ===")
+        logger.info(json.dumps(agg, indent=2))
         sys.exit(0)
 
     # Single-query path

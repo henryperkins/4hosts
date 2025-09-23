@@ -38,3 +38,16 @@ class PlannerConfig:
         }
     )
     dedup_jaccard: float = 0.92
+
+    # Relative importance of each stage when ranking.  This was previously
+    # a hard-coded constant inside `planner.py`; exposing it here makes the
+    # weights configurable at runtime and simplifies tuning experiments.
+    stage_prior: Dict[StageName, float] = field(
+        default_factory=lambda: {
+            "paradigm": 1.0,
+            "rule_based": 0.96,
+            "llm": 0.9,
+            "context": 0.88,
+            "agentic": 0.86,
+        }
+    )

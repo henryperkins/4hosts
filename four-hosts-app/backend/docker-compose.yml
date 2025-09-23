@@ -18,7 +18,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: fourhosts
     ports:
-      - "127.0.0.1:5432:5432"  # bind to loopback to avoid internet exposure
+      - "127.0.0.1:5433:5432"  # align with root stack to avoid tooling confusion
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -33,7 +33,7 @@ services:
     image: redis:7-alpine
     # container_name removed to avoid conflicts if top-level stack also runs
     ports:
-      - "127.0.0.1:6379:6379"  # bind to loopback to avoid internet exposure
+      - "127.0.0.1:6380:6379"  # avoid port clash with full stack; use 6380 for backend-only dev
     volumes:
       - redis_data:/data
     healthcheck:

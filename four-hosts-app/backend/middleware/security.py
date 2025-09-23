@@ -3,14 +3,14 @@ Security middleware for the Four Hosts Research API
 """
 
 import secrets
-import logging
+import structlog
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
 from core.config import is_production
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def csrf_protection_middleware(request: Request, call_next):
@@ -47,19 +47,21 @@ async def csrf_protection_middleware(request: Request, call_next):
         csrf_token_from_cookie = request.cookies.get("csrf_token")
         csrf_token_from_header = request.headers.get("X-CSRF-Token")
 
-        logger.debug(f"CSRF check for {request.url.path}")
-        logger.debug(f"Cookie token: {csrf_token_from_cookie}")
-        logger.debug(f"Header token: {csrf_token_from_header}")
+        logger.debug("CSRF check", path=request.url.path,
+                    cookie_token_present=bool(csrf_token_from_cookie),
+                    header_token_present=bool(csrf_token_from_header))
 
         if (not csrf_token_from_cookie or
             not csrf_token_from_header or
             csrf_token_from_cookie != csrf_token_from_header):
 
-            logger.warning(
-                f"CSRF token mismatch on {request.url.path}: "
-                f"cookie={csrf_token_from_cookie}, "
-                f"header={csrf_token_from_header}"
-            )
+            logger.warning("CSRF token mismatch",
+                         path=request.url.path,
+                         has_cookie=bool(csrf_token_from_cookie),
+                         has_header=bool(csrf_token_from_header),
+                         tokens_match=(csrf_token_from_cookie == csrf_token_from_header
+                                      if csrf_token_from_cookie and csrf_token_from_header
+                                      else False))
             return JSONResponse(
                 status_code=403,
                 content={
@@ -94,18 +96,19 @@ async def security_middleware(request: Request, call_next):
 
 def get_csrf_token(request: Request, response: Response) -> dict:
     """Generate or return existing CSRF token"""
-    logger.info(f"CSRF token endpoint accessed from {request.client.host}")
+    logger.info("CSRF token endpoint accessed",
+               client=request.client.host if request.client else "unknown")
 
     # Check if a valid CSRF token already exists
     existing_token = request.cookies.get("csrf_token")
 
     if existing_token:
-        logger.debug(f"Returning existing CSRF token: {existing_token}")
+        logger.debug("Returning existing CSRF token")
         return {"csrf_token": existing_token}
 
     # Generate a new token only if none exists
     token = secrets.token_urlsafe(16)
-    logger.debug(f"Generating new CSRF token: {token}")
+    logger.debug("Generated new CSRF token")
 
     # Determine cookie attributes from actual scheme to avoid setting
     # Secure cookies over HTTP during local development or behind proxies.

@@ -11,6 +11,7 @@ import json
 from datetime import datetime
 from dotenv import load_dotenv
 import structlog
+from logging_config import configure_logging
 
 # Load environment variables
 load_dotenv()
@@ -18,16 +19,10 @@ load_dotenv()
 # Add backend directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Configure logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.dev.ConsoleRenderer(),
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-)
+# Force pretty logs for interactive diagnostic
+# Enable pretty console logs when not running under CI but avoid re-initialising
+os.environ.setdefault("LOG_PRETTY", "1")
+configure_logging()
 
 logger = structlog.get_logger(__name__)
 
@@ -165,44 +160,37 @@ async def test_search_only():
         return False
 
 async def main():
-    print("="*60)
-    print(" RESEARCH FLOW TIMEOUT DIAGNOSTIC")
-    print("="*60)
-    print(f"Started at: {datetime.now().isoformat()}")
-    print()
+    logger.info("Research flow timeout diagnostic start",
+                started_at=datetime.now().isoformat())
 
     # Test 1: Search only
-    print("TEST 1: Search Phase Only")
-    print("-"*40)
+    logger.info("TEST 1: Search Phase Only")
     search_ok = await test_search_only()
-    print()
 
     # Test 2: Full research flow
-    print("TEST 2: Full Research Flow")
-    print("-"*40)
+    logger.info("TEST 2: Full Research Flow")
     research_ok = await test_research_flow()
-    print()
 
     # Summary
-    print("="*60)
-    print(" SUMMARY")
-    print("="*60)
+    logger.info("Summary start")
 
     if search_ok and research_ok:
-        print("✅ All tests passed - research flow is working!")
+        logger.info("All diagnostics passed")
     elif search_ok and not research_ok:
-        print("⚠️ Search works but full research fails")
-        print("Issue is likely in context engineering or synthesis phases")
+        logger.warning("Search OK, full flow failed",
+                       hint="Check context engineering or synthesis phases")
     elif not search_ok:
-        print("❌ Search phase is failing")
-        print("Check API keys and network connectivity")
+        logger.error("Search phase failing",
+                     hint="Verify API keys / network connectivity")
 
-    print("\nRecommendations:")
     if not research_ok:
-        print("1. Check logs for timeout messages")
-        print("2. Verify Azure OpenAI credentials for synthesis")
-        print("3. Check if context engineering LLM calls are working")
-        print("4. Review timeout settings in .env file")
+        logger.info("Recommendations",
+                    steps=[
+                        "Check logs for timeout messages",
+                        "Verify Azure OpenAI credentials",
+                        "Check context engineering LLM calls",
+                        "Review timeout settings in .env",
+                    ])
 
 if __name__ == "__main__":
     asyncio.run(main())

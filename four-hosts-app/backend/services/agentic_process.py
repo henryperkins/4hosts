@@ -6,6 +6,17 @@ and query proposal to drive iterative research.
 from __future__ import annotations
 
 from typing import List, Tuple, Dict, Any
+
+# Optional OpenTelemetry helper (failsafe import)
+try:
+    from utils.otel import otel_span as _otel_span  # type: ignore
+except Exception:  # pragma: no cover – tracing is optional
+    # Provide a no-op fallback so code always runs even if OTEL is disabled
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _otel_span(*_args: Any, **_kwargs: Any):  # type: ignore
+        yield None
 import re
 
 
@@ -266,86 +277,101 @@ async def run_followups(
         and coverage_ratio < coverage_threshold
         and missing_terms
     ):
-        # Planner proposes follow-ups
-        try:
-            proposed = await planner.followups(
-                seed_query=seed_query,
-                paradigm=paradigm_code,
-                missing_terms=missing_terms,
-                coverage_sources=coverage_sources,
-            )
-        except Exception:
-            break
-
-        # Filter out already executed and cap per-iteration
-        filtered: List[Any] = []
-        for cand in proposed or []:
-            q = getattr(cand, "query", None)
-            if not q or q in executed_queries:
-                continue
-            filtered.append(cand)
-            if 0 < max_new_per_iter <= len(filtered):
+        # ----------------------------------------------------------------------------
+        # Trace each follow-up iteration so we can analyse agent behaviour in OTLP.
+        # ----------------------------------------------------------------------------
+        with _otel_span(
+            "agent.loop.iteration",
+            {
+                "iteration": int(iteration),
+                "current_coverage": float(coverage_ratio or 0.0),
+                "missing_terms": int(len(missing_terms)),
+            },
+        ):
+            # -----------------------------
+            # Planner proposes follow-ups
+            # -----------------------------
+            try:
+                proposed = await planner.followups(
+                    seed_query=seed_query,
+                    paradigm=paradigm_code,
+                    missing_terms=missing_terms,
+                    coverage_sources=coverage_sources,
+                )
+            except Exception:
                 break
 
-        if not filtered:
-            break
+            # Filter out already executed and cap per-iteration
+            filtered: List[Any] = []
+            for cand in proposed or []:
+                q = getattr(cand, "query", None)
+                if not q or q in executed_queries:
+                    continue
+                filtered.append(cand)
+                if 0 < max_new_per_iter <= len(filtered):
+                    break
 
-        # Budget check
-        try:
-            if estimate_cost is not None:
-                estimated = sum(float(estimate_cost(c)) for c in filtered)
-            else:
+            if not filtered:
+                break
+
+            # Budget check
+            try:
+                if estimate_cost is not None:
+                    estimated = sum(float(estimate_cost(c)) for c in filtered)
+                else:
+                    estimated = 0.0
+            except Exception:
                 estimated = 0.0
-        except Exception:
-            estimated = 0.0
 
-        try:
-            if can_spend is not None and not can_spend(estimated):
+            try:
+                if can_spend is not None and not can_spend(estimated):
+                    break
+            except Exception:
+                # If budget callback fails, stop follow-ups
                 break
-        except Exception:
-            # If budget callback fails, stop follow-ups
-            break
 
-        # Cancellation gate
-        try:
-            if check_cancelled and await check_cancelled():
-                break
-        except Exception:
-            pass
+            # Cancellation gate
+            try:
+                if check_cancelled and await check_cancelled():
+                    break
+            except Exception:
+                pass
 
-        # Execute selected candidates
-        try:
-            results_map = {}
-            if execute_candidates:
-                results_map = await execute_candidates(filtered)
-        except Exception:
-            results_map = {}
+            # Execute selected candidates
+            try:
+                results_map = {}
+                if execute_candidates:
+                    results_map = await execute_candidates(filtered)
+            except Exception:
+                results_map = {}
 
-        # Merge new results and extend coverage sources
-        for query, res_list in (results_map or {}).items():
-            followup_results[query] = res_list
-            if to_coverage_sources:
-                try:
-                    rows = to_coverage_sources(res_list)
-                    coverage_sources.extend(rows or [])
-                except Exception:
-                    pass
+            # Merge new results and extend coverage sources
+            for query, res_list in (results_map or {}).items():
+                followup_results[query] = res_list
+                if to_coverage_sources:
+                    try:
+                        rows = to_coverage_sources(res_list)
+                        coverage_sources.extend(rows or [])
+                    except Exception:
+                        pass
 
-        # Update tracking
-        for cand in filtered:
-            q = getattr(cand, "query", None)
-            if q:
-                executed_queries.add(q)
-        new_candidates.extend(filtered)
+            # Update tracking
+            for cand in filtered:
+                q = getattr(cand, "query", None)
+                if q:
+                    executed_queries.add(q)
+            new_candidates.extend(filtered)
 
-        # Recompute coverage
-        coverage_ratio, missing_terms = evaluate_coverage_from_sources(
-            original_query,
-            context_engineered,
-            coverage_sources,
-        )
-        iteration += 1
+            # Recompute coverage
+            coverage_ratio, missing_terms = evaluate_coverage_from_sources(
+                original_query,
+                context_engineered,
+                coverage_sources,
+            )
 
+            iteration += 1
+
+    # End while loop
     return (
         new_candidates,
         followup_results,

@@ -33,7 +33,7 @@ import asyncio
 import re
 from typing import Any, Dict, List, Tuple
 
-from utils.url_utils import extract_domain
+from utils.url_utils import extract_domain, canonicalize_url
 from utils.source_normalization import dedupe_by_url
 from models.evidence import EvidenceQuote, EvidenceBundle, EvidenceDocument
 from utils.otel import otel_span as _otel_span
@@ -79,6 +79,9 @@ try:
     _SK_OK = True
 except Exception:
     _SK_OK = False
+
+# In-process short-TTL cache for fetched evidence texts: canonical_url -> (text, expires_epoch)
+_EVIDENCE_TEXT_CACHE: Dict[str, Tuple[str, float]] = {}
 
 
 def _tokens(text: str) -> List[str]:
@@ -154,6 +157,7 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     import aiohttp  # local import to avoid hard dependency at import time
     import logging
     import os
+    import time as _time
 
     logger = logging.getLogger(__name__)
 
@@ -169,19 +173,89 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
 
     # Initialize rate limiter and circuit breaker if enabled
     enable_rate_limiting = os.getenv("EVIDENCE_ENABLE_RATE_LIMITING", "1") == "1"
-    if enable_rate_limiting:
-        rate_limiter = ClientRateLimiter(calls_per_minute=60)  # 60 calls per minute
-    else:
-        rate_limiter = None
+    rate_limiter = ClientRateLimiter(calls_per_minute=60) if enable_rate_limiting else None  # 60 calls per minute
 
     circuit_threshold = int(os.getenv("EVIDENCE_CIRCUIT_BREAKER_THRESHOLD", "5"))
     circuit_timeout = int(os.getenv("EVIDENCE_CIRCUIT_BREAKER_TIMEOUT", "60"))
     circuit_breaker = EvidenceCircuitBreaker(circuit_threshold, circuit_timeout)
 
+    # Evidence fetch cache controls
+    cache_enabled = os.getenv("EVIDENCE_FETCH_CACHE_ENABLE", "1").lower() in {"1", "true", "yes", "on"}
+    use_redis_cache = os.getenv("EVIDENCE_FETCH_CACHE_USE_REDIS", "0").lower() in {"1", "true", "yes", "on"}
+    ttl_sec = float(os.getenv("EVIDENCE_FETCH_CACHE_TTL_SEC", "600"))
+    neg_ttl_sec = float(os.getenv("EVIDENCE_FETCH_CACHE_NEG_TTL_SEC", "120"))
+
+    # Prepare canonical URL map and resolve cache hits upfront
+    now = _time.time()
+    canon_map: Dict[str, str] = {}
+    to_fetch: List[str] = []
+    cache_hits = 0
+    cache_misses = 0
+
+    # Optional Redis accessor
+    async def _redis_get(canon: str) -> str | None:
+        if not use_redis_cache:
+            return None
+        try:
+            from services.cache import cache_manager  # lazy import
+            key = f"evidence_text:{canon}"
+            val = await cache_manager.get_kv(key)
+            if isinstance(val, str):
+                return val
+            # Some cache backends may return bytes
+            if isinstance(val, bytes):
+                try:
+                    return val.decode("utf-8", errors="replace")
+                except Exception:
+                    return None
+            return None
+        except Exception:
+            return None
+
+    async def _redis_set(canon: str, text: str, ttl: int) -> None:
+        if not use_redis_cache:
+            return
+        try:
+            from services.cache import cache_manager  # lazy import
+            key = f"evidence_text:{canon}"
+            await cache_manager.set_kv(key, text or "", ttl=max(1, int(ttl)))
+        except Exception:
+            # Best-effort only
+            pass
+
+    # Resolve in-memory/redis cache before issuing network requests
+    if cache_enabled and urls:
+        for url in urls:
+            u = (url or "").strip()
+            if not u:
+                continue
+            canon = canonicalize_url(u) or u
+            canon_map[u] = canon
+
+            # In-process cache first
+            cached = _EVIDENCE_TEXT_CACHE.get(canon)
+            if cached and cached[1] > now:
+                out[u] = cached[0]
+                cache_hits += 1
+                continue
+
+            # Optional Redis cache
+            red = await _redis_get(canon)
+            if isinstance(red, str) and red is not None and red != "":
+                out[u] = red
+                _EVIDENCE_TEXT_CACHE[canon] = (red, now + ttl_sec)
+                cache_hits += 1
+                continue
+
+            # Miss -> schedule fetch
+            to_fetch.append(u)
+            cache_misses += 1
+    else:
+        to_fetch = list(urls or [])
+
     # Don't apply a session-wide timeout - let each URL have its own timeout
     headers = {"User-Agent": "FourHostsResearch/1.0 (+evidence-builder)"}
     async with aiohttp.ClientSession(headers=headers) as session:
-        import time as _time
         with _otel_span("evidence.fetch.batch", {"urls": len(urls)}) as _sp:
             _t0 = _time.time()
 
@@ -204,12 +278,22 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
                             fetch_and_parse_url(session, url),
                             timeout=per_url_timeout,
                         )
-                        out[url] = txt or ""
+                        text_val = txt or ""
+                        out[url] = text_val
                         if not txt:
                             fetch_failures.append(f"{url}: empty content")
                             circuit_breaker.call_failure()
                         else:
                             circuit_breaker.call_success()
+
+                        # Populate caches
+                        if cache_enabled:
+                            canon = canon_map.get(url) or canonicalize_url(url) or url
+                            expire = now + (ttl_sec if text_val else neg_ttl_sec)
+                            _EVIDENCE_TEXT_CACHE[canon] = (text_val, expire)
+                            # Fire-and-forget Redis set (await to preserve ordering; still cheap)
+                            await _redis_set(canon, text_val, int(ttl_sec if text_val else neg_ttl_sec))
+
                     except asyncio.TimeoutError:
                         out[url] = ""
                         fetch_failures.append(
@@ -227,8 +311,8 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
                         fetch_failures.append(f"{url}: {type(e).__name__}")
                         circuit_breaker.call_failure()
 
-            # Run all fetches in parallel with bounded concurrency via semaphore
-            tasks = [asyncio.create_task(fetch_single(u)) for u in urls]
+            # Run fetches for cache misses only
+            tasks = [asyncio.create_task(fetch_single(u)) for u in to_fetch]
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -238,8 +322,32 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
                     _sp.set_attribute("latency_ms", int((_time.time() - _t0) * 1000))
                     _sp.set_attribute("success", True)
                     _sp.set_attribute("failures.count", len(fetch_failures))
+                    _sp.set_attribute("cache.hits", int(cache_hits))
+                    _sp.set_attribute("cache.misses", int(cache_misses))
             except Exception:
                 pass
+
+    # Expose cache hit/miss counters to telemetry (Prometheus if available)
+    try:
+        from services.telemetry_pipeline import telemetry_pipeline as _tp  # type: ignore
+        _prom = getattr(_tp, "_prometheus", None)
+        if _prom is not None:
+            if cache_hits:
+                _prom.evidence_cache_hits_total.inc(int(cache_hits))
+            if cache_misses:
+                _prom.evidence_cache_misses_total.inc(int(cache_misses))
+    except Exception:
+        pass
+
+    # Also record to in-process metrics facade for internal dashboards
+    try:
+        from services.metrics import metrics as _metrics  # type: ignore
+        if cache_hits:
+            _metrics.increment("evidence_cache_hits", amount=int(cache_hits))
+        if cache_misses:
+            _metrics.increment("evidence_cache_misses", amount=int(cache_misses))
+    except Exception:
+        pass
 
     # Log fetch failures summary
     if fetch_failures:

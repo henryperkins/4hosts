@@ -68,6 +68,7 @@ from utils.url_utils import clean_url, normalize_url, extract_domain, canonicali
 from utils.source_normalization import normalize_source_fields, compute_category_distribution, extract_dedup_metrics, dedupe_by_url
 from utils.date_utils import get_current_utc, get_current_iso
 from utils.token_budget import select_items_within_budget, compute_budget_plan
+from utils.grounding import compute_grounding_coverage
 
 # Local imports - core
 from core.config import (
@@ -196,6 +197,43 @@ class UnifiedResearchOrchestrator:
             if os.getenv("AGENTIC_MAX_ITERATIONS"):
                 try:
                     self.agentic_config["max_iterations"] = int(os.getenv("AGENTIC_MAX_ITERATIONS", "2") or 2)
+                except Exception:
+                    pass
+
+                # ------------------------------------------------------
+                # Grounding coverage – what fraction of answer sentences
+                # reference at least one citation marker.
+                # ------------------------------------------------------
+                try:
+                    content_str: str
+                    citations_list: List[Dict[str, Any]]
+
+                    if isinstance(synthesized_answer, dict):
+                        content_str = synthesized_answer.get("answer") or synthesized_answer.get("content") or ""
+                        citations_list = synthesized_answer.get("citations") or []
+                    else:
+                        content_str = getattr(synthesized_answer, "content", "") or ""
+                        citations_list = getattr(synthesized_answer, "citations", []) or []
+
+                    coverage_ratio, total_sent, cited_sent = compute_grounding_coverage(
+                        content_str,
+                        citations_list,
+                    )
+
+                    processed_results.setdefault("metadata", {})["grounding_coverage"] = coverage_ratio
+                    processed_results["metadata"]["sentences_total"] = total_sent
+                    processed_results["metadata"]["sentences_cited"] = cited_sent
+
+                    # Trace entry for synthesis completion
+                    agent_trace.append(
+                        {
+                            "phase": "synthesis",
+                            "coverage_ratio": coverage_ratio,
+                            "sentences_total": total_sent,
+                            "sentences_cited": cited_sent,
+                            "ts": time.time(),
+                        }
+                    )
                 except Exception:
                     pass
             if os.getenv("AGENTIC_COVERAGE_THRESHOLD"):
@@ -391,6 +429,66 @@ class UnifiedResearchOrchestrator:
             "stage_breakdown": dict(stage_breakdown),
         }
 
+        # --------------------------------------------------------------
+        # Enrich record with optional agent-loop, evidence and grounding
+        # metrics that may have been populated earlier in the run.
+        # --------------------------------------------------------------
+        agent_loop = processed_results.get("metadata", {}).get("agent_loop") if isinstance(processed_results, dict) else None  # type: ignore[arg-type]
+        if isinstance(agent_loop, dict):
+            record.update(
+                {
+                    "agent_iterations": agent_loop.get("iterations"),
+                    "agent_new_queries": agent_loop.get("new_queries"),
+                    "agent_stop_reason": agent_loop.get("stop_reason"),
+                    "agent_coverage_ratio_final": agent_loop.get("coverage_ratio_final"),
+                }
+            )
+
+        evidence_stats = (
+            processed_results.get("metadata", {}).get("evidence_stats")
+            if isinstance(processed_results, dict)
+            else None
+        )
+        if isinstance(evidence_stats, dict):
+            record.update(
+                {
+                    "evidence_quotes_count": evidence_stats.get("quotes_count"),
+                    "evidence_documents_count": evidence_stats.get("documents_count"),
+                    "evidence_total_tokens": evidence_stats.get("total_tokens"),
+                }
+            )
+
+        grounding_cov = (
+            processed_results.get("metadata", {}).get("grounding_coverage")
+            if isinstance(processed_results, dict)
+            else None
+        )
+        if grounding_cov is not None:
+            record["grounding_coverage"] = grounding_cov
+
+        # Attach last-call LLM usage (captured by llm_client)
+        try:
+            from services.llm_client import llm_client as _llm_client_instance  # local import to avoid cycles
+
+            try:
+                if hasattr(_llm_client_instance, "get_last_usage"):
+                    llm_usage = _llm_client_instance.get_last_usage()
+                else:
+                    llm_usage = getattr(_llm_client_instance, "_last_usage", None)
+            except Exception:
+                llm_usage = None
+            if llm_usage and isinstance(llm_usage, dict):
+                record.update(
+                    {
+                        "llm_model": llm_usage.get("model"),
+                        "llm_prompt_tokens": llm_usage.get("prompt_tokens"),
+                        "llm_completion_tokens": llm_usage.get("completion_tokens"),
+                        "llm_total_tokens": llm_usage.get("total_tokens"),
+                    }
+                )
+        except Exception:
+            pass
+
         # Forward deduplication stats for centralized computation
         try:
             ds = processed_results.get("dedup_stats", {}) or {}
@@ -585,6 +683,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             return bool(research_data and research_data.get("status") == RuntimeResearchStatus.CANCELLED)
 
         start_time = get_current_utc()
+        # ------------------------------------------------------------------
+        # Agent trace collector – a chronological log of orchestrator phases
+        # that the frontend can visualise for users.
+        # ------------------------------------------------------------------
+        agent_trace: List[Dict[str, Any]] = []
         # Use request‑scoped holders to avoid cross‑talk under concurrency
         cost_breakdown: Dict[str, float] = {}
         search_metrics_local: SearchMetrics = {
@@ -636,6 +739,18 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 research_id=research_id,
                 candidates_count=len(planned_candidates)
             )
+
+            # Record agent trace step – initial planning
+            try:
+                agent_trace.append(
+                    {
+                        "phase": "initial_plan",
+                        "queries_planned": len(planned_candidates),
+                        "ts": time.time(),
+                    }
+                )
+            except Exception:
+                pass
         except Exception as e:
             logger.error(
                 "Query planning failed",
@@ -727,11 +842,23 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     cost_accumulator=cost_breakdown,
                     metrics=search_metrics_local,
                 )
-        logger.info(
-            "Search execution completed",
-            research_id=research_id,
-            results_count=sum(len(results) for results in search_results.values())
-        )
+            logger.info(
+                "Search execution completed",
+                research_id=research_id,
+                results_count=sum(len(results) for results in search_results.values())
+            )
+
+            # Trace – post search batch
+            try:
+                agent_trace.append(
+                    {
+                        "phase": "search_batch",
+                        "results": sum(len(r) for r in search_results.values()),
+                        "ts": time.time(),
+                    }
+                )
+            except Exception:
+                pass
 
         # Agentic follow-up loop based on coverage gaps (extracted)
         agent_loop_metrics: Dict[str, Any] | None = None
@@ -824,10 +951,19 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 return out
 
             with _otel_span("agent.loop", {"research_id": str(research_id or ""), "max_iterations": int(max_iters), "coverage_threshold": float(coverage_threshold)}):
-                new_cands, follow_map, coverage_ratio, missing_terms, coverage_sources = await run_followups(
-                    original_query=original_query,
-                    context_engineered=context_engineered,
-                    paradigm_code=paradigm_code,
+                # Nested span for follow-up planning so we can differentiate from
+                # the outer agent loop overhead.
+                with _otel_span(
+                    "rag.plan.followups",
+                    {
+                        "research_id": str(research_id or ""),
+                        "executed_candidates": int(len(executed_candidates)),
+                    },
+                ):
+                    new_cands, follow_map, coverage_ratio, missing_terms, coverage_sources = await run_followups(
+                        original_query=original_query,
+                        context_engineered=context_engineered,
+                        paradigm_code=paradigm_code,
                     planner=planner,
                     seed_query=seed_query,
                     executed_queries=executed_queries,
@@ -856,6 +992,19 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 }
             except Exception:
                 agent_loop_metrics = {"new_queries": int(len(new_cands or []))}
+
+            # Trace – follow-ups summary
+            try:
+                agent_trace.append(
+                    {
+                        "phase": "followups",
+                        "new_queries": len(new_cands or []),
+                        "coverage_ratio": float(coverage_ratio or 0.0),
+                        "ts": time.time(),
+                    }
+                )
+            except Exception:
+                pass
 
         # Record per-query effectiveness (query -> results count)
         try:
@@ -1060,6 +1209,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 pass
         processed_results["metadata"].setdefault("agent_trace", [])
+        # Merge locally collected agent_trace steps (if any)
+        if agent_trace:
+            try:
+                processed_results["metadata"]["agent_trace"].extend(agent_trace)
+            except Exception:
+                processed_results["metadata"]["agent_trace"] = agent_trace  # type: ignore
 
         normalized_sources: List[Dict[str, Any]] = []
         failed_normalizations = 0
@@ -1291,11 +1446,40 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         f"Research ID: {research_id or 'N/A'}"
                     )
 
+                # ----------------------------------------------------------
+                # Enrich metadata with evidence statistics ahead of synthesis
+                # ----------------------------------------------------------
+                try:
+                    if evidence_bundle is not None:
+                        domains: Dict[str, int] = {}
+                        for doc in getattr(evidence_bundle, "documents", []) or []:
+                            d = getattr(doc, "domain", None) or getattr(getattr(doc, "source", None), "domain", None) or ""
+                            if d:
+                                domains[d] = domains.get(d, 0) + 1
+                        processed_results.setdefault("metadata", {})["evidence_stats"] = {
+                            "quotes_count": len(evidence_quotes_payload or []),
+                            "documents_count": len(getattr(evidence_bundle, "documents", []) or []),
+                            "total_tokens": getattr(evidence_bundle, "total_tokens", 0),
+                            "domains_top": sorted(domains.items(), key=lambda x: x[1], reverse=True)[:10],
+                        }
+                except Exception:
+                    pass
+
                 logger.info(f"Starting answer synthesis for research_id: {research_id}")
-                synthesized_answer = await self._synthesize_answer(
-                    classification=classification,
-                    context_engineered=context_engineered,
-                    results=processed_results["results"],
+
+                with _otel_span(
+                    "synthesis.generate",
+                    {
+                        "research_id": str(research_id or ""),
+                        "paradigm": str(paradigm_code),
+                        "has_evidence_bundle": bool(evidence_bundle is not None),
+                        "quotes_count": int(len(evidence_quotes_payload or [])),
+                    },
+                ):
+                    synthesized_answer = await self._synthesize_answer(
+                        classification=classification,
+                        context_engineered=context_engineered,
+                        results=processed_results["results"],
                     research_id=research_id or f"research_{int(start_time.timestamp())}",
                     options=answer_options or {},
                     evidence_quotes=evidence_quotes_payload,

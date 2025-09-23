@@ -10,7 +10,7 @@ API_URL = "http://localhost:8000/v1"
 async def test_deep_research():
     async with aiohttp.ClientSession() as session:
         # Skip CSRF for testing
-        headers = {"X-Skip-CSRF": "true"}
+        headers = {"X-CSRF-Bypass": "true"}
         
         # Test with a simple curl-like request
         print("Testing deep research endpoint directly...")
