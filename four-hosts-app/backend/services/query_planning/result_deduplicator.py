@@ -7,11 +7,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.result_adapter import ResultAdapter
+
+# Logging — prefer structlog if available. Always ensure that the
+# application-wide logging configuration is applied.
 try:
     import structlog  # type: ignore
-    logger = structlog.get_logger(__name__)
-except Exception:  # pragma: no cover - fallback when structlog missing
-import structlog
+except Exception:  # pragma: no cover – structlog not installed
+    import structlog  # type: ignore
+
 from logging_config import configure_logging
 
 configure_logging()

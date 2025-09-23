@@ -157,6 +157,14 @@ class APIService {
         headers['X-CSRF-Token'] = csrfToken
       } else {
         // Fallback: attempt to fetch CSRF then retry once with the token
+        if (!isRetry) {
+          try {
+            await CSRFProtection.getToken(true)
+            return this.fetchWithAuth(url, options, true, true)
+          } catch {
+            // Continue without CSRF token for non-protected endpoints
+          }
+        }
       }
     }
 

@@ -101,20 +101,45 @@ class CredibilityScore:
         if self.fact_check_rating == "low":
             recommendations.append("Verify facts independently")
         
+        strengths_whitelist = {
+            "High Domain Authority",
+            "Neutral Bias",
+            "High Factual Accuracy",
+            "Recently Updated",
+            "High Source Agreement",
+        }
+
+        concerns_whitelist = {
+            "Low Domain Authority",
+            "Low Factual Accuracy",
+            "Potentially Outdated",
+            "Highly Controversial",
+            "Low Source Agreement",
+        }
+
+        strengths = [f for f in self.reputation_factors if f in strengths_whitelist]
+        concerns = self.controversy_indicators + [f for f in self.reputation_factors if f in concerns_whitelist]
+
         return {
             "domain": self.domain,
             "trust_level": trust_level,
             "trust_color": trust_color,
             "overall_score": round(self.overall_score, 2),
             "key_factors": {
-                "Authority": f"{self.domain_authority or 'Unknown'}/100" if self.domain_authority else "Unknown",
+                "Authority": (
+                    f"{self.domain_authority}/100" if self.domain_authority is not None else "Unknown"
+                ),
                 "Bias": self.bias_rating or "Unknown",
                 "Factual Accuracy": self.fact_check_rating or "Unknown",
-                "Controversy": "High" if self.controversy_score > 0.7 else "Low" if self.controversy_score < 0.3 else "Moderate",
+                "Controversy": "High"
+                if self.controversy_score > 0.7
+                else "Low"
+                if self.controversy_score < 0.3
+                else "Moderate",
                 "Category": self.source_category or "Unknown",
             },
-            "strengths": [f for f in self.reputation_factors if "High" in f or "Neutral" in f],
-            "concerns": self.controversy_indicators + [f for f in self.reputation_factors if "Low" in f],
+            "strengths": strengths,
+            "concerns": concerns,
             "recommendations": recommendations,
             "paradigm_scores": {k: round(v, 2) for k, v in self.paradigm_alignment.items()},
             "last_updated": self.last_updated.strftime("%Y-%m-%d %H:%M:%S"),
@@ -167,8 +192,27 @@ class DomainAuthorityChecker:
             if moz_da is not None:
                 return moz_da
 
-        # Fallback to heuristic scoring
-        return await self._heuristic_domain_authority(domain)
+        # Fallback to heuristic scoring – also cache the heuristic result so
+        # that repeated credibility checks within the next day don’t redo the
+        # work.
+        heuristic_da = await self._heuristic_domain_authority(domain)
+
+        try:
+            setter = getattr(cache_manager, "set_kv", None)
+            if callable(setter):
+                await setter(f"cred:da:{domain}", float(heuristic_da), ttl=86400)
+            else:
+                await cache_manager.set_source_credibility(
+                    f"cred:da:{domain}",
+                    float(heuristic_da),
+                    ttl=86400,
+                )
+        except Exception:
+            # Non-fatal – continue with the computed value even if caching
+            # fails (e.g. Redis unavailable).
+            pass
+
+        return heuristic_da
 
     async def _get_moz_domain_authority(self, domain: str) -> Optional[float]:
         """Get domain authority from Moz API with exponential backoff on repeated failures"""
@@ -223,7 +267,14 @@ class DomainAuthorityChecker:
                                 if callable(setter):
                                     await setter(f"cred:da:{domain}", float(da_val), ttl=86400)
                                 else:
-                                    await cache_manager.set_source_credibility(f"cred:da:{domain}", float(da_val))
+                                    # Fallback path when KV API is not available –
+                                    # still use 1-day TTL to honour the
+                                    # Domain-Authority cache policy.
+                                    await cache_manager.set_source_credibility(
+                                        f"cred:da:{domain}",
+                                        float(da_val),
+                                        ttl=86400,
+                                    )
                                 return float(da_val)
                         except Exception:
                             return da_val
@@ -323,12 +374,23 @@ class DomainAuthorityChecker:
             "edu": 80,  # Any .edu domain
         }
 
+        # Normalise domain for consistent processing
+        d = (domain or "").strip().lower()
+        if d.startswith("www."):
+            d = d[4:]
+
         # Check exact matches first
-        if domain in high_authority:
-            return high_authority[domain]
+        if d in high_authority:
+            return high_authority[d]
+
+        # Apply TLD heuristics for .gov / .edu which usually indicate reputable institutions
+        if d.endswith(".gov"):
+            return 85
+        if d.endswith(".edu"):
+            return 80
 
         # Use domain categorizer for consistent scoring
-        category = categorize(domain)
+        category = categorize(d)
         category_scores = {
             "government": 85,
             "academic": 80,
@@ -520,16 +582,25 @@ class ControversyDetector:
         
         # Analyze search terms and content for controversial topics
         if search_terms or content:
+            import re as _re
+
             text_to_analyze = " ".join(search_terms or []) + " " + (content or "")
             text_lower = text_to_analyze.lower()
-            
+
+            # Use word-boundary search to avoid matching substrings like "transfer" for keyword "trans"
             for topic, info in self.controversial_topics.items():
-                matches = sum(1 for keyword in info["keywords"] if keyword in text_lower)
+                matches = 0
+                for keyword in info["keywords"]:
+                    pattern = r"\b" + _re.escape(keyword) + r"\b"
+                    if _re.search(pattern, text_lower):
+                        matches += 1
                 if matches > 0:
                     topic_score = min(matches * 0.1, 0.5) * info["weight"]
                     score += topic_score
                     if matches >= 2:
-                        indicators.append(f"Controversial topic: {topic.replace('_', ' ').title()}")
+                        indicators.append(
+                            f"Controversial topic: {topic.replace('_', ' ').title()}"
+                        )
         
         # Check for conflicting viewpoints indicator words
         conflict_words = ["debate", "controversy", "disputed", "conflicting", "polarizing", 
@@ -777,191 +848,197 @@ class SourceReputationDatabase:
             cached_data["last_updated"] = ensure_datetime(cached_data["last_updated"])
             return CredibilityScore(**cached_data)
 
-        async with self.domain_checker:
-            # Get domain authority
-            domain_authority = await self.domain_checker.get_domain_authority(domain)
+        # Get domain authority (no longer managed session context)
+        domain_authority = await self.domain_checker.get_domain_authority(domain)
 
-            # Get bias information with category
-            bias_data = self.bias_detector.bias_database.get(domain, {})
+        # Retrieve bias / factual ratings – use database when available, otherwise fall back to heuristic detector
+        if domain in self.bias_detector.bias_database:
+            bias_data = self.bias_detector.bias_database[domain]
             bias_rating = bias_data.get("bias", "center")
             bias_score = bias_data.get("bias_score", 0.5)
             fact_check_rating = bias_data.get("factual", "medium")
             source_category = bias_data.get("category", self._infer_category(domain))
             update_frequency = bias_data.get("update_freq", "unknown")
+        else:
+            bias_rating, bias_score, fact_check_rating = await self.bias_detector.get_bias_score(domain)
+            source_category = self._infer_category(domain)
+            update_frequency = "unknown"
 
-            # Calculate controversy score
-            controversy_score, controversy_indicators = self.controversy_detector.calculate_controversy_score(
-                domain, content, search_terms
-            )
-            
-            # Add source conflict detection if multiple sources
-            if other_sources and len(other_sources) > 1:
-                source_domains = [s.get("domain", "") for s in other_sources if s.get("domain")]
-                conflict_score = self.controversy_detector.detect_conflicting_sources(source_domains)
-                controversy_score = min(controversy_score + conflict_score * 0.3, 1.0)
-                if conflict_score > 0.5:
-                    controversy_indicators.append("Conflicting source perspectives detected")
-            
-            # Calculate recency score
-            recency_score = self.recency_modeler.calculate_recency_score(
-                published_date, source_category, is_breaking=False
-            )
-            
-            # Calculate cross-source agreement if other sources provided
-            cross_source_agreement = None
-            if other_sources and len(other_sources) > 1:
-                # Add current source to the list for comparison
-                all_sources = other_sources + [{
+        # --- Derived Scores -------------------------------------------------
+        # Controversy
+        controversy_score, controversy_indicators = self.controversy_detector.calculate_controversy_score(
+            domain, content, search_terms
+        )
+
+        # Augment controversy with cross-source conflict, when applicable
+        if other_sources and len(other_sources) > 1:
+            source_domains = [s.get("domain", "") for s in other_sources if s.get("domain")]
+            conflict_score = self.controversy_detector.detect_conflicting_sources(source_domains)
+            controversy_score = min(controversy_score + conflict_score * 0.3, 1.0)
+            if conflict_score > 0.5:
+                controversy_indicators.append("Conflicting source perspectives detected")
+
+        # Recency
+        recency_score = self.recency_modeler.calculate_recency_score(
+            published_date, source_category, is_breaking=False
+        )
+
+        # Cross-source agreement
+        cross_source_agreement = None
+        if other_sources and len(other_sources) > 1:
+            all_sources = other_sources + [
+                {
                     "domain": domain,
                     "bias_score": bias_score,
                     "factual": fact_check_rating,
-                    "category": source_category
-                }]
-                cross_source_agreement = self.agreement_calculator.calculate_agreement_score(all_sources)
+                    "category": source_category,
+                }
+            ]
+            cross_source_agreement = self.agreement_calculator.calculate_agreement_score(all_sources)
 
-            # Optional: augment with Brave AI Grounding citations
-            brave_enabled = os.getenv("ENABLE_BRAVE_GROUNDING", "0").lower() in ("1", "true", "yes")
-            brave_deep = os.getenv("BRAVE_ENABLE_RESEARCH", "0").lower() in ("1", "true", "yes")
-            brave_agreement = None
-            brave_citation_count = 0
-            if brave_enabled and brave_client().is_configured():
-                # Build a verification query
-                if content and len(content) > 10:
-                    verify_query = content[:1500]
-                elif search_terms:
-                    verify_query = " ".join(search_terms)[:1500]
-                else:
-                    verify_query = f"What is the credibility and reputation of {domain}? Provide recent sources."
-
-                try:
-                    citations = await brave_client().fetch_citations(
-                        verify_query, enable_research=brave_deep
-                    )
-                    brave_citation_count = len(citations)
-                    if brave_citation_count:
-                        # Evaluate cited domains for agreement and authority
-                        cited_domains = []
-                        seen = set()
-                        for c in citations:
-                            host = (c.hostname or "").lower()
-                            # normalize bare domains
-                            if host.startswith("www."):
-                                host = host[4:]
-                            if host and host not in seen:
-                                seen.add(host)
-                                cited_domains.append(host)
-
-                        # Limit work to first 10 unique domains
-                        cited_domains = cited_domains[:10]
-
-                        # Gather bias/factual/DA concurrently
-                        bias_tasks = [self.bias_detector.get_bias_score(h) for h in cited_domains]
-                        da_tasks = [self.domain_checker.get_domain_authority(h) for h in cited_domains]
-                        bias_results = await asyncio.gather(*bias_tasks, return_exceptions=True)
-                        da_results = await asyncio.gather(*da_tasks, return_exceptions=True)
-
-                        sources_for_agreement: List[Dict[str, Any]] = []
-                        da_values: List[float] = []
-                        for i, host in enumerate(cited_domains):
-                            bias_tuple = bias_results[i]
-                            if isinstance(bias_tuple, Exception):
-                                bias_rating2, bias_score2, factual2 = "center", 0.5, "medium"
-                            else:
-                                bias_rating2, bias_score2, factual2 = bias_tuple
-                            da_val = da_results[i]
-                            if isinstance(da_val, Exception) or da_val is None:
-                                da = 40.0
-                            else:
-                                da = float(da_val)
-                            da_values.append(da)
-                            sources_for_agreement.append({
-                                "domain": host,
-                                "bias_score": bias_score2,
-                                "factual": factual2,
-                                "category": self._infer_category(host),
-                            })
-
-                        # Use existing agreement calculator + DA quality
-                        agree = self.agreement_calculator.calculate_agreement_score(sources_for_agreement)
-                        avg_da = (sum(da_values) / len(da_values) / 100.0) if da_values else 0.4
-                        brave_agreement = max(0.0, min(1.0, 0.7 * agree + 0.3 * avg_da))
-
-                        # Blend with any precomputed agreement
-                        if cross_source_agreement is None:
-                            cross_source_agreement = brave_agreement
-                        else:
-                            cross_source_agreement = (cross_source_agreement + brave_agreement) / 2.0
-                except Exception as e:
-                    logger.debug(f"Brave grounding verification skipped due to error: {e}")
-
-            # Calculate paradigm alignment
-            paradigm_alignment = self._calculate_paradigm_alignment(
-                domain, bias_rating, fact_check_rating, paradigm
-            )
-
-            # Calculate overall score with new factors
-            overall_score = self._calculate_enhanced_overall_score(
-                domain_authority, bias_score, fact_check_rating, paradigm, domain,
-                recency_score, controversy_score, cross_source_agreement
-            )
-
-            # Identify reputation factors
-            reputation_factors = self._identify_reputation_factors(
-                domain, domain_authority, bias_rating, fact_check_rating
-            )
-            
-            # Add new reputation factors
-            if recency_score > 0.8:
-                reputation_factors.append("Recently Updated")
-            elif recency_score < 0.3:
-                reputation_factors.append("Potentially Outdated")
-            
-            if controversy_score > 0.7:
-                reputation_factors.append("Highly Controversial")
-            
-            if cross_source_agreement and cross_source_agreement > 0.8:
-                reputation_factors.append("High Source Agreement")
-            elif cross_source_agreement and cross_source_agreement < 0.3:
-                reputation_factors.append("Low Source Agreement")
-            if brave_citation_count:
-                reputation_factors.append(f"Brave citations: {brave_citation_count}")
-
-            # Create credibility score object
-            credibility = CredibilityScore(
-                domain=domain,
-                overall_score=overall_score,
-                domain_authority=domain_authority,
-                bias_rating=bias_rating,
-                bias_score=bias_score,
-                fact_check_rating=fact_check_rating,
-                paradigm_alignment=paradigm_alignment,
-                reputation_factors=reputation_factors,
-                recency_score=recency_score,
-                cross_source_agreement=cross_source_agreement,
-                controversy_score=controversy_score,
-                update_frequency=update_frequency,
-                source_category=source_category,
-                controversy_indicators=controversy_indicators,
-            )
-
-            # Cache the result under card namespace
-            kv_set = getattr(cache_manager, "set_kv", None)
-            payload = credibility.to_dict()
-            if callable(kv_set):
-                await kv_set(cache_key, payload, ttl=cache_manager.ttl_config.get("source_credibility", 30*24*3600))
+        # Optional: augment with Brave AI Grounding citations
+        brave_enabled = os.getenv("ENABLE_BRAVE_GROUNDING", "0").lower() in ("1", "true", "yes")
+        brave_deep = os.getenv("BRAVE_ENABLE_RESEARCH", "0").lower() in ("1", "true", "yes")
+        brave_agreement = None
+        brave_citation_count = 0
+        if brave_enabled and brave_client().is_configured():
+            # Build a verification query
+            if content and len(content) > 10:
+                verify_query = content[:1500]
+            elif search_terms:
+                verify_query = " ".join(search_terms)[:1500]
             else:
-                await cache_manager.set_source_credibility(cache_key, payload)
+                verify_query = f"What is the credibility and reputation of {domain}? Provide recent sources."
 
-            logger.info("Finished credibility calculation", stage="credibility_end", domain=domain, paradigm=paradigm, overall_score=overall_score, domain_authority=domain_authority, bias_score=bias_score, fact_check_rating=fact_check_rating, recency_score=recency_score, controversy_score=controversy_score, cross_source_agreement=cross_source_agreement)
+            try:
+                citations = await brave_client().fetch_citations(
+                    verify_query, enable_research=brave_deep
+                )
+                brave_citation_count = len(citations)
+                if brave_citation_count:
+                    # Evaluate cited domains for agreement and authority
+                    cited_domains = []
+                    seen = set()
+                    for c in citations:
+                        host = (c.hostname or "").lower()
+                        # normalize bare domains
+                        if host.startswith("www."):
+                            host = host[4:]
+                        if host and host not in seen:
+                            seen.add(host)
+                            cited_domains.append(host)
 
-            # Emit a verbose debug entry with the full CredibilityScore payload
-            logger.debug(
-                "Credibility score details",
-                domain=domain,
-                payload=payload,
-            )
+                    # Limit work to first 10 unique domains
+                    cited_domains = cited_domains[:10]
 
-            return credibility
+                    # Gather bias/factual/DA concurrently
+                    bias_tasks = [self.bias_detector.get_bias_score(h) for h in cited_domains]
+                    da_tasks = [self.domain_checker.get_domain_authority(h) for h in cited_domains]
+                    bias_results = await asyncio.gather(*bias_tasks, return_exceptions=True)
+                    da_results = await asyncio.gather(*da_tasks, return_exceptions=True)
+
+                    sources_for_agreement: List[Dict[str, Any]] = []
+                    da_values: List[float] = []
+                    for i, host in enumerate(cited_domains):
+                        bias_tuple = bias_results[i]
+                        if isinstance(bias_tuple, Exception):
+                            bias_rating2, bias_score2, factual2 = "center", 0.5, "medium"
+                        else:
+                            bias_rating2, bias_score2, factual2 = bias_tuple
+                        da_val = da_results[i]
+                        if isinstance(da_val, Exception) or da_val is None:
+                            da = 40.0
+                        else:
+                            da = float(da_val)
+                        da_values.append(da)
+                        sources_for_agreement.append({
+                            "domain": host,
+                            "bias_score": bias_score2,
+                            "factual": factual2,
+                            "category": self._infer_category(host),
+                        })
+
+                    # Use existing agreement calculator + DA quality
+                    agree = self.agreement_calculator.calculate_agreement_score(sources_for_agreement)
+                    avg_da = (sum(da_values) / len(da_values) / 100.0) if da_values else 0.4
+                    brave_agreement = max(0.0, min(1.0, 0.7 * agree + 0.3 * avg_da))
+
+                    # Blend with any precomputed agreement
+                    if cross_source_agreement is None:
+                        cross_source_agreement = brave_agreement
+                    else:
+                        cross_source_agreement = (cross_source_agreement + brave_agreement) / 2.0
+            except Exception as e:
+                logger.debug(f"Brave grounding verification skipped due to error: {e}")
+
+        # Calculate paradigm alignment
+        paradigm_alignment = self._calculate_paradigm_alignment(
+            domain, bias_rating, fact_check_rating, paradigm
+        )
+
+        # Calculate overall score with new factors
+        overall_score = self._calculate_enhanced_overall_score(
+            domain_authority, bias_score, fact_check_rating, paradigm, domain,
+            recency_score, controversy_score, cross_source_agreement
+        )
+
+        # Identify reputation factors
+        reputation_factors = self._identify_reputation_factors(
+            domain, domain_authority, bias_rating, fact_check_rating
+        )
+
+        # Add new reputation factors
+        if recency_score > 0.8:
+            reputation_factors.append("Recently Updated")
+        elif recency_score < 0.3:
+            reputation_factors.append("Potentially Outdated")
+
+        if controversy_score > 0.7:
+            reputation_factors.append("Highly Controversial")
+
+        if cross_source_agreement and cross_source_agreement > 0.8:
+            reputation_factors.append("High Source Agreement")
+        elif cross_source_agreement and cross_source_agreement < 0.3:
+            reputation_factors.append("Low Source Agreement")
+        if brave_citation_count:
+            reputation_factors.append(f"Brave citations: {brave_citation_count}")
+
+        # Create credibility score object
+        credibility = CredibilityScore(
+            domain=domain,
+            overall_score=overall_score,
+            domain_authority=domain_authority,
+            bias_rating=bias_rating,
+            bias_score=bias_score,
+            fact_check_rating=fact_check_rating,
+            paradigm_alignment=paradigm_alignment,
+            reputation_factors=reputation_factors,
+            recency_score=recency_score,
+            cross_source_agreement=cross_source_agreement,
+            controversy_score=controversy_score,
+            update_frequency=update_frequency,
+            source_category=source_category,
+            controversy_indicators=controversy_indicators,
+        )
+
+        # Cache the result under card namespace
+        kv_set = getattr(cache_manager, "set_kv", None)
+        payload = credibility.to_dict()
+        if callable(kv_set):
+            await kv_set(cache_key, payload, ttl=cache_manager.ttl_config.get("source_credibility", 30*24*3600))
+        else:
+            await cache_manager.set_source_credibility(cache_key, payload)
+
+        logger.info("Finished credibility calculation", stage="credibility_end", domain=domain, paradigm=paradigm, overall_score=overall_score, domain_authority=domain_authority, bias_score=bias_score, fact_check_rating=fact_check_rating, recency_score=recency_score, controversy_score=controversy_score, cross_source_agreement=cross_source_agreement)
+
+        # Emit a verbose debug entry with the full CredibilityScore payload
+        logger.debug(
+            "Credibility score details",
+            domain=domain,
+            payload=payload,
+        )
+
+        return credibility
     
     def _infer_category(self, domain: str) -> str:
         """Infer source category from domain via shared categorizer."""
@@ -1209,187 +1286,70 @@ async def get_source_credibility_safe(
         return 0.5, f"Credibility check failed: {str(e)}", "failed"
 
 
-# Example usage and testing
-async def test_credibility_system():
-    """Test the enhanced credibility system"""
-    print("Testing Enhanced Source Credibility System...")
-    print("=" * 50)
 
-    # Test basic credibility scoring
-    test_domains = [
-        "nytimes.com",
-        "foxnews.com",
-        "reuters.com",
-        "nature.com",
-        "breitbart.com",
-        "wikipedia.org",
-        "twitter.com",
-        "arxiv.org",
-        "bbc.com",
-    ]
-
-    print("\n1. BASIC CREDIBILITY ASSESSMENT")
-    print("-" * 40)
-    
-    for domain in test_domains:
-        print(f"\n{domain}:")
-        credibility = await get_source_credibility(domain, "bernard")
-        card = credibility.generate_credibility_card()
-        
-        print(f"  Trust Level: {card['trust_level']} ({card['overall_score']})")
-        print(f"  Category: {credibility.source_category}")
-        print(f"  Key Factors: {', '.join(card['key_factors'].values())}")
-        if card['concerns']:
-            print(f"  Concerns: {', '.join(card['concerns'])}")
-    
-    print("\n\n2. CONTROVERSY DETECTION TEST")
-    print("-" * 40)
-    
-    controversial_test = [
-        ("cnn.com", ["trump", "election", "fraud"], "Political controversy test"),
-        ("nature.com", ["climate", "change", "debate"], "Climate science test"),
-        ("foxnews.com", ["vaccine", "mandate", "freedom"], "Health policy test"),
-    ]
-    
-    for domain, terms, description in controversial_test:
-        print(f"\n{description} - {domain}:")
-        credibility = await get_source_credibility(
-            domain=domain,
-            search_terms=terms,
-            paradigm="bernard"
-        )
-        print(f"  Controversy Score: {credibility.controversy_score:.2f}")
-        if credibility.controversy_indicators:
-            print(f"  Indicators: {', '.join(credibility.controversy_indicators)}")
-    
-    print("\n\n3. RECENCY AND TEMPORAL RELEVANCE TEST")
-    print("-" * 40)
-    
-    # Test with different publication dates
-    test_dates = [
-        (get_current_utc() - timedelta(hours=12), "12 hours ago"),
-        (get_current_utc() - timedelta(days=7), "1 week ago"),
-        (get_current_utc() - timedelta(days=30), "1 month ago"),
-        (get_current_utc() - timedelta(days=365), "1 year ago"),
-    ]
-    
-    for date, description in test_dates:
-        print(f"\nNews article from {description}:")
-        credibility = await get_source_credibility(
-            domain="cnn.com",
-            published_date=date,
-            paradigm="bernard"
-        )
-        print(f"  Recency Score: {credibility.recency_score:.2f}")
-        print(f"  Overall Impact on Credibility: {credibility.overall_score:.2f}")
-    
-    print("\n\n4. CROSS-SOURCE AGREEMENT TEST")
-    print("-" * 40)
-    
-    # Test agreement between sources
-    print("\nTesting agreement between similar sources:")
-    similar_sources = [
-        {"domain": "reuters.com", "bias_score": 0.9, "factual": "high", "category": "news"},
-        {"domain": "apnews.com", "bias_score": 0.9, "factual": "high", "category": "news"},
-        {"domain": "bbc.com", "bias_score": 0.8, "factual": "high", "category": "news"},
-    ]
-    
-    credibility = await get_source_credibility(
-        domain="npr.org",
-        other_sources=similar_sources,
-        paradigm="bernard"
-    )
-    print(f"  Cross-Source Agreement: {credibility.cross_source_agreement:.2f}")
-    print(f"  Overall Credibility: {credibility.overall_score:.2f}")
-    
-    print("\nTesting agreement between conflicting sources:")
-    conflicting_sources = [
-        {"domain": "foxnews.com", "bias_score": 0.2, "factual": "mixed", "category": "news"},
-        {"domain": "cnn.com", "bias_score": 0.3, "factual": "mixed", "category": "news"},
-        {"domain": "breitbart.com", "bias_score": 0.1, "factual": "low", "category": "news"},
-    ]
-    
-    credibility = await get_source_credibility(
-        domain="huffpost.com",
-        other_sources=conflicting_sources,
-        paradigm="bernard"
-    )
-    print(f"  Cross-Source Agreement: {credibility.cross_source_agreement:.2f}")
-    print(f"  Controversy Score: {credibility.controversy_score:.2f}")
-    print(f"  Overall Credibility: {credibility.overall_score:.2f}")
-    
-    print("\n\n5. PARADIGM-SPECIFIC CREDIBILITY")
-    print("-" * 40)
-    
-    test_domain = "propublica.org"
-    print(f"\nTesting {test_domain} across paradigms:")
-    
-    for paradigm in ["dolores", "teddy", "bernard", "maeve"]:
-        credibility = await get_source_credibility(
-            domain=test_domain,
-            paradigm=paradigm,
-            search_terms=["investigation", "corruption"]
-        )
-        alignment = credibility.paradigm_alignment.get(paradigm, 0.0)
-        print(f"  {paradigm.upper()}: Score={credibility.overall_score:.2f}, Alignment={alignment:.2f}")
-    
-    print("\n\n6. CREDIBILITY CARD GENERATION")
-    print("-" * 40)
-    
-    # Generate a detailed credibility card
-    credibility = await get_source_credibility(
-        domain="nytimes.com",
-        search_terms=["politics", "election"],
-        published_date=get_current_utc() - timedelta(days=2),
-        paradigm="bernard"
-    )
-    
-    card = credibility.generate_credibility_card()
-    print(f"\nCredibility Card for {card['domain']}:")
-    print(f"  Trust Level: {card['trust_level']} (Score: {card['overall_score']})")
-    print("\n  Key Factors:")
-    for factor, value in card['key_factors'].items():
-        print(f"    - {factor}: {value}")
-    
-    if card['strengths']:
-        print("\n  Strengths:")
-        for strength in card['strengths']:
-            print(f"    + {strength}")
-    
-    if card['concerns']:
-        print("\n  Concerns:")
-        for concern in card['concerns']:
-            print(f"    - {concern}")
-    
-    if card['recommendations']:
-        print("\n  Recommendations:")
-        for rec in card['recommendations']:
-            print(f"    → {rec}")
-    
-    print("\n  Paradigm Alignment Scores:")
-    for paradigm, score in card['paradigm_scores'].items():
-        print(f"    {paradigm}: {score}")
-
-
-# Additional utility functions for credibility analysis
 async def analyze_source_credibility_batch(
     sources: List[Dict[str, Any]], 
     paradigm: str = "bernard"
 ) -> Dict[str, Any]:
     """Analyze credibility for multiple sources and provide aggregate insights"""
-    credibility_scores = []
-    
+    if not sources:
+        # Return zeroed structure for empty input to avoid division-by-zero errors
+        return {
+            "total_sources": 0,
+            "average_credibility": 0.0,
+            "high_credibility_sources": 0,
+            "controversial_sources": 0,
+            "most_credible": None,
+            "least_credible": None,
+            "credibility_distribution": {
+                "very_high": 0,
+                "high": 0,
+                "moderate": 0,
+                "low": 0,
+                "very_low": 0,
+            },
+            "paradigm_recommendations": [],
+        }
+
+    # Run credibility calculations concurrently for efficiency
+    tasks = []
     for source in sources:
-        credibility = await get_source_credibility(
-            domain=source.get("domain", ""),
-            paradigm=paradigm,
-            content=source.get("content"),
-            search_terms=source.get("search_terms"),
-            published_date=source.get("published_date"),
-            other_sources=[s for s in sources if s != source]
+        tasks.append(
+            get_source_credibility(
+                domain=source.get("domain", ""),
+                paradigm=paradigm,
+                content=source.get("content"),
+                search_terms=source.get("search_terms"),
+                published_date=source.get("published_date"),
+                other_sources=[s for s in sources if s != source],
+            )
         )
-        credibility_scores.append(credibility)
-    
+
+    credibility_scores = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Filter out failed results keeping successful CredibilityScore instances
+    credibility_scores = [c for c in credibility_scores if isinstance(c, CredibilityScore)]
+
+    if not credibility_scores:
+        # In the extremely rare case that *all* credibility look-ups failed
+        # we still want to return a well-formed (non-crashing) payload.
+        return {
+            "total_sources": len(sources),
+            "average_credibility": 0.0,
+            "high_credibility_sources": 0,
+            "controversial_sources": 0,
+            "most_credible": None,
+            "least_credible": None,
+            "credibility_distribution": {
+                "very_high": 0,
+                "high": 0,
+                "moderate": 0,
+                "low": 0,
+                "very_low": 0,
+            },
+            "paradigm_recommendations": [],
+        }
+
     # Calculate aggregate metrics
     avg_credibility = sum(c.overall_score for c in credibility_scores) / len(credibility_scores)
     high_credibility_count = sum(1 for c in credibility_scores if c.overall_score >= 0.7)
@@ -1440,7 +1400,3 @@ def _get_paradigm_recommendations(scores: List[CredibilityScore], paradigm: str)
             recommendations.append("Update with more recent business intelligence for strategic insights")
     
     return recommendations
-
-
-if __name__ == "__main__":
-    asyncio.run(test_credibility_system())

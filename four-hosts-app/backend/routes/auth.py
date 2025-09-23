@@ -14,6 +14,7 @@ from models.auth import (
     LogoutRequest,
     PreferencesPayload
 )
+from services.rate_limiter import RateLimitExceeded
 from services.auth_service import (
     auth_service as real_auth_service,
     create_access_token,
@@ -97,16 +98,25 @@ async def register(user_data: UserCreate, request: Request, response: Response):
 @router.post("/login")
 async def login(login_data: UserLogin, response: Response, request: Request):
     """Login with email and password"""
+    # Apply rate limiting - 5 attempts per minute per IP
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None:
+        client_ip = request.client.host if request.client else "unknown"
+        identifier = f"login:{client_ip}"
+        allowed, info = await limiter.check_rate_limit(identifier, "anonymous", "login")
+        if not allowed and info:
+            raise RateLimitExceeded(
+                retry_after=info.get("retry_after", 60),
+                limit_type=info.get("limit_type", "login_attempts_per_minute"),
+                limit=info.get("limit", 0),
+            )
+    """Login with email and password"""
     request_id = getattr(request.state, 'request_id', 'unknown')
     logger.info(f"Login attempt for email: {login_data.email} "
                 f"[req_id: {request_id}]")
 
-    # Convert to auth module's UserLogin model
-    from services.auth_service import UserLogin as AuthUserLogin
-
-    auth_login_data = AuthUserLogin(
-        email=login_data.email, password=login_data.password
-    )
+    # Use the UserLogin model directly from models.auth
+    auth_login_data = login_data
 
     # Enhanced authentication with detailed failure logging
     try:

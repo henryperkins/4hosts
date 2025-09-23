@@ -364,16 +364,31 @@ class CacheManager:
             return None
 
     async def set_source_credibility(
-        self, domain: str, credibility_data: Dict[str, Any]
-    ):
-        """Cache source credibility data"""
+        self,
+        domain: str,
+        credibility_data: Any,
+        *,
+        ttl: int | None = None,
+    ) -> None:
+        """Cache source credibility data.
+
+        A small handful of call-sites need a shorter TTL than the default
+        30-day **credibility card** window—for example, standalone Domain
+        Authority values ("cred:da:*" keys) should be refreshed daily.  The
+        optional *ttl* parameter allows those callers to override the
+        default while preserving existing behaviour elsewhere.
+        """
+
         cache_key = self._generate_cache_key("credibility", domain)
+
+        # Fall back to the configured default if no ttl supplied
+        ttl_seconds = ttl if ttl is not None else self.ttl_config["source_credibility"]
 
         try:
             async with self.get_client() as client:
                 await client.setex(
                     cache_key,
-                    self.ttl_config["source_credibility"],
+                    ttl_seconds,
                     json.dumps(credibility_data, default=str),
                 )
 
@@ -622,7 +637,7 @@ async def cache_search_results(
 # Example usage and testing
 async def test_cache_system():
     """Test the cache system"""
-logger.info("Testing cache system...")
+    logger.info("Testing cache system...")
 
     # Initialize cache
     success = await initialize_cache()
@@ -639,7 +654,7 @@ logger.info("Testing cache system...")
         "distribution": {"maeve": 0.4, "dolores": 0.25, "bernard": 0.2, "teddy": 0.15},
     }
 
-logger.info("Testing paradigm classification cache...")
+    logger.info("Testing paradigm classification cache...")
 
     # Set classification
     await cache_manager.set_paradigm_classification(test_query, test_classification)
@@ -655,7 +670,7 @@ logger.info("Testing paradigm classification cache...")
         logger.warning("Failed to retrieve cached classification")
 
     # Test search results caching
-logger.info("Testing search results cache...")
+    logger.info("Testing search results cache...")
 
     test_results = [
         SearchResult(
@@ -694,7 +709,7 @@ logger.info("Testing search results cache...")
         logger.warning("Failed to retrieve cached search results")
 
     # Test cost tracking
-logger.info("Testing cost tracking...")
+    logger.info("Testing cost tracking...")
     await cache_manager.track_api_cost("google", 0.05, 1)
     await cache_manager.track_api_cost("bing", 0.03, 1)
 

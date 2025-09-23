@@ -197,6 +197,7 @@ class APIKey(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     key_hash = Column(String(255), unique=True, nullable=False)  # Hashed API key
+    key_index = Column(String(16), nullable=False, index=True)  # First 16 chars for secure lookup
     name = Column(String(100), nullable=False)
 
     # Permissions

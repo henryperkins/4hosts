@@ -8,10 +8,14 @@ import hashlib
 import json
 import traceback
 import time
+import asyncio
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
+import hmac, hashlib as _hash
+import os
+from collections import OrderedDict
 
 # Security utilities
 from utils.security import sanitize_user_input, pattern_validator
@@ -152,7 +156,7 @@ class ClassificationResult:
     reasoning: Dict[HostParadigm, List[str]]
     # Optional: structured signals for UI (e.g., matched keywords per paradigm)
     signals: Dict[HostParadigm, Dict[str, Any]] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # --- Feature Extraction (To be implemented) ---
@@ -173,19 +177,47 @@ class QueryAnalyzer:
     def __init__(self):
         self.intent_patterns = self._compile_patterns()
 
+    # ---------------------- helper utilities ----------------------
+
+    @staticmethod
+    def _to_paradigm(key: Any) -> Optional["HostParadigm"]:
+        """Normalize a string or enum key to HostParadigm enum."""
+        if isinstance(key, HostParadigm):
+            return key
+        if isinstance(key, str):
+            k = key.strip().lower()
+            mapping = {
+                "dolores": HostParadigm.DOLORES,
+                "revolutionary": HostParadigm.DOLORES,
+                "teddy": HostParadigm.TEDDY,
+                "devotion": HostParadigm.TEDDY,
+                "bernard": HostParadigm.BERNARD,
+                "analytical": HostParadigm.BERNARD,
+                "maeve": HostParadigm.MAEVE,
+                "strategic": HostParadigm.MAEVE,
+            }
+            return mapping.get(k)
+        return None
+
     def _compile_patterns(self) -> Dict[HostParadigm, List[re.Pattern]]:
         """Compile regex patterns for efficiency with safety checks"""
-        compiled = {}
-        # Use canonical pattern list with safe compilation
-        for paradigm, pattern_list in self._CANON_PATTERNS.items():
-            compiled[paradigm] = []
+        compiled: Dict[HostParadigm, List[re.Pattern]] = {}
+        # Normalize keys so downstream lookups are reliable
+        for raw_key, pattern_list in self._CANON_PATTERNS.items():
+            paradigm = self._to_paradigm(raw_key)
+            if paradigm is None:
+                logger.warning("Unknown paradigm key in patterns", key=raw_key)
+                continue
+            bucket: List[re.Pattern] = []
             for p in pattern_list:
-                # Use safe pattern compilation to prevent ReDoS
                 safe_pattern = pattern_validator.safe_compile(p, re.IGNORECASE)
                 if safe_pattern:
-                    compiled[paradigm].append(safe_pattern)
+                    bucket.append(safe_pattern)
                 else:
-                    logger.warning(f"Skipped unsafe pattern for {paradigm}: {p[:50]}...")
+                    logger.warning(
+                        f"Skipped unsafe pattern for {paradigm}: {p[:50]}..."
+                    )
+            compiled[paradigm] = bucket
         return compiled
 
     def analyze(self, query: str, research_id: Optional[str] = None) -> QueryFeatures:
@@ -414,7 +446,7 @@ class ParadigmClassifier:
                 items_done=0,
                 items_total=total_steps
             )
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         features_task = loop.run_in_executor(None, self.analyzer.analyze, query)
         
         # Start LLM classification later after features are available
@@ -424,9 +456,12 @@ class ParadigmClassifier:
         feature_start = time.time()
         features = await features_task
 
-        # Start LLM classification now that features are available
+        # Launch LLM classification concurrently using sanitized query text
         if self.use_llm:
-            llm_task = self._llm_classification(query, features)
+            sanitized_query = features.text if features else query
+            llm_task = asyncio.create_task(
+                self._llm_classification(sanitized_query, features)
+            )
 
         # Emit a compact, structured features snapshot to aid debugging
         try:
@@ -887,18 +922,23 @@ Return as JSON with this structure:
 
             # Generate completion returns a string
             logger.info(f"Sending prompt to LLM for classification, research_id: {getattr(features, 'research_id', None)}")
-            response_payload = await llm_client.generate_completion(
-                prompt=prompt,
-                paradigm="bernard",  # Use analytical paradigm for classification
-                json_schema=CLASSIFICATION_JSON_SCHEMA,
+            timeout_sec = float(os.getenv("CLASSIFICATION_LLM_TIMEOUT_SEC", "20"))
+            response_payload = await asyncio.wait_for(
+                llm_client.generate_completion(
+                    prompt=prompt,
+                    paradigm="bernard",  # analytical model/profile
+                    json_schema=CLASSIFICATION_JSON_SCHEMA,
+                ),
+                timeout=timeout_sec,
             )
 
-            # Log a truncated raw response for telemetry (keep <=1k chars)
-            try:
-                preview = response_payload if isinstance(response_payload, str) else json.dumps(response_payload)
-            except Exception:
-                preview = str(response_payload)
-            logger.info(f"LLM response for research_id: {getattr(features, 'research_id', None)}, response: {preview[:1024]}")
+            # Log structured metadata without exposing raw model output
+            present_keys = list(response_payload.keys()) if isinstance(response_payload, dict) else []
+            logger.info(
+                "LLM response received",
+                research_id=getattr(features, "research_id", None),
+                keys_present=present_keys,
+            )
 
             # Parse the JSON response with robust error handling/repair
             llm_result: Optional[Dict[str, Any]]
@@ -955,10 +995,9 @@ Return as JSON with this structure:
             return scores
 
         except Exception as e:
-            logger.error(f"Error in LLM classification for research_id: {getattr(features, 'research_id', None)}, error: {e}", exc_info=True)
-            logger.error(f"Error in LLM classification: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(
+                "Error in LLM classification", error=str(e), exc_info=True
+            )
             # Return empty scores on error
             return {}
 
@@ -969,7 +1008,13 @@ Return as JSON with this structure:
 class ClassificationEngine:
     """Main interface for the classification system"""
 
-    def __init__(self, use_llm: bool = True, cache_enabled: bool = True):
+    def __init__(
+        self,
+        use_llm: bool = True,
+        cache_enabled: bool = True,
+        cache_size: int = 512,
+        cache_ttl_sec: int = 0,
+    ):
         self.analyzer = QueryAnalyzer()
         # Try to import LLM client lazily
         global llm_client, LLM_AVAILABLE
@@ -988,8 +1033,26 @@ class ClassificationEngine:
         
         actual_use_llm = use_llm and LLM_AVAILABLE
         self.classifier = ParadigmClassifier(self.analyzer, actual_use_llm)
+
         self.cache_enabled = cache_enabled
-        self.cache: Dict[str, ClassificationResult] = {} if cache_enabled else None
+        self._cache_size = max(16, int(cache_size))
+        self._cache_ttl = max(0, int(cache_ttl_sec))
+        # key -> (timestamp, result)
+        self.cache: "OrderedDict[str, tuple[float, ClassificationResult]]" = (
+            OrderedDict() if cache_enabled else None
+        )
+
+    # ---------------- Cache helpers ----------------
+
+    @staticmethod
+    def _cache_key(raw_query: str) -> str:
+        """Generate a stable HMAC-SHA256 key for the query."""
+        try:
+            cleaned = sanitize_user_input(raw_query or "")
+        except Exception:
+            cleaned = (raw_query or "").strip()
+        secret = os.getenv("CLASSIFICATION_CACHE_HMAC_KEY", "dev-secret-key").encode()
+        return hmac.new(secret, cleaned.encode("utf-8", "ignore"), _hash.sha256).hexdigest()[:32]
 
     async def classify_query(self, query: str, research_id: Optional[str] = None) -> ClassificationResult:
         """Classify a query with caching and logging"""
@@ -1010,7 +1073,10 @@ class ClassificationEngine:
         start = perf_counter()
         cache_hit = False
 
-        if self.cache_enabled and query in self.cache:
+        key = self._cache_key(query)
+        now = time.time()
+
+        if self.cache_enabled and key in self.cache:
             logger.info(
                 "Classification cache hit",
                 stage="classification_cache",
@@ -1018,7 +1084,13 @@ class ClassificationEngine:
                 cache_hit=True,
             )
             cache_hit = True
-            result = self.cache[query]
+            ts, result = self.cache.pop(key)
+            # TTL check
+            if self._cache_ttl and (now - ts) > self._cache_ttl:
+                cache_hit = False
+            else:
+                # reinsert to update LRU order
+                self.cache[key] = (ts, result)
         else:
             logger.info(
                 "Performing new classification",
@@ -1030,7 +1102,10 @@ class ClassificationEngine:
             try:
                 result = await self.classifier.classify(query, research_id)
                 if self.cache_enabled:
-                    self.cache[query] = result
+                    self.cache[key] = (now, result)
+                    # enforce size
+                    while len(self.cache) > self._cache_size:
+                        self.cache.popitem(last=False)
             except Exception as e:
                 logger.error(
                     "Classification failed",

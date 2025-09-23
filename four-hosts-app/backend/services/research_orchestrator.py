@@ -976,6 +976,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     execute_candidates=_execute,
                     to_coverage_sources=_to_cov,
                     check_cancelled=check_cancelled,
+                    progress_callback=progress_callback,
+                    research_id=research_id,
                 )
 
             # Integrate results and metrics

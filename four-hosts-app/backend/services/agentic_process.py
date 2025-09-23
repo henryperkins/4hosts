@@ -225,6 +225,8 @@ async def run_followups(
     execute_candidates=None,
     to_coverage_sources=None,
     check_cancelled=None,
+    progress_callback=None,
+    research_id: str | None = None,
 ) -> Tuple[
     List[Any],
     Dict[str, List[Any]],
@@ -255,8 +257,27 @@ async def run_followups(
         coverage_sources,
     )
 
+    # Emit initial progress snapshot (iteration 0 / max_iterations)
+    await _emit_progress(0, max_iterations, msg="Starting agentic follow-up planning")
+
     new_candidates: List[Any] = []
     followup_results: Dict[str, List[Any]] = {}
+
+    # Helper to emit progress updates (agentic_loop phase) if a tracker is
+    # provided.  We centralise the logic so individual call-sites stay tidy.
+    async def _emit_progress(current_iter: int, total_iter: int, msg: str | None = None):
+        if progress_callback and research_id:
+            try:
+                await progress_callback.update_progress(
+                    research_id,
+                    phase="agentic_loop",
+                    items_done=current_iter,
+                    items_total=max(1, total_iter),
+                    message=msg,
+                )
+            except Exception:
+                # We never fail the follow-up loop due to progress errors.
+                pass
 
     if (
         max_iterations <= 0
@@ -288,6 +309,13 @@ async def run_followups(
                 "missing_terms": int(len(missing_terms)),
             },
         ):
+            # Progress update before heavy planner work
+            await _emit_progress(
+                iteration,
+                max_iterations,
+                msg=f"Follow-up iteration {iteration + 1}/{max_iterations} – planning",
+            )
+
             # -----------------------------
             # Planner proposes follow-ups
             # -----------------------------
@@ -371,7 +399,22 @@ async def run_followups(
 
             iteration += 1
 
+            # Emit progress after iteration completes with updated coverage
+            await _emit_progress(
+                iteration,
+                max_iterations,
+                msg=f"Follow-up iteration {iteration}/{max_iterations} completed (coverage {coverage_ratio:.2%})",
+            )
+
     # End while loop
+
+    # Final progress snap – mark loop complete
+    await _emit_progress(
+        max_iterations,
+        max_iterations,
+        msg="Agentic follow-up planning finished",
+    )
+
     return (
         new_candidates,
         followup_results,

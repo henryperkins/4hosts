@@ -37,6 +37,15 @@ async def csrf_protection_middleware(request: Request, call_next):
         "/v1/research/history",
         "/v1/research/status",
         "/v1/system/public-stats",
+        # Authentication endpoints should be exempt because the client may
+        # not yet possess a CSRF cookie when attempting to log in or
+        # register a brand-new account. Protecting these routes with a
+        # per-request token therefore blocks legitimate first-factor
+        # authentication attempts.
+        "/auth/login",
+        "/auth/register",
+        "/v1/auth/login",
+        "/v1/auth/register",
     ]
 
     # Skip CSRF check for safe methods and exempt routes

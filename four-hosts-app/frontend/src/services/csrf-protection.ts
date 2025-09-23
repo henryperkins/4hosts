@@ -20,6 +20,12 @@ export class CSRFProtection {
 
   private static async fetchCSRFToken(): Promise<string> {
     try {
+      // The CSRF token endpoint is intentionally version-agnostic and lives
+      // at `/api/csrf-token` on the backend (see `backend/core/app.py`).
+      // Using the versioned path here results in a 404 which blocks every
+      // subsequent state-changing request. Align the frontend to the actual
+      // backend route so the token can be fetched correctly.
+
       const response = await fetch('/api/csrf-token', {
         credentials: 'include'
       })

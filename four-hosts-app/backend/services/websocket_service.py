@@ -12,14 +12,13 @@ import structlog
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Set, Any, Optional, List
 from enum import Enum
-from typing import Any
 import uuid
+import time
+from weakref import WeakKeyDictionary
 
 from utils.date_utils import iso_or_none
 
-from fastapi import WebSocket, WebSocketDisconnect, Depends, Query, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import jwt
+from fastapi import WebSocket, WebSocketDisconnect, Header
 from pydantic import BaseModel, Field
 
 from services.auth_service import decode_token, TokenData, UserRole
@@ -97,22 +96,35 @@ class ConnectionManager:
     def __init__(self):
         # Active connections by user ID
         self.active_connections: Dict[str, Set[WebSocket]] = {}
-        # Connection metadata
-        self.connection_metadata: Dict[WebSocket, Dict[str, Any]] = {}
+        # Connection metadata keyed by WebSocket; weak ref to prevent leaks
+        self.connection_metadata: "WeakKeyDictionary[WebSocket, Dict[str, Any]]" = WeakKeyDictionary()
         # Research subscriptions (research_id -> set of websockets)
         self.research_subscriptions: Dict[str, Set[WebSocket]] = {}
-        # Message history for reconnection
+        # Message history for reconnection (research_id -> List[WSMessage])
         self.message_history: Dict[str, List[WSMessage]] = {}
         self.history_limit = 100
+
         # Bound history by time to avoid unbounded growth on long sessions
         try:
             self.history_ttl_sec: int = int(os.getenv("WS_HISTORY_TTL_SEC", "900") or 900)
         except Exception:
             self.history_ttl_sec = 900
+
         # Keepalive task for long-lived websockets behind proxies
         self._keepalive_task: Optional[asyncio.Task] = None
         # Lower default keepalive to better survive strict proxies; override via env.
         self._keepalive_interval_sec: int = int(os.getenv("WS_KEEPALIVE_INTERVAL_SEC", "20") or 20)
+
+        # Retention for completed research progress (seconds) – used by ProgressTracker cleanup
+        self._progress_retention_sec: int = int(os.getenv("WS_PROGRESS_RETENTION_SEC", "300") or 300)
+
+        # Optional write-pump to decouple slow clients (opt-in via env)
+        self._use_write_pump: bool = os.getenv("WS_WRITE_PUMP", "0") == "1"
+        self._send_queues: Dict[WebSocket, asyncio.Queue] = {}
+        self._write_pumps: Dict[WebSocket, asyncio.Task] = {}
+
+        # Timestamp for last global history sweep
+        self._last_history_sweep_ts: float = 0.0
 
     def _all_live_websockets(self) -> Set[WebSocket]:
         conns: Set[WebSocket] = set()
@@ -175,6 +187,12 @@ class ConnectionManager:
             "subscriptions": set(),
         }
 
+        # Optionally create a per-connection writer pump to isolate slow clients
+        if self._use_write_pump and websocket not in self._send_queues:
+            q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+            self._send_queues[websocket] = q
+            self._write_pumps[websocket] = asyncio.create_task(self._writer_pump(websocket, q))
+
         # Send connection confirmation
         await self.send_to_websocket(
             websocket,
@@ -208,8 +226,16 @@ class ConnectionManager:
         for research_id in list(metadata["subscriptions"]):
             await self.unsubscribe_from_research(websocket, research_id)
 
-        # Cleanup metadata
-        del self.connection_metadata[websocket]
+        # Cleanup metadata (weak dict suppress if absent)
+        with contextlib.suppress(Exception):
+            del self.connection_metadata[websocket]
+
+        # Tear down writer pump if present
+        task = self._write_pumps.pop(websocket, None)
+        if task and not task.done():
+            task.cancel()
+
+        self._send_queues.pop(websocket, None)
 
         logger.info(f"WebSocket disconnected for user {user_id}")
 
@@ -255,7 +281,7 @@ class ConnectionManager:
     async def send_to_websocket(self, websocket: WebSocket, message: WSMessage):
         """Send a message to a specific WebSocket"""
         try:
-            await websocket.send_json(self._transform_for_frontend(message))
+            await self._send_json(websocket, self._transform_for_frontend(message))
         except Exception as e:
             logger.error(f"Error sending to WebSocket: {e}")
             await self.disconnect(websocket)
@@ -264,9 +290,9 @@ class ConnectionManager:
         """Send a message to all connections for a user"""
         if user_id in self.active_connections:
             disconnected = []
-            for websocket in self.active_connections[user_id]:
+            for websocket in list(self.active_connections[user_id]):
                 try:
-                    await websocket.send_json(self._transform_for_frontend(message))
+                    await self._send_json(websocket, self._transform_for_frontend(message))
                 except Exception as e:
                     logger.error(f"Error sending to user {user_id}: {e}")
                     disconnected.append(websocket)
@@ -297,16 +323,81 @@ class ConnectionManager:
         # Send to subscribers
         if research_id in self.research_subscriptions:
             disconnected = []
-            for websocket in self.research_subscriptions[research_id]:
+            for websocket in list(self.research_subscriptions[research_id]):
                 try:
-                    await websocket.send_json(self._transform_for_frontend(message))
+                    await self._send_json(websocket, self._transform_for_frontend(message))
                 except Exception as e:
                     logger.error(f"Error broadcasting to research {research_id}: {e}")
                     disconnected.append(websocket)
 
-            # Clean up disconnected websockets
-            for ws in disconnected:
-                await self.disconnect(ws)
+        # Clean up disconnected websockets
+        for ws in disconnected:
+            await self.disconnect(ws)
+
+    # ------------------------------------------------------------------
+    # Internal helpers for write-pump and JSON serialization
+    # ------------------------------------------------------------------
+
+    async def _writer_pump(self, websocket: WebSocket, q: asyncio.Queue):
+        """Background task draining a send queue for a websocket.
+
+        Helps prevent head-of-line blocking when a single slow client cannot
+        keep up with the broadcast rate. If the connection closes or the task
+        is cancelled, it exits quietly.
+        """
+        try:
+            while True:
+                payload = await q.get()
+                try:
+                    if isinstance(payload, str):
+                        await websocket.send_text(payload)
+                    else:
+                        await websocket.send_json(payload)
+                except Exception as e:
+                    logger.error(f"Writer pump send failed: {e}")
+                    await self.disconnect(websocket)
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def _send_json(self, websocket: WebSocket, payload: Dict[str, Any]):
+        """Efficient JSON send with optional write-pump buffering."""
+        # If write pump enabled for this socket, enqueue serialized text
+        if self._use_write_pump and websocket in self._send_queues:
+            try:
+                import orjson
+
+                text = orjson.dumps(payload).decode("utf-8")
+            except Exception:
+                text = json.dumps(payload, default=str)
+
+            q = self._send_queues[websocket]
+            if q.full():
+                with contextlib.suppress(Exception):
+                    _ = q.get_nowait()
+            await q.put(text)
+            return
+
+        # Fallback: inline send
+        try:
+            import orjson
+
+            await websocket.send_text(orjson.dumps(payload).decode("utf-8"))
+        except Exception:
+            await websocket.send_json(payload)
+
+        # Periodic sweep to prune stale histories (global)
+        now_ts = time.time()
+        if self.history_ttl_sec > 0 and (now_ts - self._last_history_sweep_ts) >= 60:
+            self._last_history_sweep_ts = now_ts
+            cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=self.history_ttl_sec)
+            to_delete: List[str] = []
+            for rid, msgs in self.message_history.items():
+                last_ts = msgs[-1].timestamp if msgs else None
+                if not last_ts or last_ts < cutoff_dt:
+                    to_delete.append(rid)
+            for rid in to_delete:
+                self.message_history.pop(rid, None)
 
     async def handle_client_message(
         self, websocket: WebSocket, message: Dict[str, Any]
@@ -349,7 +440,7 @@ class ConnectionManager:
             except Exception:
                 research = None
 
-            is_admin = str(user_role).lower() == "admin"
+            is_admin = _is_admin_role(user_role)
             if not research:
                 await self.send_to_websocket(
                     websocket,
@@ -486,11 +577,18 @@ class ConnectionManager:
         ts = ws_message.timestamp
         ts_str = iso_or_none(ts) or str(ts)
 
-        return {
+        out: Dict[str, Any] = {
+            "id": ws_message.id,
             "type": type_mapping.get(ws_message.type, str(ws_message.type)),
             "data": data,
             "timestamp": ts_str,
         }
+
+        # Preserve retry intent so FE may act differently
+        if ws_message.type == WSEventType.SEARCH_RETRY:
+            out.setdefault("data", {})["retry"] = True
+
+        return out
 
 
 # --- Progress Tracker ---
@@ -1041,8 +1139,8 @@ class ProgressTracker:
         except Exception as e:
             logger.debug(f"Cache invalidation (complete) failed: {e}")
 
-        # Clean up after delay
-        await asyncio.sleep(300)  # Keep for 5 minutes
+        # Clean up after delay (configurable retention)
+        await asyncio.sleep(max(0, int(self.connection_manager._progress_retention_sec)))
         if research_id in self.research_progress:
             del self.research_progress[research_id]
 
@@ -1261,6 +1359,17 @@ from services.websocket_auth import (
 from fastapi import APIRouter
 
 
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
+
+
+def _is_admin_role(role: Any) -> bool:
+    """Return True when the supplied role (enum or str) indicates admin."""
+    val = getattr(role, "value", role)
+    return str(val).lower() == "admin"
+
+
 def create_websocket_router(
     connection_manager: ConnectionManager, progress_tracker: ProgressTracker
 ) -> APIRouter:
@@ -1311,8 +1420,22 @@ def create_websocket_router(
 
             # Handle messages with rate limiting
             while True:
-                # Receive message
-                data = await websocket.receive_json()
+                # Receive message (tolerate non-JSON ping text)
+                try:
+                    data = await websocket.receive_json()
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    # Attempt to treat text 'ping' frames as heartbeat
+                    with contextlib.suppress(Exception):
+                        text = await websocket.receive_text()
+                        if (text or "").strip().lower() == "ping":
+                            await connection_manager.handle_client_message(
+                                websocket, {"type": "ping"}
+                            )
+                            continue
+                    # Unknown frame type → ignore and keep loop
+                    continue
 
                 # Check message rate limit
                 if not await check_websocket_message_rate(
@@ -1410,7 +1533,7 @@ def create_websocket_router(
             except Exception:
                 research = None
 
-            is_admin = str(user_data.role).lower() == "admin"
+            is_admin = _is_admin_role(user_data.role)
             if (not research) or (
                 (str(research.get("user_id")) != str(user_data.user_id)) and not is_admin
             ):

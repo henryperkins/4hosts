@@ -7,9 +7,10 @@ W-S-C-I (Write-Select-Compress-Isolate) implementation
 import logging
 import structlog
 import os
-from typing import Dict, List, Any, Optional, Set
+from typing import Dict, List, Any, Optional, Set, TypedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from time import perf_counter
 import re
 from abc import ABC, abstractmethod
 
@@ -31,6 +32,17 @@ except Exception:
 # Configure logging
 logger = structlog.get_logger(__name__)
 
+
+# Cross-layer outputs typing to avoid Dict[str, Any] everywhere
+class PreviousOutputs(TypedDict, total=False):
+    write: "WriteLayerOutput"
+    rewrite: Dict[str, Any]
+    select: "SelectLayerOutput"
+    compress: "CompressLayerOutput"
+    isolate: "IsolateLayerOutput"
+    optimize: Dict[str, Any]
+    _experiment: Dict[str, Any]
+
 # --- Data Models ---
 
 
@@ -43,7 +55,7 @@ class WriteLayerOutput:
     key_themes: List[str]
     narrative_frame: str
     search_priorities: List[str]
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -102,7 +114,7 @@ class ContextEngineeredQuery:
     # New optional layer outputs
     rewrite_output: Optional[Dict[str, Any]] = None
     optimize_output: Optional[Dict[str, Any]] = None
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # Optional: per-layer durations in seconds
     layer_durations: Dict[str, float] = field(default_factory=dict)
     # Refined queries after rewrite/optimization (consumed by orchestrator)
@@ -123,7 +135,7 @@ class ContextLayer(ABC):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Optional[Dict[str, Any]] = None,
+        previous_outputs: Optional[PreviousOutputs] = None,
     ) -> Any:
         """Process input through this layer"""
         pass
@@ -132,7 +144,7 @@ class ContextLayer(ABC):
         """Log processing metrics"""
         self.processing_history.append(
             {
-                "timestamp": datetime.now(),
+                "timestamp": datetime.now(timezone.utc),
                 "duration": duration,
                 "input_size": len(str(input_data)),
                 "output_size": len(str(output_data)),
@@ -224,10 +236,10 @@ class WriteLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Optional[Dict[str, Any]] = None,
+        previous_outputs: Optional[PreviousOutputs] = None,
     ) -> WriteLayerOutput:
         """Process query through Write layer"""
-        start_time = datetime.now()
+        start_time = perf_counter()
 
         paradigm = classification.primary_paradigm
         strategy = self.paradigm_strategies[paradigm]
@@ -252,7 +264,7 @@ class WriteLayer(ContextLayer):
         )
 
         # Log processing
-        duration = (datetime.now() - start_time).total_seconds()
+        duration = perf_counter() - start_time
         self.log_processing(classification, output, duration)
 
         logger.info(f"Write layer processed with focus: {output.documentation_focus}")
@@ -330,9 +342,9 @@ class RewriteLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Optional[Dict[str, Any]] = None,
+        previous_outputs: Optional[PreviousOutputs] = None,
     ) -> Dict[str, Any]:
-        start_time = datetime.now()
+        start_time = perf_counter()
         original = classification.query
         paradigm = classification.primary_paradigm.value
         rewrites: List[str] = []
@@ -379,7 +391,7 @@ class RewriteLayer(ContextLayer):
             core = re.sub(r"\s+", " ", core).strip()
             rewrites = [core] if core else [original]
 
-        duration = (datetime.now() - start_time).total_seconds()
+        duration = perf_counter() - start_time
         output = {
             "method": method,
             "rewritten": rewrites[0],
@@ -388,12 +400,7 @@ class RewriteLayer(ContextLayer):
         self.log_processing(original, output, duration)
         return output
 
-        # Add urgency-based priorities
-        if classification.features.urgency_score > 0.7:
-            priorities.insert(0, "recent developments")
-            priorities.insert(1, "breaking news")
-
-        return priorities
+        # NOTE: dead code removed – was unreachable and referenced undefined 'priorities'
 
 
 # --- Select Layer Implementation ---
@@ -483,25 +490,31 @@ class SelectLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Optional[Dict[str, Any]] = None,
+        previous_outputs: Optional[PreviousOutputs] = None,
     ) -> SelectLayerOutput:
         """Process through Select layer"""
-        start_time = datetime.now()
+        start_time = perf_counter()
 
         paradigm = classification.primary_paradigm
         strategy = self.selection_strategies[paradigm]
         write_output = previous_outputs.get("write") if previous_outputs else None
 
-        # Generate enhanced search queries
-        search_strategy = paradigm_search.get_search_strategy(paradigm.value)
-        search_context = paradigm_search.SearchContext(
-            original_query=classification.query,
-            paradigm=paradigm.value,
-            secondary_paradigm=classification.secondary_paradigm.value
-            if classification.secondary_paradigm
-            else None,
-        )
-        search_queries = await search_strategy.generate_search_queries(search_context)
+        # Generate enhanced search queries (with safe fallback)
+        try:
+            search_strategy = paradigm_search.get_search_strategy(paradigm.value)
+            search_context = paradigm_search.SearchContext(
+                original_query=classification.query,
+                paradigm=paradigm.value,
+                secondary_paradigm=classification.secondary_paradigm.value
+                if classification.secondary_paradigm
+                else None,
+            )
+            search_queries = await search_strategy.generate_search_queries(search_context)
+        except Exception as e:
+            logger.warning(
+                "Select layer: search strategy failed; using fallback", error=str(e)
+            )
+            search_queries = [{"query": classification.query, "reason": "fallback"}]
 
         # Add secondary paradigm queries if significant
         # if (
@@ -553,7 +566,7 @@ class SelectLayer(ContextLayer):
         )
 
         # Log processing
-        duration = (datetime.now() - start_time).total_seconds()
+        duration = perf_counter() - start_time
         self.log_processing(classification, output, duration)
 
         logger.info(f"Select layer generated {len(search_queries)} search queries")
@@ -643,10 +656,10 @@ class CompressLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Optional[Dict[str, Any]] = None,
+        previous_outputs: Optional[PreviousOutputs] = None,
     ) -> CompressLayerOutput:
         """Process through Compress layer"""
-        start_time = datetime.now()
+        start_time = perf_counter()
 
         paradigm = classification.primary_paradigm
         strategy = self.compression_strategies[paradigm]
@@ -697,7 +710,7 @@ class CompressLayer(ContextLayer):
         )
 
         # Log processing
-        duration = (datetime.now() - start_time).total_seconds()
+        duration = perf_counter() - start_time
         self.log_processing(classification, output, duration)
 
         logger.info(
@@ -832,10 +845,10 @@ class IsolateLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Optional[Dict[str, Any]] = None,
+        previous_outputs: Optional[PreviousOutputs] = None,
     ) -> IsolateLayerOutput:
         """Process through Isolate layer"""
-        start_time = datetime.now()
+        start_time = perf_counter()
 
         paradigm = classification.primary_paradigm
         strategy = self.isolation_strategies[paradigm]
@@ -853,7 +866,7 @@ class IsolateLayer(ContextLayer):
         )
 
         # Log processing
-        duration = (datetime.now() - start_time).total_seconds()
+        duration = perf_counter() - start_time
         self.log_processing(classification, output, duration)
 
         logger.info(f"Isolate layer configured for: {output.isolation_strategy}")
@@ -907,9 +920,9 @@ class OptimizeLayer(ContextLayer):
     async def process(
         self,
         classification: ClassificationResult,
-        previous_outputs: Optional[Dict[str, Any]] = None,
+        previous_outputs: Optional[PreviousOutputs] = None,
     ) -> Dict[str, Any]:
-        start_time = datetime.now()
+        start_time = perf_counter()
         paradigm = classification.primary_paradigm.value
         original = classification.query
         rewritten = None
@@ -986,7 +999,7 @@ class OptimizeLayer(ContextLayer):
             "variations": variations,
             "variations_count": len(variations),
         }
-        duration = (datetime.now() - start_time).total_seconds()
+        duration = perf_counter() - start_time
         self.log_processing(base_query, output, duration)
         return output
 
@@ -1011,7 +1024,8 @@ class ContextEngineeringPipeline:
         research_id: Optional[str] = None
     ) -> ContextEngineeredQuery:
         """Process classification through all context layers"""
-        start_time = datetime.now()
+        wall_start = perf_counter()
+        started_at = datetime.now(timezone.utc)
 
         logger.info(
             f"Starting context engineering for paradigm: {classification.primary_paradigm.value}"
@@ -1136,7 +1150,7 @@ class ContextEngineeringPipeline:
             )
 
         # Calculate total processing time
-        processing_time = (datetime.now() - start_time).total_seconds()
+        processing_time = perf_counter() - wall_start
 
         # Compose refined queries for orchestrator (variations + select queries)
         refined_queries: List[str] = []
@@ -1211,6 +1225,8 @@ Context Engineering Summary:
 
         paradigm_counts = {p: 0 for p in HostParadigm}
         total_time = 0.0
+        rewrite_ct = len(self.rewrite_layer.processing_history)
+        optimize_ct = len(self.optimize_layer.processing_history)
 
         for eq in self.processing_history:
             paradigm_counts[eq.classification.primary_paradigm] += 1
@@ -1227,6 +1243,8 @@ Context Engineering Summary:
                 "select": len(self.select_layer.processing_history),
                 "compress": len(self.compress_layer.processing_history),
                 "isolate": len(self.isolate_layer.processing_history),
+                "rewrite": rewrite_ct,
+                "optimize": optimize_ct,
             },
         }
 

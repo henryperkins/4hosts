@@ -62,6 +62,13 @@ API_KEY_LENGTH = 32
 # Security
 security = HTTPBearer()
 
+# Import models from canonical location
+from models.auth import (
+    UserCreate as AuthUserCreate,
+    UserLogin as AuthUserLogin,
+    Token as AuthToken,
+)
+
 # --- Data Models ---
 
 
@@ -90,23 +97,6 @@ class User(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class UserCreate(BaseModel):
-    """User creation model"""
-
-    email: EmailStr
-    username: str
-    password: str
-    role: UserRole = UserRole.FREE
-    auth_provider: AuthProvider = AuthProvider.LOCAL
-
-
-class UserLogin(BaseModel):
-    """User login model"""
-
-    email: EmailStr
-    password: str
-
-
 class APIKeyInfo(BaseModel):
     """API Key info model returned by service layer"""
 
@@ -124,13 +114,6 @@ class APIKeyInfo(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class Token(BaseModel):
-    """JWT Token model"""
-
-    access_token: str
-    refresh_token: Optional[str] = None
-    token_type: str = "bearer"
-    expires_in: int
 
 
 class TokenData(BaseModel):
@@ -346,7 +329,7 @@ class AuthService:
     def __init__(self):
         pass
 
-    async def create_user(self, user_data: UserCreate, db: AsyncSession) -> User:
+    async def create_user(self, user_data: AuthUserCreate, db: AsyncSession) -> User:
         """Create a new user"""
         # Validate password strength
         if not validate_password_strength(user_data.password):
@@ -424,7 +407,7 @@ class AuthService:
             raise HTTPException(status_code=409, detail="User already exists")
 
     async def authenticate_user(
-        self, login_data: UserLogin, db: Optional[AsyncSession] = None
+        self, login_data: AuthUserLogin, db: Optional[AsyncSession] = None
     ) -> Optional[User]:
         """Authenticate user with email and password"""
         # Obtain DB session correctly from async generator
@@ -451,7 +434,7 @@ class AuthService:
                 return None
 
             # Verify password
-            if not await verify_password(login_data.password, str(db_user.password_hash)):
+            if not await verify_password(login_data.password, db_user.password_hash):
                 return None
 
             # Check if user is active
