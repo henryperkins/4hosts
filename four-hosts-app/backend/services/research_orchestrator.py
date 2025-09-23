@@ -7,6 +7,7 @@ Combines all the best features from multiple orchestrator implementations
 import asyncio
 import os
 import structlog
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -110,6 +111,15 @@ except Exception:
     _global_metrics = None
 
 logger = structlog.get_logger(__name__)
+
+def _otel_span(name: str, attributes: Dict[str, Any] | None = None):
+    try:
+        from opentelemetry import trace as _trace
+        tracer = _trace.get_tracer("four-hosts-research-api")
+        return tracer.start_as_current_span(name, attributes=attributes or {})
+    except Exception:
+        from contextlib import nullcontext as _nullcontext
+        return _nullcontext()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -622,11 +632,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         logger.info("Executing query planner", research_id=research_id, paradigm=paradigm_code)
         try:
-            planned_candidates = await planner.initial_plan(
-                seed_query=seed_query,
-                paradigm=paradigm_code,
-                additional_queries=refined_queries,
-            )
+            with _otel_span("rag.plan.initial", {"research_id": str(research_id or ""), "paradigm": str(paradigm_code), "query_limit": int(limited), "refined_queries_count": int(len(refined_queries))}):
+                planned_candidates = await planner.initial_plan(
+                    seed_query=seed_query,
+                    paradigm=paradigm_code,
+                    additional_queries=refined_queries,
+                )
             logger.info(
                 "Query planning successful",
                 research_id=research_id,
@@ -703,16 +714,26 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             research_id=research_id,
             candidates_count=len(executed_candidates)
         )
-        search_results = await self._execute_searches_with_budget(
-            executed_candidates,
-            classification.primary_paradigm,
-            user_context,
-            progress_callback,
-            research_id,
-            check_cancelled,  # Pass cancellation check function
-            cost_accumulator=cost_breakdown,
-            metrics=search_metrics_local,
-        )
+        with _otel_span(
+            "research.execute",
+            {
+                "research_id": str(research_id or ""),
+                "paradigm": str(paradigm_code),
+                "synthesize_answer": bool(synthesize_answer),
+                "deep_research.enabled": bool(enable_deep_research),
+            },
+        ):
+            with _otel_span("rag.search.batch", {"research_id": str(research_id or ""), "candidates_count": int(len(executed_candidates))}):
+                search_results = await self._execute_searches_with_budget(
+                    executed_candidates,
+                    classification.primary_paradigm,
+                    user_context,
+                    progress_callback,
+                    research_id,
+                    check_cancelled,  # Pass cancellation check function
+                    cost_accumulator=cost_breakdown,
+                    metrics=search_metrics_local,
+                )
         logger.info(
             "Search execution completed",
             research_id=research_id,
@@ -720,6 +741,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         )
 
         # Agentic follow-up loop based on coverage gaps (extracted)
+        agent_loop_metrics: Dict[str, Any] | None = None
         if self.agentic_config.get("enabled", True):
             logger.info("Starting agentic follow-up loop", research_id=research_id)
             executed_queries = {cand.query for cand in executed_candidates}
@@ -808,29 +830,39 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     })
                 return out
 
-            new_cands, follow_map, coverage_ratio, missing_terms, coverage_sources = await run_followups(
-                original_query=original_query,
-                context_engineered=context_engineered,
-                paradigm_code=paradigm_code,
-                planner=planner,
-                seed_query=seed_query,
-                executed_queries=executed_queries,
-                coverage_sources=coverage_sources,
-                max_iterations=max_iters,
-                coverage_threshold=coverage_threshold,
-                max_new_per_iter=max_new_per_iter,
-                estimate_cost=_estimate_cost,
-                can_spend=_can_spend,
-                execute_candidates=_execute,
-                to_coverage_sources=_to_cov,
-                check_cancelled=check_cancelled,
-            )
+            with _otel_span("agent.loop", {"research_id": str(research_id or ""), "max_iterations": int(max_iters), "coverage_threshold": float(coverage_threshold)}):
+                new_cands, follow_map, coverage_ratio, missing_terms, coverage_sources = await run_followups(
+                    original_query=original_query,
+                    context_engineered=context_engineered,
+                    paradigm_code=paradigm_code,
+                    planner=planner,
+                    seed_query=seed_query,
+                    executed_queries=executed_queries,
+                    coverage_sources=coverage_sources,
+                    max_iterations=max_iters,
+                    coverage_threshold=coverage_threshold,
+                    max_new_per_iter=max_new_per_iter,
+                    estimate_cost=_estimate_cost,
+                    can_spend=_can_spend,
+                    execute_candidates=_execute,
+                    to_coverage_sources=_to_cov,
+                    check_cancelled=check_cancelled,
+                )
 
             # Integrate results and metrics
             executed_candidates.extend(new_cands)
             search_metrics_local["total_queries"] = int(search_metrics_local.get("total_queries", 0)) + len(new_cands)
             for query, res in (follow_map or {}).items():
                 search_results[query] = res
+            # Collect agent loop metrics for telemetry
+            try:
+                agent_loop_metrics = {
+                    "new_queries": int(len(new_cands or [])),
+                    "coverage_ratio": float(coverage_ratio or 0.0),
+                    "missing_terms": list(missing_terms or []),
+                }
+            except Exception:
+                agent_loop_metrics = {"new_queries": int(len(new_cands or []))}
 
         # Record per-query effectiveness (query -> results count)
         try:
@@ -858,6 +890,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             research_id,
             metrics=search_metrics_local,
         )
+        try:
+            if agent_loop_metrics:
+                processed_results.setdefault("metadata", {})["agent_loop"] = agent_loop_metrics
+        except Exception:
+            pass
 
         await self._augment_with_exa_research(
             processed_results,
@@ -1148,17 +1185,24 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         evidence_timeout = int(os.getenv("EVIDENCE_BUILDER_OVERALL_TIMEOUT", "120"))
 
                         try:
-                            evidence_bundle, evidence_quotes_payload = await asyncio.wait_for(
-                                build_evidence_pipeline(
-                                    getattr(context_engineered, "original_query", ""),
-                                    normalized_sources,
-                                    max_docs=max_docs,
-                                    quotes_per_doc=EVIDENCE_QUOTES_PER_DOC_DEFAULT,
-                                    include_full_content=True,
-                                    full_text_budget=EVIDENCE_BUDGET_TOKENS_DEFAULT,
-                                ),
-                                timeout=evidence_timeout,
-                            )
+                            with _otel_span("evidence.build", {"research_id": str(research_id or ""), "normalized_sources": int(len(normalized_sources)), "max_docs": int(max_docs), "quotes_per_doc": int(EVIDENCE_QUOTES_PER_DOC_DEFAULT)}) as _sp:
+                                t0 = time.time()
+                                evidence_bundle, evidence_quotes_payload = await asyncio.wait_for(
+                                    build_evidence_pipeline(
+                                        getattr(context_engineered, "original_query", ""),
+                                        normalized_sources,
+                                        max_docs=max_docs,
+                                        quotes_per_doc=EVIDENCE_QUOTES_PER_DOC_DEFAULT,
+                                        include_full_content=True,
+                                        full_text_budget=EVIDENCE_BUDGET_TOKENS_DEFAULT,
+                                    ),
+                                    timeout=evidence_timeout,
+                                )
+                                try:
+                                    if _sp:
+                                        _sp.set_attribute("latency_ms", int((time.time() - t0) * 1000))
+                                except Exception:
+                                    pass
                         except asyncio.TimeoutError:
                             logger.error(f"Evidence building timed out after {evidence_timeout} seconds")
                             # Create empty evidence bundle to continue with synthesis
@@ -1182,6 +1226,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                                 f"Evidence builder succeeded: {len(evidence_quotes)} quotes from "
                                 f"{len(getattr(evidence_bundle, 'documents', []))} documents"
                             )
+                            # Attach evidence stats for telemetry
+                            try:
+                                if evidence_bundle is not None:
+                                    processed_results.setdefault("metadata", {})["evidence_stats"] = {
+                                        "quotes_count": int(len(getattr(evidence_bundle, "quotes", []) or [])),
+                                        "documents_count": int(len(getattr(evidence_bundle, "documents", []) or [])),
+                                        "documents_token_count": int(getattr(evidence_bundle, "documents_token_count", 0) or 0),
+                                        "by_domain": dict(getattr(evidence_bundle, "by_domain", {}) or {}),
+                                    }
+                            except Exception:
+                                pass
 
                         # Signal evidence phase completion to UI
                         if progress_callback and research_id:

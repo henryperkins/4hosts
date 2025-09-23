@@ -180,52 +180,80 @@ async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     # Don't apply a session-wide timeout - let each URL have its own timeout
     headers = {"User-Agent": "FourHostsResearch/1.0 (+evidence-builder)"}
     async with aiohttp.ClientSession(headers=headers) as session:
-        # Create individual fetch tasks with their own timeouts
-        async def fetch_single(url: str) -> None:
-            async with semaphore:  # Limit concurrent fetches
-                # Check circuit breaker
-                if not circuit_breaker.allow_request():
-                    out[url] = ""
-                    fetch_failures.append(f"{url}: circuit breaker open")
-                    return
+        # Batch span for URL fetches (defensive: no-op if OTel unavailable)
+        try:
+            from opentelemetry import trace as _trace
+            _tracer = _trace.get_tracer("four-hosts-research-api")
+        except Exception:
+            _tracer = None
+        from contextlib import nullcontext as _nullcontext
+        import time as _time
 
-                # Apply rate limiting if enabled
-                if rate_limiter:
-                    await rate_limiter.acquire(url)
+        _span_cm = (
+            _tracer.start_as_current_span(
+                "evidence.fetch.batch", attributes={"urls.count": len(urls)}
+            )
+            if _tracer
+            else _nullcontext()
+        )
+        with _span_cm as _sp:
+            _t0 = _time.time()
 
-                try:
-                    # Apply timeout using asyncio.wait_for for per-URL control
-                    txt = await asyncio.wait_for(
-                        fetch_and_parse_url(session, url),
-                        timeout=per_url_timeout,
-                    )
-                    out[url] = txt or ""
-                    if not txt:
-                        fetch_failures.append(f"{url}: empty content")
+            # Create individual fetch tasks with their own timeouts
+            async def fetch_single(url: str) -> None:
+                async with semaphore:  # Limit concurrent fetches
+                    # Check circuit breaker
+                    if not circuit_breaker.allow_request():
+                        out[url] = ""
+                        fetch_failures.append(f"{url}: circuit breaker open")
+                        return
+
+                    # Apply rate limiting if enabled
+                    if rate_limiter:
+                        await rate_limiter.acquire(url)
+
+                    try:
+                        # Apply timeout using asyncio.wait_for for per-URL control
+                        txt = await asyncio.wait_for(
+                            fetch_and_parse_url(session, url),
+                            timeout=per_url_timeout,
+                        )
+                        out[url] = txt or ""
+                        if not txt:
+                            fetch_failures.append(f"{url}: empty content")
+                            circuit_breaker.call_failure()
+                        else:
+                            circuit_breaker.call_success()
+                    except asyncio.TimeoutError:
+                        out[url] = ""
+                        fetch_failures.append(
+                            f"{url}: timeout after {per_url_timeout}s"
+                        )
                         circuit_breaker.call_failure()
-                    else:
-                        circuit_breaker.call_success()
-                except asyncio.TimeoutError:
-                    out[url] = ""
-                    fetch_failures.append(
-                        f"{url}: timeout after {per_url_timeout}s"
-                    )
-                    circuit_breaker.call_failure()
-                except aiohttp.ClientError as e:
-                    out[url] = ""
-                    fetch_failures.append(
-                        f"{url}: network error - {type(e).__name__}"
-                    )
-                    circuit_breaker.call_failure()
-                except Exception as e:  # noqa: F841
-                    out[url] = ""
-                    fetch_failures.append(f"{url}: {type(e).__name__}")
-                    circuit_breaker.call_failure()
+                    except aiohttp.ClientError as e:
+                        out[url] = ""
+                        fetch_failures.append(
+                            f"{url}: network error - {type(e).__name__}"
+                        )
+                        circuit_breaker.call_failure()
+                    except Exception as e:  # noqa: F841
+                        out[url] = ""
+                        fetch_failures.append(f"{url}: {type(e).__name__}")
+                        circuit_breaker.call_failure()
 
-        # Run all fetches in parallel with bounded concurrency via semaphore
-        tasks = [asyncio.create_task(fetch_single(u)) for u in urls]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Run all fetches in parallel with bounded concurrency via semaphore
+            tasks = [asyncio.create_task(fetch_single(u)) for u in urls]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Set batch-level metrics
+            try:
+                if _sp:
+                    _sp.set_attribute("latency_ms", int((_time.time() - _t0) * 1000))
+                    _sp.set_attribute("success", True)
+                    _sp.set_attribute("failures.count", len(fetch_failures))
+            except Exception:
+                pass
 
     # Log fetch failures summary
     if fetch_failures:

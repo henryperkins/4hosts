@@ -73,6 +73,15 @@ load_dotenv()
 
 logger = structlog.get_logger(__name__)
 
+def _otel_span(name: str, attributes: Dict[str, Any] | None = None):
+    try:
+        from opentelemetry import trace as _trace
+        tracer = _trace.get_tracer("four-hosts-research-api")
+        return tracer.start_as_current_span(name, attributes=attributes or {})
+    except Exception:
+        from contextlib import nullcontext as _nullcontext
+        return _nullcontext()
+
 MAX_LOG_BODY = int(os.getenv("SEARCH_LOG_BODY_MAX", "2048"))
 
 
@@ -1958,10 +1967,26 @@ class SearchAPIManager:
         except Exception:
             timeout = float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
         try:
-            results = await asyncio.wait_for(
-                api.search_with_variations(seed_query, cfg, planned=planned),
-                timeout=timeout,
-            )
+            _t0 = time.time()
+            with _otel_span(
+                "rag.provider.search",
+                {
+                    "provider": name,
+                    "seed_query": seed_query[:120],
+                    "planned_count": len(planned),
+                },
+            ) as _sp:
+                results = await asyncio.wait_for(
+                    api.search_with_variations(seed_query, cfg, planned=planned),
+                    timeout=timeout,
+                )
+                try:
+                    if _sp:
+                        _sp.set_attribute("results.count", len(results) if results else 0)
+                        _sp.set_attribute("latency_ms", int((time.time() - _t0) * 1000))
+                        _sp.set_attribute("success", True)
+                except Exception:
+                    pass
 
             if progress_callback and research_id:
                 try:
@@ -2093,10 +2118,26 @@ class SearchAPIManager:
         try:
             timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
             _t0 = time.time()
-            results = await asyncio.wait_for(
-                api.search_with_variations(seed_query, cfg, planned=planned),
-                timeout=timeout,
-            )
+            _t0 = time.time()
+            with _otel_span(
+                "rag.provider.search",
+                {
+                    "provider": name,
+                    "seed_query": seed_query[:120],
+                    "planned_count": len(planned),
+                },
+            ) as _sp:
+                results = await asyncio.wait_for(
+                    api.search_with_variations(seed_query, cfg, planned=planned),
+                    timeout=timeout,
+                )
+                try:
+                    if _sp:
+                        _sp.set_attribute("results.count", len(results) if results else 0)
+                        _sp.set_attribute("latency_ms", int((time.time() - _t0) * 1000))
+                        _sp.set_attribute("success", True)
+                except Exception:
+                    pass
             try:
                 resp_ms = int((time.time() - _t0) * 1000)
                 unique_domains = len({extract_domain(r.url) for r in (results or []) if getattr(r, "url", "")})
@@ -2250,10 +2291,27 @@ class SearchAPIManager:
                 continue
             async def _run_with_timeout(_api: BaseSearchAPI) -> List[SearchResult]:
                 try:
-                    return await asyncio.wait_for(
-                        _api.search_with_variations(seed_query, cfg, planned=planned),
-                        timeout=_per_provider_to,
-                    )
+                    _t0 = time.time()
+                    with _otel_span(
+                        "rag.provider.search",
+                        {
+                            "provider": getattr(_api, "__class__", type(_api)).__name__,
+                            "seed_query": seed_query[:120],
+                            "planned_count": len(planned),
+                        },
+                    ) as _sp:
+                        res = await asyncio.wait_for(
+                            _api.search_with_variations(seed_query, cfg, planned=planned),
+                            timeout=_per_provider_to,
+                        )
+                        try:
+                            if _sp:
+                                _sp.set_attribute("results.count", len(res) if res else 0)
+                                _sp.set_attribute("latency_ms", int((time.time() - _t0) * 1000))
+                                _sp.set_attribute("success", True)
+                        except Exception:
+                            pass
+                        return res
                 except asyncio.TimeoutError:
                     logger.warning(f"Provider timeout ({_per_provider_to:.1f}s): {getattr(_api, '__class__', type(_api)).__name__}")
                     return []

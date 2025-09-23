@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Union, TYPE_CHECKING
 
 import structlog
@@ -24,6 +25,15 @@ if TYPE_CHECKING:
 #  Logging
 # ────────────────────────────────────────────────────────────
 logger = structlog.get_logger(__name__)
+
+def _otel_span(name: str, attributes: Dict[str, Any] | None = None):
+    try:
+        from opentelemetry import trace as _trace
+        tracer = _trace.get_tracer("four-hosts-research-api")
+        return tracer.start_as_current_span(name, attributes=attributes or {})
+    except Exception:
+        from contextlib import nullcontext as _nullcontext
+        return _nullcontext()
 
 # ────────────────────────────────────────────────────────────
 #  Configuration
@@ -194,17 +204,33 @@ class LLMClient:
 
         # For o-series models, delegate to Responses API
         if _is_o_series(model) or response_format or json_schema:
-            return await self._generate_via_responses(
-                prompt=prompt,
-                model=model,
-                paradigm_key=paradigm_key,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
-                response_format=response_format,
-                json_schema=json_schema,
-                stream=stream
-            )
+            # Instrument Responses API generation
+            _attrs = {
+                "paradigm": paradigm_key,
+                "model": model,
+                "stream": bool(stream),
+                "structured": bool(response_format or json_schema),
+            }
+            with _otel_span("llm.generate", _attrs) as _sp:
+                _t0 = time.time()
+                _result = await self._generate_via_responses(
+                    prompt=prompt,
+                    model=model,
+                    paradigm_key=paradigm_key,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    reasoning_effort=reasoning_effort,
+                    response_format=response_format,
+                    json_schema=json_schema,
+                    stream=stream
+                )
+                try:
+                    if _sp:
+                        _sp.set_attribute("latency_ms", int((time.time() - _t0) * 1000))
+                        _sp.set_attribute("success", True)
+                except Exception:
+                    pass
+                return _result
 
         # For non-o models, use Chat Completions
         logger.info(
@@ -230,17 +256,32 @@ class LLMClient:
                 client_type="azure" if client == self.azure_client else "openai",
                 model=self._get_deployment_name(model)
             )
-            response = await client.chat.completions.create(
-                model=self._get_deployment_name(model),
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-                response_format=response_format if response_format else None,
-                stream=stream
-            )
+            with _otel_span(
+                "llm.chat_completions",
+                {
+                    "model": self._get_deployment_name(model),
+                    "paradigm": paradigm_key,
+                    "stream": bool(stream),
+                },
+            ) as _sp:
+                _t0 = time.time()
+                response = await client.chat.completions.create(
+                    model=self._get_deployment_name(model),
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    frequency_penalty=frequency_penalty,
+                    presence_penalty=presence_penalty,
+                    response_format=response_format if response_format else None,
+                    stream=stream
+                )
+                try:
+                    if _sp:
+                        _sp.set_attribute("latency_ms", int((time.time() - _t0) * 1000))
+                        _sp.set_attribute("success", True)
+                except Exception:
+                    pass
 
             if stream:
                 logger.info("Streaming response initiated")
