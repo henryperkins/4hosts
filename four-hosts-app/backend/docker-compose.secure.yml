@@ -1,0 +1,89 @@
+version: '3.8'
+
+# Secure Redis configuration for production use
+# This file provides a hardened Redis setup with authentication and restricted network access
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: ${DB_NAME:-fourhosts}
+    ports:
+      # Only bind to localhost to prevent external access
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-user} -d ${DB_NAME:-fourhosts}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - backend-network
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+      - --requirepass
+      - ${REDIS_PASSWORD:-changeme_use_strong_password}
+    environment:
+      # Pass the Redis password as an environment variable
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme_use_strong_password}
+    ports:
+      # Only bind to localhost to prevent external access
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme_use_strong_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - backend-network
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  # Redis Insight (optional monitoring tool - remove in production)
+  # redis-insight:
+  #   image: redislabs/redisinsight:latest
+  #   ports:
+  #     - "127.0.0.1:8001:8001"
+  #   volumes:
+  #     - redis-insight:/db
+  #   networks:
+  #     - backend-network
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - redis
+
+networks:
+  backend-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  # redis-insight:
+  #   driver: local

@@ -1352,13 +1352,11 @@ async def analyze_source_credibility_batch(
     #    not block progress.
     # ------------------------------------------------------------------
     tasks: List[asyncio.Task] = []
-    # Map tasks to their source data for later retrieval
-    task_to_source: Dict[asyncio.Task, Dict[str, Any]] = {}
 
     async def _score_task(src: Dict[str, Any]):
         """Compute credibility for a single source while capturing errors."""
         try:
-            return await get_source_credibility(
+            score = await get_source_credibility(
                 domain=src.get("domain", ""),
                 paradigm=paradigm,
                 content=src.get("content"),
@@ -1366,17 +1364,17 @@ async def analyze_source_credibility_batch(
                 published_date=src.get("published_date"),
                 other_sources=[s for s in sources if s != src],
             )
+            return (src, score)
         except Exception as exc:
             logger.warning("Credibility calculation failed for %s: %s", src.get("domain"), exc)
-            return None
+            return (src, None)
 
     for src in sources:
         task = asyncio.create_task(_score_task(src))
         tasks.append(task)
-        task_to_source[task] = src
 
     total_tasks = len(tasks)
-    credibility_scores: List[CredibilityScore] = []
+    credibility_results: List[Tuple[Dict[str, Any], CredibilityScore]] = []
 
     # Helper: ensure ``check_cancelled`` is always awaitable.
     if check_cancelled is None:
@@ -1397,9 +1395,11 @@ async def analyze_source_credibility_batch(
             break
 
         try:
-            result = await fut  # type: Optional[CredibilityScore]
-            if result and isinstance(result, CredibilityScore):
-                credibility_scores.append(result)
+            result = await fut  # type: Tuple[Dict[str, Any], Optional[CredibilityScore]]
+            if result and isinstance(result, tuple) and len(result) == 2:
+                source, score = result
+                if score and isinstance(score, CredibilityScore):
+                    credibility_results.append((source, score))
         except Exception:  # pragma: no cover
             logger.warning("Unexpected exception in credibility task", exc_info=True)
 
@@ -1420,7 +1420,7 @@ async def analyze_source_credibility_batch(
     # 3. Aggregate results – fall back to zeros if *every* task failed or was
     #    cancelled.
     # ------------------------------------------------------------------
-    if not credibility_scores:
+    if not credibility_results:
         return {
             "total_sources": len(sources),
             "average_credibility": 0.0,
@@ -1438,27 +1438,28 @@ async def analyze_source_credibility_batch(
             "paradigm_recommendations": [],
         }
 
-    avg_credibility: float = sum(c.overall_score for c in credibility_scores) / len(credibility_scores)
-    high_credibility_count: int = sum(1 for c in credibility_scores if c.overall_score >= 0.7)
-    controversial_count: int = sum(1 for c in credibility_scores if getattr(c, "controversy_score", 0) > 0.5)
+    scores_only = [item[1] for item in credibility_results]
+    avg_credibility: float = sum(c.overall_score for c in scores_only) / len(scores_only)
+    high_credibility_count: int = sum(1 for c in scores_only if c.overall_score >= 0.7)
+    controversial_count: int = sum(1 for c in scores_only if getattr(c, "controversy_score", 0) > 0.5)
 
-    sorted_scores = sorted(credibility_scores, key=lambda x: x.overall_score, reverse=True)
+    sorted_results = sorted(credibility_results, key=lambda x: x[1].overall_score, reverse=True)
 
     return {
         "total_sources": len(sources),
         "average_credibility": avg_credibility,
         "high_credibility_sources": high_credibility_count,
         "controversial_sources": controversial_count,
-        "most_credible": sorted_scores[0].domain if sorted_scores else None,
-        "least_credible": sorted_scores[-1].domain if sorted_scores else None,
+        "most_credible": sorted_results[0][0].get("domain") if sorted_results else None,
+        "least_credible": sorted_results[-1][0].get("domain") if sorted_results else None,
         "credibility_distribution": {
-            "very_high": sum(1 for c in credibility_scores if c.overall_score >= 0.8),
-            "high": sum(1 for c in credibility_scores if 0.6 <= c.overall_score < 0.8),
-            "moderate": sum(1 for c in credibility_scores if 0.4 <= c.overall_score < 0.6),
-            "low": sum(1 for c in credibility_scores if 0.2 <= c.overall_score < 0.4),
-            "very_low": sum(1 for c in credibility_scores if c.overall_score < 0.2),
+            "very_high": sum(1 for c in scores_only if c.overall_score >= 0.8),
+            "high": sum(1 for c in scores_only if 0.6 <= c.overall_score < 0.8),
+            "moderate": sum(1 for c in scores_only if 0.4 <= c.overall_score < 0.6),
+            "low": sum(1 for c in scores_only if 0.2 <= c.overall_score < 0.4),
+            "very_low": sum(1 for c in scores_only if c.overall_score < 0.2),
         },
-        "paradigm_recommendations": _get_paradigm_recommendations(credibility_scores, paradigm),
+        "paradigm_recommendations": _get_paradigm_recommendations(scores_only, paradigm),
     }
 
 def _get_paradigm_recommendations(scores: List[CredibilityScore], paradigm: str) -> List[str]:

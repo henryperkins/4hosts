@@ -77,9 +77,20 @@ services:
     volumes:
       # Persistent volume for Redis data (optional persistence)
       - redis_data:/data
-    command: redis-server --appendonly yes  # Enable persistence
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-Twiohmld1234!}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 300
+      --timeout 300
+      --protected-mode yes
+      --bind 0.0.0.0
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-Twiohmld1234!}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-Twiohmld1234!}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,6 +101,8 @@ services:
     labels:
       com.fourhosts.service: "cache"
       com.fourhosts.description: "Redis cache for sessions and performance optimization"
+    security_opt:
+      - no-new-privileges:true
 
   # ==========================================================================
   # BACKEND SERVICE - FastAPI Application
@@ -107,8 +120,9 @@ services:
       # Environment mode - development enables debug features and relaxed CORS
       ENVIRONMENT: development
 
-      # Cache connection (application gracefully handles Redis unavailability)
-      REDIS_URL: redis://redis:6379
+      # Cache connection with authentication (password URL-encoded)
+      REDIS_URL: redis://:${REDIS_PASSWORD_ENCODED:-Twiohmld1234%21}@redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-Twiohmld1234!}
       # JWT signing key (development default; override via .env in real use)
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-dev-token-change-me}
 

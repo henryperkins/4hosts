@@ -289,8 +289,8 @@ class ConnectionManager:
 
     async def send_to_user(self, user_id: str, message: WSMessage):
         """Send a message to all connections for a user"""
+        disconnected = []
         if user_id in self.active_connections:
-            disconnected = []
             for websocket in list(self.active_connections[user_id]):
                 try:
                     await self._send_json(websocket, self._transform_for_frontend(message))
@@ -298,9 +298,9 @@ class ConnectionManager:
                     logger.error(f"Error sending to user {user_id}: {e}")
                     disconnected.append(websocket)
 
-            # Clean up disconnected websockets
-            for ws in disconnected:
-                await self.disconnect(ws)
+        # Clean up disconnected websockets
+        for ws in disconnected:
+            await self.disconnect(ws)
 
     async def broadcast_to_research(self, research_id: str, message: WSMessage):
         """Broadcast a message to all subscribers of a research"""
