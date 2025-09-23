@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 import os
 import structlog
+from utils.otel import otel_span as _otel_span
 
 logger = structlog.get_logger(__name__)
 
@@ -48,6 +49,10 @@ class QueryPlanner:
         additional_queries: Optional[Iterable[str]] = None,
     ) -> List[QueryCandidate]:
         start_time = time.time()
+        _span = _otel_span(
+            "rag.plan.initial",
+            {"paradigm": paradigm, "max_candidates": self.cfg.max_candidates},
+        ).__enter__()
 
         # Materialize additional_queries only if needed
         # to avoid exhausting generators
@@ -173,6 +178,11 @@ class QueryPlanner:
             queries=[c.query[:100] for c in result[:5]],
         )
 
+        if _span:
+            try:
+                _span.end()
+            except Exception:
+                pass
         return result
 
     async def followups(
@@ -183,13 +193,17 @@ class QueryPlanner:
         missing_terms: Sequence[str],
         coverage_sources: Optional[Sequence[dict]] = None,
     ) -> List[QueryCandidate]:
-        followup_candidates = await self.agentic_stage.generate(
-            seed_query=seed_query,
-            paradigm=paradigm,
-            missing_terms=missing_terms,
-            cfg=self.cfg,
-            coverage_sources=coverage_sources,
-        )
+        with _otel_span(
+            "rag.plan.followups",
+            {"paradigm": paradigm, "missing_terms": len(missing_terms)},
+        ):
+            followup_candidates = await self.agentic_stage.generate(
+                seed_query=seed_query,
+                paradigm=paradigm,
+                missing_terms=missing_terms,
+                cfg=self.cfg,
+                coverage_sources=coverage_sources,
+            )
         return self._merge_and_rank(followup_candidates)
 
     def _merge_and_rank(

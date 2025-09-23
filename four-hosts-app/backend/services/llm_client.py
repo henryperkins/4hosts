@@ -435,8 +435,22 @@ class LLMClient:
             request_data["text"] = {"format": {"type": "json_object"}}
             request_data["instructions"] = "You must respond with valid JSON."
 
-        # Delegate to Responses API
-        result = await responses_create(**request_data)
+        from time import time as _now
+        with _otel_span(
+            "llm.responses_api",
+            {"model": model, "stream": bool(stream)}
+        ) as _sp:
+            _t0 = _now()
+            try:
+                result = await responses_create(**request_data)
+                if _sp:
+                    _sp.set_attribute("latency_ms", int((_now() - _t0) * 1000))
+                    _sp.set_attribute("success", True)
+            except Exception as e:
+                if _sp:
+                    _sp.set_attribute("success", False)
+                    _sp.set_attribute("error", str(e))
+                raise
 
         if stream:
             return self._stream_responses(result)
