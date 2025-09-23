@@ -40,8 +40,8 @@ RUN addgroup -g 1001 -S appuser && \
     touch /var/run/nginx.pid && \
     chown -R appuser:appuser /var/run/nginx.pid
 
-# Expose port
-EXPOSE 80
+# Expose ports
+EXPOSE 80 443
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

@@ -4,13 +4,16 @@ Provides specialized search capabilities through Brave's MCP server
 """
 
 import os
-import logging
+import structlog
 from typing import Dict, List, Any, Optional
 from enum import Enum
 
 from services.mcp_integration import MCPServer, MCPCapability, mcp_integration
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 class BraveSearchType(str, Enum):

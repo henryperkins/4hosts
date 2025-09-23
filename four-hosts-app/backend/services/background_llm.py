@@ -4,7 +4,7 @@ Handles long-running LLM tasks using the background mode
 """
 
 import asyncio
-import logging
+import structlog
 from typing import Dict, Optional, Any, Callable
 from enum import Enum
 import os
@@ -15,7 +15,10 @@ from utils.date_utils import get_current_utc
 from services.cache import cache_manager
 from services.research_store import research_store
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 class BackgroundTaskStatus(str, Enum):

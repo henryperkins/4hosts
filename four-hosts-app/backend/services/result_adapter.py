@@ -4,10 +4,13 @@ Handles both dict and object formats to prevent AttributeError crashes
 """
 
 from typing import Any, Dict, Optional, Union, List
-import logging
+import structlog
 from utils.url_utils import extract_domain
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 class ResultAdapter:

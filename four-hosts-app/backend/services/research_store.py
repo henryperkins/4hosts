@@ -4,12 +4,15 @@ Provides Redis-backed research data storage with fallback to in-memory storage
 """
 
 import json
-import logging
+import structlog
 from typing import Dict, Optional, List, Any
 import os
 from utils.date_utils import get_current_utc
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 class ResearchStore:

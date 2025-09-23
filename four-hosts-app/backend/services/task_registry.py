@@ -4,14 +4,17 @@ Manages all background tasks and ensures proper cleanup during shutdown
 """
 
 import asyncio
-import logging
+import structlog
 from typing import Dict, Set, Optional, Any, Callable
 from datetime import datetime
 from enum import Enum
 import weakref
 from contextlib import asynccontextmanager
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 class TaskPriority(str, Enum):

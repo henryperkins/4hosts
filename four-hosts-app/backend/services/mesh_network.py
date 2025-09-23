@@ -9,7 +9,7 @@ import without initializing heavy dependencies.
 
 from __future__ import annotations
 
-import logging
+import structlog
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,7 +28,10 @@ except Exception:
         MAEVE = "maeve"
 
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

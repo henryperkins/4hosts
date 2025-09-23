@@ -5,13 +5,14 @@ Tests paradigm classification with the new HF model
 """
 
 import asyncio
-import logging
+import structlog
 from services.ml_pipeline import ml_pipeline
 from services.classification_engine import QueryFeatures, HostParadigm
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 # Test queries for each paradigm
 TEST_QUERIES = {

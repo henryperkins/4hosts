@@ -11,8 +11,11 @@ try:
     import structlog  # type: ignore
     logger = structlog.get_logger(__name__)
 except Exception:  # pragma: no cover - fallback when structlog missing
-    import logging
-    logger = logging.getLogger(__name__)
+import structlog
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 class ResultDeduplicator:

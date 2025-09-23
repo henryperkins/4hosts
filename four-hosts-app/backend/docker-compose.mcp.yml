@@ -48,3 +48,5 @@ services:
 
 networks:
   fourhosts-network:
+    external: true
+    name: fourhosts-network

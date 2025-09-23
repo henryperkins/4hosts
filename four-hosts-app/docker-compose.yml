@@ -233,8 +233,7 @@ services:
         condition: service_started  # Frontend can start once backend is running
     ports:
       - "80:80"
-    # Expose 443 only after TLS certificates are provisioned to avoid handshake errors
-    # - "443:443"
+      - "443:443"
     volumes:
       - ./frontend/certs:/etc/nginx/certs:ro
       - ./frontend/certbot:/var/www/certbot:ro
@@ -267,7 +266,8 @@ volumes:
 # ==========================================================================
 networks:
   fourhosts-network:
-    driver: bridge
+    external: true
+    name: fourhosts-network
 
 # ==========================================================================
 # USAGE INSTRUCTIONS

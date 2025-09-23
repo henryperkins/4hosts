@@ -8,7 +8,7 @@ actually used by the application.
 from __future__ import annotations
 
 import json
-import logging
+import structlog
 import os
 from functools import lru_cache
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
@@ -17,7 +17,10 @@ import httpx
 from openai import AsyncOpenAI
 
 # Logging
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 # ────────────────────────────────────────────────────────────
 #  OpenAI Responses Client

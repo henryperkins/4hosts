@@ -12,7 +12,7 @@ Buckets are stored under research_store using the research_id value
 from __future__ import annotations
 
 import asyncio
-import logging
+import structlog
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -21,7 +21,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from services.research_store import research_store
 from utils.date_utils import safe_parse_date
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

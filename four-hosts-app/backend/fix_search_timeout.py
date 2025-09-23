@@ -8,6 +8,15 @@ import asyncio
 import os
 import sys
 from dotenv import load_dotenv
+import structlog
+
+# Ensure central logging pipeline is configured even for this helper script
+from logging_config import configure_logging
+
+configure_logging()
+
+# Use structured logger instead of raw prints
+logger = structlog.get_logger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -61,18 +70,18 @@ except Exception as e:
     results_by_label = {}
 """
 
-    print("Suggested patches to fix the search timeout issue:")
-    print("=" * 60)
-    print("\n1. SEARCH APIS PATCH (services/search_apis.py):")
-    print(search_apis_patch)
-    print("\n2. ORCHESTRATOR PATCH (services/research_orchestrator.py):")
-    print(orchestrator_patch)
-    print("=" * 60)
+    logger.info("Suggested patches to fix the search timeout issue:")
+    logger.info("=" * 60)
+    logger.info("SEARCH APIS PATCH (services/search_apis.py)")
+    logger.info(search_apis_patch)
+    logger.info("ORCHESTRATOR PATCH (services/research_orchestrator.py)")
+    logger.info(orchestrator_patch)
+    logger.info("=" * 60)
 
 def verify_api_keys():
     """Verify all required API keys are present"""
-    print("\nChecking API Keys:")
-    print("-" * 40)
+    logger.info("Checking API Keys:")
+    logger.info("-" * 40)
 
     keys_status = {
         "BRAVE_SEARCH_API_KEY": os.getenv("BRAVE_SEARCH_API_KEY"),
@@ -85,13 +94,13 @@ def verify_api_keys():
     for key, value in keys_status.items():
         if value:
             masked = f"{value[:8]}...{value[-4:]}" if len(value) > 12 and "KEY" in key else value
-            print(f"✅ {key}: {masked}")
+            logger.info("API key present", key=key, masked=masked)
         else:
-            print(f"❌ {key}: Not set")
+            logger.warning("API key missing", key=key)
 
     # Check search disable flags
-    print("\nSearch Provider Flags:")
-    print("-" * 40)
+    logger.info("Search Provider Flags:")
+    logger.info("-" * 40)
     flags = {
         "SEARCH_DISABLE_BRAVE": os.getenv("SEARCH_DISABLE_BRAVE", "0"),
         "SEARCH_DISABLE_GOOGLE": os.getenv("SEARCH_DISABLE_GOOGLE", "0"),
@@ -101,12 +110,12 @@ def verify_api_keys():
 
     for key, value in flags.items():
         status = "Disabled" if value in ["1", "true"] else "Enabled"
-        print(f"  {key}: {value} ({status})")
+        logger.info("search provider flag", flag=key, value=value, status=status)
 
 def suggest_env_fixes():
     """Suggest environment variable fixes"""
-    print("\nRecommended .env Configuration:")
-    print("-" * 40)
+    logger.info("Recommended .env Configuration:")
+    logger.info("-" * 40)
 
     fixes = []
 
@@ -125,21 +134,21 @@ def suggest_env_fixes():
 
     if fixes:
         for fix in fixes:
-            print(f"• {fix}")
+            logger.info("config suggestion", suggestion=fix)
     else:
-        print("✅ Configuration looks good!")
+        logger.info("Configuration looks good!")
 
 async def test_search_flow():
     """Test the search flow with timeout handling"""
     from services.search_apis import create_search_manager, SearchConfig
     from services.query_planning.types import QueryCandidate
 
-    print("\nTesting Search Flow:")
-    print("-" * 40)
+    logger.info("Testing Search Flow:")
+    logger.info("-" * 40)
 
     try:
         manager = create_search_manager()
-        print(f"✅ Search manager created with APIs: {list(manager.apis.keys())}")
+        logger.info("Search manager created", apis=list(manager.apis.keys()))
 
         # Test with a simple query
         config = SearchConfig(max_results=5)
@@ -149,26 +158,25 @@ async def test_search_flow():
             stage="rule_based"
         )
 
-        print("Testing search with 10s timeout...")
+        logger.info("Testing search with 10s timeout...")
         try:
             results = await asyncio.wait_for(
                 manager.search_with_priority([candidate], config),
                 timeout=10.0
             )
-            print(f"✅ Search succeeded, got {len(results)} results")
+            logger.info("Search succeeded", result_count=len(results))
         except asyncio.TimeoutError:
-            print("❌ Search timed out - this is the issue!")
-            print("   The search is hanging and not returning within timeout")
+            logger.error("Search timed out - this is the issue!", note="hangs and not returning")
         except Exception as e:
-            print(f"❌ Search failed with error: {e}")
+            logger.error("Search failed", error=str(e))
 
     except Exception as e:
-        print(f"❌ Failed to create search manager: {e}")
+        logger.error("Failed to create search manager", error=str(e))
 
 def main():
-    print("=" * 60)
-    print("SEARCH TIMEOUT FIX DIAGNOSTIC")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("SEARCH TIMEOUT FIX DIAGNOSTIC")
+    logger.info("=" * 60)
 
     # Step 1: Verify API keys
     verify_api_keys()
@@ -182,10 +190,10 @@ def main():
     # Step 4: Show patch suggestions
     add_search_timeout_logging()
 
-    print("\n" + "=" * 60)
-    print("IMMEDIATE ACTIONS TO FIX THE ISSUE:")
-    print("=" * 60)
-    print("""
+    logger.info("=" * 60)
+    logger.info("IMMEDIATE ACTIONS TO FIX THE ISSUE:")
+    logger.info("=" * 60)
+    logger.info("""
 1. QUICK FIX - Increase timeouts in .env:
    SEARCH_TASK_TIMEOUT_SEC=60
    SEARCH_PROVIDER_TIMEOUT_SEC=30

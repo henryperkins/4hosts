@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import os
 from typing import Any, Dict, List
-import logging
+import structlog
 
 from services.llm_client import llm_client
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 def enabled() -> bool:

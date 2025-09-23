@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
+import structlog
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -25,7 +25,10 @@ import aiohttp
 
 from .cache import cache_manager
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -235,4 +238,3 @@ def brave_client() -> BraveGroundingClient:
     if _singleton is None:
         _singleton = BraveGroundingClient()
     return _singleton
-

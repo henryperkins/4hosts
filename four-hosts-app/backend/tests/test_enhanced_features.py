@@ -7,16 +7,14 @@ Test script for enhanced Four Hosts features:
 """
 
 import asyncio
-import logging
 from datetime import datetime
 from typing import Dict, Any
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+import structlog
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 # Import enhanced components
 from services.answer_generator import (

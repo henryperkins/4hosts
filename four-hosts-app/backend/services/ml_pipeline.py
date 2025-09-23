@@ -4,7 +4,7 @@ Trains and updates models based on user feedback and system performance
 """
 
 import asyncio
-import logging
+import structlog
 import json
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
@@ -23,7 +23,9 @@ try:
     ML_AVAILABLE = True
 except ImportError:
     ML_AVAILABLE = False
-    logger = logging.getLogger(__name__)
+    from logging_config import configure_logging
+    configure_logging()
+    logger = structlog.get_logger(__name__)
     logger.warning("Scikit-learn not available - ML pipeline will use mock training")
 
 # Import HF zero-shot classifier
@@ -32,13 +34,18 @@ try:
     HF_AVAILABLE = True
 except ImportError:
     HF_AVAILABLE = False
-    logger = logging.getLogger(__name__)
+    from logging_config import configure_logging
+    configure_logging()
+    logger = structlog.get_logger(__name__)
     logger.info("HF zero-shot classifier not available")
 
 from .classification_engine import HostParadigm, QueryFeatures
 from .self_healing_system import self_healing_system
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

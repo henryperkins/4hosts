@@ -4,7 +4,7 @@ Phase 5: Production-Ready Features
 """
 
 import asyncio
-import logging
+import structlog
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Set
 from collections import defaultdict
@@ -21,7 +21,10 @@ from core.limits import WS_RATE_LIMITS
 from core.config import is_production
 from services.token_manager import token_manager
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 # WebSocket rate limiting configuration comes from core.limits
 

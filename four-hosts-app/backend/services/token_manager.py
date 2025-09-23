@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis
-import logging
+import structlog
 
 from utils.async_utils import run_in_thread
 
@@ -17,7 +17,10 @@ from database.connection import get_db
 from database.models import RefreshToken, RevokedToken
 
 # Configure logging
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 # Token configuration
 REFRESH_TOKEN_LENGTH = 32

@@ -8,7 +8,7 @@ Provides deep, multi-source research capabilities with paradigm-aware synthesis.
 from __future__ import annotations
 
 import asyncio
-import logging
+import structlog
 from dataclasses import dataclass
 import os
 from datetime import datetime
@@ -46,7 +46,10 @@ from utils.token_budget import trim_text_to_tokens
 from models.evidence import EvidenceQuote
 
 # Logging
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 # ────────────────────────────────────────────────────────────

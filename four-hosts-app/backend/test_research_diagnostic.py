@@ -14,9 +14,12 @@ backend_path = Path(__file__).parent
 sys.path.insert(0, str(backend_path))
 
 # Configure logging
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Use central structured logging
+import structlog
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 async def test_classification():
     """Test paradigm classification"""

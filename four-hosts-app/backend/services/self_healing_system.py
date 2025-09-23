@@ -4,7 +4,7 @@ Monitors performance and automatically switches paradigms for better results
 """
 
 import asyncio
-import logging
+import structlog
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -14,7 +14,10 @@ from .classification_engine import HostParadigm
 from models.synthesis_models import GeneratedAnswer
 from .monitoring import monitoring_service
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

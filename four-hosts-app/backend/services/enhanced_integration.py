@@ -4,7 +4,7 @@ Integration module for enhanced answer generators, self-healing system, and ML p
 Connects new components to the existing Four Hosts application
 """
 
-import logging
+import structlog
 from typing import Dict, Optional, Any, List, Union, cast
 from datetime import datetime
 
@@ -22,7 +22,10 @@ from contracts import (
 )
 import asyncio
 
-logger = logging.getLogger(__name__)
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 def _to_contract_source(obj: Any) -> ContractSource:

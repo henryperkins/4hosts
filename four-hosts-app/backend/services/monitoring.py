@@ -13,7 +13,13 @@ from typing import Dict, Any, Optional, List, Callable
 from collections import defaultdict, deque
 import psutil
 
-from backend.logging_config import configure_logging  # noqa: F401 – side-effects
+# Import logging configuration.
+# In container builds the code lives at /app without a 'backend' package prefix.
+# Try canonical import first, then fall back to local module path.
+try:
+    from backend.logging_config import configure_logging  # noqa: F401
+except Exception:  # pragma: no cover - container path fallback
+    from logging_config import configure_logging  # noqa: F401
 
 import structlog
 from prometheus_client import Counter, Histogram, Gauge, Summary, generate_latest
