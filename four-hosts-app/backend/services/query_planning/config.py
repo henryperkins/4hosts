@@ -102,14 +102,16 @@ def build_planner_config(
 
     dedup_env = os.getenv("UNIFIED_QUERY_DEDUP_JACCARD")
     if dedup_env is not None:
-        try:
-            cfg.dedup_jaccard = max(0.0, min(1.0, float(dedup_env)))
-        except Exception as exc:
-            logger.warning(
-                "Invalid UNIFIED_QUERY_DEDUP_JACCARD override ignored",
-                raw_value=dedup_env,
-                error=str(exc),
-            )
+        dedup_env_stripped = dedup_env.strip()
+        if dedup_env_stripped:
+            try:
+                cfg.dedup_jaccard = max(0.0, min(1.0, float(dedup_env_stripped)))
+            except Exception as exc:
+                logger.warning(
+                    "Invalid UNIFIED_QUERY_DEDUP_JACCARD override ignored",
+                    raw_value=dedup_env,
+                    error=str(exc),
+                )
 
     # ------------------------------------------------------------------
     # Stage-prior weight overrides

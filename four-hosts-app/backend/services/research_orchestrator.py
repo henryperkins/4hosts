@@ -64,7 +64,7 @@ from utils.cost_attribution import attribute_search_costs
 from utils.evidence_utils import deduplicate_evidence_quotes, deduplicate_evidence_matches, ensure_match
 from utils.retry import instrumented_retry
 from utils.type_coercion import as_int
-from utils.url_utils import clean_url, normalize_url, extract_domain, canonicalize_url
+from utils.url_utils import clean_url, normalize_url, extract_domain, canonicalize_url, is_valid_url
 from utils.source_normalization import normalize_source_fields, compute_category_distribution, extract_dedup_metrics, dedupe_by_url
 from utils.date_utils import get_current_utc, get_current_iso
 from utils.token_budget import select_items_within_budget, compute_budget_plan
@@ -2726,7 +2726,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         progress_callback: Optional[Any],
         research_id: Optional[str],
     ) -> None:
-        """Run Exa research to supplement Brave results when configured."""
+        """Run Exa research to supplement search results when configured."""
 
         try:
             enabled = os.getenv("ENABLE_EXA_RESEARCH_SUPPLEMENT", "1").lower() in {"1", "true", "yes"}
@@ -2742,6 +2742,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         if not results:
             return
 
+        # Collect highlights from any available results (prioritizing Brave, but falling back to others)
+        highlights: List[Dict[str, str]] = []
+
+        # First try to get Brave results
         brave_highlights: List[Dict[str, str]] = []
         for res in results:
             try:
@@ -2750,17 +2754,36 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     source_name = (getattr(res, "source_api", "") or "").lower()
             except Exception:
                 source_name = ""
-            if "brave" not in source_name:
-                continue
-            brave_highlights.append(
-                {
-                    "title": str(getattr(res, "title", "") or ""),
-                    "url": str(getattr(res, "url", "") or ""),
-                    "snippet": str(getattr(res, "snippet", "") or getattr(res, "content", "") or ""),
-                }
-            )
+            if "brave" in source_name:
+                brave_highlights.append(
+                    {
+                        "title": str(getattr(res, "title", "") or ""),
+                        "url": str(getattr(res, "url", "") or ""),
+                        "snippet": str(getattr(res, "snippet", "") or getattr(res, "content", "") or ""),
+                    }
+                )
 
-        if not brave_highlights:
+        # Use Brave results if available, otherwise fall back to any high-quality results
+        if brave_highlights:
+            highlights = brave_highlights
+        else:
+            # Fall back to any available results (e.g., Google, academic sources, or Exa's own web results)
+            for res in results[:10]:  # Take top 10 results as highlights
+                try:
+                    url = str(getattr(res, "url", "") or "")
+                    # Skip pseudo URLs and invalid URLs
+                    if url and not url.startswith("exa://") and is_valid_url(url):
+                        highlights.append(
+                            {
+                                "title": str(getattr(res, "title", "") or ""),
+                                "url": url,
+                                "snippet": str(getattr(res, "snippet", "") or getattr(res, "content", "") or ""),
+                            }
+                        )
+                except Exception:
+                    continue
+
+        if not highlights:
             return
 
         primary_paradigm = getattr(classification, "primary_paradigm", None)
@@ -2783,11 +2806,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 pass
 
-        # Dedupe and budget Brave highlights before sending to EXA
+        # Dedupe and budget highlights (from Brave or fallback sources) before sending to EXA
         try:
-            highlights_dedup = dedupe_by_url(brave_highlights)
+            highlights_dedup = dedupe_by_url(highlights)  # Use the highlights list we built (Brave or fallback)
         except Exception:
-            highlights_dedup = list(brave_highlights)
+            highlights_dedup = list(highlights)
         try:
             exa_total = int(os.getenv("EXA_HIGHLIGHTS_BUDGET_TOKENS", "4000") or 4000)
             exa_plan = compute_budget_plan(exa_total)
@@ -2812,7 +2835,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             return
 
         supplemental_sources = [src for src in exa_output.supplemental_sources if src.get("url")]
+        citations = [cite for cite in exa_output.citations if cite.get("url")]
 
+        # Create the main Exa research synthesis result with proper HTTPS anchor
+        # Use the first citation URL if available, otherwise generate a research store URL
+        anchor_url = None
+        if citations and citations[0].get("url"):
+            anchor_url = citations[0].get("url")
+        elif supplemental_sources and supplemental_sources[0].get("url"):
+            anchor_url = supplemental_sources[0].get("url")
+        else:
+            # Fall back to generating a research store URL
+            anchor_url = f"https://research.fourhosts.ai/synthesis/{quote_plus(original_query[:80])}"
+
+        # Build content for the synthesis result
         content_lines = [f"Summary: {exa_output.summary.strip()}"]
         if exa_output.key_findings:
             content_lines.append("Key Findings:")
@@ -2822,11 +2858,20 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             for src in supplemental_sources[:5]:
                 title = src.get("title") or src.get("url")
                 content_lines.append(f"* {title} ({src.get('url')})")
+        if citations:
+            content_lines.append("Citations:")
+            for cite in citations[:5]:
+                label = cite.get("title") or cite.get("url")
+                note = cite.get("note")
+                if note:
+                    content_lines.append(f"* {label} ({cite.get('url')}) — {note}")
+                else:
+                    content_lines.append(f"* {label} ({cite.get('url')})")
 
-        pseudo_url = f"exa://research/{quote_plus(original_query[:80])}"
+        # Create the main synthesis result with proper HTTPS URL
         supplement = SearchResult(
             title="Exa Research Synthesis",
-            url=pseudo_url,
+            url=anchor_url,
             snippet=exa_output.summary[:280],
             source="exa_research",
             content="\n".join(content_lines),
@@ -2835,19 +2880,94 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             raw_data={
                 "key_findings": exa_output.key_findings,
                 "supplemental_sources": supplemental_sources,
+                "citations": citations,
                 "focus": focus,
+                "exa_synthesis_id": f"exa://research/{quote_plus(original_query[:80])}",  # Keep as metadata reference
             },
             result_type="research",
         )
 
-        # Prepend so the synthesis step sees it early without displacing top Brave hits entirely
+        # Prepend the synthesis result
         processed_results["results"].insert(0, supplement)
+
+        # Convert supplemental sources and citations into normalized SearchResult entries
+        new_results = []
+
+        # Add supplemental sources as SearchResult entries
+        for src in supplemental_sources:
+            url = src.get("url")
+            if url and is_valid_url(url):
+                # Check if URL already exists in results to avoid duplicates
+                canonical = canonicalize_url(url)
+                already_exists = False
+                for existing_res in processed_results["results"]:
+                    try:
+                        existing_url = getattr(existing_res, "url", "") or ""
+                        if canonicalize_url(existing_url) == canonical:
+                            already_exists = True
+                            break
+                    except Exception:
+                        continue
+
+                if not already_exists:
+                    new_result = SearchResult(
+                        title=src.get("title", "Untitled"),
+                        url=url,
+                        snippet=src.get("snippet", ""),
+                        source="exa_supplemental",
+                        relevance_score=0.75,
+                        credibility_score=0.60,
+                        raw_data={
+                            "from_exa_research": True,
+                            "source_type": "supplemental",
+                        },
+                        result_type="web",
+                    )
+                    new_results.append(new_result)
+
+        # Add citations as SearchResult entries (with higher credibility)
+        for cite in citations:
+            url = cite.get("url")
+            if url and is_valid_url(url):
+                # Check if URL already exists
+                canonical = canonicalize_url(url)
+                already_exists = False
+                for existing_res in processed_results["results"]:
+                    try:
+                        existing_url = getattr(existing_res, "url", "") or ""
+                        if canonicalize_url(existing_url) == canonical:
+                            already_exists = True
+                            break
+                    except Exception:
+                        continue
+
+                if not already_exists:
+                    new_result = SearchResult(
+                        title=cite.get("title", "Untitled Citation"),
+                        url=url,
+                        snippet=cite.get("note", ""),
+                        source="exa_citation",
+                        relevance_score=0.80,
+                        credibility_score=0.70,
+                        raw_data={
+                            "from_exa_research": True,
+                            "source_type": "citation",
+                            "note": cite.get("note", ""),
+                        },
+                        result_type="web",
+                    )
+                    new_results.append(new_result)
+
+        # Append the new results to the existing results list
+        if new_results:
+            processed_results["results"].extend(new_results)
 
         metadata = processed_results.setdefault("metadata", {})
         metadata["exa_research"] = {
             "summary": exa_output.summary,
             "key_findings": exa_output.key_findings,
             "supplemental_sources": supplemental_sources,
+            "citations": citations,
         }
         metadata.setdefault("apis_used", [])
         try:

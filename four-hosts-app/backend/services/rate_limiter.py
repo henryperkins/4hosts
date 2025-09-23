@@ -8,17 +8,19 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, Tuple
 from collections import defaultdict, deque
-import redis
 import os
 import re
 
-from utils.async_utils import run_in_thread
+import redis.asyncio as redis
+
 from utils.security import ip_validator, token_validator
 import json
 import logging
 import structlog
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
+
+from services.redis_utils import create_async_redis
 
 try:
     # Heavy server-side auth dependencies; may not be available in simple client-only contexts
@@ -48,6 +50,41 @@ except Exception:  # pragma: no cover - fallback for lightweight imports
 logger = structlog.get_logger(__name__)
 
 
+_CONCURRENT_INCREMENT_SCRIPT = """
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local current = redis.call('incr', key)
+if ttl > 0 then
+  redis.call('expire', key, ttl)
+end
+if current > limit then
+  redis.call('decr', key)
+  return 0
+end
+return current
+"""
+
+_CONCURRENT_DECREMENT_SCRIPT = """
+local key = KEYS[1]
+local ttl = tonumber(ARGV[1])
+local value = redis.call('get', key)
+if not value then
+  return 0
+end
+value = tonumber(value)
+if value <= 1 then
+  redis.call('del', key)
+  return 0
+end
+local next_value = redis.call('decr', key)
+if next_value > 0 and ttl > 0 then
+  redis.call('expire', key, ttl)
+end
+return next_value
+"""
+
+
 class RateLimitExceeded(HTTPException):
     """Custom exception for rate limit exceeded"""
 
@@ -72,8 +109,13 @@ class RateLimiter:
 
     def __init__(self, redis_url: Optional[str] = None):
         """Initialize rate limiter with optional Redis backend"""
-        self.redis_url = redis_url
-        self.redis_client = None
+        self.redis_url = redis_url if redis_url is not None else os.getenv("REDIS_URL")
+        self.redis_client: Optional[redis.Redis] = None
+        self._redis_ready: bool = False
+        self._redis_lock = asyncio.Lock()
+        self._concurrency_ttl = 300
+        # Cache limits per identifier so we can enforce them during increment/decrement
+        self._limit_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
 
         # In-memory fallback storage
         self.buckets: Dict[str, Dict[str, Any]] = defaultdict(dict)
@@ -82,17 +124,15 @@ class RateLimiter:
         )
         self.concurrent_requests: Dict[str, int] = defaultdict(int)
 
-        # Try to connect to Redis if URL provided
-        if redis_url:
+        if self.redis_url:
             try:
-                self.redis_client = redis.from_url(redis_url, decode_responses=True)
-                self.redis_client.ping()
-                logger.info("Connected to Redis for rate limiting")
-            except Exception as e:
+                self.redis_client = create_async_redis(self.redis_url)
+            except Exception as exc:
                 logger.warning(
-                    f"Failed to connect to Redis: {e}. Using in-memory storage."
+                    "Failed to configure Redis client for rate limiting: %s", exc
                 )
                 self.redis_client = None
+                self.redis_url = None
 
     async def check_rate_limit(
         self, identifier: str, role: UserRole, request_type: str = "api"
@@ -103,6 +143,14 @@ class RateLimiter:
         """
         limits = RATE_LIMITS.get(role, RATE_LIMITS[UserRole.FREE])
         current_time = time.time()
+        self._limit_cache[identifier] = (limits, current_time)
+
+        # Expire stale cache entries periodically to limit growth
+        if len(self._limit_cache) > 1024:
+            cutoff = current_time - 600  # keep last 10 minutes
+            self._limit_cache = {
+                k: v for k, v in self._limit_cache.items() if v[1] >= cutoff
+            }
 
         # Check concurrent requests
         if not await self._check_concurrent_limit(
@@ -150,12 +198,37 @@ class RateLimiter:
 
     async def _check_concurrent_limit(self, identifier: str, limit: int) -> bool:
         """Check concurrent request limit"""
-        if self.redis_client:
+        if await self._ensure_redis():
             key = f"concurrent:{identifier}"
             current = await self._redis_get_int(key, 0)
             return current < limit
-        else:
-            return self.concurrent_requests[identifier] < limit
+
+        return self.concurrent_requests[identifier] < limit
+
+    async def _ensure_redis(self) -> bool:
+        """Initialise the Redis client once and memoise the outcome."""
+        if self._redis_ready and self.redis_client is not None:
+            return True
+        if not self.redis_url:
+            return False
+
+        async with self._redis_lock:
+            if self._redis_ready and self.redis_client is not None:
+                return True
+            try:
+                if self.redis_client is None:
+                    self.redis_client = create_async_redis(self.redis_url)
+                await self.redis_client.ping()
+                self._redis_ready = True
+                logger.info("Connected to Redis for rate limiting")
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "Failed to connect to Redis for rate limiting: %s", exc
+                )
+                self.redis_client = None
+                self._redis_ready = False
+                return False
 
     async def _check_time_window_limit(
         self,
@@ -166,7 +239,7 @@ class RateLimiter:
         current_time: float,
     ) -> bool:
         """Check rate limit for a specific time window"""
-        if self.redis_client:
+        if await self._ensure_redis():
             return await self._check_redis_window_limit(
                 identifier, window_name, window_seconds, limit, current_time
             )
@@ -214,63 +287,108 @@ class RateLimiter:
         current_time: float,
     ) -> bool:
         """Check rate limit using Redis sliding window"""
-        def _sync_op() -> bool:
-            key_local = f"rate_limit:{identifier}:{window_name}"
-            window_start_local = current_time - window_seconds
+        if not await self._ensure_redis():
+            return True
 
-            pipe_local = self.redis_client.pipeline()
-            pipe_local.zremrangebyscore(key_local, 0, window_start_local)
-            pipe_local.zcard(key_local)
-            pipe_local.zadd(key_local, {str(current_time): current_time})
-            pipe_local.expire(key_local, window_seconds + 60)
-            results_local = pipe_local.execute()
-            count_local = results_local[1]
+        key = f"rate_limit:{identifier}:{window_name}"
+        window_start = current_time - window_seconds
 
-            if count_local >= limit:
-                self.redis_client.zrem(key_local, str(current_time))
+        try:
+            async with self.redis_client.pipeline(transaction=True) as pipe:  # type: ignore[arg-type]
+                pipe.zremrangebyscore(key, 0, window_start)
+                pipe.zcard(key)
+                pipe.zadd(key, {str(current_time): current_time})
+                pipe.expire(key, window_seconds + 60)
+                results = await pipe.execute()
+
+            count = results[1] if isinstance(results, list) and len(results) > 1 else 0
+            if count >= limit:
+                await self.redis_client.zrem(key, str(current_time))
                 return False
 
             return True
-
-        return await run_in_thread(_sync_op)
+        except Exception as exc:
+            logger.warning("Redis window limit check failed, falling back: %s", exc)
+            return self._check_memory_window_limit(
+                identifier, window_name, window_seconds, limit, current_time
+            )
 
     async def _record_request(self, identifier: str, timestamp: float):
         """Record a request for tracking"""
         self.request_history[identifier].append(timestamp)
 
-        if self.redis_client:
+        if await self._ensure_redis():
             # Record in Redis for distributed tracking
             key = f"request_history:{identifier}"
-            await run_in_thread(self.redis_client.lpush, key, timestamp)
-            await run_in_thread(self.redis_client.ltrim, key, 0, 999)  # Keep last 1000
-            await run_in_thread(self.redis_client.expire, key, 86400)  # 24 hour expiry
+            await self.redis_client.lpush(key, str(timestamp))
+            await self.redis_client.ltrim(key, 0, 999)  # Keep last 1000
+            await self.redis_client.expire(key, 86400)  # 24 hour expiry
 
-    async def increment_concurrent(self, identifier: str):
+    async def increment_concurrent(self, identifier: str) -> bool:
         """Increment concurrent request counter"""
-        if self.redis_client:
+        limits = self._limit_cache.get(
+            identifier, (RATE_LIMITS[UserRole.FREE], 0.0)
+        )[0]
+        limit_value = limits.get("concurrent_requests", RATE_LIMITS[UserRole.FREE]["concurrent_requests"])
+
+        if await self._ensure_redis():
             key = f"concurrent:{identifier}"
-            await run_in_thread(self.redis_client.incr, key)
-            await run_in_thread(self.redis_client.expire, key, 300)  # 5 minute expiry
-        else:
-            self.concurrent_requests[identifier] += 1
+            result = await self.redis_client.eval(  # type: ignore[call-arg]
+                _CONCURRENT_INCREMENT_SCRIPT,
+                1,
+                key,
+                int(limit_value),
+                int(self._concurrency_ttl),
+            )
+            return bool(result)
+
+        current = self.concurrent_requests[identifier] + 1
+        if current > limit_value:
+            return False
+        self.concurrent_requests[identifier] = current
+        return True
 
     async def decrement_concurrent(self, identifier: str):
         """Decrement concurrent request counter"""
-        if self.redis_client:
+        if await self._ensure_redis():
             key = f"concurrent:{identifier}"
-            current = await self._redis_get_int(key, 0)
-            if current > 0:
-                await run_in_thread(self.redis_client.decr, key)
-        else:
-            if self.concurrent_requests[identifier] > 0:
-                self.concurrent_requests[identifier] -= 1
+            try:
+                await self.redis_client.eval(  # type: ignore[call-arg]
+                    _CONCURRENT_DECREMENT_SCRIPT,
+                    1,
+                    key,
+                    int(self._concurrency_ttl),
+                )
+            except Exception as exc:
+                logger.debug("Redis decrement failed: %s", exc)
+            return
+
+        if self.concurrent_requests[identifier] > 0:
+            self.concurrent_requests[identifier] -= 1
+            if self.concurrent_requests[identifier] <= 0:
+                self.concurrent_requests.pop(identifier, None)
 
     async def _redis_get_int(self, key: str, default: int = 0) -> int:
         """Get integer value from Redis with default"""
-        value = await run_in_thread(self.redis_client.get, key)
+        if not await self._ensure_redis():
+            return default
+        value = await self.redis_client.get(key)
         return int(value) if value else default
 
-    def get_usage_stats(self, identifier: str, role: UserRole) -> Dict[str, Any]:
+    def get_effective_limits(self, identifier: str, role: Optional[UserRole] = None) -> Dict[str, Any]:
+        """Expose the most recently used limits for an identifier."""
+        cached = self._limit_cache.get(identifier)
+        if cached:
+            return cached[0]
+        if role is not None:
+            return RATE_LIMITS.get(role, RATE_LIMITS[UserRole.FREE])
+        return RATE_LIMITS[UserRole.FREE]
+
+    @property
+    def redis_enabled(self) -> bool:
+        return self._redis_ready and self.redis_client is not None
+
+    async def get_usage_stats(self, identifier: str, role: UserRole) -> Dict[str, Any]:
         """Get current usage statistics for an identifier"""
         limits = RATE_LIMITS.get(role, RATE_LIMITS[UserRole.FREE])
         current_time = time.time()
@@ -278,15 +396,21 @@ class RateLimiter:
         stats = {"limits": limits, "usage": {}}
 
         # Calculate usage for each time window
+        redis_ready = await self._ensure_redis()
+
         for window_name, window_seconds, limit_key in [
             ("minute", 60, "requests_per_minute"),
             ("hour", 3600, "requests_per_hour"),
             ("day", 86400, "requests_per_day"),
         ]:
-            if self.redis_client:
+            if redis_ready and self.redis_client is not None:
                 key = f"rate_limit:{identifier}:{window_name}"
                 window_start = current_time - window_seconds
-                count = self.redis_client.zcount(key, window_start, current_time)
+                try:
+                    count = await self.redis_client.zcount(key, window_start, current_time)
+                except Exception:
+                    redis_ready = False
+                    count = 0
             else:
                 # Count from in-memory history
                 window_start = current_time - window_seconds
@@ -302,8 +426,13 @@ class RateLimiter:
             }
 
         # Add concurrent usage
-        if self.redis_client:
-            concurrent = self.redis_client.get(f"concurrent:{identifier}") or 0
+        if redis_ready and self.redis_client is not None:
+            try:
+                concurrent_value = await self.redis_client.get(f"concurrent:{identifier}")
+            except Exception:
+                concurrent_value = None
+                redis_ready = False
+            concurrent = int(concurrent_value) if concurrent_value else 0
         else:
             concurrent = self.concurrent_requests[identifier]
 
@@ -386,14 +515,21 @@ class RateLimitMiddleware:
             )
 
         # Track concurrent request
-        await self.rate_limiter.increment_concurrent(identifier)
+        limits = self.rate_limiter.get_effective_limits(identifier, role)
+        slot_acquired = await self.rate_limiter.increment_concurrent(identifier)
+        if not slot_acquired:
+            raise RateLimitExceeded(
+                retry_after=1,
+                limit_type="concurrent_requests",
+                limit=limits.get("concurrent_requests", 0),
+            )
 
         try:
             # Add rate limit headers to response
             response = await call_next(request)
 
             # Add rate limit info headers
-            stats = self.rate_limiter.get_usage_stats(identifier, role)
+            stats = await self.rate_limiter.get_usage_stats(identifier, role)
             response.headers["X-RateLimit-Limit"] = str(
                 stats["limits"]["requests_per_minute"]
             )
@@ -407,7 +543,8 @@ class RateLimitMiddleware:
             return response
         finally:
             # Always decrement concurrent counter
-            await self.rate_limiter.decrement_concurrent(identifier)
+            if slot_acquired:
+                await self.rate_limiter.decrement_concurrent(identifier)
 
     async def _extract_identifier(self, request: Request) -> Optional[str]:
         """Extract identifier from request (API key or user ID)"""

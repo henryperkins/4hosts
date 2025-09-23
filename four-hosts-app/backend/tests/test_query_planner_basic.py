@@ -97,3 +97,44 @@ async def test_planner_respects_stage_order():
     # Respect per-stage caps
     assert len(paradigm_seen) <= cfg.per_stage_caps["paradigm"]
     assert len(rule_seen) <= cfg.per_stage_caps["rule_based"]
+
+
+@pytest.mark.asyncio
+async def test_default_stage_order_includes_context_and_agentic(monkeypatch):
+    cfg = PlannerConfig(enable_llm=False)
+    planner = QueryPlanner(cfg)
+
+    async def _fake_rule(**_kwargs):
+        return [
+            QueryCandidate(query="rule", stage="rule_based", label="primary")
+        ]
+
+    async def _fake_paradigm(**_kwargs):
+        return [
+            QueryCandidate(query="paradigm", stage="paradigm", label="pattern")
+        ]
+
+    async def _fake_context(additional_queries, _cfg):  # pragma: no cover - guard
+        assert additional_queries == ["ctx"], "context stage should receive refined queries"
+        return [
+            QueryCandidate(query="ctx", stage="context", label="context_1")
+        ]
+
+    async def _fake_agentic(**_kwargs):
+        return [
+            QueryCandidate(query="followup", stage="agentic", label="followup_1")
+        ]
+
+    monkeypatch.setattr(planner.rule_stage, "generate", _fake_rule)
+    monkeypatch.setattr(planner.paradigm_stage, "generate", _fake_paradigm)
+    monkeypatch.setattr(planner.context_stage, "generate", _fake_context)
+    monkeypatch.setattr(planner.agentic_stage, "generate", _fake_agentic)
+
+    plan = await planner.initial_plan(
+        seed_query="seed",
+        paradigm="bernard",
+        additional_queries=["ctx"],
+    )
+
+    stages = {candidate.stage for candidate in plan}
+    assert {"rule_based", "paradigm", "context", "agentic"}.issubset(stages)

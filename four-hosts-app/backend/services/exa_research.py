@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import structlog
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -22,6 +22,7 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_BASE_URL = "https://api.exa.ai"
 DEFAULT_MODEL = "exa-research"
+DEFAULT_TIMEOUT_SECONDS = 120.0
 
 
 @dataclass
@@ -29,8 +30,9 @@ class ExaResearchOutput:
     """Structured payload returned from Exa research model."""
 
     summary: str
-    key_findings: List[str]
-    supplemental_sources: List[Dict[str, Any]]
+    key_findings: List[str] = field(default_factory=list)
+    supplemental_sources: List[Dict[str, Any]] = field(default_factory=list)
+    citations: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class ExaResearchClient:
@@ -40,7 +42,12 @@ class ExaResearchClient:
         self.api_key = os.getenv("EXA_API_KEY", "").strip()
         self.base_url = os.getenv("EXA_RESEARCH_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
         self.model = os.getenv("EXA_RESEARCH_MODEL", DEFAULT_MODEL)
-        self.timeout = float(os.getenv("EXA_RESEARCH_TIMEOUT", "45") or 45)
+        # Default to 120s so we stay within the 90–180s completion window noted in docs
+        timeout_raw = os.getenv("EXA_RESEARCH_TIMEOUT", str(int(DEFAULT_TIMEOUT_SECONDS)))
+        try:
+            self.timeout = float(timeout_raw)
+        except (TypeError, ValueError):
+            self.timeout = DEFAULT_TIMEOUT_SECONDS
 
     def is_configured(self) -> bool:
         return bool(self.api_key)
@@ -73,6 +80,7 @@ class ExaResearchClient:
         payload = {
             "model": self.model,
             "input": instructions,
+            "response_format": self._build_response_format(),
         }
 
         headers = {
@@ -119,6 +127,15 @@ class ExaResearchClient:
                 for src in parsed.get("supplemental_sources", [])
                 if isinstance(src, dict)
             ],
+            citations=[
+                {
+                    "title": str(cite.get("title", "")).strip(),
+                    "url": str(cite.get("url", "")).strip(),
+                    "note": str(cite.get("note", "")).strip(),
+                }
+                for cite in parsed.get("citations", [])
+                if isinstance(cite, dict) and (cite.get("url") or cite.get("title"))
+            ],
         )
 
     def _build_prompt(
@@ -144,25 +161,66 @@ class ExaResearchClient:
         return (
             "You are an Exa research specialist providing high-precision analysis to complement "
             "general web search findings. Review the Brave search highlights and produce a concise "
-            "augmentation that introduces additional perspectives, data points, or sources.\n\n"
+            "augmentation that introduces additional perspectives, data points, citations, or sources.\n\n"
             f"Primary Query: {query}\n"
             f"{focus_line}\n\n"
             "Brave Highlights:\n"
             f"{context_block}\n\n"
-            "Respond with strict JSON using this schema:\n"
-            "{\n"
-            "  \"summary\": string,\n"
-            "  \"key_findings\": [string, ...],\n"
-            "  \"supplemental_sources\": [\n"
-            "    {\n"
-            "      \"title\": string,\n"
-            "      \"url\": string,\n"
-            "      \"snippet\": string\n"
-            "    }\n"
-            "  ]\n"
-            "}\n"
-            "Do not include commentary outside the JSON object."
+            "Ensure the response addresses the query directly, surfaces unique key findings, "
+            "and includes precise citations for any new facts introduced."
         )
+
+    @staticmethod
+    def _build_response_format() -> Dict[str, Any]:
+        """Return JSON schema so Exa enforces structured output."""
+
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "exa_research_supplement",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "key_findings": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "default": [],
+                        },
+                        "supplemental_sources": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "url": {"type": "string"},
+                                    "snippet": {"type": "string"},
+                                },
+                                "required": ["url"],
+                            },
+                            "default": [],
+                        },
+                        "citations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "url": {"type": "string"},
+                                    "note": {"type": "string"},
+                                },
+                                "required": ["url"],
+                            },
+                            "default": [],
+                        },
+                    },
+                    "required": ["summary"],
+                },
+            },
+        }
 
     @staticmethod
     def _extract_output_text(payload: Dict[str, Any]) -> str:
@@ -211,4 +269,3 @@ class ExaResearchClient:
 
 
 exa_research_client = ExaResearchClient()
-

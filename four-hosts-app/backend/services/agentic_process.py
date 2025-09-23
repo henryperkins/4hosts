@@ -250,16 +250,6 @@ async def run_followups(
       (new_candidates, followup_results_map, final_coverage_ratio,
        missing_terms, coverage_sources)
     """
-    # Initial coverage
-    coverage_ratio, missing_terms = evaluate_coverage_from_sources(
-        original_query,
-        context_engineered,
-        coverage_sources,
-    )
-
-    # Emit initial progress snapshot (iteration 0 / max_iterations)
-    await _emit_progress(0, max_iterations, msg="Starting agentic follow-up planning")
-
     new_candidates: List[Any] = []
     followup_results: Dict[str, List[Any]] = {}
 
@@ -278,6 +268,16 @@ async def run_followups(
             except Exception:
                 # We never fail the follow-up loop due to progress errors.
                 pass
+
+    # Initial coverage
+    coverage_ratio, missing_terms = evaluate_coverage_from_sources(
+        original_query,
+        context_engineered,
+        coverage_sources,
+    )
+
+    # Emit initial progress snapshot (iteration 0 / max_iterations)
+    await _emit_progress(0, max_iterations, msg="Starting agentic follow-up planning")
 
     if (
         max_iterations <= 0

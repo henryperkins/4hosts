@@ -14,6 +14,7 @@ from services.context_engineering import context_pipeline
 from services.cache import cache_manager
 from services.research_store import research_store
 from services.llm_client import llm_client
+from services.token_manager import token_manager
 from models.base import ResearchStatus
 import json
 from fastapi import Request
@@ -141,6 +142,22 @@ async def get_system_stats(request: Request) -> Dict[str, Any]:
         cache_stats = await cache_manager.get_cache_stats()
         hit_rate = float(cache_stats.get("hit_rate_percent", 0.0))
 
+        rate_limiter = getattr(request.app.state, "rate_limiter", None)
+        redis_components = {
+            "cache": "redis" if cache_manager.redis_pool else "memory",
+            "research_store": (
+                "redis"
+                if research_store.use_redis
+                else f"fallback:{research_store.use_redis_reason}"
+            ),
+            "rate_limiter": "redis"
+            if getattr(rate_limiter, "redis_enabled", False)
+            else "memory",
+            "token_manager": "redis"
+            if getattr(token_manager, "redis_enabled", False)
+            else "memory",
+        }
+
         # Health status via app.state
         health_service = getattr(getattr(request.app.state, "monitoring", {}), "get", lambda k, d=None: d)("health")
         health = "healthy"
@@ -160,6 +177,7 @@ async def get_system_stats(request: Request) -> Dict[str, Any]:
             "cache_hits": int(cache_stats.get("hit_count", 0)),
             "cache_misses": int(cache_stats.get("miss_count", 0)),
             "system_health": health,
+            "redis_components": redis_components,
         }
     except Exception as e:
         logger.error("Failed to build system stats: %s", e)

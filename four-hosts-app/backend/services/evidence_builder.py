@@ -30,7 +30,10 @@ Each returned quote dict has the shape:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import structlog
+import time as _time
 from typing import Any, Dict, List, Tuple
 
 from utils.url_utils import extract_domain, canonicalize_url
@@ -55,6 +58,11 @@ from utils.token_budget import (
     trim_text_to_tokens,
     select_items_within_budget,
 )
+
+from logging_config import configure_logging
+
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 def _item_get(data: Any, key: str, default: Any = None) -> Any:
@@ -155,14 +163,6 @@ def _domain_from(url: str) -> str:
 
 async def _fetch_texts(urls: List[str]) -> Dict[str, str]:
     import aiohttp  # local import to avoid hard dependency at import time
-import structlog
-    import os
-    import time as _time
-
-from logging_config import configure_logging
-
-configure_logging()
-logger = structlog.get_logger(__name__)
 
     out: Dict[str, str] = {}
     fetch_failures: List[str] = []

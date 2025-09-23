@@ -131,9 +131,24 @@ async def execute_real_research(
         return research_data and research_data.get("status") == ResearchStatus.CANCELLED
 
     # Track concurrent usage if a limiter was provided (enforce U-014)
+    limiter_acquired = False
     if limiter is not None and limiter_identifier:
         try:
-            await limiter.increment_concurrent(limiter_identifier)
+            limiter_acquired = await limiter.increment_concurrent(limiter_identifier)
+            if not limiter_acquired:
+                logger.warning(
+                    "rate_limiter.concurrent_slot_unavailable",
+                    research_id=research_id,
+                    identifier=limiter_identifier,
+                )
+                await research_store.update_fields(
+                    research_id,
+                    {
+                        "status": ResearchStatus.FAILED,
+                        "error": "System is busy. Please try again in a moment.",
+                    },
+                )
+                return
         except Exception as e:
             log_exception("limiter.increment_concurrent", e, research_id=research_id)
 
@@ -997,7 +1012,7 @@ async def execute_real_research(
             pass
     finally:
         # Always decrement concurrent counter when using limiter
-        if limiter is not None and limiter_identifier:
+        if limiter_acquired and limiter is not None and limiter_identifier:
             try:
                 await limiter.decrement_concurrent(limiter_identifier)
             except Exception:

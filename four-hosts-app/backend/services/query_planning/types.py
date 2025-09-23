@@ -26,7 +26,13 @@ class PlannerConfig:
     enable_llm: bool = False
     enable_agentic: bool = True
     stage_order: List[StageName] = field(
-        default_factory=lambda: ["rule_based", "paradigm", "llm"]
+        default_factory=lambda: [
+            "rule_based",
+            "paradigm",
+            "context",
+            "llm",
+            "agentic",
+        ]
     )
     per_stage_caps: Dict[StageName, int] = field(
         default_factory=lambda: {

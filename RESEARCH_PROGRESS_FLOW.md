@@ -16,8 +16,8 @@ The Four Hosts application tracks research progress through a WebSocket-based re
   - `search`: 40%
   - `analysis`: 10% (dedup/credibility/filtering)
   - `agentic_loop`: 10%
-  - `synthesis`: 15%
-  - `complete`: 0% (terminal state)
+  - `synthesis`: 12%
+  - `complete`: 3% (smooths final transition to 100%)
 
 #### Progress Facade (`services/progress.py`)
 - Thin wrapper providing safe no-op behavior when WebSocket unavailable
@@ -63,12 +63,14 @@ Synthesis Events:
 - Classification confidence scores
 
 ### Phase 2: Query Optimization (Context Engineering)
-**Location:** `services/context_engineering.py:1034-1104`
+**Location:** `services/context_engineering.py:1056-1149`
 **Progress Points:**
-1. Write Layer (`context_engineering.py:1060`) - "Rewriting query"
-2. Select Layer (`context_engineering.py:1074`) - "Optimizing search terms"
-3. Compress Layer (`context_engineering.py:1088`) - "Generating search queries"
-4. Isolate Layer (`context_engineering.py:1102`) - "Isolating key findings"
+1. Write Layer (`context_engineering.py:1060`) - "Processing Write layer - documenting paradigm focus"
+2. Rewrite Layer (`context_engineering.py:1074`) - "Rewriting query for clarity and searchability"
+3. Select Layer (`context_engineering.py:1088`) - "Selecting search methods and sources"
+4. Optimize Layer (`context_engineering.py:1102`) - "Optimizing search terms and query variations"
+5. Compress Layer (`context_engineering.py:1116`) - "Compressing information by paradigm priorities"
+6. Isolate Layer (`context_engineering.py:1130`) - "Isolating key findings extraction patterns"
 
 **Details Tracked:**
 - Original query
@@ -77,14 +79,14 @@ Synthesis Events:
 - Query compression results
 
 ### Phase 3: Search & Retrieval
-**Location:** `services/research_orchestrator.py:2301-2376`
+**Location:** `services/research_orchestrator.py:2286-2404`
 **Progress Points:**
 1. Search Started (`research_orchestrator.py:2304`)
    - Query being executed
    - Stage and label identifiers
 2. Search Completed (`research_orchestrator.py:2366`)
    - Number of results found
-   - APIs successfully queried
+   - Running counters for `searches_completed` / `total_searches`
 3. Source Found (`research_orchestrator.py:2373`)
    - Individual source metadata (title, URL, snippet)
    - First 3 sources reported for UI preview
@@ -93,43 +95,41 @@ Synthesis Events:
 - `total_searches` - Number of search operations planned
 - `searches_completed` - Completed search operations
 - `sources_found` - Total sources discovered
+- API usage is inferred from successive `search.started` events on the frontend (no longer emitted on `search.completed`)
 
 ### Phase 4: Credibility Checking
 **Location:** `services/credibility.py`, called via `research_orchestrator.py`
-**Progress Reporting:** `websocket_service.py:1286`
+**Progress Reporting:** `websocket_service.py:1379`
 **Details Tracked:**
 - Domain being evaluated
 - Credibility score (0.0-1.0)
-- Domain authority metrics
-- Bias ratings
-- Fact-check ratings
+- Timestamp (broadcast payload no longer includes auxiliary metrics)
 
 ### Phase 5: Ranking & Deduplication
 **Location:** `services/query_planning/result_deduplicator.py`
-**Progress Reporting:** `research_orchestrator.py:2490`
+**Progress Reporting:** `research_orchestrator.py:2490` / `websocket_service.py:1394`
 **Details Tracked:**
 - `before_count` - Results before deduplication
 - `after_count` - Results after deduplication
-- `duplicates_removed` - Number of duplicates eliminated
-- `deduplication_rate` - Percentage of duplicates (0.0-1.0)
+- `removed` - Number of duplicates eliminated
+- Timestamp (deduplication rate is now derived server-side only)
 
 ### Phase 6: Synthesis & Answer Generation
 **Location:** `services/answer_generator.py`, `research_orchestrator.py:2018-2137`
 **Progress Points:**
 1. Synthesis Started (`research_orchestrator.py:2020`)
    - Paradigm being used
-   - Number of sources being synthesized
-2. Synthesis Progress (`answer_generator.py:962`)
-   - Section being generated
-   - Token/word targets
+   - Number of sections planned
+2. Section Workflow (`answer_generator.py:1219-1275`)
+   - Per-section sub-steps emitted via `update_progress_step` (filtering sources, creating citations, generating content, extracting insights, section complete)
 3. Synthesis Completed (`research_orchestrator.py:2132`)
    - Number of sections generated
    - Total citations included
 
 **Details Tracked:**
-- Section generation progress
-- Citation compilation
-- Evidence bundle creation
+- Section generation progress (step labels per section)
+- Citation compilation counts
+- Evidence bundle usage (implicit through section steps)
 
 ## Real-time Progress Metrics
 
@@ -139,8 +139,8 @@ Synthesis Events:
 - **Phase Units:** Granular completion tracking within phases
 - **Completed Phases:** Set of finished pipeline stages
 
-### Heartbeat System (`websocket_service.py:609`)
-- Periodic updates every 20 seconds (configurable)
+### Heartbeat System (`websocket_service.py:1026`)
+- Periodic updates every 10 seconds (configurable)
 - Prevents connection timeout during long operations
 - Maintains UI responsiveness during LLM synthesis
 
@@ -184,18 +184,19 @@ Synthesis Events:
 2. RESEARCH_STARTED event broadcast
 3. Classification phase (10% progress)
 4. Context engineering phases (15% progress)
-   - Write, Select, Compress, Isolate sub-phases
+   - Write, Rewrite, Select, Optimize, Compress, Isolate sub-phases
 5. Search operations (40% progress)
    - Multiple SEARCH_STARTED/COMPLETED cycles
    - SOURCE_FOUND events for discoveries
 6. Analysis phase (10% progress)
    - CREDIBILITY_CHECK events
    - DEDUPLICATION event
-7. Synthesis phase (15% progress)
+7. Synthesis phase (12% progress)
    - SYNTHESIS_STARTED (mapped to research_progress)
-   - Section generation updates
+   - Section sub-steps broadcast for each section
    - SYNTHESIS_COMPLETED (mapped to research_completed)
-8. RESEARCH_COMPLETED event (100% progress)
+8. Complete phase (3% progress)
+   - `complete_research` forces the final 100% update
 ```
 
 This comprehensive tracking ensures users have real-time visibility into every step of the research process, from initial query optimization through final answer synthesis.

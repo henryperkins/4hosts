@@ -5,13 +5,12 @@ Handles refresh tokens, token revocation, and session management
 
 import os
 import secrets
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-import redis
+import redis.asyncio as redis
 import structlog
-
-from utils.async_utils import run_in_thread
 
 from database.connection import get_db
 from database.models import RefreshToken, RevokedToken
@@ -21,6 +20,8 @@ from logging_config import configure_logging
 
 configure_logging()
 logger = structlog.get_logger(__name__)
+
+from services.redis_utils import create_async_redis
 
 # Token configuration
 REFRESH_TOKEN_LENGTH = 32
@@ -32,14 +33,44 @@ class TokenManager:
     """Manages refresh tokens and token revocation"""
 
     def __init__(self, redis_url: Optional[str] = None):
-        self.redis_client = None
-        if redis_url:
+        self.redis_url = redis_url if redis_url is not None else os.getenv("REDIS_URL")
+        self.redis_client: Optional[redis.Redis] = None
+        self._redis_lock = asyncio.Lock()
+        self._redis_ready = False
+
+        if self.redis_url:
             try:
-                self.redis_client = redis.from_url(redis_url, decode_responses=True)
-                self.redis_client.ping()
+                self.redis_client = create_async_redis(self.redis_url)
+            except Exception as exc:
+                logger.warning("Failed to configure Redis client for tokens: %s", exc)
+                self.redis_client = None
+                self.redis_url = None
+
+    async def _ensure_redis(self) -> bool:
+        if self._redis_ready and self.redis_client is not None:
+            return True
+        if not self.redis_url:
+            return False
+
+        async with self._redis_lock:
+            if self._redis_ready and self.redis_client is not None:
+                return True
+            try:
+                if self.redis_client is None:
+                    self.redis_client = create_async_redis(self.redis_url)
+                await self.redis_client.ping()
+                self._redis_ready = True
                 logger.info("Connected to Redis for token management")
-            except Exception as e:
-                logger.warning(f"Failed to connect to Redis: {e}")
+                return True
+            except Exception as exc:
+                logger.warning("Failed to connect to Redis for token cache: %s", exc)
+                self.redis_client = None
+                self._redis_ready = False
+                return False
+
+    @property
+    def redis_enabled(self) -> bool:
+        return self._redis_ready and self.redis_client is not None
 
     def generate_refresh_token(self) -> str:
         """Generate a secure refresh token"""
@@ -99,7 +130,7 @@ class TokenManager:
             await db.commit()
 
             # Cache in Redis if available
-            if self.redis_client:
+            if await self._ensure_redis():
                 cache_key = f"refresh_token:{token_id}"
                 cache_data = {
                     "user_id": user_id,
@@ -108,12 +139,11 @@ class TokenManager:
                     "expires_at": expires_at.isoformat(),
                 }
 
-                await run_in_thread(
-                    self.redis_client.setex,
-                    cache_key,
-                    int(timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS).total_seconds()),
-                    str(cache_data),
-                )
+                ttl_seconds = int(timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS).total_seconds())
+                try:
+                    await self.redis_client.setex(cache_key, ttl_seconds, str(cache_data))
+                except Exception as exc:
+                    logger.debug("Failed to cache refresh token in Redis: %s", exc)
 
             logger.info(f"Created refresh token for user {user_id}")
 
@@ -343,11 +373,14 @@ class TokenManager:
             await db.commit()
 
             # Cache in Redis if available
-            if self.redis_client:
+            if await self._ensure_redis():
                 cache_key = f"revoked_jti:{jti}"
                 ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
                 if ttl > 0:
-                    self.redis_client.setex(cache_key, ttl, "1")
+                    try:
+                        await self.redis_client.setex(cache_key, ttl, "1")
+                    except Exception as exc:
+                        logger.debug("Failed to cache revoked JTI in Redis: %s", exc)
 
             logger.info(f"Revoked JTI {jti} for user {user_id}")
 
@@ -358,9 +391,12 @@ class TokenManager:
     async def is_jti_revoked(self, jti: str, db: AsyncSession = None) -> bool:
         """Check if a JTI is revoked"""
         # Check Redis cache first
-        if self.redis_client:
-            if self.redis_client.exists(f"revoked_jti:{jti}"):
-                return True
+        if await self._ensure_redis():
+            try:
+                if await self.redis_client.exists(f"revoked_jti:{jti}"):
+                    return True
+            except Exception as exc:
+                logger.debug("Redis JTI lookup failed: %s", exc)
 
         # Check database
         if db is None:

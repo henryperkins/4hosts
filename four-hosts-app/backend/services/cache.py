@@ -100,8 +100,9 @@ class CacheManager:
         except Exception as e:
             logger.error(f"Failed to connect to Redis: {str(e)}")
 
-            # Attempt to auto-launch a local Redis container if Docker exists
-            if shutil.which("docker") and os.getenv("DISABLE_AUTO_REDIS", "0") != "1":
+            auto_start_allowed = os.getenv("ENABLE_AUTO_REDIS", "0").lower() in ("1", "true", "yes")
+            disable_flag = os.getenv("DISABLE_AUTO_REDIS", "0") == "1"
+            if auto_start_allowed and not disable_flag and shutil.which("docker"):
                 try:
                     container_name = "fourhosts-redis-auto"
                     # Start container if not already running
@@ -124,7 +125,7 @@ class CacheManager:
                     )
 
                     # Give Redis a moment to start
-                    time.sleep(2)
+                    await asyncio.sleep(2)
 
                     # Retry connection once
                     try:
@@ -142,6 +143,10 @@ class CacheManager:
                         )
                 except Exception as docker_err:
                     logger.error("Failed to auto-start Redis via Docker: %s", docker_err)
+            else:
+                logger.debug(
+                    "Redis auto-start skipped (ENABLE_AUTO_REDIS not set or Docker unavailable)"
+                )
 
             self.redis_pool = None
             return False
@@ -470,8 +475,12 @@ class CacheManager:
                 cost_pattern = f"cost:*:{date}"
                 calls_pattern = f"calls:*:{date}"
 
-                cost_keys = await client.keys(cost_pattern)
-                calls_keys = await client.keys(calls_pattern)
+                cost_keys = [
+                    key async for key in client.scan_iter(match=cost_pattern)
+                ]
+                calls_keys = [
+                    key async for key in client.scan_iter(match=calls_pattern)
+                ]
 
                 results = {}
 
@@ -560,10 +569,11 @@ class CacheManager:
         """Clear expired keys (maintenance function)"""
         try:
             async with self.get_client() as client:
-                keys = await client.keys(pattern)
+                processed = 0
                 deleted = 0
 
-                for key in keys:
+                async for key in client.scan_iter(match=pattern):
+                    processed += 1
                     ttl = await client.ttl(key)
                     if ttl == -1:  # Key exists but has no expiry
                         # Set a default expiry based on key type
@@ -574,9 +584,11 @@ class CacheManager:
                         deleted += 1
 
                 logger.info(
-                    f"Maintenance: processed {len(keys)} keys, {deleted} were expired"
+                    "Maintenance: processed %d keys, %d were expired",
+                    processed,
+                    deleted,
                 )
-                return {"processed": len(keys), "expired": deleted}
+                return {"processed": processed, "expired": deleted}
 
         except Exception as e:
             logger.error(f"Maintenance error: {str(e)}")
@@ -587,7 +599,7 @@ class CacheManager:
         try:
             async with self.get_client() as client:
                 pattern = f"search:*{query_pattern}*"
-                keys = await client.keys(pattern)
+                keys = [key async for key in client.scan_iter(match=pattern)]
 
                 if keys:
                     deleted = await client.delete(*keys)

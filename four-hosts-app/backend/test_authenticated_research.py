@@ -89,7 +89,7 @@ def test_authenticated_research():
         # Step 4: Poll for results
         if research_id:
             print("\n4. Polling for results...")
-            max_attempts = 120  # Wait up to 120 seconds
+            max_attempts = 240  # Wait up to 240 seconds to allow slower searches
             for i in range(max_attempts):
                 time.sleep(1)
 
@@ -101,14 +101,39 @@ def test_authenticated_research():
                 if response.status_code == 200:
                     status_data = response.json()
                     status = status_data.get('status')
-                    print(f"   [{i+1}s] Status: {status}", end="")
+                    progress_info = status_data.get('progress')
+                    progress_line = ""
 
-                    # Show progress if available
-                    if 'progress' in status_data:
-                        progress = status_data['progress']
-                        print(f" - {progress.get('phase', 'unknown')} ({progress.get('percentage', 0)}%)")
-                    else:
-                        print()
+                    if isinstance(progress_info, dict):
+                        phase = progress_info.get('phase', 'unknown')
+
+                        pct_value = None
+                        pct_raw = progress_info.get('percentage')
+                        if pct_raw is None:
+                            nested = progress_info.get('progress')
+                            if isinstance(nested, dict):
+                                pct_raw = nested.get('percentage')
+                            else:
+                                pct_raw = nested
+                        if pct_raw is None:
+                            custom_data = progress_info.get('custom_data')
+                            if isinstance(custom_data, dict):
+                                pct_raw = custom_data.get('percentage')
+
+                        try:
+                            if pct_raw is not None:
+                                pct_value = float(pct_raw)
+                        except (TypeError, ValueError):
+                            pct_value = None
+
+                        if pct_value is not None:
+                            progress_line = f" - {phase} ({pct_value:.0f}%)"
+                        else:
+                            progress_line = f" - {phase}"
+                    elif progress_info is not None:
+                        progress_line = f" - progress: {progress_info}"
+
+                    print(f"   [{i+1}s] Status: {status}{progress_line}")
 
                     if status == 'completed':
                         print("\n   ✓ Research completed!")
