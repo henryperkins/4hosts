@@ -2325,7 +2325,7 @@ class SearchAPIManager:
                     if progress_callback and research_id:
                         try:
                             count = len(res) if isinstance(res, list) else 0
-                            await progress_callback.report_search_completed(research_id, query, count)
+                            await progress_callback.report_search_completed(research_id, seed_query, count)
                         except Exception:
                             pass
                     all_res.extend(res if isinstance(res, list) else [])
