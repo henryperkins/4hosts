@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { FiHome, FiClock, FiUser, FiBarChart2, FiMenu, FiX, FiLayers } from 'react-icons/fi'
 import { ToggleSwitch } from './ui/ToggleSwitch'
 import { Button } from './ui/Button'
 import { useAuth } from '../hooks/useAuth'
 import { useThemeStore, useDarkMode } from '../store/themeStore'
+import api from '../services/api'
 
 export const Navigation = () => {
   const { isAuthenticated, user, logout } = useAuth()
@@ -14,6 +15,31 @@ export const Navigation = () => {
   const darkMode = useDarkMode()
   const { setDarkMode } = useThemeStore()
 
+  const navItems = useMemo(() => ([
+    { path: '/', icon: FiHome, label: 'Research', paradigm: 'dolores' },
+    { path: '/history', icon: FiClock, label: 'History', paradigm: 'bernard' },
+    { path: '/metrics', icon: FiBarChart2, label: 'Metrics', paradigm: 'teddy' },
+  ]), [])
+
+  const paradigmHoverColors = useMemo(() => ({
+    dolores: 'hover:text-paradigm-dolores',
+    bernard: 'hover:text-paradigm-bernard',
+    teddy: 'hover:text-paradigm-teddy',
+    maeve: 'hover:text-paradigm-maeve'
+  }), [])
+
+  const getParadigmHoverClass = useCallback((paradigm?: string) => {
+    if (!paradigm) return ''
+    return paradigmHoverColors[paradigm] || ''
+  }, [paradigmHoverColors])
+
+  const handleLogout = useCallback(async () => {
+    await logout()
+    api.disconnectWebSocket()
+    setMobileMenuOpen(false)
+    navigate('/login')
+  }, [logout, navigate])
+
   if (!isAuthenticated) return null
 
   const isActive = (path: string) => {
@@ -22,24 +48,6 @@ export const Navigation = () => {
 
   const closeMobileMenu = () => {
     setMobileMenuOpen(false)
-  }
-
-  // Paradigm-themed navigation items
-  const navItems = [
-    { path: '/', icon: FiHome, label: 'Research', paradigm: 'dolores' },
-    { path: '/history', icon: FiClock, label: 'History', paradigm: 'bernard' },
-    { path: '/metrics', icon: FiBarChart2, label: 'Metrics', paradigm: 'teddy' },
-  ]
-
-  const getParadigmHoverClass = (paradigm?: string) => {
-    if (!paradigm) return ''
-    const paradigmHoverColors: Record<string, string> = {
-      dolores: 'hover:text-paradigm-dolores',
-      bernard: 'hover:text-paradigm-bernard',
-      teddy: 'hover:text-paradigm-teddy',
-      maeve: 'hover:text-paradigm-maeve'
-    }
-    return paradigmHoverColors[paradigm] || ''
   }
 
   return (
@@ -69,7 +77,7 @@ export const Navigation = () => {
             >
               <FiLayers className="h-6 w-6 group-hover:rotate-12 transition-transform duration-300" aria-hidden="true" />
               <span className="hidden sm:inline gradient-brand text-responsive-xl">Four Hosts Research</span>
-              <span className="sm:hidden gradient-brand text-responsive-lg truncate">4H Research</span>
+              <span className="sm:hidden gradient-brand text-responsive-lg truncate">Four Hosts</span>
             </Link>
             <div className="hidden md:flex items-center gap-2">
               {navItems.map(({ path, icon: Icon, label, paradigm }) => {
@@ -164,11 +172,7 @@ export const Navigation = () => {
             <Button
               variant="ghost"
               fullWidth
-              onClick={async () => {
-                await logout()
-                closeMobileMenu()
-                navigate('/login')
-              }}
+              onClick={handleLogout}
               className="text-error hover:bg-error/10 justify-start"
             >
               Logout

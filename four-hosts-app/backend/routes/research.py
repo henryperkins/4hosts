@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, cast, Dict
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Request
+from fastapi.responses import JSONResponse
 
 from models.research import (
     ResearchQuery,
@@ -40,7 +41,12 @@ from services.research_persistence import (
     persist_failure,
     record_submission,
 )
-from core.config import SYNTHESIS_MAX_LENGTH_DEFAULT, ENABLE_MESH_NETWORK
+from core.config import (
+    SYNTHESIS_MAX_LENGTH_DEFAULT,
+    ENABLE_MESH_NETWORK,
+    PROGRESS_WS_TIMEOUT_MS,
+    RESULTS_POLL_TIMEOUT_MS,
+)
 from services.result_adapter import ResultAdapter
 from models.result_models import ResearchFinalResult
 from services.mesh_network import mesh_negotiator
@@ -1194,7 +1200,14 @@ async def get_research_status(
     """Get the status of a research query"""
     research = await research_store.get(research_id)
     if not research:
-        raise HTTPException(status_code=404, detail="Research not found")
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": "Research not found",
+                "message": f"Research '{research_id}' was not found or has expired.",
+                "error_code": "research_not_found",
+            },
+        )
 
     # Verify ownership (use canonical user_id; fall back to id for compatibility)
     requester_id = str(getattr(current_user, "user_id", getattr(current_user, "id", None)))
@@ -1202,7 +1215,14 @@ async def get_research_status(
         research["user_id"] != requester_id
         and current_user.role != UserRole.ADMIN
     ):
-        raise HTTPException(status_code=403, detail="Access denied")
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Access denied",
+                "message": "You do not have access to this research record.",
+                "error_code": "forbidden",
+            },
+        )
 
     status_response = {
         "research_id": research_id,
@@ -1212,6 +1232,16 @@ async def get_research_status(
         "progress": research.get("progress", {}),
         "cost_info": research.get("cost_info"),
     }
+
+    is_terminal = research["status"] in {
+        ResearchStatus.FAILED,
+        ResearchStatus.CANCELLED,
+        ResearchStatus.COMPLETED,
+    }
+    status_response["terminal"] = is_terminal
+    status_response["terminal_status"] = research["status"] if is_terminal else None
+    status_response["progress_ws_timeout_ms"] = PROGRESS_WS_TIMEOUT_MS
+    status_response["results_poll_timeout_ms"] = RESULTS_POLL_TIMEOUT_MS
 
     # Add status-specific information
     if research["status"] == ResearchStatus.FAILED:
@@ -1244,7 +1274,14 @@ async def get_research_results(
     """Get completed research results"""
     research = await research_store.get(research_id)
     if not research:
-        raise HTTPException(status_code=404, detail="Research not found")
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": "Research not found",
+                "message": f"Research '{research_id}' was not found or has expired.",
+                "error_code": "research_not_found",
+            },
+        )
 
     # Verify ownership (use canonical user_id; fall back to id for compatibility)
     requester_id = str(getattr(current_user, "user_id", getattr(current_user, "id", None)))
@@ -1252,7 +1289,14 @@ async def get_research_results(
         research["user_id"] != requester_id
         and current_user.role != UserRole.ADMIN
     ):
-        raise HTTPException(status_code=403, detail="Access denied")
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Access denied",
+                "message": "You do not have access to this research record.",
+                "error_code": "forbidden",
+            },
+        )
 
     if research["status"] != ResearchStatus.COMPLETED:
         if research["status"] == ResearchStatus.FAILED:
@@ -1263,7 +1307,11 @@ async def get_research_results(
                 "error": error_detail,
                 "research_id": research_id,
                 "message": "Research failed. Please try submitting a new query.",
-                "can_retry": True
+                "can_retry": True,
+                "terminal": True,
+                "terminal_status": ResearchStatus.FAILED,
+                "progress_ws_timeout_ms": PROGRESS_WS_TIMEOUT_MS,
+                "results_poll_timeout_ms": RESULTS_POLL_TIMEOUT_MS,
             }
         elif research["status"] == ResearchStatus.CANCELLED:
             # Return cancellation information
@@ -1273,7 +1321,11 @@ async def get_research_results(
                 "message": "Research was cancelled by user.",
                 "cancelled_at": research.get("cancelled_at"),
                 "cancelled_by": research.get("cancelled_by"),
-                "can_retry": True
+                "can_retry": True,
+                "terminal": True,
+                "terminal_status": ResearchStatus.CANCELLED,
+                "progress_ws_timeout_ms": PROGRESS_WS_TIMEOUT_MS,
+                "results_poll_timeout_ms": RESULTS_POLL_TIMEOUT_MS,
             }
         elif research["status"] in [
             ResearchStatus.PROCESSING, ResearchStatus.IN_PROGRESS
@@ -1289,7 +1341,11 @@ async def get_research_results(
                 "progress": research.get("progress", {}),
                 "estimated_completion": research.get("estimated_completion"),
                 "can_cancel": True,
-                "can_retry": False
+                "can_retry": False,
+                "terminal": False,
+                "terminal_status": None,
+                "progress_ws_timeout_ms": PROGRESS_WS_TIMEOUT_MS,
+                "results_poll_timeout_ms": RESULTS_POLL_TIMEOUT_MS,
             }
         else:
             # Handle other statuses (QUEUED, etc.)
@@ -1298,46 +1354,101 @@ async def get_research_results(
                 "research_id": research_id,
                 "message": f"Research is {research['status']}",
                 "can_retry": research["status"] != ResearchStatus.PROCESSING,
-                "can_cancel": research["status"] in [ResearchStatus.QUEUED]
+                "can_cancel": research["status"] in [ResearchStatus.QUEUED],
+                "terminal": research["status"] in {ResearchStatus.COMPLETED, ResearchStatus.FAILED, ResearchStatus.CANCELLED},
+                "terminal_status": research["status"] if research["status"] in {ResearchStatus.COMPLETED, ResearchStatus.FAILED, ResearchStatus.CANCELLED} else None,
+                "progress_ws_timeout_ms": PROGRESS_WS_TIMEOUT_MS,
+                "results_poll_timeout_ms": RESULTS_POLL_TIMEOUT_MS,
             }
 
-    # Ensure results have the expected structure for frontend
-    results = research["results"]
+    try:
+        # Ensure results have the expected structure for frontend
+        raw_results = research.get("results") or {}
+        results = dict(raw_results) if isinstance(raw_results, dict) else {}
 
-    # The frontend expects 'answer' to exist for display
-    # If answer is missing or incomplete, try to reconstruct it
-    if results:
-        # Check if answer exists and has required fields
-        answer = results.get("answer")
-        if not answer or not isinstance(answer, dict):
-            # Try to get it from integrated_synthesis
-            integrated = results.get("integrated_synthesis")
-            if integrated and isinstance(integrated, dict):
-                primary = integrated.get("primary_answer")
-                if primary and isinstance(primary, dict):
-                    results["answer"] = primary
-                    logger.info(f"Populated answer from integrated_synthesis for research_id: {research_id}")
+        results.setdefault("research_id", research_id)
+        results.setdefault("status", "completed")
+        results["terminal"] = True
+        results["terminal_status"] = ResearchStatus.COMPLETED
+        results["progress_ws_timeout_ms"] = PROGRESS_WS_TIMEOUT_MS
+        results["results_poll_timeout_ms"] = RESULTS_POLL_TIMEOUT_MS
 
-        # Ensure answer has minimum required fields for display
-        if results.get("answer") and isinstance(results["answer"], dict):
-            answer = results["answer"]
-            # Ensure required fields exist with defaults
-            if "summary" not in answer:
-                answer["summary"] = "Research completed but no summary available."
-            if "sections" not in answer:
-                answer["sections"] = []
-            if "action_items" not in answer:
-                answer["action_items"] = []
-            if "citations" not in answer:
-                answer["citations"] = []
-            if "metadata" not in answer:
-                answer["metadata"] = {}
+        # The frontend expects 'answer' to exist for display
+        # If answer is missing or incomplete, try to reconstruct it
+        if results:
+            # Check if answer exists and has required fields
+            answer = results.get("answer")
+            if not answer or not isinstance(answer, dict):
+                # Try to get it from integrated_synthesis
+                integrated = results.get("integrated_synthesis")
+                if integrated and isinstance(integrated, dict):
+                    primary = integrated.get("primary_answer")
+                    if primary and isinstance(primary, dict):
+                        results["answer"] = primary
+                        logger.info(f"Populated answer from integrated_synthesis for research_id: {research_id}")
 
-        # Ensure status field is included for frontend consistency
-        if "status" not in results:
-            results["status"] = "completed"
+            # Ensure answer has minimum required fields for display
+            if results.get("answer") and isinstance(results["answer"], dict):
+                answer = results["answer"]
+                # Ensure required fields exist with defaults
+                if "summary" not in answer:
+                    answer["summary"] = "Research completed but no summary available."
+                if "sections" not in answer:
+                    answer["sections"] = []
+                if "action_items" not in answer:
+                    answer["action_items"] = []
+                if "citations" not in answer:
+                    answer["citations"] = []
+                if "metadata" not in answer:
+                    answer["metadata"] = {}
 
-    return results
+            # Ensure status field is included for frontend consistency
+            if "status" not in results:
+                results["status"] = "completed"
+
+            # Normalize metadata to a mapping and backfill required keys
+            metadata = results.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            else:
+                metadata = dict(metadata)
+
+            evidence_skipped = metadata.get("evidence_builder_skipped")
+            if evidence_skipped is None:
+                evidence_skipped = bool(results.get("evidence_builder_skipped"))
+            metadata["evidence_builder_skipped"] = bool(evidence_skipped)
+
+            err_message = metadata.get("error_message") or research.get("error") or research.get("error_message")
+            if err_message:
+                metadata["error_message"] = str(err_message)
+
+            credibility_summary = results.get("credibility_summary") or metadata.get("credibility_summary")
+            if not isinstance(credibility_summary, dict):
+                credibility_summary = {}
+            else:
+                credibility_summary = dict(credibility_summary)
+            score_distribution = credibility_summary.get("score_distribution")
+            if not isinstance(score_distribution, dict):
+                credibility_summary["score_distribution"] = {}
+            metadata["credibility_summary"] = credibility_summary
+
+            results["metadata"] = metadata
+
+        return results
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error(
+            "research.results.unhandled",
+            research_id=research_id,
+            error=str(exc),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Unable to fetch research results",
+                "message": "An unexpected error occurred while preparing the research payload.",
+                "error_code": "research_results_error",
+            },
+        )
 
 
 # ---------------------------------------------------------------------------

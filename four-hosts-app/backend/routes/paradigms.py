@@ -3,7 +3,7 @@ Paradigm-related routes for the Four Hosts Research API
 """
 
 import structlog
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 
@@ -130,19 +130,29 @@ async def override_paradigm(
 
     # Update stored record: set override + reset status and results
     try:
-        # Persist override for traceability
-        await research_store.update_field(
-            payload.research_id, "override_paradigm", payload.paradigm.value
+        # Persist override for traceability (allow clearing via explicit null)
+        override_value: Optional[str] = (
+            payload.paradigm.value if payload.paradigm else None
         )
-        if payload.reason:
+
+        await research_store.update_field(
+            payload.research_id, "override_paradigm", override_value
+        )
+        if payload.reason is not None:
+            reason_value = payload.reason.strip() or None
             await research_store.update_field(
-                payload.research_id, "override_reason", payload.reason
+                payload.research_id, "override_reason", reason_value
+            )
+        elif not payload.paradigm:
+            # Clearing the override should also remove stale reason text
+            await research_store.update_field(
+                payload.research_id, "override_reason", None
             )
 
         # Update nested options.paradigm_override for the executor path
         try:
             options = dict(research.get("options") or {})
-            options["paradigm_override"] = payload.paradigm.value
+            options["paradigm_override"] = override_value
             await research_store.update_field(payload.research_id, "options", options)
         except Exception:
             # Non-fatal; executor also reads top-level override
@@ -182,13 +192,14 @@ async def override_paradigm(
     logger.info(
         "Paradigm override enqueued for research %s: -> %s",
         payload.research_id,
-        payload.paradigm.value,
+        override_value or "cleared",
     )
 
     return {
         "success": True,
         "research_id": payload.research_id,
-        "new_paradigm": payload.paradigm.value,
+        "new_paradigm": override_value,
+        "override_cleared": override_value is None,
         "status": "in_progress",
     }
 

@@ -8,7 +8,7 @@ export interface ResearchOptions {
   language?: string
   region?: string
   enable_ai_classification?: boolean
-  paradigm_override?: Paradigm
+  paradigm_override?: Paradigm | null
   // Deep research specific options
   search_context_size?: 'small' | 'medium' | 'large'
   user_location?: {

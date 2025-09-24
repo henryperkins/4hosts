@@ -5,6 +5,7 @@ import { useAuth } from '../hooks/useAuth'
 import type { ResearchOptions, Paradigm } from '../types'
 import { Button } from './ui/Button'
 import { InputField } from './ui/InputField'
+import { LoadingSpinner } from './ui/LoadingSpinner'
 
 interface ResearchFormState {
   query: string
@@ -64,38 +65,10 @@ interface ResearchFormEnhancedProps {
   onSubmit: (query: string, options: ResearchOptions) => void
   isLoading: boolean
   onQueryChange?: (query: string) => void
+  classificationState?: 'idle' | 'loading' | 'ready' | 'error'
 }
 
-// Commented out - not currently used
-// const ParadigmOption = React.memo<{
-//   value: string
-//   label: string
-//   icon: string
-//   description: string
-//   colorClass: string
-//   isSelected: boolean
-//   onSelect: (value: string) => void
-// }>(({ value, label, icon, description, colorClass, isSelected, onSelect }) => (
-//   <button
-//     type="button"
-//     onClick={() => onSelect(value)}
-//     className={`group w-full text-left px-4 py-3 rounded-lg border transition-all ${
-//       isSelected 
-//         ? 'border-primary bg-primary/10 shadow-sm' 
-//         : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
-//     }`}
-//   >
-//     <div className="flex items-center gap-3">
-//       <span className="text-2xl">{icon}</span>
-//       <div className="flex-1">
-//         <div className={`font-medium ${colorClass}`}>{label}</div>
-//         <div className="text-xs text-gray-500 dark:text-gray-400">{description}</div>
-//       </div>
-//     </div>
-//   </button>
-// ))
-
-export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSubmit, isLoading, onQueryChange }) => {
+export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSubmit, isLoading, onQueryChange, classificationState = 'idle' }) => {
   const { user } = useAuth()
   
   const initialState: ResearchFormState = {
@@ -148,7 +121,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
     // Include paradigm override if a specific paradigm is selected
     const optionsToSend: ResearchOptions = {
       ...state.options,
-      paradigm_override: state.paradigm !== 'auto' ? (state.paradigm as Paradigm) : undefined,
+      paradigm_override: state.paradigm !== 'auto' ? (state.paradigm as Paradigm) : null,
     }
 
     onSubmit(trimmedQuery, optionsToSend)
@@ -187,7 +160,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
 
   const handleParadigmSelect = useCallback((value: string) => {
     dispatch({ type: 'SET_PARADIGM', payload: value })
-    const override = value !== 'auto' ? (value as Paradigm) : undefined
+    const override = value !== 'auto' ? (value as Paradigm) : null
     dispatch({ type: 'UPDATE_OPTIONS', payload: { paradigm_override: override } })
   }, [])
 
@@ -250,6 +223,20 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
             minLength={10}
             aria-describedby={state.error ? "query-error" : undefined}
           />
+          <div className="mt-2 min-h-[1.5rem] text-xs text-text-muted" aria-live="polite">
+            {classificationState === 'loading' && (
+              <span className="inline-flex items-center gap-1 text-primary">
+                <LoadingSpinner size="sm" className="!gap-0" />
+                Analyzing paradigms…
+              </span>
+            )}
+            {classificationState === 'ready' && (
+              <span className="text-success">Live paradigm preview updated.</span>
+            )}
+            {classificationState === 'error' && (
+              <span className="text-warning">Preview unavailable. We’ll keep trying.</span>
+            )}
+          </div>
         </div>
 
         {/* Paradigm Selection */}
@@ -317,10 +304,7 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
                   <button
                     key={option.value}
                     type="button"
-                    onClick={() => {
-                      console.log('Depth button clicked:', option.value)
-                      dispatch({ type: 'SET_DEPTH', payload: option.value })
-                    }}
+                    onClick={() => dispatch({ type: 'SET_DEPTH', payload: option.value })}
                     disabled={disabled}
                     className={`flex-1 p-3 rounded-lg border-2 transition-all duration-200
                   ${isSelected

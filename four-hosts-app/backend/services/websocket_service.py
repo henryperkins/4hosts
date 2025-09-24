@@ -19,6 +19,8 @@ from weakref import WeakKeyDictionary
 
 from utils.date_utils import iso_or_none
 
+from core.config import PROGRESS_WS_TIMEOUT_MS, RESULTS_POLL_TIMEOUT_MS
+
 from fastapi import WebSocket, WebSocketDisconnect, Header
 from pydantic import BaseModel, Field
 
@@ -118,6 +120,9 @@ class ConnectionManager:
 
         # Retention for completed research progress (seconds) – used by ProgressTracker cleanup
         self._progress_retention_sec: int = int(os.getenv("WS_PROGRESS_RETENTION_SEC", "300") or 300)
+
+        # Cache timeout to surface in resume heartbeats for clients
+        self.progress_ws_timeout_ms: int = PROGRESS_WS_TIMEOUT_MS
 
         # Optional write-pump to decouple slow clients (opt-in via env)
         self._use_write_pump: bool = os.getenv("WS_WRITE_PUMP", "0") == "1"
@@ -267,6 +272,24 @@ class ConnectionManager:
         if research_id in self.message_history:
             for message in self.message_history[research_id][-10:]:  # Last 10 messages
                 await self.send_to_websocket(websocket, message)
+
+        # Emit a lightweight resume heartbeat so the client knows the stream is active
+        try:
+            await self.send_to_websocket(
+                websocket,
+                WSMessage(
+                    type=WSEventType.SYSTEM_NOTIFICATION,
+                    data={
+                        "research_id": research_id,
+                        "message": "Progress stream resumed",
+                        "heartbeat": True,
+                        "resumed": True,
+                        "progress_ws_timeout_ms": self.progress_ws_timeout_ms,
+                    },
+                ),
+            )
+        except Exception as exc:
+            logger.debug("ws.resume_heartbeat_failed", research_id=research_id, error=str(exc))
 
     async def unsubscribe_from_research(self, websocket: WebSocket, research_id: str):
         """Unsubscribe a WebSocket from research updates"""
@@ -613,6 +636,13 @@ class ProgressTracker:
         # synthesis).  A task is created for every `start_research` call and
         # cancelled automatically in `_cleanup`.
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
+        # Heartbeat interval derives from configured timeout to ensure
+        # clients receive multiple keepalives before the UI grace period lapses.
+        try:
+            derived = max(5, min(30, int(PROGRESS_WS_TIMEOUT_MS / 3000)))
+        except Exception:
+            derived = 10
+        self._heartbeat_interval_sec: int = derived or 10
 
         # Rolling average duration per phase (milliseconds)
         self._phase_stats: Dict[str, List[float]] = {}
@@ -697,7 +727,7 @@ class ProgressTracker:
         # Launch background heartbeat so clients receive periodic updates even
         # when no phase events are emitted.
         self._heartbeat_tasks[research_id] = asyncio.create_task(
-            self._heartbeat(research_id)
+            self._heartbeat(research_id, interval=self._heartbeat_interval_sec)
         )
 
     async def update_progress(
@@ -965,6 +995,8 @@ class ProgressTracker:
             "high_quality_sources": progress_data.get("high_quality_sources", 0),
             "duplicates_removed": progress_data.get("duplicates_removed", 0),
             "mcp_tools_used": progress_data.get("mcp_tools_used", 0),
+            "progress_ws_timeout_ms": PROGRESS_WS_TIMEOUT_MS,
+            "results_poll_timeout_ms": RESULTS_POLL_TIMEOUT_MS,
         }
 
         if message:
@@ -1023,18 +1055,19 @@ class ProgressTracker:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _heartbeat(self, research_id: str, interval: int = 10):
+    async def _heartbeat(self, research_id: str, interval: Optional[int] = None):
         """Send a heartbeat every *interval* seconds until research ends."""
         try:
+            interval_sec = interval or self._heartbeat_interval_sec or 10
             while research_id in self.research_progress:
-                await asyncio.sleep(interval)
+                await asyncio.sleep(interval_sec)
 
                 if research_id not in self.research_progress:
                     break
 
                 last = self.research_progress[research_id].get("last_update")
                 # Only send a ping if nothing was sent for > interval seconds
-                if last and (datetime.now(timezone.utc) - last).total_seconds() < interval:
+                if last and (datetime.now(timezone.utc) - last).total_seconds() < interval_sec:
                     continue
 
                 # Store previous progress to prevent regression

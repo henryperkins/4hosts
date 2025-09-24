@@ -62,6 +62,9 @@ class ParadigmClassification(BaseModel):
     confidence: float
     explanation: Dict[str, str]
 
+    class Config:
+        use_enum_values = True
+
 
 # Mapping for backward compatibility
 HOST_TO_MAIN_PARADIGM = {

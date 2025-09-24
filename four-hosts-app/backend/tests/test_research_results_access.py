@@ -1,9 +1,12 @@
+import json
+
 import pytest
-from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 from routes.research import get_research_results
 from services.research_store import research_store
 from models.base import ResearchStatus, UserRole
+from core.config import PROGRESS_WS_TIMEOUT_MS, RESULTS_POLL_TIMEOUT_MS
 
 
 def _minimal_results_payload(rid: str) -> dict:
@@ -93,6 +96,44 @@ async def test_get_research_results_access_denied_for_other_user():
         "results": _minimal_results_payload(rid),
     })
     other = _User(user_id="someone-else", role=UserRole.PRO)
-    with pytest.raises(HTTPException) as ei:
-        await get_research_results(rid, current_user=other)
-    assert ei.value.status_code == 403
+    response = await get_research_results(rid, current_user=other)
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 403
+    payload = json.loads(response.body)
+    assert payload.get("error_code") == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_get_research_results_normalizes_metadata():
+    rid = "res_meta_1"
+    owner_id = "owner-meta"
+    await research_store.set(rid, {
+        "id": rid,
+        "user_id": owner_id,
+        "query": "metadata test",
+        "options": {},
+        "status": ResearchStatus.COMPLETED,
+        "created_at": "2025-01-02T00:00:00Z",
+        "results": {
+            "research_id": rid,
+            "paradigm_analysis": {
+                "primary": {"paradigm": "bernard", "confidence": 1.0}
+            },
+            "answer": {"summary": "", "sections": [], "action_items": [], "citations": [], "metadata": None},
+            "sources": [],
+            "metadata": None,
+        },
+    })
+    user = _User(user_id=owner_id, role=UserRole.PRO)
+    result = await get_research_results(rid, current_user=user)
+
+    metadata = result.get("metadata") or {}
+    assert isinstance(metadata, dict)
+    assert metadata.get("evidence_builder_skipped") is False
+    cred_summary = metadata.get("credibility_summary") or {}
+    assert isinstance(cred_summary, dict)
+    assert isinstance(cred_summary.get("score_distribution"), dict)
+    assert result.get("terminal") is True
+    assert result.get("terminal_status") == ResearchStatus.COMPLETED
+    assert result.get("progress_ws_timeout_ms") == PROGRESS_WS_TIMEOUT_MS
+    assert result.get("results_poll_timeout_ms") == RESULTS_POLL_TIMEOUT_MS

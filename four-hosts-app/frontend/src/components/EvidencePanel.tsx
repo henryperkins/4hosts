@@ -21,9 +21,46 @@ interface EvidencePanelProps {
 
 export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial = 6 }) => {
   const [showAll, setShowAll] = React.useState(false)
-  if (!Array.isArray(quotes) || quotes.length === 0) return null
+  const safeQuotes = React.useMemo(() => (Array.isArray(quotes) ? quotes : []), [quotes])
+  const hasQuotes = safeQuotes.length > 0
 
-  const list = showAll ? quotes : quotes.slice(0, maxInitial)
+  const locale = React.useMemo(() => (
+    typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'en-US'
+  ), [])
+
+  const list = React.useMemo(() => {
+    if (showAll) return safeQuotes
+    return safeQuotes.slice(0, maxInitial)
+  }, [showAll, safeQuotes, maxInitial])
+
+  const computeKey = React.useCallback((quote: EvidenceQuote) => {
+    if (quote.id) return quote.id
+    const rawKey = `${quote.quote || ''}|${quote.url || ''}`
+    let encoded: string | null = null
+    try {
+      encoded = btoa(rawKey)
+    } catch {
+      try {
+        encoded = btoa(unescape(encodeURIComponent(rawKey)))
+      } catch {
+        encoded = null
+      }
+    }
+    if (encoded) {
+      return `quote-${encoded.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`
+    }
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return crypto.randomUUID()
+    }
+    let hash = 0
+    for (let i = 0; i < rawKey.length; i += 1) {
+      hash = (hash << 5) - hash + rawKey.charCodeAt(i)
+      hash |= 0
+    }
+    return `quote-${Math.abs(hash).toString(36)}`
+  }, [])
+
+  if (!hasQuotes) return null
 
   const credibilityIcon = (score?: number) => {
     if (typeof score !== 'number') return null
@@ -43,26 +80,8 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
       </CardHeader>
       <CardContent>
         <ul className="space-y-3">
-          {list.map((q, idx) => {
-            // Generate a reasonably stable but safe key.  We attempt to base-64
-            // encode the first ~30 chars of the quote + URL, but `btoa` only
-            // supports Latin1 input.  If the quote contains non-ASCII
-            // characters we fall back to `encodeURIComponent` -> `btoa` to
-            // ensure the operation does not throw.  If *that* still fails, we
-            // degrade gracefully to a simple incremental key.
-
-            const rawKey = (q.quote || '').slice(0, 30) + (q.url || '')
-            let encoded: string
-            try {
-              encoded = btoa(rawKey)
-            } catch {
-              try {
-                encoded = btoa(unescape(encodeURIComponent(rawKey)))
-              } catch {
-                encoded = `fallback-${idx}`
-              }
-            }
-            const stableKey = q.id || `quote-${encoded.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10)}-${idx}`
+          {list.map((q) => {
+            const stableKey = computeKey(q)
             return (
             <li key={stableKey} className="rounded-md border border-border p-3 bg-surface">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -71,7 +90,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-muted">
                     {credibilityIcon(q.credibility_score)}
                     {q.domain ? <span className="font-medium text-text">{q.domain}</span> : null}
-                    {q.published_date ? <span>• {new Date(q.published_date).toLocaleDateString()}</span> : null}
+                    {q.published_date ? <span>• {new Date(q.published_date).toLocaleDateString(locale)}</span> : null}
                   </div>
                 </div>
                 {q.url && (

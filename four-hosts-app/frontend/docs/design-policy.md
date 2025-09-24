@@ -75,6 +75,58 @@ Implementation Notes
 - Use the theme store (`themeStore.ts`) to persist light/dark preferences. Future variations (e.g., high-contrast mode) should hook into the same pattern.
 - Document component-specific variations (buttons, cards) in Storybook or similar to make the design system discoverable by engineering and QA.
 
+Component Health Review (Q1 2024)
+---------------------------------
+
+This analysis captures the current implementation strengths and gaps across key front-end components. Use it to prioritize polish work without losing sight of the elements that already function well.
+
+### ResearchFormEnhanced.tsx
+
+- **Issues**: Commented `ParadigmOption` block remains in the file (lines 69-96); submitting the form never shows a classification-in-progress state; `paradigm_override` is omitted when the user leaves the override at `auto`, though the backend may expect an explicit value.
+- **Strengths**: User preference hydration works reliably; query validation prevents noisy submissions; form labels and errors meet accessibility guidelines.
+
+### ResearchProgress.tsx
+
+- **Issues**: The `VITE_RESULTS_POLL_TIMEOUT_MS` environment flag is undocumented; the soft-timeout message tells users runs continue even after polling stops; WebSocket updates cannot be paused when the user switches tabs.
+- **Strengths**: Numeric inputs are thoroughly validated; small API result sets compare efficiently; reconnection logic is resilient.
+
+### ResearchPage.tsx
+
+- **Issues**: Polling relies on manual error handling instead of React Query's built-ins; `getStatus` is recreated every render; two `ClassificationFeedback` instances create redundant UI.
+- **Strengths**: Local state is purposeful; motion respects `prefers-reduced-motion`; polling halts cleanly when requested.
+
+### ResultsDisplayEnhanced.tsx
+
+- **Issues**: Metadata typing uses `Record<string, unknown>` which erodes type safety; exports lack a loading affordance; malformed backend payloads are not wrapped in an error boundary.
+- **Strengths**: Optional typing guards against partial responses; panel sections collapse intuitively; export flows function end to end.
+
+### ResearchResultPage.tsx
+
+- **Issues**: Polling may continue after unmount when cleanup fails; inline errors never redirect to the dedicated error surface; 404 and 500 responses look identical.
+- **Strengths**: The two-second polling cadence balances freshness and load; polling stops promptly on completion; unmount cleanup typically succeeds.
+
+### ContextMetricsPanel.tsx
+
+- **Issues**: Sub-10 ms operations render as `0.00s` instead of `<0.01s`; individual state setters fire sequentially, introducing extra renders; panel lacks a manual refresh.
+- **Strengths**: Responsive grid adapts across breakpoints; acronym legend clarifies terminology; loading and error states are well defined.
+
+### EvidencePanel.tsx
+
+- **Issues**: Fallback keys still rely on the array index; timestamp formatting ignores the user's locale; `slice(0, maxInitial)` runs on every render.
+- **Strengths**: Primary key generation supports Unicode content; credibility indicators expose ARIA metadata; expand/collapse interactions feel smooth.
+
+### Navigation.tsx
+
+- **Issues**: The "4H Research" abbreviation can confuse new users; logging out does not close WebSocket sessions before redirecting; `getParadigmHoverClass` re-instantiates each render.
+- **Strengths**: Breakpoints are deliberate; skip link remains functional; mobile transitions are fluid.
+
+#### Cross-Cutting Priorities
+
+- **Performance**: Extract render-stable helpers in `ResearchPage` and `Navigation`, and batch state updates in `ContextMetricsPanel`.
+- **UX**: Remove stale comments from `ResearchFormEnhanced`, clarify the `ResearchProgress` timeout message, and consolidate the dual feedback panels in `ResearchPage`.
+- **Data Handling**: Replace broad `Record<string, unknown>` metadata typing, localize evidence timestamps, and differentiate error statuses in `ResearchResultPage`.
+- **Missing Enhancements**: Add a metrics refresh trigger, allow pausing research updates during tab switches, and tear down live connections on logout.
+
 Roadmap Items
 -------------
 

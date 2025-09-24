@@ -9,13 +9,15 @@ import { Badge } from './ui/Badge'
 import PhaseTracker from './research/PhaseTracker'
 import ResearchStats from './research/ResearchStats'
 import EventLog, { type ProgressUpdate as LogUpdate, type CategoryKey as LogCategory } from './research/EventLog'
-import api from '../services/api'
+import api, { type WSMessage } from '../services/api'
 import { stripHtml } from '../utils/sanitize'
 
 const MAX_UPDATES = 100
 const MAX_SOURCE_PREVIEWS = 10
 const MAX_API_BADGES = 12
 const RESEARCH_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+// Configurable via VITE_PROGRESS_WS_TIMEOUT_MS (see VITE_CONFIG.md)
+const WS_TIMEOUT_MS = Number(import.meta.env.VITE_PROGRESS_WS_TIMEOUT_MS ?? 180000)
 
 const toFiniteNumber = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -192,6 +194,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [validationError, setValidationError] = useState<string | null>(null)
   const [pollingTimeout, setPollingTimeout] = useState<boolean>(false)
   const [liveAnnouncement, setLiveAnnouncement] = useState<string>('')
+  const [wsPaused, setWsPaused] = useState(false)
   const safeResearchId = React.useMemo(() => {
     const trimmed = (researchId || '').trim()
     return RESEARCH_ID_PATTERN.test(trimmed) ? trimmed : null
@@ -203,6 +206,8 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const onCancelRef = useRef<typeof onCancel>(onCancel)
   const startTimeRef = useRef<number | null>(null)
   const timeoutTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const wsCallbackRef = useRef<((message: WSMessage) => void) | null>(null)
+  const wsPausedRef = useRef(false)
   useEffect(() => { startTimeRef.current = startTime }, [startTime])
 
   useEffect(() => {
@@ -263,16 +268,15 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
     if (timeoutTimerRef.current) {
       clearTimeout(timeoutTimerRef.current)
     }
-    const TIMEOUT_MS = Number(import.meta.env.VITE_PROGRESS_WS_TIMEOUT_MS || 180000)
     timeoutTimerRef.current = setTimeout(() => {
       setPollingTimeout(true)
       setCurrentStatus('failed')
       if (onCompleteRef.current) {
         onCompleteRef.current()
       }
-    }, Number.isFinite(TIMEOUT_MS) ? TIMEOUT_MS : 180000)
+    }, Number.isFinite(WS_TIMEOUT_MS) ? WS_TIMEOUT_MS : 180000)
 
-    api.connectWebSocket(safeResearchId, (message) => {
+    const handleMessage = (message: WSMessage) => {
       setIsConnecting(false)
 
       // Clear timeout on any message received
@@ -717,7 +721,12 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
       if (normalizedStatus === 'cancelled' && onCancelRef.current) {
         onCancelRef.current()
       }
-    })
+    }
+
+    wsCallbackRef.current = handleMessage
+    if (!document.hidden) {
+      api.connectWebSocket(safeResearchId, handleMessage)
+    }
 
     return () => {
       api.unsubscribeFromResearch(safeResearchId)
@@ -725,8 +734,52 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         clearTimeout(timeoutTimerRef.current)
         timeoutTimerRef.current = null
       }
+      wsCallbackRef.current = null
+      wsPausedRef.current = false
+      setWsPaused(false)
     }
   }, [safeResearchId, CE_LEN])
+
+  useEffect(() => {
+    if (!safeResearchId) return
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        wsPausedRef.current = true
+        setWsPaused(true)
+        setLiveAnnouncement('Live updates paused while this tab is inactive.')
+        api.unsubscribeFromResearch(safeResearchId)
+        if (timeoutTimerRef.current) {
+          clearTimeout(timeoutTimerRef.current)
+          timeoutTimerRef.current = null
+        }
+      } else {
+        const cb = wsCallbackRef.current
+        if (cb) {
+          api.connectWebSocket(safeResearchId, cb)
+        }
+        if (wsPausedRef.current) {
+          setLiveAnnouncement('Resumed live updates.')
+        }
+        if (timeoutTimerRef.current) {
+          clearTimeout(timeoutTimerRef.current)
+        }
+        timeoutTimerRef.current = setTimeout(() => {
+          setPollingTimeout(true)
+          setCurrentStatus('failed')
+          if (onCompleteRef.current) {
+            onCompleteRef.current()
+          }
+        }, Number.isFinite(WS_TIMEOUT_MS) ? WS_TIMEOUT_MS : 180000)
+        wsPausedRef.current = false
+        setWsPaused(false)
+        setPollingTimeout(false)
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [safeResearchId])
 
   // Elapsed time ticker
   useEffect(() => {
@@ -854,6 +907,11 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
             >
               {isCancelling ? 'Cancelling...' : 'Cancel'}
             </Button>
+          )}
+          {wsPaused && (
+            <Badge variant="warning" size="sm" className="text-xs">
+              Updates paused
+            </Badge>
           )}
           <StatusBadge
             status={getStatusType()}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 // AlertCircle not currently used
@@ -10,6 +10,31 @@ import ParadigmDisplay from './ParadigmDisplay'
 import { ClassificationFeedback } from './feedback/ClassificationFeedback'
 import api from '../services/api'
 import type { ResearchResult, ParadigmClassification, ResearchOptions } from '../types'
+
+type StagedStatus = 'queued' | 'processing' | 'in_progress' | 'failed' | 'cancelled'
+
+const stagedStatuses: StagedStatus[] = ['queued', 'processing', 'in_progress']
+
+const getStatus = (obj: unknown): StagedStatus | 'completed' | undefined => {
+  if (obj && typeof obj === 'object') {
+    const rec = obj as Record<string, unknown>
+    if (typeof rec.status === 'string') {
+      return rec.status as StagedStatus | 'completed'
+    }
+    if ('answer' in rec && 'paradigm_analysis' in rec) {
+      return 'completed'
+    }
+  }
+  return undefined
+}
+
+const getMessage = (obj: unknown): string | undefined => {
+  if (obj && typeof obj === 'object') {
+    const rec = obj as Record<string, unknown>
+    return typeof rec.message === 'string' ? rec.message : undefined
+  }
+  return undefined
+}
 
 export const ResearchPage = () => {
   const navigate = useNavigate()
@@ -23,25 +48,30 @@ export const ResearchPage = () => {
   const [showProgress, setShowProgress] = useState(false)
   const [stopPolling, setStopPolling] = useState(false)
   const pollStartRef = useRef<number | null>(null)
+  const [classificationState, setClassificationState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
 
   // Live classification preview with debounce
   useEffect(() => {
     // Reset preview when query cleared or while a research is running
     if (!liveQuery || isLoading) {
       setLiveClassification(null)
+      setClassificationState('idle')
       return
     }
 
     const trimmed = liveQuery.trim()
     if (trimmed.length < 10) {
       setLiveClassification(null)
+      setClassificationState('idle')
       return
     }
+
+    let cancelled = false
+    setClassificationState('loading')
 
     const handle = setTimeout(async () => {
       try {
         const data = await api.classifyQuery(trimmed)
-        // Normalize to ParadigmClassification shape
         if (data && data.primary) {
           setLiveClassification({
             primary: data.primary,
@@ -50,38 +80,22 @@ export const ResearchPage = () => {
             confidence: typeof data.confidence === 'number' ? data.confidence : 0,
             explanation: data.explanation || {}
           })
+          if (!cancelled) {
+            setClassificationState('ready')
+          }
         }
       } catch {
-        // Silent fail for preview
+        if (!cancelled) {
+          setClassificationState('error')
+        }
       }
     }, 400)
 
-    return () => clearTimeout(handle)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
   }, [liveQuery, isLoading])
-
-  // Type helpers for staged/terminal statuses from results endpoint
-  type StagedStatus = 'queued' | 'processing' | 'in_progress' | 'failed' | 'cancelled'
-  const getStatus = (obj: unknown): StagedStatus | string | undefined => {
-    if (obj && typeof obj === 'object') {
-      const rec = obj as Record<string, unknown>
-      // Check for explicit status field
-      if (typeof rec.status === 'string') {
-        return rec.status
-      }
-      // If we have answer and paradigm_analysis, it's completed results
-      if (rec.answer && rec.paradigm_analysis) {
-        return 'completed'
-      }
-    }
-    return undefined
-  }
-  const getMessage = (obj: unknown): string | undefined => {
-    if (obj && typeof obj === 'object') {
-      const rec = obj as Record<string, unknown>
-      return typeof rec.message === 'string' ? rec.message : undefined
-    }
-    return undefined
-  }
 
   const handleSubmit = async (query: string, options: ResearchOptions) => {
     setIsLoading(true)
@@ -89,6 +103,8 @@ export const ResearchPage = () => {
     setResults(null)
     setShowProgress(true)
     setStopPolling(false)
+    setParadigmClassification(null)
+    setClassificationState('idle')
 
     try {
       // Submit research query
@@ -118,13 +134,19 @@ export const ResearchPage = () => {
     refetchInterval: (query) => {
       const d: unknown = query.state.data as unknown
       const s = getStatus(d)
-      const staged: StagedStatus[] = ['queued','processing','in_progress']
       // Keep polling if still in progress
-      if (s && staged.includes(s as StagedStatus)) return 2000
+      if (s && stagedStatuses.includes(s as StagedStatus)) return 2000
       // Stop polling once we have a final status
       return false
     },
     staleTime: 1000,
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : 'Unable to check research status.'
+      setError(message)
+      setIsLoading(false)
+      setShowProgress(false)
+      setStopPolling(true)
+    },
   })
 
   // Apply polled results
@@ -132,10 +154,9 @@ export const ResearchPage = () => {
     if (!polledResults || !currentResearchId) return
 
     const status = getStatus(polledResults)
-    const staged: StagedStatus[] = ['queued','processing','in_progress']
 
     // Skip if still in progress
-    if (status && staged.includes(status as StagedStatus)) return
+    if (status && stagedStatuses.includes(status as StagedStatus)) return
 
     // Handle error states
     if (status === 'failed' || status === 'cancelled') {
@@ -197,7 +218,7 @@ export const ResearchPage = () => {
       if (!start) return
       const elapsed = Date.now() - start
       if (elapsed >= TIMEOUT_MS) {
-        setError('Research is taking longer than usual but is still running. You can keep this page open or come back later in History.')
+        setError('We paused live updates after a long run. Your research continues in the background and will appear in History.')
         setIsLoading(false)
         setStopPolling(true)
         clearInterval(id)
@@ -205,6 +226,28 @@ export const ResearchPage = () => {
     }, 2000)
     return () => clearInterval(id)
   }, [showProgress, currentResearchId])
+
+  const classificationBlock = useMemo(() => {
+    if (results && !showProgress && paradigmClassification) {
+      return {
+        heading: 'Paradigm Overview',
+        classification: paradigmClassification,
+        researchId: results.research_id || null,
+        query: results.query || liveQuery,
+      }
+    }
+
+    if (!results && !showProgress && liveClassification) {
+      return {
+        heading: 'Live Paradigm Preview',
+        classification: liveClassification,
+        researchId: null,
+        query: liveQuery,
+      }
+    }
+
+    return null
+  }, [results, showProgress, paradigmClassification, liveClassification, liveQuery])
 
   return (
     <div id="main-content" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-fade-in">
@@ -217,7 +260,12 @@ export const ResearchPage = () => {
         </p>
       </div>
 
-      <ResearchFormEnhanced onSubmit={handleSubmit} isLoading={isLoading} onQueryChange={setLiveQuery} />
+      <ResearchFormEnhanced
+        onSubmit={handleSubmit}
+        isLoading={isLoading}
+        onQueryChange={setLiveQuery}
+        classificationState={classificationState}
+      />
 
       {error && (
         <Alert variant="error" title="Research Error" className="mt-4">
@@ -225,31 +273,15 @@ export const ResearchPage = () => {
         </Alert>
       )}
 
-      {/* Live preview before submission */}
-      {!results && !showProgress && liveClassification && (
+      {classificationBlock && (
         <div className="animate-scale-in">
-          <div className="mb-2 text-xs text-text-muted">Live Paradigm Preview</div>
-          <ParadigmDisplay classification={liveClassification} />
-          {/* Optional classification feedback before run (research_id omitted) */}
+          <div className="mb-2 text-xs text-text-muted">{classificationBlock.heading}</div>
+          <ParadigmDisplay classification={classificationBlock.classification} />
           <div className="mt-2">
             <ClassificationFeedback
-              researchId={null}
-              query={liveQuery}
-              classification={liveClassification}
-            />
-          </div>
-        </div>
-      )}
-
-      {paradigmClassification && (
-        <div className="animate-scale-in">
-          <ParadigmDisplay classification={paradigmClassification} />
-          {/* Classification feedback tied to this research run when available */}
-          <div className="mt-2">
-            <ClassificationFeedback
-              researchId={results?.research_id || null}
-              query={results?.query || liveQuery}
-              classification={paradigmClassification}
+              researchId={classificationBlock.researchId}
+              query={classificationBlock.query}
+              classification={classificationBlock.classification}
             />
           </div>
         </div>

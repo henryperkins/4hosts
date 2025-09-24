@@ -3,7 +3,7 @@ Research-related Pydantic models
 """
 
 from typing import Optional, Dict, List, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from models.base import (
     ResearchDepth,
@@ -30,6 +30,17 @@ class ResearchOptions(BaseModel):
     )
     user_location: Optional[Dict[str, str]] = None
 
+    @validator("paradigm_override", pre=True)
+    def _coerce_optional_paradigm(cls, value: Any) -> Optional[Any]:  # type: ignore[override]
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"", "null", "none", "auto"}:
+                return None
+            return normalized
+        return value
+
 
 class ResearchQuery(BaseModel):
     query: str = Field(..., min_length=10, max_length=500)
@@ -48,9 +59,10 @@ class ResearchResult(BaseModel):
 
 
 class ParadigmOverrideRequest(BaseModel):
-    """Request model to force a different paradigm for research job"""
+    """Request model to force or clear a paradigm for a research job"""
+
     research_id: str
-    paradigm: Paradigm
+    paradigm: Optional[Paradigm] = None
     reason: Optional[str] = None
 
 

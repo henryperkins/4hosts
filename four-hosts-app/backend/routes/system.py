@@ -13,6 +13,7 @@ import structlog
 from fastapi import APIRouter, Request
 
 from core.limits import API_RATE_LIMITS, WS_RATE_LIMITS
+from core.config import PROGRESS_WS_TIMEOUT_MS, RESULTS_POLL_TIMEOUT_MS
 from services.context_engineering import context_pipeline
 from services.cache import cache_manager
 from services.research_store import research_store
@@ -63,6 +64,15 @@ async def get_limits() -> Dict[str, Any]:
     return {
         "plans": _serialise_api_limits(),
         "realtime": _serialise_ws_limits(),
+    }
+
+
+@router.get("/frontend-config")
+async def get_frontend_config() -> Dict[str, Any]:
+    """Expose timeout-related configuration for frontend alignment."""
+    return {
+        "progress_ws_timeout_ms": PROGRESS_WS_TIMEOUT_MS,
+        "results_poll_timeout_ms": RESULTS_POLL_TIMEOUT_MS,
     }
 
 

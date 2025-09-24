@@ -86,6 +86,22 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_ms(primary: str, default: int, *aliases: str) -> int:
+    """Read a millisecond timeout from env, supporting multiple keys."""
+    candidates = (primary, *aliases)
+    for key in candidates:
+        raw = os.getenv(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            value = int(float(raw))
+            if value > 0:
+                return value
+        except Exception:
+            continue
+    return default
+
+
 # Baseline words per entire answer (allocated per section by weight)
 # UPDATED FOR O3: Increased from 5000 to 50000 to utilize o3's 100k output capacity
 SYNTHESIS_BASE_WORDS: int = _env_int("SYNTHESIS_BASE_WORDS", 50000)
@@ -116,6 +132,18 @@ EVIDENCE_SEMANTIC_SCORING: bool = (os.getenv("EVIDENCE_SEMANTIC_SCORING", "1").l
 
 # Include short per‑source summaries alongside quotes in prompts
 EVIDENCE_INCLUDE_SUMMARIES: bool = (os.getenv("EVIDENCE_INCLUDE_SUMMARIES", "1").lower() in {"1", "true", "yes"})
+
+# Frontend-aligned timeout knobs (mirrors Vite env defaults)
+PROGRESS_WS_TIMEOUT_MS: int = _env_ms(
+    "PROGRESS_WS_TIMEOUT_MS",
+    180_000,
+    "VITE_PROGRESS_WS_TIMEOUT_MS",
+)
+RESULTS_POLL_TIMEOUT_MS: int = _env_ms(
+    "RESULTS_POLL_TIMEOUT_MS",
+    1_200_000,  # 20 minutes
+    "VITE_RESULTS_POLL_TIMEOUT_MS",
+)
 
 
 # ────────────────────────────────────────────────────────────

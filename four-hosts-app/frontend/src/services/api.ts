@@ -464,8 +464,19 @@ class APIService {
     const response = await this.fetchWithAuth(`/research/results/${safeResearchId}`)
 
     if (!response.ok) {
-      const error = await response.json()
-      throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to get research results')
+      let message = 'Failed to get research results'
+      try {
+        const error = await response.json()
+        const detail = typeof error.detail === 'string' ? error.detail : undefined
+        if (detail) {
+          message = detail
+        }
+      } catch {
+        // ignore parse errors
+      }
+      const err = new Error(message) as Error & { status?: number }
+      err.status = response.status
+      throw err
     }
 
     const data = await response.json()

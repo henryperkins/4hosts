@@ -3,6 +3,10 @@
 ## Overview
 The Four Hosts application tracks research progress through a WebSocket-based real-time system that flows from backend services through to the frontend UI. Progress updates are broadcast at each major phase of the research pipeline.
 
+### Timeout alignment
+- Progress sockets honour `PROGRESS_WS_TIMEOUT_MS` (mirrors `VITE_PROGRESS_WS_TIMEOUT_MS`). The backend keeps an internal heartbeat interval derived from this value and announces it to clients via the `/system/frontend-config` endpoint as well as on resume heartbeats so UI pause messaging stays in sync.
+- REST polling honours `RESULTS_POLL_TIMEOUT_MS` (mirrors `VITE_RESULTS_POLL_TIMEOUT_MS`). These values surface in both `/research/status/{id}` and `/research/results/{id}` payloads to document the backend-side expectations for long-running jobs.
+
 ## Architecture Components
 
 ### 1. Core Progress Infrastructure

@@ -75,7 +75,10 @@ type EvidenceQuote = {
   id: string
 }
 
-type AnswerMetadataType = { evidence_quotes?: EvidenceQuoteRaw[]; statistical_insights?: number } & Record<string, unknown>
+type AnswerMetadataType = Partial<ResearchResult['metadata']> & {
+  evidence_quotes?: EvidenceQuoteRaw[]
+  statistical_insights?: number
+}
 
 type PrimaryAnswer = {
   citations?: AnswerCitation[]
@@ -138,12 +141,27 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   const [sourcesPageSize, setSourcesPageSize] = useState<number>(20)
   const [sourcesPage, setSourcesPage] = useState<number>(1)
   const fetchedAtRef = useRef<string>(new Date().toISOString())
+  const [metadataError, setMetadataError] = useState<string | null>(null)
 
   const integrated_synthesis = results.integrated_synthesis as unknown as IntegratedSynthesis | undefined
   const baseAnswer = (integrated_synthesis?.primary_answer ??
     (results as unknown as { answer?: PrimaryAnswer }).answer) as PrimaryAnswer | undefined
 
-  const metadata = results.metadata ?? {}
+  const rawMetadata = results.metadata
+  const metadata = useMemo<AnswerMetadataType>(() => {
+    if (rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)) {
+      return rawMetadata as AnswerMetadataType
+    }
+    return {} as AnswerMetadataType
+  }, [rawMetadata])
+
+  useEffect(() => {
+    if (rawMetadata && (typeof rawMetadata !== 'object' || Array.isArray(rawMetadata))) {
+      setMetadataError('Some metadata fields could not be parsed and were hidden.')
+    } else {
+      setMetadataError(null)
+    }
+  }, [rawMetadata])
 
   const contextLayers = useMemo<ContextLayersInfo | null>(() => {
     const legacy = results.paradigm_analysis?.context_engineering as ContextLayersInfo | undefined
@@ -154,9 +172,15 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
   const actionableRatio = Number(metadata?.actionable_content_ratio ?? 0)
   const bias = metadata?.bias_check
-  const categoryDistribution = (metadata?.category_distribution || {}) as Record<string, number>
-  const biasDistribution = (metadata?.bias_distribution || {}) as Record<string, number>
-  const credibilityDistribution = (metadata?.credibility_summary?.score_distribution || {}) as Record<'high' | 'medium' | 'low', number>
+  const categoryDistribution = useMemo(() => (
+    (metadata?.category_distribution || {}) as Record<string, number>
+  ), [metadata?.category_distribution])
+  const biasDistribution = useMemo(() => (
+    (metadata?.bias_distribution || {}) as Record<string, number>
+  ), [metadata?.bias_distribution])
+  const credibilityDistribution = useMemo(() => (
+    (metadata?.credibility_summary?.score_distribution || {}) as Record<'high' | 'medium' | 'low', number>
+  ), [metadata?.credibility_summary?.score_distribution])
 
   const toBase64Safe = (s: string): string | null => {
     try {
@@ -183,7 +207,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     }
   }
 
-  const sourcesList = (Array.isArray(results.sources) ? results.sources : []) as ResearchSource[]
+  const sourcesList = useMemo<ResearchSource[]>(() => (
+    Array.isArray(results.sources) ? results.sources : []
+  ) as ResearchSource[], [results.sources])
 
   const domainInfo = useMemo(() => {
     const map: Record<string, { category?: string; explanation?: string; score?: number }> = {}
@@ -205,6 +231,8 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     let strong = 0, moderate = 0, weak = 0
     let minDate: number | null = null
     let maxDate: number | null = null
+    const locale = typeof navigator !== 'undefined' && navigator.language ? navigator.language : undefined
+    const formatDate = (value: number) => new Date(value).toLocaleDateString(locale)
     for (const s of sourcesList) {
       const sc = typeof s.credibility_score === 'number' ? s.credibility_score : undefined
       if (typeof sc === 'number') {
@@ -226,7 +254,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       strong,
       moderate,
       weak,
-      window: minDate && maxDate ? `${new Date(minDate).toLocaleDateString()}-${new Date(maxDate).toLocaleDateString()}` : undefined,
+      window: minDate && maxDate ? `${formatDate(minDate)}-${formatDate(maxDate)}` : undefined,
     }
   }, [sourcesList])
 
@@ -309,7 +337,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       }
     })
     return out
-  }, [baseAnswer?.metadata, metadata?.evidence_quotes])
+  }, [baseAnswer, metadata?.evidence_quotes])
 
   // Coerce secondary perspective to a section (hook must be unconditional)
   const secondaryAsSection: AnswerSection | null = useMemo(() => {
@@ -324,9 +352,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   }, [integrated_synthesis?.secondary_perspective])
 
   const allSections: AnswerSection[] = useMemo(() => {
-    const baseSections = Array.isArray(baseAnswer?.sections) ? baseAnswer!.sections! : []
+    const baseSections = Array.isArray(baseAnswer?.sections) ? baseAnswer.sections : []
     return secondaryAsSection ? [...baseSections, secondaryAsSection] : baseSections
-  }, [baseAnswer?.sections, secondaryAsSection])
+  }, [baseAnswer, secondaryAsSection])
 
   // Sources filtering/sorting/pagination
   const {
@@ -375,7 +403,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   if (!baseAnswer) {
     const noSearchResults =
       (metadata?.total_sources_analyzed === 0) ||
-      (metadata as any)?.evidence_builder_skipped === true // If you have this in the type, remove "as any".
+      metadata?.evidence_builder_skipped === true
     const belowThresholdResults = sourcesList.some(s => s.raw_data?.below_relevance_threshold === true)
     const isProcessing = results.status === 'processing' || results.status === 'pending'
 
@@ -414,9 +442,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     Sources analyzed: {metadata.total_sources_analyzed}
                   </p>
                 )}
-                {(metadata as any).error_message && (
+                {metadata?.error_message && (
                   <p className="text-sm text-error mt-1">
-                    Error: {(metadata as any).error_message}
+                    Error: {metadata.error_message}
                   </p>
                 )}
               </>
@@ -513,6 +541,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   return (
     <div className="mt-8 space-y-6 animate-fade-in">
       <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border">
+        <div className="sr-only" aria-live="polite">
+          {isExporting ? `Preparing ${exportFormat ?? 'export'} download…` : ''}
+        </div>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between mb-4">
           <div>
             <h2 className="text-2xl font-bold text-text">Research results</h2>
@@ -522,7 +553,8 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
           <div className="flex flex-wrap gap-2 sm:justify-end sm:items-center">
             {(() => {
-              const pri = results.paradigm_analysis?.primary?.paradigm || (metadata as any)?.paradigm || 'bernard'
+              const fallbackParadigm = typeof metadata?.paradigm === 'string' ? metadata.paradigm : 'bernard'
+              const pri = results.paradigm_analysis?.primary?.paradigm || fallbackParadigm
               return (
                 <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getParadigmClass(pri || 'bernard')}`}>
                   {getParadigmDescription(pri || 'bernard')}
@@ -562,7 +594,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 {
                   (() => {
                     const allowed = ['json', 'csv', 'pdf', 'markdown', 'excel'] as const
-                    const exportFormats = (results as unknown as { export_formats?: Record<string, string> }).export_formats || {}
+                    const exportFormats = results.export_formats || {}
                     const map: Record<string, string> = { ...exportFormats }
                     if (Object.keys(map).length === 0) {
                       // Fallback for display only; actual export uses api.exportResearch()
@@ -592,6 +624,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             </div>
           </div>
         </div>
+
+        {metadataError && (
+          <div className="mt-3 p-3 border border-warning/30 bg-warning/10 text-warning text-xs rounded-md">
+            {metadataError}
+          </div>
+        )}
 
         <div className="mt-3">
           <p className="text-text text-base"><span className="font-semibold">Bottom line:</span> {bottomLine(summary)}</p>
@@ -1064,11 +1102,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             >
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                 <h3 className="text-lg font-semibold text-text">{section.title}</h3>
-                <span className={`px-2 py-1 rounded text-xs font-medium ${getParadigmClass((section as any)?.paradigm || 'bernard')}`}>
-                  {getParadigmDescription((section as any)?.paradigm || 'bernard')}
+                <span className={`px-2 py-1 rounded text-xs font-medium ${getParadigmClass(section.paradigm || 'bernard')}`}>
+                  {getParadigmDescription(section.paradigm || 'bernard')}
                 </span>
                 <span className="text-sm text-text-muted">
-                  {Number((section as any)?.sources_count ?? 0)} sources • {Math.round(Number((section as any)?.confidence ?? 0) * 100)}% confidence
+                  {Number(section.sources_count ?? 0)} sources • {Math.round(Number(section.confidence ?? 0) * 100)}% confidence
                 </span>
               </div>
               {expandedSections.has(index) ? (
