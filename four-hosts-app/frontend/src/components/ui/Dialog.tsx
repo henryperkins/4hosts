@@ -167,7 +167,7 @@ export const Dialog: React.FC<DialogProps> = ({
             {showCloseButton && (
               <button
                 onClick={onClose}
-                className="ml-auto -mr-2 -mt-2 p-2 text-text-muted hover:text-text rounded-lg hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 touch-target active:scale-95"
+                className="ml-auto -mr-2 -mt-2 p-2 text-text-muted hover:text-text rounded-lg hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary touch-target active:scale-95"
                 aria-label="Close dialog"
               >
                 <FiX className="h-5 w-5" />

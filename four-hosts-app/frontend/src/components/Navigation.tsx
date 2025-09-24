@@ -77,7 +77,7 @@ export const Navigation = () => {
                   <Link
                     key={path}
                     to={path}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 hover-lift focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 touch-target ${
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 hover-lift focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary touch-target ${
                       isActive(path)
                         ? 'bg-primary/10 text-primary shadow-lg scale-105'
                         : `text-text-muted hover:bg-surface-subtle ${getParadigmHoverClass(paradigm)} active:scale-95`
@@ -108,7 +108,7 @@ export const Navigation = () => {
 
             <Link
               to="/profile"
-              className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 hover-lift focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+              className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 hover-lift focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
                 isActive('/profile')
                   ? 'bg-primary/10 text-primary shadow-md'
                   : 'text-text-muted hover:text-text hover:bg-surface-subtle'
@@ -169,7 +169,7 @@ export const Navigation = () => {
                 closeMobileMenu()
                 navigate('/login')
               }}
-              className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 justify-start"
+              className="text-error hover:bg-error/10 justify-start"
             >
               Logout
             </Button>

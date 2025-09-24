@@ -48,9 +48,9 @@ export const ClassificationFeedback: React.FC<Props> = ({ researchId, query, cla
   }
 
   return (
-    <div className="mt-3 p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800">
+    <div className="mt-3 p-4 border border-border rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <span className="text-sm text-gray-700 dark:text-gray-300">Was this classification correct?</span>
+        <span className="text-sm text-text">Was this classification correct?</span>
         <div className="flex gap-2">
           <Button
             variant={agree === true ? 'success' : 'ghost'}
@@ -74,7 +74,7 @@ export const ClassificationFeedback: React.FC<Props> = ({ researchId, query, cla
       {agree === false && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Choose the correct paradigm</label>
+            <label className="block text-sm text-text mb-1">Choose the correct paradigm</label>
             <div className="flex flex-wrap gap-2">
               {options.map((p) => (
                 <Button
@@ -112,7 +112,7 @@ export const ClassificationFeedback: React.FC<Props> = ({ researchId, query, cla
           Submit
         </Button>
         {agree === true && (
-          <span className="text-xs text-gray-500 dark:text-gray-400 inline-flex items-center gap-1"><FiCheck /> You’re confirming the classification.</span>
+          <span className="text-xs text-text-muted inline-flex items-center gap-1"><FiCheck /> You’re confirming the classification.</span>
         )}
       </div>
     </div>

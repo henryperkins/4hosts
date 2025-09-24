@@ -151,7 +151,7 @@ export const StatCard = forwardRef<HTMLDivElement, StatCardProps>(
             <p className="text-2xl font-bold text-text mt-1">{value}</p>
             {trend && (
               <p className={`text-sm mt-2 ${
-                trend.value >= 0 ? 'text-green-600' : 'text-red-600'
+                trend.value >= 0 ? 'text-success' : 'text-error'
               }`}>
                 {trend.value >= 0 ? '+' : ''}{trend.value}% {trend.label}
               </p>

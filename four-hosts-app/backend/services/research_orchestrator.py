@@ -58,6 +58,9 @@ from services.search_apis import (
     SearchConfig,
     create_search_manager,
 )
+from services.session_memory import session_manager
+from services.context_packager import default_packager
+from services.evaluation.context_evaluator import evaluate_context_package, evaluate_context_package_async
 
 # Local imports - utilities
 from utils.cost_attribution import attribute_search_costs
@@ -645,13 +648,25 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except:
             return 5
 
-    def _build_planner_config(self, query_limit: int) -> PlannerConfig:
+    def _build_planner_config(self, query_limit: int, refined_queries: List[str]) -> PlannerConfig:
         """Build planner configuration"""
         base_config = PlannerConfig(
             max_candidates=query_limit,
             enable_agentic=self.agentic_config.get("enabled", False),
         )
-        return build_planner_config(base=base_config)
+        cfg = build_planner_config(base=base_config)
+
+        if refined_queries:
+            if cfg.per_stage_caps.get("context", 0) <= 0:
+                cfg.per_stage_caps["context"] = 6
+            if "context" not in cfg.stage_order:
+                try:
+                    insert_at = cfg.stage_order.index("paradigm") + 1
+                    cfg.stage_order.insert(insert_at, "context")
+                except ValueError:
+                    cfg.stage_order.append("context")
+
+        return cfg
 
     async def execute_research(
         self,
@@ -722,9 +737,35 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             seed_query=seed_query[:100]
         )
 
-        planner_cfg = self._build_planner_config(limited)
+        planner_cfg = self._build_planner_config(limited, refined_queries)
         paradigm_code = normalize_to_internal_code(getattr(classification, "primary_paradigm", HostParadigm.BERNARD))
         planner = QueryPlanner(planner_cfg)
+
+        session = None
+        if research_id:
+            try:
+                policy = "summary" if self.agentic_config.get("enabled", False) else "trim"
+                policy_kwargs: Dict[str, Any]
+                if policy == "summary":
+                    policy_kwargs = {"keep_last_n_turns": 3, "context_limit": 6}
+                else:
+                    policy_kwargs = {"max_turns": 4}
+                session = await session_manager.get_or_create(
+                    str(research_id),
+                    policy=policy,
+                    **policy_kwargs,
+                )
+                initial_content = original_query or getattr(classification, "query", "")
+                if initial_content:
+                    await session.add_items([
+                        {"role": "user", "content": initial_content},
+                        {
+                            "role": "assistant",
+                            "content": f"Planning research with paradigm '{paradigm_code}'.",
+                        },
+                    ])
+            except Exception:
+                session = None
 
         logger.info("Executing query planner", research_id=research_id, paradigm=paradigm_code)
         try:
@@ -782,6 +823,18 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             len(planned_candidates),
             getattr(classification.primary_paradigm, "value", classification.primary_paradigm),
         )
+
+        if session:
+            try:
+                preview = ", ".join(c.query for c in planned_candidates[:3])
+                await session.add_items([
+                    {
+                        "role": "assistant",
+                        "content": f"Planned {len(planned_candidates)} queries. Preview: {preview}",
+                    }
+                ])
+            except Exception:
+                pass
 
         executed_candidates: List[QueryCandidate] = list(planned_candidates)
         search_metrics_local["total_queries"] = int(search_metrics_local.get("total_queries", 0)) + len(executed_candidates)
@@ -842,11 +895,23 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     cost_accumulator=cost_breakdown,
                     metrics=search_metrics_local,
                 )
-            logger.info(
-                "Search execution completed",
-                research_id=research_id,
-                results_count=sum(len(results) for results in search_results.values())
-            )
+        logger.info(
+            "Search execution completed",
+            research_id=research_id,
+            results_count=sum(len(results) for results in search_results.values())
+        )
+
+        if session:
+            try:
+                total_results = sum(len(res or []) for res in search_results.values())
+                await session.add_items([
+                    {
+                        "role": "assistant",
+                        "content": f"Aggregated {total_results} search results across {len(search_results)} queries.",
+                    }
+                ])
+            except Exception:
+                pass
 
             # Trace – post search batch
             try:
@@ -1025,6 +1090,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 return {"status": "cancelled", "message": "Research was cancelled"}
 
         # Process and enrich results
+        memory_session = session
         processed_results = await self._process_results(
             search_results,
             classification,
@@ -1032,6 +1098,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             user_context,
             progress_callback,
             research_id,
+            memory_session=memory_session,
             metrics=search_metrics_local,
         )
         try:
@@ -1607,6 +1674,67 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         if apis_used:
             processed_results.setdefault("metadata", {})["apis_used"] = apis_used
 
+        packaged_context = None
+        context_eval = None
+        try:
+            session_notes: List[str] = []
+            if memory_session:
+                try:
+                    history = await memory_session.get_items()
+                except Exception:
+                    history = []
+                for item in history[-6:]:
+                    if isinstance(item, dict):
+                        role = item.get("role") or "assistant"
+                        content = (item.get("content") or "").strip()
+                        if content:
+                            session_notes.append(f"{role}: {content}")
+
+            packaged_context = default_packager.build_from_context(
+                context_engineered,
+                base_instructions="Research orchestration context seed",
+                memory_items=session_notes,
+            )
+
+            answer_text = ""
+            if synthesized_answer is not None:
+                answer_text = (
+                    getattr(synthesized_answer, "text", "")
+                    or getattr(synthesized_answer, "content", "")
+                    or getattr(synthesized_answer, "primary_answer", "")
+                    or str(synthesized_answer)
+                )
+
+            retrieved_documents: List[str] = []
+            for source in normalized_sources:
+                if isinstance(source, dict):
+                    title = source.get("title", "")
+                    snippet = source.get("snippet", "")
+                else:
+                    title = getattr(source, "title", "")
+                    snippet = getattr(source, "snippet", "")
+                retrieved_documents.append(f"{title} {snippet}")
+
+            # Try async evaluation with Content Safety if available
+            try:
+                context_eval = await evaluate_context_package_async(
+                    packaged_context,
+                    answer=answer_text,
+                    retrieved_documents=retrieved_documents,
+                    check_content_safety=True
+                )
+            except:
+                # Fallback to sync evaluation if async fails
+                context_eval = evaluate_context_package(
+                    packaged_context,
+                    answer=answer_text,
+                    retrieved_documents=retrieved_documents,
+                )
+        except Exception as exc:
+            logger.debug("context_evaluation_failed", error=str(exc))
+            packaged_context = None
+            context_eval = None
+
         response = {
             "research_id": research_id or f"research_{int(start_time.timestamp())}",
             "query": getattr(context_engineered, "original_query", classification.query),
@@ -1645,6 +1773,32 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             },
             "export_formats": {},
         }
+
+        if packaged_context:
+            try:
+                response["metadata"]["context_bundle"] = {
+                    "total_budget": packaged_context.total_budget,
+                    "total_used": packaged_context.total_used,
+                    "segments": [
+                        {
+                            "name": seg.name,
+                            "budget_tokens": seg.budget_tokens,
+                            "used_tokens": seg.used_tokens,
+                            "dropped": len(seg.dropped),
+                        }
+                        for seg in packaged_context.segments
+                    ],
+                }
+            except Exception:
+                pass
+
+        if context_eval:
+            try:
+                response["metadata"]["context_evaluation"] = context_eval.as_dict()
+                if context_eval.notes:
+                    response["metadata"]["context_evaluation_notes"] = context_eval.notes
+            except Exception:
+                pass
 
         # Ensure "classification_details" is properly typed using ClassificationDetailsSchema
         try:
@@ -2434,6 +2588,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         user_context: Any,
         progress_callback: Optional[Any] = None,
         research_id: Optional[str] = None,
+        memory_session: Optional[Any] = None,
         *,
         metrics: Optional[SearchMetrics] = None,
     ) -> Dict[str, Any]:
@@ -2457,7 +2612,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             try:
                 sm = getattr(self, "search_manager", None)
                 if sm is not None:
-                    session = sm._any_session()
+                    http_session = sm._any_session()
                     limit = int(os.getenv("SEARCH_BACKFILL_CONCURRENCY", "8") or 8)
                     sem_fetch = asyncio.Semaphore(max(1, limit))
 
@@ -2465,7 +2620,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         res, url = item
                         async with sem_fetch:
                             try:
-                                fetched = await sm.fetcher.fetch(session, url)
+                                fetched = await sm.fetcher.fetch(http_session, url)
                                 if fetched and not str(getattr(res, "content", "") or "").strip():
                                     res.content = fetched
                             except Exception:

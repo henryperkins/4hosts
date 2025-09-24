@@ -1241,16 +1241,43 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
 
         with otel_span("rag.provider.search", attrs):
             await self.rate.wait()
-            # Map safe search to Google's accepted values: 'active' or 'off'
-            safe_level = "off" if str(getattr(cfg, "safe_search", "moderate")).lower() == "off" else "active"
-            params = {
+            # Map SearchConfig fields to official Custom Search parameters
+            safe_pref = str(getattr(cfg, "safe_search", "moderate") or "").lower()
+            safe_level = "off" if safe_pref in {"off", "disabled"} else "active"
+
+            num = max(1, min(int(cfg.max_results or 10), 10))
+            params: Dict[str, Any] = {
                 "key": self.api_key,
                 "cx": self.cx,
                 "q": self.qopt.optimize_query(query),
-                "num": min(cfg.max_results, 10),
+                "num": num,
                 "safe": safe_level,
                 "hl": cfg.language,
             }
+
+            lang = (cfg.language or "").lower()
+            if lang:
+                primary_lang = lang.split("-")[0]
+                if len(primary_lang) == 2 and primary_lang.isalpha():
+                    params["lr"] = f"lang_{primary_lang}"
+
+            if cfg.region and isinstance(cfg.region, str) and len(cfg.region) == 2:
+                params["gl"] = cfg.region.lower()
+
+            if cfg.date_range:
+                params["dateRestrict"] = cfg.date_range
+
+            if cfg.exclusion_keywords:
+                cleaned = sorted({kw.strip() for kw in cfg.exclusion_keywords if kw and kw.strip()})
+                if cleaned:
+                    params["excludeTerms"] = " ".join(cleaned)
+
+            offset = max(0, int(getattr(cfg, "offset", 0) or 0))
+            if offset:
+                # API allows start indices up to 91 (start + num - 1 <= 100)
+                start_idx = offset + 1
+                max_start = max(1, 100 - num + 1)
+                params["start"] = min(start_idx, max_start)
             # Use a reasonable timeout for Google Search
             timeout = aiohttp.ClientTimeout(total=15)
             try:
@@ -1278,12 +1305,23 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
 
             attrs["http_status"] = 200
             attrs["success"] = True
+            info = data.get("searchInformation", {}) if isinstance(data, dict) else {}
+            if isinstance(info, dict):
+                total = info.get("totalResults")
+                if total:
+                    attrs["total_results"] = total
+                try:
+                    if info.get("searchTime") is not None:
+                        attrs["search_time_ms"] = int(float(info["searchTime"]) * 1000)
+                except Exception:
+                    pass
             attrs["latency_ms"] = int((time.perf_counter() - start) * 1000)
         items = data.get("items", []) or []
         results: List[SearchResult] = []
         for it in items:
             title = it.get("title", "") or ""
-            url = it.get("link", "") or ""
+            url = it.get("link") or it.get("formattedUrl") or it.get("htmlFormattedUrl") or ""
+            display_link = it.get("displayLink") or ""
             snippet = it.get("snippet", "") or it.get("htmlSnippet", "") or ""
             # Attempt to extract a date if present in pagemap or snippet
             pagemap = it.get("pagemap") or {}
@@ -1303,14 +1341,35 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                             break
                 except Exception:
                     pass
+            file_format = it.get("fileFormat")
+            mime_type = it.get("mime")
+            if not url and display_link and "//" not in display_link:
+                domain_hint = f"https://{display_link}"
+            else:
+                domain_hint = url or display_link
+            raw_item = dict(it)
+            raw_item.setdefault("pagemap", pagemap)
+            raw_item["google_meta"] = {
+                "cache_id": it.get("cacheId"),
+                "display_link": display_link,
+                "formatted_url": it.get("formattedUrl"),
+                "html_formatted_url": it.get("htmlFormattedUrl"),
+                "file_format": file_format,
+                "mime": mime_type,
+                "labels": it.get("labels"),
+            }
+
             res = SearchResult(
                 title=title,
                 url=url,
                 snippet=snippet,
                 source="google_cse",
                 published_date=meta_dt,
-                raw_data=it,
+                result_type=("file" if file_format else "web"),
+                domain=extract_domain(domain_hint) if domain_hint else extract_domain(url),
+                raw_data=raw_item,
             )
+            res.raw_data.setdefault("displayLink", display_link)
             ensure_snippet_content(res)
             results.append(res)
         return self.rfilter.filter(results, query, cfg)
@@ -1339,12 +1398,21 @@ class ExaSearchAPI(BaseSearchAPI):
         q_limit = int(os.getenv("SEARCH_PROVIDER_Q_LIMIT", "400"))
         payload: Dict[str, Any] = {
             "query": _safe_truncate_query(self.qopt.optimize_query(query), q_limit),
-            "numResults": min(cfg.max_results, 10),
+            "num_results": min(cfg.max_results, 10),
         }
+
+        if cfg.authority_whitelist:
+            payload["include_domains"] = list(cfg.authority_whitelist)
+        if cfg.authority_blacklist:
+            payload["exclude_domains"] = list(cfg.authority_blacklist)
+
+        # Request snippet-friendly highlights by default; allow opt-out via env.
+        if os.getenv("EXA_INCLUDE_HIGHLIGHTS", "1").lower() in {"1", "true", "yes"}:
+            payload["highlights"] = True
 
         # Optional: include full text in results
         if os.getenv("EXA_INCLUDE_TEXT", "0").lower() in {"1", "true", "yes"}:
-            payload["contents"] = {"text": True}
+            payload["text"] = True
 
         headers = {
             "x-api-key": self.api_key,
@@ -1372,20 +1440,36 @@ class ExaSearchAPI(BaseSearchAPI):
         results: List[SearchResult] = []
         for it in items:
             # Highlights list -> choose first for snippet, preserve all in raw_data
-            highlights: List[str] = it.get("highlights") or []
+            raw_highlights = it.get("highlights")
+            if isinstance(raw_highlights, list):
+                highlights = raw_highlights
+            elif isinstance(raw_highlights, dict):
+                highlights = list(raw_highlights.get("values", []))
+            else:
+                highlights = []
+            highlight_scores = it.get("highlightScores")
+            if highlight_scores is None:
+                highlight_scores = it.get("highlight_scores")
+
+            published_raw = it.get("publishedDate") or it.get("published_date")
+            parsed_date = (
+                safe_parse_date(published_raw)
+                if isinstance(published_raw, str)
+                else None
+            )
             res = SearchResult(
                 title=it.get("title") or "",
                 url=it.get("url") or "",
                 snippet=(highlights[0] if highlights else ""),
                 source="exa",
-                published_date=safe_parse_date(it.get("publishedDate")) if isinstance(it.get("publishedDate"), str) else None,
+                published_date=parsed_date,
                 author=(it.get("author") or None),
                 raw_data={
                     "exa": {
                         "id": it.get("id"),
                         "score": it.get("score"),
                         "highlights": highlights,
-                        "highlight_scores": it.get("highlightScores"),
+                        "highlight_scores": highlight_scores,
                         "image": it.get("image"),
                         "favicon": it.get("favicon"),
                     }
@@ -2574,11 +2658,30 @@ class SearchAPIManager:
 
         # Organize results by candidate label
         for result in stage_results or []:
-            label = (result.raw_data or {}).get("query_label")
-            stage = (result.raw_data or {}).get("query_stage")
+            raw_data = result.raw_data if isinstance(result.raw_data, dict) else {}
+            label = raw_data.get("query_label")
+            stage = raw_data.get("query_stage")
+
+            if not isinstance(result.raw_data, dict):
+                result.raw_data = raw_data
+
+            provider = (
+                getattr(result, "source_api", None)
+                or getattr(result, "source", None)
+                or raw_data.get("provider")
+                or raw_data.get("source")
+                or "unknown"
+            )
+
+            result.raw_data["cost_attribution"] = {
+                "stage": stage,
+                "label": label,
+                "provider": provider,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
             if isinstance(label, str):
                 results_by_label.setdefault(label, []).append(result)
-            # Add stage:label annotation for downstream use
             if isinstance(label, str) and isinstance(stage, str):
                 result.raw_data["stage_label"] = f"{stage}:{label}"
 

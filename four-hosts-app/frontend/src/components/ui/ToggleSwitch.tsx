@@ -50,15 +50,15 @@ export const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
 
   const variantClasses = {
     default: {
-      checked: 'bg-blue-600 dark:bg-blue-500',
+      checked: 'bg-primary',
       unchecked: 'bg-surface-muted'
     },
     success: {
-      checked: 'bg-green-600 dark:bg-green-500',
+      checked: 'bg-success',
       unchecked: 'bg-surface-muted'
     },
     danger: {
-      checked: 'bg-red-600 dark:bg-red-500',
+      checked: 'bg-error',
       unchecked: 'bg-surface-muted'
     }
   }
@@ -94,7 +94,7 @@ export const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
         relative inline-flex items-center rounded-full
         transition-colors duration-200 ease-in-out
         focus-visible:outline-none focus-visible:ring-2 
-        focus-visible:ring-blue-500 focus-visible:ring-offset-2
+        focus-visible:ring-primary focus-visible:ring-offset-2
         disabled:opacity-50 disabled:cursor-not-allowed
         ${currentSize.switch}
         ${checked ? currentVariant.checked : currentVariant.unchecked}
@@ -197,11 +197,11 @@ export const IconToggle: React.FC<IconToggleProps> = ({
         inline-flex items-center justify-center
         rounded-lg transition-all duration-200
         ${checked 
-          ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' 
+          ? 'bg-primary/15 text-primary border border-primary/20' 
           : 'bg-surface-muted text-text-muted hover:bg-surface-subtle'
         }
         focus-visible:outline-none focus-visible:ring-2 
-        focus-visible:ring-blue-500 focus-visible:ring-offset-2
+        focus-visible:ring-primary focus-visible:ring-offset-2
         disabled:opacity-50 disabled:cursor-not-allowed
         ${sizeClasses[size]}
         ${className}

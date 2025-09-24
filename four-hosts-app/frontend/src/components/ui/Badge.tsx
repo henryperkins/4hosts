@@ -23,7 +23,7 @@ export const Badge: React.FC<BadgeProps> = ({
   const variantClasses = {
     default: 'badge-default',
     success: 'badge bg-success/20 text-success border border-success/30',
-    warning: 'badge bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 border border-yellow-500/30',
+    warning: 'badge bg-warning/20 text-warning border border-warning/30',
     error: 'badge bg-error/20 text-error border border-error/30',
     info: 'badge bg-primary/20 text-primary border border-primary/30',
     paradigm: paradigm ? `badge paradigm-bg-${paradigm} text-paradigm-${paradigm} border border-paradigm-${paradigm}/20` : 'badge-default'
@@ -48,7 +48,7 @@ export const Badge: React.FC<BadgeProps> = ({
       {onRemove && (
         <button
           onClick={onRemove}
-          className="ml-1 -mr-1 hover:bg-black/10 dark:hover:bg-white/10 rounded-full p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-primary"
+          className="ml-1 -mr-1 hover:bg-surface-muted rounded-full p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-primary"
           aria-label="Remove"
         >
           <svg

@@ -12,29 +12,9 @@ export const useThemeStore = create<ThemeState>()(
     (set) => ({
       darkMode: false,
       
-      toggleDarkMode: () => set((state) => {
-        const newValue = !state.darkMode
-        
-        // Update DOM
-        if (newValue) {
-          document.documentElement.classList.add('dark')
-        } else {
-          document.documentElement.classList.remove('dark')
-        }
-        
-        return { darkMode: newValue }
-      }),
+      toggleDarkMode: () => set((state) => ({ darkMode: !state.darkMode })),
       
-      setDarkMode: (darkMode) => set(() => {
-        // Update DOM
-        if (darkMode) {
-          document.documentElement.classList.add('dark')
-        } else {
-          document.documentElement.classList.remove('dark')
-        }
-        
-        return { darkMode }
-      })
+      setDarkMode: (darkMode) => set(() => ({ darkMode }))
     }),
     {
       name: 'theme-store',
@@ -43,8 +23,10 @@ export const useThemeStore = create<ThemeState>()(
         // Apply theme on rehydration
         if (state?.darkMode) {
           document.documentElement.classList.add('dark')
+          document.documentElement.style.colorScheme = 'dark'
         } else {
           document.documentElement.classList.remove('dark')
+          document.documentElement.style.colorScheme = 'light'
         }
       }
     }

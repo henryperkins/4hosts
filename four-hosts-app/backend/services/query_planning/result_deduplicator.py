@@ -32,6 +32,16 @@ class ResultDeduplicator:
             except Exception:
                 similarity_threshold = 0.8
         self.similarity_threshold = similarity_threshold
+        self.provider_thresholds: Dict[str, float] = {"default": self.similarity_threshold}
+        exa_default = 0.85
+        exa_override = os.getenv("DEDUP_SIMILARITY_THRESH_EXA")
+        if exa_override is not None:
+            try:
+                exa_default = float(exa_override)
+            except Exception:
+                exa_default = 0.85
+        exa_clamped = max(0.0, min(1.0, exa_default))
+        self.provider_thresholds["exa"] = exa_clamped
 
     async def deduplicate_results(self, results: List[Any]) -> Dict[str, Any]:
         if not results:
@@ -41,9 +51,11 @@ class ResultDeduplicator:
                 "similarity_threshold": self.similarity_threshold,
             }
 
-        unique_results: List[Any] = []
         duplicates_removed = 0
-        seen_urls: set[str] = set()
+        duplicate_groups: Dict[str, List[Any]] = {}
+        url_index: Dict[str, Tuple[Any, Optional[str]]] = {}
+        url_group_map: Dict[int, Optional[str]] = {}
+        unique_group_map: Dict[int, Optional[str]] = {}
 
         url_deduplicated: List[Any] = []
         for result in results:
@@ -52,11 +64,20 @@ class ResultDeduplicator:
             if not url:
                 duplicates_removed += 1
                 continue
-            if url not in seen_urls:
-                seen_urls.add(url)
-                url_deduplicated.append(result)
-            else:
+            existing = url_index.get(url)
+            if existing:
                 duplicates_removed += 1
+                representative, group_key = existing
+                if not group_key:
+                    group_key = f"group_{len(duplicate_groups) + 1}"
+                    duplicate_groups[group_key] = [representative]
+                    url_index[url] = (representative, group_key)
+                    url_group_map[id(representative)] = group_key
+                duplicate_groups[group_key].append(result)
+                continue
+            url_index[url] = (result, None)
+            url_group_map[id(result)] = None
+            url_deduplicated.append(result)
 
         buckets: Dict[int, List[Tuple[int, Any]]] = {}
         for r in url_deduplicated:
@@ -68,23 +89,87 @@ class ResultDeduplicator:
 
         unique: List[Any] = []
         for _, items in buckets.items():
-            kept: List[Tuple[int, Any]] = []
+            kept: List[Tuple[int, Any, Optional[str]]] = []
             for simhash, result in items:
                 adapter = ResultAdapter(result)
                 is_dup = False
-                for ref_hash, ref in kept:
-                    threshold = self._adaptive_threshold(adapter, ResultAdapter(ref))
+                target_group: Optional[str] = None
+                for idx, (ref_hash, ref, group_key) in enumerate(kept):
+                    ref_adapter = ResultAdapter(ref)
+                    threshold = self._adaptive_threshold(adapter, ref_adapter)
                     if self._hamdist64(simhash, ref_hash) <= threshold:
                         is_dup = True
+                        target_group = group_key
+                    else:
+                        provider_key = self._provider_key(adapter, ref_adapter)
+                        similarity_threshold = self.provider_thresholds.get(
+                            provider_key,
+                            self.similarity_threshold,
+                        )
+                        if (
+                            adapter.domain
+                            and ref_adapter.domain
+                            and adapter.domain == ref_adapter.domain
+                        ):
+                            similarity_threshold = min(similarity_threshold, 0.6)
+                        if self._calculate_content_similarity(adapter, ref_adapter) >= similarity_threshold:
+                            is_dup = True
+                            target_group = group_key
+                    if is_dup:
+                        duplicates_removed += 1
+                        if not target_group:
+                            target_group = f"group_{len(duplicate_groups) + 1}"
+                            duplicate_groups[target_group] = [ref]
+                            kept[idx] = (ref_hash, ref, target_group)
+                        unique_group_map[id(ref)] = target_group
+                        duplicate_groups[target_group].append(result)
                         break
-                    if self._calculate_content_similarity(adapter, ResultAdapter(ref)) >= self.similarity_threshold:
-                        is_dup = True
-                        break
-                if is_dup:
-                    duplicates_removed += 1
-                else:
-                    kept.append((simhash, result))
+                if not is_dup:
+                    for ref in unique:
+                        ref_adapter = ResultAdapter(ref)
+                        if (
+                            adapter.domain
+                            and ref_adapter.domain
+                            and adapter.domain != ref_adapter.domain
+                        ):
+                            continue
+                        threshold = self._adaptive_threshold(adapter, ref_adapter)
+                        if self._hamdist64(
+                            self._simhash64(f"{adapter.title} {adapter.snippet}"),
+                            self._simhash64(f"{ref_adapter.title} {ref_adapter.snippet}"),
+                        ) <= threshold:
+                            dup_candidate = True
+                        else:
+                            provider_key = self._provider_key(adapter, ref_adapter)
+                            similarity_threshold = self.provider_thresholds.get(
+                                provider_key,
+                                self.similarity_threshold,
+                            )
+                            if (
+                                adapter.domain
+                                and ref_adapter.domain
+                                and adapter.domain == ref_adapter.domain
+                            ):
+                                similarity_threshold = min(similarity_threshold, 0.6)
+                            dup_candidate = (
+                                self._calculate_content_similarity(adapter, ref_adapter)
+                                >= similarity_threshold
+                            )
+                        if dup_candidate:
+                            duplicates_removed += 1
+                            group_key = unique_group_map.get(id(ref))
+                            if not group_key:
+                                group_key = f"group_{len(duplicate_groups) + 1}"
+                                duplicate_groups[group_key] = [ref]
+                                unique_group_map[id(ref)] = group_key
+                            duplicate_groups[group_key].append(result)
+                            is_dup = True
+                            break
+
+                if not is_dup:
+                    kept.append((simhash, result, None))
                     unique.append(result)
+                    unique_group_map[id(result)] = url_group_map.get(id(result))
 
         # Emit structured metrics for observability
         try:
@@ -109,16 +194,26 @@ class ResultDeduplicator:
         except Exception:
             pass
 
+        filtered_groups = {
+            group_id: members
+            for group_id, members in duplicate_groups.items()
+            if len(members) >= 2
+        }
+
         return {
             "unique_results": unique,
             "duplicates_removed": duplicates_removed,
             "similarity_threshold": self.similarity_threshold,
+            "duplicate_groups": filtered_groups,
         }
 
     @staticmethod
     def _adaptive_threshold(result: ResultAdapter, reference: ResultAdapter) -> int:
         domain = result.domain or reference.domain
         result_type = result.get("result_type", reference.get("result_type", "web"))
+        provider = result.get("provider") or reference.get("provider")
+        if isinstance(provider, str) and provider.lower() == "exa":
+            return 6
         if result_type == "academic" or (domain and (domain.endswith(".edu") or domain.endswith(".gov"))):
             return 8
         if result_type in {"news", "blog"}:
@@ -126,9 +221,34 @@ class ResultDeduplicator:
         return 3
 
     @staticmethod
+    def _provider_key(result: ResultAdapter, reference: ResultAdapter) -> str:
+        provider = (
+            result.get("provider")
+            or reference.get("provider")
+            or result.get("source")
+            or reference.get("source")
+        )
+        if not provider:
+            try:
+                provider = result.source_api or reference.source_api
+            except Exception:
+                provider = "default"
+        if isinstance(provider, str) and provider:
+            return provider.lower()
+        return "default"
+
+    @staticmethod
     def _calculate_content_similarity(a: ResultAdapter, b: ResultAdapter) -> float:
-        text_a = f"{a.title} {a.snippet}".lower()
-        text_b = f"{b.title} {b.snippet}".lower()
+        text_a = " ".join(
+            part
+            for part in [a.title, a.snippet, getattr(a, "content", "")]
+            if part
+        ).lower()
+        text_b = " ".join(
+            part
+            for part in [b.title, b.snippet, getattr(b, "content", "")]
+            if part
+        ).lower()
         tokens_a = set(re.findall(r"[a-z0-9]+", text_a))
         tokens_b = set(re.findall(r"[a-z0-9]+", text_b))
         if not tokens_a or not tokens_b:

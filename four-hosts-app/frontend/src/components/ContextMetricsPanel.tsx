@@ -35,31 +35,31 @@ export function ContextMetricsPanel() {
   }, [])
 
   return (
-    <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-900/30 rounded-lg border border-gray-200 dark:border-gray-700">
-      <div className="flex items-center justify-between mb-2">
-        <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Context Metrics (W‑S‑C‑I)</h4>
+    <div className="mt-4 p-4 bg-surface-subtle rounded-lg border border-border">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-2">
+        <h4 className="text-sm font-semibold text-text text-center sm:text-left">Context Metrics (W‑S‑C‑I)</h4>
       </div>
       {loading ? (
-        <p className="text-sm text-gray-600 dark:text-gray-400">Loading...</p>
+        <p className="text-sm text-text-muted">Loading...</p>
       ) : error ? (
-        <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+        <p className="text-sm text-error">{error}</p>
       ) : (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <div className="bg-white dark:bg-gray-800 rounded p-3 border border-gray-200 dark:border-gray-700">
-            <p className="text-gray-600 dark:text-gray-400">Processed</p>
-            <p className="text-gray-900 dark:text-gray-100 font-semibold">{total}</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
+          <div className="bg-surface rounded p-3 border border-border text-center sm:text-left">
+            <p className="text-text-muted">Processed</p>
+            <p className="text-text font-semibold">{total}</p>
           </div>
-          <div className="bg-white dark:bg-gray-800 rounded p-3 border border-gray-200 dark:border-gray-700">
-            <p className="text-gray-600 dark:text-gray-400">Avg Time</p>
-            <p className="text-gray-900 dark:text-gray-100 font-semibold">{avg.toFixed(2)}s</p>
+          <div className="bg-surface rounded p-3 border border-border text-center sm:text-left">
+            <p className="text-text-muted">Avg Time</p>
+            <p className="text-text font-semibold">{avg.toFixed(2)}s</p>
           </div>
-          <div className="bg-white dark:bg-gray-800 rounded p-3 border border-gray-200 dark:border-gray-700">
-            <p className="text-gray-600 dark:text-gray-400">Layer Count</p>
-            <p className="text-gray-900 dark:text-gray-100 font-semibold">W:{layers.write||0} S:{layers.select||0}</p>
+          <div className="bg-surface rounded p-3 border border-border text-center sm:text-left">
+            <p className="text-text-muted">Layer Count</p>
+            <p className="text-text font-semibold">W:{layers.write||0} S:{layers.select||0}</p>
           </div>
-          <div className="bg-white dark:bg-gray-800 rounded p-3 border border-gray-200 dark:border-gray-700">
-            <p className="text-gray-600 dark:text-gray-400">Pipeline</p>
-            <p className="text-gray-900 dark:text-gray-100 font-semibold">C:{layers.compress||0} I:{layers.isolate||0}</p>
+          <div className="bg-surface rounded p-3 border border-border text-center sm:text-left">
+            <p className="text-text-muted">Pipeline</p>
+            <p className="text-text font-semibold">C:{layers.compress||0} I:{layers.isolate||0}</p>
           </div>
         </div>
       )}

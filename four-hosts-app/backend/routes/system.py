@@ -3,21 +3,22 @@ System routes for SSOTA telemetry and limits
 """
 
 from typing import Any, Dict, List
-import structlog
-# pylint: disable=import-error
+import json
 from collections import defaultdict
 from datetime import timedelta
 
-from fastapi import APIRouter
+import structlog
+# pylint: disable=import-error
 
+from fastapi import APIRouter, Request
+
+from core.limits import API_RATE_LIMITS, WS_RATE_LIMITS
 from services.context_engineering import context_pipeline
 from services.cache import cache_manager
 from services.research_store import research_store
 from services.llm_client import llm_client
 from services.token_manager import token_manager
-from models.base import ResearchStatus
-import json
-from fastapi import Request
+from models.base import ResearchStatus, UserRole
 from utils.type_coercion import as_int
 from utils.date_utils import safe_parse_date, get_current_utc
 
@@ -34,16 +35,34 @@ async def get_context_metrics() -> Dict[str, Any]:
         return {"context_pipeline": {}}
 
 
+def _serialise_api_limits() -> Dict[str, Dict[str, Any]]:
+    plans: Dict[str, Dict[str, Any]] = {}
+    for role, limits in API_RATE_LIMITS.items():
+        role_name = role.value if isinstance(role, UserRole) else str(role)
+        plans[role_name.lower()] = {
+            "requests_per_minute": limits.get("requests_per_minute"),
+            "requests_per_hour": limits.get("requests_per_hour"),
+            "requests_per_day": limits.get("requests_per_day"),
+            "concurrent_requests": limits.get("concurrent_requests"),
+            "max_query_length": limits.get("max_query_length"),
+            "max_sources": limits.get("max_sources"),
+        }
+    return plans
+
+
+def _serialise_ws_limits() -> Dict[str, Dict[str, Any]]:
+    plans: Dict[str, Dict[str, Any]] = {}
+    for role, limits in WS_RATE_LIMITS.items():
+        role_name = role.value if isinstance(role, UserRole) else str(role)
+        plans[role_name.lower()] = dict(limits)
+    return plans
+
+
 @router.get("/limits")
 async def get_limits() -> Dict[str, Any]:
-    # Static placeholders aligned with SSOTA doc
     return {
-        "plans": {
-            "free": {"requests_per_hour": 10, "concurrent": 1, "max_sources": 50},
-            "basic": {"requests_per_hour": 100, "concurrent": 5, "max_sources": 200},
-            "pro": {"requests_per_hour": 1000, "concurrent": 20, "max_sources": 1000},
-            "enterprise": {"requests_per_hour": None, "concurrent": None, "max_sources": None},
-        }
+        "plans": _serialise_api_limits(),
+        "realtime": _serialise_ws_limits(),
     }
 
 

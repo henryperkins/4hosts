@@ -91,8 +91,8 @@ export const EventLog = memo(function EventLog({ updates, isMobile, showVerbose,
     filtered.map((update, index) => {
       let icon: React.ReactNode = null
       if (update.message?.includes('Searching')) icon = <FiSearch className="h-4 w-4 text-primary animate-pulse" />
-      else if (update.message?.includes('credibility')) icon = <FiCheckCircle className="h-4 w-4 text-green-500" />
-      else if (update.message?.includes('duplicate')) icon = <FiDatabase className="h-4 w-4 text-yellow-500" />
+      else if (update.message?.includes('credibility')) icon = <FiCheckCircle className="h-4 w-4 text-success" />
+      else if (update.message?.includes('duplicate')) icon = <FiDatabase className="h-4 w-4 text-warning" />
       return (
         <CollapsibleEvent
           key={index}

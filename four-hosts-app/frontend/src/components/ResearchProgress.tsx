@@ -191,6 +191,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
   const [isMobile, setIsMobile] = useState(false)
   const [validationError, setValidationError] = useState<string | null>(null)
   const [pollingTimeout, setPollingTimeout] = useState<boolean>(false)
+  const [liveAnnouncement, setLiveAnnouncement] = useState<string>('')
   const safeResearchId = React.useMemo(() => {
     const trimmed = (researchId || '').trim()
     return RESEARCH_ID_PATTERN.test(trimmed) ? trimmed : null
@@ -248,7 +249,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
 
   useEffect(() => {
     if (!safeResearchId) {
-      setValidationError('Invalid research identifier – unable to subscribe to progress updates.')
+      setValidationError('Invalid research identifier - unable to subscribe to progress updates.')
       setIsConnecting(false)
       setCurrentStatus('failed')
       return
@@ -387,7 +388,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           const tool = typeof data.tool === 'string' ? stripHtml(data.tool) : ''
           if (server && tool) {
             const phase = data.status ? 'completed' : 'executing'
-            statusUpdate = { message: `🔧 MCP ${server}.${tool} ${phase}` }
+            statusUpdate = { message: `Tool: MCP ${server}.${tool} ${phase}` }
           } else {
             const messageText = typeof data.message === 'string' ? stripHtml(data.message) : undefined
             statusUpdate = { message: messageText }
@@ -398,7 +399,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           const warningMessage = typeof data.message === 'string' ? stripHtml(data.message) : undefined
           const limitType = typeof data.limit_type === 'string' ? data.limit_type : undefined
           statusUpdate = {
-            message: `⚠️ Rate limit warning: ${warningMessage || limitType || 'limit approaching'}`
+            message: `Warning: Rate limit warning: ${warningMessage || limitType || 'limit approaching'}`
           }
           setRateLimitWarning({
             message: warningMessage,
@@ -412,7 +413,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           const oldPhase = typeof data.old_phase === 'string' ? stripHtml(data.old_phase) : 'unknown'
           const newPhase = typeof data.new_phase === 'string' ? stripHtml(data.new_phase) : 'unknown'
           statusUpdate = {
-            message: `Phase changed: ${oldPhase} → ${newPhase}`,
+            message: `Phase changed: ${oldPhase} -> ${newPhase}`,
             phase: typeof data.new_phase === 'string' ? data.new_phase : undefined
           }
           if (typeof data.new_phase === 'string') {
@@ -816,11 +817,21 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         : hasStarted ? '0%' : '-'
   ), [stats.sourcesFound, stats.highQualitySources, hasStarted])
 
+  useEffect(() => {
+    if (!updates.length) return
+    const latest = updates[updates.length - 1]
+    const stamp = new Date(latest.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const statusText = latest.status ? latest.status.replace(/_/g, ' ') : currentStatus
+    const announcement = latest.message ? `${statusText}: ${latest.message}` : statusText
+    setLiveAnnouncement(`${stamp} ${announcement}`.trim())
+  }, [updates, currentStatus])
+
   const showSearchMeta = currentPhase === 'search' && stats.totalSearches > 0
   const showAnalysisMeta = currentPhase === 'analysis' && !!analysisTotal && analysisTotal > 0
 
   return (
     <Card className="mt-6 animate-slide-up">
+      <div className="sr-only" aria-live="polite">{liveAnnouncement}</div>
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-text">Research Progress</h3>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">

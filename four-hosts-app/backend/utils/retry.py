@@ -203,6 +203,7 @@ def get_llm_retry_decorator():
         ),
         retry=retry_if_exception_type((Exception,)),
         before_sleep=before_sleep_log(logger, logging.INFO),
+        reraise=True,
     )
 
 
@@ -229,6 +230,7 @@ def get_api_retry_decorator(
         ),
         retry=retry_if_exception_type(exceptions),
         before_sleep=before_sleep_log(logger, logging.INFO),
+        reraise=True,
     )
 
 
@@ -245,14 +247,20 @@ def get_search_retry_decorator():
         ),
         retry=retry_if_exception_type((Exception,)),
         before_sleep=before_sleep_log(logger, logging.INFO),
+        reraise=True,
     )
 
 
 class RateLimitedError(Exception):
     """Exception raised when rate limited."""
 
-    def __init__(self, message: str, retry_after: Optional[float] = None):
-        super().__init__(message)
+    def __init__(
+        self,
+        message: Optional[str] = None,
+        retry_after: Optional[float] = None,
+    ) -> None:
+        # Default to a generic message so callers can omit it for convenience.
+        super().__init__(message or "Rate limited")
         self.retry_after = retry_after
 
 

@@ -5,6 +5,8 @@ SSOTA Search routes: paradigm-aware single-shot search
 from typing import Any, Dict, List, Optional
 from dataclasses import asdict
 import logging
+import re
+
 import structlog
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -17,6 +19,123 @@ from services.search_apis import SearchConfig
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/search", tags=["search"])
+
+
+PARADIGM_KEYWORDS: Dict[str, List[str]] = {
+    Paradigm.DOLORES.value: [
+        "expose",
+        "reveal",
+        "corruption",
+        "injustice",
+        "accountability",
+    ],
+    Paradigm.TEDDY.value: [
+        "help",
+        "support",
+        "care",
+        "resources",
+        "community",
+    ],
+    Paradigm.BERNARD.value: [
+        "research",
+        "evidence",
+        "statistical",
+        "data",
+        "analysis",
+    ],
+    Paradigm.MAEVE.value: [
+        "strategy",
+        "market",
+        "kpi",
+        "roi",
+        "competitive",
+    ],
+}
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def compute_paradigm_alignment(paradigm: str, *text_parts: str) -> float:
+    """Return heuristic alignment score between text and paradigm keywords."""
+
+    keywords = PARADIGM_KEYWORDS.get((paradigm or "").lower())
+    if not keywords:
+        return 0.0
+
+    combined_text = " ".join(tp for tp in text_parts if isinstance(tp, str))
+    if not combined_text:
+        return 0.0
+
+    text_l = combined_text.lower()
+    hits = sum(1 for kw in keywords if kw in text_l)
+    if not hits:
+        return 0.0
+    return round(min(1.0, hits / len(keywords)), 2)
+
+
+def _split_sentences(text: str, max_items: int) -> List[str]:
+    sentences = []
+    if not text:
+        return sentences
+    for segment in _SENTENCE_SPLIT_RE.split(text.strip()):
+        seg = segment.strip()
+        if len(seg.split()) >= 6:
+            sentences.append(seg)
+        if len(sentences) >= max_items:
+            break
+    return sentences
+
+
+def extract_key_insights_from_result(data: Dict[str, Any], max_items: int = 3) -> List[str]:
+    """Pull concise insight snippets from search result payloads."""
+
+    insights: List[str] = []
+    seen = set()
+
+    def _add_candidates(candidates: Any) -> None:
+        if not candidates or len(insights) >= max_items:
+            return
+        if isinstance(candidates, str):
+            candidates_iter = [candidates]
+        else:
+            candidates_iter = candidates if isinstance(candidates, (list, tuple, set)) else []
+        for cand in candidates_iter:
+            if not isinstance(cand, str):
+                continue
+            cleaned = cand.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            insights.append(cleaned)
+            if len(insights) >= max_items:
+                break
+
+    # Priority: existing insights or highlights from providers
+    _add_candidates(data.get("key_insights"))
+
+    raw_data = data.get("raw_data") if isinstance(data, dict) else None
+    if isinstance(raw_data, dict):
+        _add_candidates(raw_data.get("highlights") or [])
+        exa_meta = raw_data.get("exa")
+        if isinstance(exa_meta, dict):
+            _add_candidates(exa_meta.get("highlights") or [])
+        _add_candidates(raw_data.get("sections") or [])
+
+    _add_candidates(data.get("sections") or [])
+
+    if len(insights) < max_items:
+        text_blocks = [
+            data.get("content"),
+            data.get("snippet"),
+        ]
+        for block in text_blocks:
+            if not block:
+                continue
+            _add_candidates(_split_sentences(block, max_items - len(insights)))
+            if len(insights) >= max_items:
+                break
+
+    return insights[:max_items]
 
 
 @router.post("/paradigm-aware")
@@ -105,13 +224,21 @@ async def paradigm_aware_search(
                 d = r.to_dict() if hasattr(r, "to_dict") else (asdict(r) if hasattr(r, "__dataclass_fields__") else dict(r))
             except Exception:
                 d = getattr(r, "__dict__", {})
+            alignment_score = compute_paradigm_alignment(
+                paradigm,
+                d.get("title"),
+                d.get("snippet"),
+                d.get("content"),
+                " ".join(d.get("sections", []) if isinstance(d.get("sections"), list) else []),
+            )
+            insights = extract_key_insights_from_result(d)
             return {
                 "title": d.get("title", ""),
                 "source": d.get("domain") or d.get("source_api") or d.get("source") or "",
                 "url": d.get("url", ""),
                 "relevance_score": float(d.get("credibility_score", 0.0) or 0.0),
-                "paradigm_alignment": 1.0,  # placeholder since we don't compute alignment here
-                "key_insights": [],
+                "paradigm_alignment": alignment_score,
+                "key_insights": insights,
             }
 
         items = [_to_item(r) for r in (filtered or [])]

@@ -7,7 +7,7 @@ W-S-C-I (Write-Select-Compress-Isolate) implementation
 import logging
 import structlog
 import os
-from typing import Dict, List, Any, Optional, Set, Tuple, TypedDict
+from typing import Dict, List, Any, Optional, Set, TypedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import perf_counter
@@ -880,8 +880,6 @@ class OptimizeLayer(ContextLayer):
     def __init__(self):
         super().__init__("Optimize")
         self.optimizer = QueryOptimizer()
-        self._cached_planner: Optional[QueryPlanner] = None
-        self._cached_planner_signature: Optional[Tuple[Any, ...]] = None
 
     def _planner_config(self) -> PlannerConfig:
         max_candidates = int(os.getenv("CE_PLANNER_MAX_CANDIDATES", "10") or 10)
@@ -918,18 +916,6 @@ class OptimizeLayer(ContextLayer):
                 pass
         return cfg
 
-    @staticmethod
-    def _planner_signature(cfg: PlannerConfig) -> Tuple[Any, ...]:
-        return (
-            cfg.max_candidates,
-            cfg.enable_llm,
-            cfg.enable_agentic,
-            tuple(cfg.stage_order),
-            tuple(sorted(cfg.per_stage_caps.items())),
-            cfg.dedup_jaccard,
-            tuple(sorted(cfg.stage_prior.items())),
-        )
-
     async def process(
         self,
         classification: ClassificationResult,
@@ -944,14 +930,7 @@ class OptimizeLayer(ContextLayer):
         base_query = rewritten or original
 
         planner_cfg = self._planner_config()
-        signature = self._planner_signature(planner_cfg)
-        if not self._cached_planner or signature != self._cached_planner_signature:
-            planner = QueryPlanner(planner_cfg)
-            self._cached_planner = planner
-            self._cached_planner_signature = signature
-        else:
-            planner = self._cached_planner
-            planner.cfg = planner_cfg
+        planner = QueryPlanner(planner_cfg)
 
         additional_queries: List[str] = []
         try:

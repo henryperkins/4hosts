@@ -197,7 +197,7 @@ export const UserProfile: React.FC = () => {
               disabled={!isEditing}
               checked={preferences.enable_real_search || false}
               onChange={(e) => setPreferences({ ...preferences, enable_real_search: e.target.checked })}
-              className="h-5 w-5 text-primary focus:ring-blue-500 border-border rounded disabled:opacity-50"
+              className="h-5 w-5 text-primary focus:ring-primary border-border rounded disabled:opacity-50"
             />
           </label>
 
@@ -214,7 +214,7 @@ export const UserProfile: React.FC = () => {
               disabled={!isEditing}
               checked={preferences.enable_ai_classification || false}
               onChange={(e) => setPreferences({ ...preferences, enable_ai_classification: e.target.checked })}
-              className="h-5 w-5 text-primary focus:ring-blue-500 border-border rounded disabled:opacity-50"
+              className="h-5 w-5 text-primary focus:ring-primary border-border rounded disabled:opacity-50"
             />
           </label>
 
@@ -234,7 +234,7 @@ export const UserProfile: React.FC = () => {
               disabled={!isEditing}
               value={preferences.theme || 'light'}
               onChange={(e) => setPreferences({ ...preferences, theme: e.target.value as 'light' | 'dark' })}
-              className="px-3 py-1 border border-border rounded-lg text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+              className="px-3 py-1 border border-border rounded-lg text-sm focus:ring-primary focus:border-primary disabled:opacity-50"
             >
               <option value="light">Light</option>
               <option value="dark">Dark</option>

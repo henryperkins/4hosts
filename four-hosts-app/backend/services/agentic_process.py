@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import List, Tuple, Dict, Any
 
+import structlog
+
 # Optional OpenTelemetry helper (failsafe import)
 try:
     from utils.otel import otel_span as _otel_span  # type: ignore
@@ -18,6 +20,9 @@ except Exception:  # pragma: no cover – tracing is optional
     def _otel_span(*_args: Any, **_kwargs: Any):  # type: ignore
         yield None
 import re
+
+
+logger = structlog.get_logger(__name__)
 
 
 def _normalize(text: str) -> str:
@@ -279,11 +284,36 @@ async def run_followups(
     # Emit initial progress snapshot (iteration 0 / max_iterations)
     await _emit_progress(0, max_iterations, msg="Starting agentic follow-up planning")
 
+    followup_triggered = (
+        max_iterations > 0
+        and coverage_ratio < coverage_threshold
+        and bool(missing_terms)
+    )
+    logger.info(
+        "agentic_coverage_evaluation",
+        stage="initial",
+        coverage_ratio=float(coverage_ratio or 0.0),
+        coverage_threshold=float(coverage_threshold),
+        missing_terms=len(missing_terms or []),
+        paradigm=paradigm_code,
+        research_id=research_id,
+        followup_triggered=bool(followup_triggered),
+        max_iterations=int(max_iterations),
+    )
+
     if (
         max_iterations <= 0
         or coverage_ratio >= coverage_threshold
         or not missing_terms
     ):
+        if max_iterations <= 0:
+            skipped_reason = "max_iterations"
+        elif coverage_ratio >= coverage_threshold:
+            skipped_reason = "coverage_met"
+        elif not missing_terms:
+            skipped_reason = "no_missing_terms"
+        else:
+            skipped_reason = "skipped"
         # Report agentic loop complete even when skipped
         if progress_callback and research_id:
             await progress_callback.update_progress(
@@ -292,6 +322,16 @@ async def run_followups(
                 items_done=max_iterations, items_total=max_iterations,
                 message="Agentic loop skipped – coverage met"
             )
+        logger.info(
+            "agentic_loop_complete",
+            iterations_executed=0,
+            final_coverage=float(coverage_ratio or 0.0),
+            remaining_terms=len(missing_terms or []),
+            paradigm=paradigm_code,
+            research_id=research_id,
+            followup_triggered=False,
+            skipped_reason=skipped_reason,
+        )
         return (
             new_candidates,
             followup_results,
@@ -405,6 +445,17 @@ async def run_followups(
                 coverage_sources,
             )
 
+            logger.info(
+                "agentic_coverage_evaluation",
+                stage="iteration",
+                iteration=int(iteration + 1),
+                coverage_ratio=float(coverage_ratio or 0.0),
+                coverage_threshold=float(coverage_threshold),
+                missing_terms=len(missing_terms or []),
+                paradigm=paradigm_code,
+                research_id=research_id,
+            )
+
             iteration += 1
 
             # Emit progress after iteration completes with updated coverage
@@ -415,6 +466,16 @@ async def run_followups(
             )
 
     # End while loop
+
+    logger.info(
+        "agentic_loop_complete",
+        iterations_executed=int(iteration),
+        final_coverage=float(coverage_ratio or 0.0),
+        remaining_terms=len(missing_terms or []),
+        paradigm=paradigm_code,
+        research_id=research_id,
+        followup_triggered=bool(iteration > 0),
+    )
 
     # Final progress snap – mark loop complete
     await _emit_progress(

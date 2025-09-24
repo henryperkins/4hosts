@@ -22,7 +22,7 @@ const MetricsDashboard = lazy(() => import('./components/MetricsDashboard').then
 // Loading component
 const LoadingSpinner = () => (
   <div className="flex items-center justify-center min-h-screen">
-    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
   </div>
 )
 
@@ -43,8 +43,15 @@ function App() {
       } catch {
         // Ignore parse errors
       }
+    } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      setDarkMode(true)
     }
   }, [setDarkMode])
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode)
+    document.documentElement.style.colorScheme = darkMode ? 'dark' : 'light'
+  }, [darkMode])
 
   // Initialize CSRF token and check auth on mount
   useEffect(() => {
@@ -60,10 +67,10 @@ function App() {
           <Toaster
             position="top-right"
             toastOptions={{
-              className: 'dark:bg-gray-800 dark:text-gray-100',
+              className: 'bg-surface text-text border border-border shadow-lg',
               style: {
-                background: darkMode ? '#1f2937' : undefined,
-                color: darkMode ? '#f3f4f6' : undefined,
+                background: darkMode ? 'var(--surface-subtle)' : 'var(--surface)',
+                color: 'var(--text)',
               },
             }}
           />

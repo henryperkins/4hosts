@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { FiAlertCircle } from 'react-icons/fi'
-import { LoadingSpinner } from './ui/LoadingSpinner'
+import { SkeletonLoader } from './SkeletonLoader'
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from './ui/Card'
 import { Button } from './ui/Button'
 // Alert component not currently used
@@ -66,10 +66,9 @@ export const ResearchResultPage = () => {
 
   if (isLoading) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex flex-col items-center justify-center py-12">
-          <LoadingSpinner size="xl" variant="primary" text="Loading research results..." />
-        </div>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+        <SkeletonLoader type='card' count={2} className="bg-surface-subtle" />
+        <SkeletonLoader type='text' count={3} />
       </div>
     )
   }

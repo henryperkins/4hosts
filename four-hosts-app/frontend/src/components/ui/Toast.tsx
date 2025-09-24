@@ -33,15 +33,15 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onC
   }, [toast.duration, handleClose])
 
   const icons = {
-    success: <FiCheckCircle className="h-5 w-5 text-green-400" />,
-    error: <FiXCircle className="h-5 w-5 text-red-400" />,
-    info: <FiAlertCircle className="h-5 w-5 text-blue-400" />
+    success: <FiCheckCircle className="h-5 w-5 text-success" />,
+    error: <FiXCircle className="h-5 w-5 text-error" />,
+    info: <FiAlertCircle className="h-5 w-5 text-primary" />
   }
 
   const styles = {
-    success: 'bg-green-50 text-green-800 border-green-200',
-    error: 'bg-red-50 text-red-800 border-red-200',
-    info: 'bg-blue-50 text-blue-800 border-blue-200'
+    success: 'bg-success/15 text-success border border-success/30',
+    error: 'bg-error/15 text-error border border-error/30',
+    info: 'bg-primary/15 text-primary border border-primary/30'
   }
 
   const glowStyles = {
@@ -67,7 +67,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onC
       </div>
       <button
         onClick={handleClose}
-        className="ml-4 shrink-0 inline-flex text-gray-400 hover:text-gray-600 focus:outline-none transition-colors duration-200"
+        className="ml-4 shrink-0 inline-flex text-text-muted hover:text-text focus:outline-none transition-colors duration-200"
       >
         <FiX className="h-4 w-4" />
       </button>

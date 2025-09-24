@@ -33,31 +33,31 @@ export const Alert: React.FC<AlertProps> = ({
 
   const variantStyles = {
     info: {
-      container: 'bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800',
-      icon: 'text-blue-600 dark:text-blue-400',
-      title: 'text-blue-800 dark:text-blue-200',
-      content: 'text-blue-700 dark:text-blue-300',
+      container: 'bg-primary/15 border border-primary/30',
+      icon: 'text-primary',
+      title: 'text-primary',
+      content: 'text-text',
       defaultIcon: FiInfo
     },
     success: {
-      container: 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800',
-      icon: 'text-green-600 dark:text-green-400',
-      title: 'text-green-800 dark:text-green-200',
-      content: 'text-green-700 dark:text-green-300',
+      container: 'bg-success/15 border border-success/30',
+      icon: 'text-success',
+      title: 'text-success',
+      content: 'text-text',
       defaultIcon: FiCheckCircle
     },
     warning: {
-      container: 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800',
-      icon: 'text-yellow-600 dark:text-yellow-400',
-      title: 'text-yellow-800 dark:text-yellow-200',
-      content: 'text-yellow-700 dark:text-yellow-300',
+      container: 'bg-warning/15 border border-warning/30',
+      icon: 'text-warning',
+      title: 'text-warning',
+      content: 'text-text',
       defaultIcon: FiAlertCircle
     },
     error: {
-      container: 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800',
-      icon: 'text-red-600 dark:text-red-400',
-      title: 'text-red-800 dark:text-red-200',
-      content: 'text-red-700 dark:text-red-300',
+      container: 'bg-error/15 border border-error/30',
+      icon: 'text-error',
+      title: 'text-error',
+      content: 'text-text',
       defaultIcon: FiXCircle
     }
   }
@@ -104,9 +104,9 @@ export const Alert: React.FC<AlertProps> = ({
               className={`
                 inline-flex rounded-md p-1.5 
                 ${styles.icon} 
-                hover:bg-black/10 dark:hover:bg-white/10
+                hover:bg-surface-muted
                 focus-visible:outline-none focus-visible:ring-2 
-                focus-visible:ring-offset-2 focus-visible:ring-blue-500
+                focus-visible:ring-offset-2 focus-visible:ring-primary
                 transition-colors duration-200
               `}
               aria-label="Dismiss alert"
@@ -145,15 +145,15 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
   if (!isOpen) return null
 
   const variantStyles = {
-    info: 'text-blue-600',
-    warning: 'text-yellow-600',
-    danger: 'text-red-600'
+    info: 'text-primary',
+    warning: 'text-warning',
+    danger: 'text-error'
   }
 
   const variantButtons = {
-    info: 'btn-primary',
-    warning: 'bg-yellow-600 hover:bg-yellow-700 text-white',
-    danger: 'bg-red-600 hover:bg-red-700 text-white'
+    info: 'btn btn-primary',
+    warning: 'btn btn-warning',
+    danger: 'btn btn-danger'
   }
 
   return (
@@ -188,7 +188,7 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
         <div className="flex gap-3 justify-end mt-6">
           <button
             onClick={onClose}
-            className="btn-secondary"
+            className="btn btn-secondary"
           >
             {cancelText}
           </button>
@@ -197,7 +197,7 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
               onConfirm()
               onClose()
             }}
-            className={`btn ${variantButtons[variant]}`}
+            className={variantButtons[variant]}
           >
             {confirmText}
           </button>

@@ -119,7 +119,7 @@ export const ResearchHistory: React.FC = () => {
 
   if (history.length === 0) {
     return (
-      <Card className="p-12 text-center animate-fade-in">
+      <Card className="p-8 sm:p-12 text-center animate-fade-in">
         <FiSearch className="h-16 w-16 text-text-muted mx-auto mb-4 animate-pulse" />
         <h3 className="text-xl font-semibold text-text mb-2">No research history yet</h3>
         <p className="text-text-muted mb-6">Start exploring and your research queries will appear here</p>
@@ -134,10 +134,10 @@ export const ResearchHistory: React.FC = () => {
   }
 
   return (
-    <Card className="p-6 animate-fade-in">
-      <div className="flex items-center justify-between mb-6">
+    <Card className="p-4 sm:p-6 animate-fade-in">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6">
         <h2 className="text-2xl font-bold text-text flex items-center gap-2">
-          <FiClock className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+          <FiClock className="h-6 w-6 text-primary" />
           Research History
         </h2>
         <span className="text-sm text-text-muted">
@@ -162,9 +162,9 @@ export const ResearchHistory: React.FC = () => {
               onMouseEnter={() => setHoveredItem(item.research_id)}
               onMouseLeave={() => setHoveredItem(null)}
             >
-              <div className="flex items-start justify-between">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
+                  <div className="flex flex-wrap items-center gap-3 mb-2">
                     <StatusIcon 
                       status={getStatusType(item.status)}
                       size="sm"
@@ -174,7 +174,7 @@ export const ResearchHistory: React.FC = () => {
                     </h3>
                   </div>
 
-                  <div className="flex items-center gap-4 text-sm text-text-muted">
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-sm text-text-muted">
                     <span className="flex items-center gap-1">
                       <FiCalendar className="h-3 w-3" />
                       {format(new Date(item.created_at), 'MMM d, yyyy')}
@@ -203,7 +203,7 @@ export const ResearchHistory: React.FC = () => {
                     )}
                     
                     {item.summary?.total_cost !== undefined && (
-                      <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                      <span className="flex items-center gap-1 text-success">
                         ${item.summary.total_cost.toFixed(4)}
                       </span>
                     )}
@@ -225,8 +225,8 @@ export const ResearchHistory: React.FC = () => {
                   )}
                 </div>
 
-                <div className={`flex items-center gap-2 transition-all duration-300 ${
-                  isHovered ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2'
+                <div className={`flex items-center gap-2 transition-all duration-300 opacity-100 translate-x-0 ${
+                  isHovered ? 'md:opacity-100 md:translate-x-0' : 'md:opacity-0 md:-translate-x-2'
                 }`}>
                   {canCancel(item.status) && (
                     <Button

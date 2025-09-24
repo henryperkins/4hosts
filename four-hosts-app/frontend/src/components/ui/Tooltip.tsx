@@ -109,10 +109,10 @@ export const Tooltip: React.FC<TooltipProps> = ({
     <div
       ref={tooltipRef}
       role="tooltip"
+      data-placement={placement}
       className={`
-        fixed z-50 px-3 py-2 text-sm text-white bg-gray-900 dark:bg-gray-700 
-        rounded-md shadow-lg pointer-events-none
-        animate-fade-in transition-opacity duration-200
+        tooltip-panel fixed z-50 px-3 py-2 text-sm font-medium
+        pointer-events-none animate-fade-in transition-opacity duration-200
         ${className}
       `}
       style={{
@@ -121,15 +121,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
       }}
     >
       {content}
-      <div
-        className={`
-          absolute w-0 h-0 border-transparent
-          ${placement === 'top' ? 'bottom-[-8px] left-1/2 -translate-x-1/2 border-t-8 border-l-8 border-r-8 border-t-gray-900 dark:border-t-gray-700' : ''}
-          ${placement === 'bottom' ? 'top-[-8px] left-1/2 -translate-x-1/2 border-b-8 border-l-8 border-r-8 border-b-gray-900 dark:border-b-gray-700' : ''}
-          ${placement === 'left' ? 'right-[-8px] top-1/2 -translate-y-1/2 border-l-8 border-t-8 border-b-8 border-l-gray-900 dark:border-l-gray-700' : ''}
-          ${placement === 'right' ? 'left-[-8px] top-1/2 -translate-y-1/2 border-r-8 border-t-8 border-b-8 border-r-gray-900 dark:border-r-gray-700' : ''}
-        `}
-      />
+      <div className="tooltip-arrow" data-placement={placement} aria-hidden="true" />
     </div>,
     document.body
   )

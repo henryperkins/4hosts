@@ -39,49 +39,49 @@ export const StatusIcon: React.FC<StatusIconProps> = ({
   const statusConfig = {
     pending: {
       icon: FiClock,
-      color: 'text-gray-500',
+      color: 'text-text-muted',
       label: label || 'Pending',
       animation: ''
     },
     processing: {
       icon: FiLoader,
-      color: 'text-blue-500',
+      color: 'text-primary',
       label: label || 'Processing',
       animation: animated ? 'animate-spin' : ''
     },
     in_progress: {
       icon: FiLoader,
-      color: 'text-blue-500',
+      color: 'text-primary',
       label: label || 'In Progress',
       animation: animated ? 'animate-spin' : ''
     },
     completed: {
       icon: FiCheckCircle,
-      color: 'text-green-500',
+      color: 'text-success',
       label: label || 'Completed',
       animation: animated ? 'animate-scale-in' : ''
     },
     failed: {
       icon: FiXCircle,
-      color: 'text-red-500',
+      color: 'text-error',
       label: label || 'Failed',
       animation: animated ? 'animate-shake' : ''
     },
     cancelled: {
       icon: FiX,
-      color: 'text-orange-500',
+      color: 'text-warning',
       label: label || 'Cancelled',
       animation: animated ? 'animate-scale-in' : ''
     },
     warning: {
       icon: FiAlertCircle,
-      color: 'text-yellow-500',
+      color: 'text-warning',
       label: label || 'Warning',
       animation: animated ? 'animate-pulse' : ''
     },
     info: {
       icon: FiCircle,
-      color: 'text-blue-400',
+      color: 'text-primary/80',
       label: label || 'Info',
       animation: ''
     }
@@ -132,36 +132,36 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
 
   const statusStyles = {
     pending: {
-      solid: 'bg-gray-500 text-white',
-      subtle: 'bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700'
+      solid: 'bg-border text-text',
+      subtle: 'bg-surface-subtle text-text-muted border-border'
     },
     processing: {
-      solid: 'bg-blue-500 text-white',
-      subtle: 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800'
+      solid: 'bg-primary text-white',
+      subtle: 'bg-primary/15 text-primary border border-primary/30'
     },
     in_progress: {
-      solid: 'bg-blue-500 text-white',
-      subtle: 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800'
+      solid: 'bg-primary text-white',
+      subtle: 'bg-primary/15 text-primary border border-primary/30'
     },
     completed: {
-      solid: 'bg-green-500 text-white',
-      subtle: 'bg-green-100 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-800'
+      solid: 'bg-success text-white',
+      subtle: 'bg-success/15 text-success border border-success/30'
     },
     failed: {
-      solid: 'bg-red-500 text-white',
-      subtle: 'bg-red-100 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-800'
+      solid: 'bg-error text-white',
+      subtle: 'bg-error/15 text-error border border-error/30'
     },
     cancelled: {
-      solid: 'bg-orange-500 text-white',
-      subtle: 'bg-orange-100 text-orange-700 border-orange-200 dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-800'
+      solid: 'bg-warning text-white',
+      subtle: 'bg-warning/15 text-warning border border-warning/30'
     },
     warning: {
-      solid: 'bg-yellow-500 text-white',
-      subtle: 'bg-yellow-100 text-yellow-700 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300 dark:border-yellow-800'
+      solid: 'bg-warning text-white',
+      subtle: 'bg-warning/15 text-warning border border-warning/30'
     },
     info: {
-      solid: 'bg-blue-400 text-white',
-      subtle: 'bg-blue-50 text-blue-600 border-blue-100 dark:bg-blue-900/20 dark:text-blue-400 dark:border-blue-900'
+      solid: 'bg-primary text-white',
+      subtle: 'bg-primary/15 text-primary border border-primary/30'
     }
   }
 
@@ -208,14 +208,14 @@ export const StatusDot: React.FC<StatusDotProps> = ({
   }
 
   const statusColors = {
-    pending: 'bg-gray-500',
-    processing: 'bg-blue-500',
-    in_progress: 'bg-blue-500',
-    completed: 'bg-green-500',
-    failed: 'bg-red-500',
-    cancelled: 'bg-orange-500',
-    warning: 'bg-yellow-500',
-    info: 'bg-blue-400'
+    pending: 'bg-border',
+    processing: 'bg-primary',
+    in_progress: 'bg-primary',
+    completed: 'bg-success',
+    failed: 'bg-error',
+    cancelled: 'bg-warning',
+    warning: 'bg-warning',
+    info: 'bg-primary/80'
   }
 
   return (

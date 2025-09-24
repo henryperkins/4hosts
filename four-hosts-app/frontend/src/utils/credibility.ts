@@ -30,9 +30,9 @@ export function getCredibilityLabel(score?: number): string {
 export function getCredibilityColor(score: number): string {
   const band = getCredibilityBand(score)
   switch (band) {
-    case 'high': return 'text-green-600 dark:text-green-400'
-    case 'medium': return 'text-yellow-600 dark:text-yellow-400'
-    case 'low': return 'text-red-600 dark:text-red-400'
+    case 'high': return 'text-success'
+    case 'medium': return 'text-warning'
+    case 'low': return 'text-error'
   }
 }
 

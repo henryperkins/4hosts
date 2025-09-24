@@ -52,6 +52,10 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        display: ['var(--font-display)', 'sans-serif'],
+        sans: ['var(--font-body)', 'sans-serif'],
+      },
       colors: {
         // Paradigm colors with opacity support
         'paradigm-dolores': withOpacityValue('--paradigm-dolores-rgb'),
@@ -63,6 +67,7 @@ const config: Config = {
         'surface-subtle': withOpacityValue('--surface-subtle-rgb'),
         'surface-muted': withOpacityValue('--surface-muted-rgb'),
         'border': withOpacityValue('--border-rgb'),
+        'border-subtle': withOpacityValue('--border-subtle-rgb'),
         'text': withOpacityValue('--text-rgb'),
         'text-subtle': withOpacityValue('--text-subtle-rgb'),
         'text-muted': withOpacityValue('--text-muted-rgb'),
@@ -70,6 +75,7 @@ const config: Config = {
         'primary': withOpacityValue('--primary-rgb'),
         'success': withOpacityValue('--success-rgb'),
         'error': withOpacityValue('--error-rgb'),
+        'warning': withOpacityValue('--warning-rgb'),
       },
       keyframes: {
         spin: {
@@ -120,18 +126,23 @@ const config: Config = {
             },
             strong: {
               color: 'var(--text)',
+              fontFamily: 'var(--font-display)',
             },
             h1: {
               color: 'var(--text)',
+              fontFamily: 'var(--font-display)',
             },
             h2: {
               color: 'var(--text)',
+              fontFamily: 'var(--font-display)',
             },
             h3: {
               color: 'var(--text)',
+              fontFamily: 'var(--font-display)',
             },
             h4: {
               color: 'var(--text)',
+              fontFamily: 'var(--font-display)',
             },
             code: {
               color: 'var(--text)',

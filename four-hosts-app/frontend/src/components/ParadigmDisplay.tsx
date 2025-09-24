@@ -10,7 +10,7 @@ const ParadigmDisplayComponent = ({ classification }: ParadigmDisplayProps) => {
   // Validate that we have a valid primary paradigm
   if (!classification?.primary || !paradigmInfo[classification.primary as Paradigm]) {
     return (
-      <div className="mt-6 bg-surface shadow rounded-lg p-6 border border-border">
+      <div className="mt-6 bg-surface shadow rounded-lg p-4 sm:p-6 border border-border">
         <h2 className="text-lg font-medium text-text mb-4">Paradigm Classification</h2>
         <p className="text-text-muted">Analyzing paradigm...</p>
       </div>
@@ -21,12 +21,12 @@ const ParadigmDisplayComponent = ({ classification }: ParadigmDisplayProps) => {
   const secondary = classification.secondary ? paradigmInfo[classification.secondary as Paradigm] : null
   
   return (
-    <div className="mt-6 bg-surface shadow rounded-lg p-6 border border-border">
+    <div className="mt-6 bg-surface shadow rounded-lg p-4 sm:p-6 border border-border">
       <h2 className="text-lg font-medium text-text mb-4">Paradigm Classification</h2>
       
       <div className="space-y-4">
         <div className={`border-l-4 ${primary.borderColor} ${primary.bgLight} p-4 rounded-r-lg`}>
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className={`font-semibold ${primary.textColor}`}>{primary.name}</h3>
               <p className="text-sm text-text-muted mt-1">{primary.description}</p>
@@ -41,7 +41,7 @@ const ParadigmDisplayComponent = ({ classification }: ParadigmDisplayProps) => {
         
         {secondary && (
           <div className={`border-l-4 ${secondary.borderColor} ${secondary.bgLight} p-4 rounded-r-lg opacity-75`}>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h3 className={`font-semibold ${secondary.textColor} text-sm`}>Secondary: {secondary.name}</h3>
                 <p className="text-xs text-text-muted mt-1">{secondary.description}</p>

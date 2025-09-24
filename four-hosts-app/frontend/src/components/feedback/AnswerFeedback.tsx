@@ -48,13 +48,13 @@ export const AnswerFeedback: React.FC<Props> = ({ researchId }) => {
   }
 
   return (
-    <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800">
+    <div className="p-4 border border-border rounded-lg bg-surface">
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm text-gray-700 dark:text-gray-300">Was this answer helpful?</span>
+        <span className="text-sm text-text">Was this answer helpful?</span>
         <div className="flex items-center gap-2">
           <button
             type="button"
-            className={`px-3 py-1 rounded border text-sm inline-flex items-center gap-1 ${helpful === true ? 'bg-green-600 text-white border-green-600' : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300'}`}
+            className={`px-3 py-1 rounded border text-sm inline-flex items-center gap-1 ${helpful === true ? 'bg-success text-white border-success' : 'border-border-subtle text-text'}`}
             onClick={() => setHelpful(true)}
             aria-pressed={helpful === true}
           >
@@ -62,7 +62,7 @@ export const AnswerFeedback: React.FC<Props> = ({ researchId }) => {
           </button>
           <button
             type="button"
-            className={`px-3 py-1 rounded border text-sm inline-flex items-center gap-1 ${helpful === false ? 'bg-red-600 text-white border-red-600' : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300'}`}
+            className={`px-3 py-1 rounded border text-sm inline-flex items-center gap-1 ${helpful === false ? 'bg-error text-white border-error' : 'border-border-subtle text-text'}`}
             onClick={() => setHelpful(false)}
             aria-pressed={helpful === false}
           >
@@ -72,7 +72,7 @@ export const AnswerFeedback: React.FC<Props> = ({ researchId }) => {
       </div>
 
       <div className="mt-3">
-        <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Rate the answer</label>
+        <label className="block text-sm text-text mb-1">Rate the answer</label>
         <div className="flex items-center gap-1">
           {stars.map((s) => (
             <button
@@ -85,12 +85,12 @@ export const AnswerFeedback: React.FC<Props> = ({ researchId }) => {
               aria-label={`${s} star${s > 1 ? 's' : ''}`}
             >
               <FiStar
-                className={`h-6 w-6 ${ (hover || rating) >= s ? 'text-yellow-500' : 'text-gray-400 dark:text-gray-600' }`}
+                className={`h-6 w-6 ${ (hover || rating) >= s ? 'text-warning' : 'text-text-muted' }`}
                 aria-hidden="true"
               />
             </button>
           ))}
-          <span className="ml-2 text-xs text-gray-600 dark:text-gray-400">{rating > 0 ? `${rating}/5 (${(normalized(rating) * 100).toFixed(0)}%)` : 'No rating yet'}</span>
+          <span className="ml-2 text-xs text-text-muted">{rating > 0 ? `${rating}/5 (${(normalized(rating) * 100).toFixed(0)}%)` : 'No rating yet'}</span>
         </div>
       </div>
 
@@ -117,7 +117,7 @@ export const AnswerFeedback: React.FC<Props> = ({ researchId }) => {
           type="button"
           onClick={handleSubmit}
           disabled={submitting || rating === 0}
-          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm border ${rating > 0 ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300'} ${submitting ? 'opacity-60 cursor-not-allowed' : ''}`}
+          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm border ${rating > 0 ? 'bg-primary text-white border-primary' : 'border-border-subtle text-text-muted'} ${submitting ? 'opacity-60 cursor-not-allowed' : ''}`}
         >
           <FiSend className="h-4 w-4" /> Submit feedback
         </button>
@@ -127,4 +127,3 @@ export const AnswerFeedback: React.FC<Props> = ({ researchId }) => {
 }
 
 export default AnswerFeedback
-

@@ -13,9 +13,9 @@ export const TOAST_ICONS = {
 } as const
 
 export const TOAST_STYLES = {
-  success: 'bg-green-50 text-green-800 border-green-200',
-  error: 'bg-red-50 text-red-800 border-red-200',
-  info: 'bg-blue-50 text-blue-800 border-blue-200'
+  success: 'bg-success/15 text-success border border-success/30',
+  error: 'bg-error/15 text-error border border-error/30',
+  info: 'bg-primary/15 text-primary border border-primary/30'
 } as const
 
 export const TOAST_GLOW_STYLES = {

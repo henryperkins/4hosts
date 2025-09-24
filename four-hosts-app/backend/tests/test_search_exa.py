@@ -15,6 +15,7 @@ from services.search_apis import (
     SearchAPIManager,
     RateLimitedError,
 )
+from services.query_planning.types import QueryCandidate
 
 
 class DummyResponse:
@@ -38,6 +39,8 @@ class DummySession:
     def __init__(self, responses):
         self._responses = list(responses)
         self._idx = 0
+        self.last_json = None
+        self.last_headers = None
 
     def post(self, url, headers=None, json=None, timeout=None):
         # Return the next response; clamp to last when exhausted
@@ -45,6 +48,8 @@ class DummySession:
             return DummyResponse(status=200, json_data={"results": []})
         resp = self._responses[min(self._idx, len(self._responses) - 1)]
         self._idx += 1
+        self.last_json = json
+        self.last_headers = headers
         return resp
 
 
@@ -129,10 +134,53 @@ async def test_exa_429_propagates_and_manager_sets_cooldown(monkeypatch):
     mgr.add_api("exa", api, is_fallback=True)
     monkeypatch.setenv("SEARCH_QUOTA_COOLDOWN_SEC", "5")
 
+    planned = [QueryCandidate(query="q", stage="rule_based", label="seed")]
     with pytest.raises(RateLimitedError):
-        await mgr._search_single_provider("exa", api, "q", SearchConfig(max_results=2), None, None)
+        await mgr._search_single_provider("exa", api, planned, SearchConfig(max_results=2), None, None)
 
     assert "exa" in mgr.quota_blocked and mgr.quota_blocked["exa"] > 0
+
+
+@pytest.mark.asyncio
+async def test_exa_handles_snake_case_payload(monkeypatch):
+    api = ExaSearchAPI(api_key="test")
+    payload = {
+        "results": [
+            {
+                "title": "Snake",
+                "url": "https://example.com/snake",
+                "published_date": "2024-05-05",
+                "highlights": ["shed skin"],
+                "highlight_scores": [0.42],
+            }
+        ]
+    }
+    api._sess = lambda: DummySession([DummyResponse(status=200, json_data=payload)])  # type: ignore[assignment]
+    res = await api.search("q", SearchConfig(max_results=1, min_relevance_score=0.0))
+    assert res and res[0].published_date and res[0].published_date.year == 2024
+    assert res[0].snippet == "shed skin"
+    exa_raw = res[0].raw_data.get("exa") or {}
+    assert exa_raw.get("highlight_scores") == [0.42]
+
+
+@pytest.mark.asyncio
+async def test_exa_request_payload_matches_spec(monkeypatch):
+    api = ExaSearchAPI(api_key="key")
+    dummy = DummySession([DummyResponse(status=200, json_data={"results": []})])
+    api._sess = lambda: dummy  # type: ignore[assignment]
+    monkeypatch.setenv("EXA_INCLUDE_HIGHLIGHTS", "0")
+    cfg = SearchConfig(
+        max_results=7,
+        authority_whitelist=["exa.ai"],
+        authority_blacklist=["spam.example"],
+    )
+
+    await api.search("spec", cfg)
+
+    assert dummy.last_json["num_results"] == 7
+    assert dummy.last_json["include_domains"] == ["exa.ai"]
+    assert dummy.last_json["exclude_domains"] == ["spam.example"]
+    assert "highlights" not in dummy.last_json
 
 
 @pytest.mark.asyncio

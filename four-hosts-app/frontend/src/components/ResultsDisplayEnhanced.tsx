@@ -226,7 +226,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       strong,
       moderate,
       weak,
-      window: minDate && maxDate ? `${new Date(minDate).toLocaleDateString()}–${new Date(maxDate).toLocaleDateString()}` : undefined,
+      window: minDate && maxDate ? `${new Date(minDate).toLocaleDateString()}-${new Date(maxDate).toLocaleDateString()}` : undefined,
     }
   }, [sourcesList])
 
@@ -237,7 +237,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
     const firstSentence = text.split(/(?<=[.!?])\s+/)[0] || text
     const words = firstSentence.trim().split(/\s+/)
     if (words.length <= maxWords) return firstSentence.trim()
-    return words.slice(0, maxWords).join(' ') + '…'
+    return words.slice(0, maxWords).join(' ') + '...'
   }
 
   const confidenceInfo = useMemo(() => {
@@ -496,11 +496,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
   const getPriorityIcon = (priority: string) => {
     switch (priority) {
       case 'high':
-        return <FiAlertCircle className="h-4 w-4 text-red-500 dark:text-red-400" aria-label="High priority" />
+        return <FiAlertCircle className="h-4 w-4 text-error" aria-label="High priority" />
       case 'medium':
-        return <FiClock className="h-4 w-4 text-yellow-500 dark:text-yellow-400" aria-label="Medium priority" />
+        return <FiClock className="h-4 w-4 text-warning" aria-label="Medium priority" />
       default:
-        return <FiCheckCircle className="h-4 w-4 text-green-500 dark:text-green-400" aria-label="Low priority" />
+        return <FiCheckCircle className="h-4 w-4 text-success" aria-label="Low priority" />
     }
   }
 
@@ -512,15 +512,15 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
   return (
     <div className="mt-8 space-y-6 animate-fade-in">
-      <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border">
-        <div className="flex items-start justify-between mb-4">
+      <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between mb-4">
           <div>
             <h2 className="text-2xl font-bold text-text">Research results</h2>
             <p className="text-sm text-text-muted mt-1">Query: "{results.query}"</p>
             <p className="text-xs text-text-subtle">As of {new Date(fetchedAtRef.current).toLocaleString()}</p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap gap-2 sm:justify-end sm:items-center">
             {(() => {
               const pri = results.paradigm_analysis?.primary?.paradigm || (metadata as any)?.paradigm || 'bernard'
               return (
@@ -542,7 +542,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               <button
                 onClick={() => setDropdownOpen(!dropdownOpen)}
                 disabled={isExporting}
-                className="p-2 text-text-muted hover:text-text hover:bg-surface-subtle rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="p-2 text-text-muted hover:text-text hover:bg-surface-subtle rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary"
                 aria-label="Export results"
                 aria-expanded={dropdownOpen}
                 aria-haspopup="true"
@@ -599,24 +599,24 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             <span className="font-medium">Evidence:</span> {evidenceSnapshot.total.toLocaleString()} sources ({evidenceSnapshot.strong} strong, {evidenceSnapshot.moderate} moderate, {evidenceSnapshot.weak} weak){evidenceSnapshot.window ? ` · timeframe ${evidenceSnapshot.window}` : ''}.
           </div>
           <div className="mt-1 text-sm text-text">
-            <span className="font-medium">Confidence:</span> {confidenceInfo.band} ({Math.round(confidenceInfo.conf)}%){confidenceInfo.because ? ` — because ${confidenceInfo.because}.` : '.'}
+            <span className="font-medium">Confidence:</span> {confidenceInfo.band} ({Math.round(confidenceInfo.conf)}%){confidenceInfo.because ? ` - because ${confidenceInfo.because}.` : '.'}
           </div>
         </div>
 
         <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="bg-surface-subtle p-3 rounded-lg border border-border">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-sm text-text-muted">Actionable Content</span>
-              <span className={`text-xs font-semibold px-2 py-0.5 rounded ${actionableRatio >= 0.85 ? 'bg-green-600 text-white' : 'bg-amber-500 text-white'}`}>
+              <span className={`text-xs font-semibold px-2 py-0.5 rounded ${actionableRatio >= 0.85 ? 'bg-success text-white' : 'bg-warning text-white'}`}>
                 {(actionableRatio * 100).toFixed(0)}%
               </span>
             </div>
             <p className="text-xs text-text-subtle mt-1">Estimated share of concrete actions and key insights.</p>
           </div>
           <div className="bg-surface-subtle p-3 rounded-lg border border-border">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-sm text-text-muted">Bias Check</span>
-              <span className={`text-xs font-semibold px-2 py-0.5 rounded ${bias?.balanced ? 'bg-green-600 text-white' : 'bg-amber-500 text-white'}`}>
+              <span className={`text-xs font-semibold px-2 py-0.5 rounded ${bias?.balanced ? 'bg-success text-white' : 'bg-warning text-white'}`}>
                 {bias?.balanced ? 'Balanced' : 'Needs Balance'}
               </span>
             </div>
@@ -628,7 +628,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             </p>
           </div>
           <div className="bg-surface-subtle p-3 rounded-lg border border-border">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-sm text-text-muted">Paradigm Fit</span>
               <span className="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-600 text-white">
                 {((metadata?.paradigm_fit?.confidence || 0) * 100).toFixed(0)}% conf · margin {((metadata?.paradigm_fit?.margin || 0) * 100).toFixed(0)}%
@@ -649,7 +649,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
 
         <div className="mt-3 p-3 rounded-lg bg-surface-subtle border border-border">
           <p className="text-xs text-text-muted">
-            <span className="font-semibold">Scales:</span> Confidence — High ≥ 80%, Medium 60–79%, Low &lt; 60%. Quality — Strong ≥ 0.80, Moderate 0.60–0.79, Weak &lt; 0.60.
+            <span className="font-semibold">Scales:</span> Confidence - High ≥ 80%, Medium 60-79%, Low &lt; 60%. Quality - Strong ≥ 0.80, Moderate 0.60-0.79, Weak &lt; 0.60.
           </p>
         </div>
 
@@ -699,14 +699,14 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               return (
                 <div>
                   <div className="h-2 w-full rounded bg-surface-muted overflow-hidden flex">
-                    <div className="h-2 bg-green-600" style={{ width: `${pct('high') || 0}%` }} />
-                    <div className="h-2 bg-yellow-500" style={{ width: `${pct('medium') || 0}%` }} />
-                    <div className="h-2 bg-red-500" style={{ width: `${pct('low') || 0}%` }} />
+                    <div className="h-2 bg-success" style={{ width: `${pct('high') || 0}%` }} />
+                    <div className="h-2 bg-warning" style={{ width: `${pct('medium') || 0}%` }} />
+                    <div className="h-2 bg-error" style={{ width: `${pct('low') || 0}%` }} />
                   </div>
                   <div className="mt-2 flex gap-2 text-xs text-text">
-                    <span className="px-2 py-0.5 rounded bg-green-600 text-white">High {pct('high') || 0}%</span>
-                    <span className="px-2 py-0.5 rounded bg-yellow-500 text-white">Medium {pct('medium') || 0}%</span>
-                    <span className="px-2 py-0.5 rounded bg-red-500 text-white">Low {pct('low') || 0}%</span>
+                    <span className="px-2 py-0.5 rounded bg-success text-white">High {pct('high') || 0}%</span>
+                    <span className="px-2 py-0.5 rounded bg-warning text-white">Medium {pct('medium') || 0}%</span>
+                    <span className="px-2 py-0.5 rounded bg-error text-white">Low {pct('low') || 0}%</span>
                   </div>
                 </div>
               )
@@ -756,11 +756,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
 
         {integrated_synthesis && (
-          <div className="mt-4 p-4 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800 transition-colors duration-200">
-            <h4 className="text-sm font-semibold text-green-900 dark:text-green-100 mb-3">Strategic Framework</h4>
+          <div className="mt-4 p-4 bg-success/15 rounded-lg border border-success/30 transition-colors duration-200">
+            <h4 className="text-sm font-semibold text-success mb-3">Strategic Framework</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="bg-surface rounded-lg border border-border p-4">
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-2">
                   <h5 className="text-sm font-semibold text-text">Immediate Opportunities (Maeve)</h5>
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${getParadigmClass('maeve')}`}>Strategic</span>
                 </div>
@@ -776,25 +776,25 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               </div>
 
               <div className="bg-surface rounded-lg border border-border p-4">
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-2">
                   <h5 className="text-sm font-semibold text-text">Systemic Context (Dolores)</h5>
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${getParadigmClass('dolores')}`}>Revolutionary</span>
                 </div>
                 <div className="text-sm text-text whitespace-pre-wrap">
-                  {integrated_synthesis.secondary_perspective?.content || '—'}
+                  {integrated_synthesis.secondary_perspective?.content || '-'}
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        <div className="mt-4 p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg border border-yellow-200 dark:border-yellow-800 transition-colors duration-200">
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-sm font-semibold text-yellow-900 dark:text-yellow-100">Action Items</h4>
-            <span className="text-xs text-yellow-800 dark:text-yellow-200">{actionItems.length} found</span>
+        <div className="mt-4 p-4 bg-warning/15 rounded-lg border border-warning/30 transition-colors duration-200">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-2">
+            <h4 className="text-sm font-semibold text-warning">Action Items</h4>
+            <span className="text-xs text-warning/80">{actionItems.length} found</span>
           </div>
           {actionItems.length > 0 ? (
-            <ul className="divide-y divide-yellow-200 dark:divide-yellow-800">
+            <ul className="divide-y divide-warning/30">
               {actionItems.map((it: ActionItem, idx: number) => (
                 <li key={idx} className="py-2 flex items-start gap-3">
                   <div className="mt-0.5" aria-hidden>
@@ -802,7 +802,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   </div>
                   <div className="flex-1">
                     <div className="text-sm text-text">
-                      {it.action || '—'}
+                      {it.action || '-'}
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-text-muted">
                       {it.timeframe && (
@@ -822,7 +822,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
 
         {contextLayers ? (
-          <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 transition-colors duration-200">
+          <div className="mt-4 p-4 bg-primary/15 rounded-lg border border-primary/30 transition-colors duration-200">
             <h4 className="text-sm font-semibold text-text mb-2">Context engineering pipeline</h4>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
               {contextLayers.write_focus ? (
@@ -836,7 +836,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 <p className="font-semibold text-text">
                   {typeof contextLayers.compression_ratio === 'number'
                     ? `${(contextLayers.compression_ratio * 100).toFixed(0)}%`
-                    : '—'}
+                    : '-'}
                 </p>
               </div>
               <div>
@@ -844,7 +844,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 <p className="font-semibold text-text">
                   {typeof contextLayers.token_budget === 'number'
                     ? contextLayers.token_budget.toLocaleString()
-                    : '—'}
+                    : '-'}
                 </p>
               </div>
               <div>
@@ -852,12 +852,12 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 <p className="font-semibold text-text">
                   {typeof contextLayers.search_queries_count === 'number'
                     ? contextLayers.search_queries_count
-                    : '—'}
+                    : '-'}
                 </p>
               </div>
               <div>
                 <p className="text-text-muted">Isolation Strategy</p>
-                <p className="font-semibold capitalize text-text">{contextLayers.isolation_strategy || '—'}</p>
+                <p className="font-semibold capitalize text-text">{contextLayers.isolation_strategy || '-'}</p>
               </div>
             </div>
             {contextLayers.layer_times ? (
@@ -866,9 +866,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   const label = k.charAt(0).toUpperCase() + k.slice(1)
                   const value = typeof v === 'number' ? v : Number(v)
                   return (
-                    <div key={k} className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
+                    <div key={k} className="bg-primary/15 rounded p-2 border border-primary/20">
                       <p className="text-text">{label} Time</p>
-                      <p className="font-semibold text-text">{Number.isFinite(value) ? `${value.toFixed(2)}s` : '—'}</p>
+                      <p className="font-semibold text-text">{Number.isFinite(value) ? `${value.toFixed(2)}s` : '-'}</p>
                     </div>
                   )
                 })}
@@ -885,7 +885,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     return (
                       <div key={k} className="flex-1">
                         <div className="h-2 rounded" style={{ width: '100%', background: 'rgba(59,130,246,0.15)' }}>
-                          <div className="h-2 rounded bg-blue-600" style={{ width: `${widthPercent}%` }} />
+                          <div className="h-2 rounded bg-primary" style={{ width: `${widthPercent}%` }} />
                         </div>
                         <div className="text-[10px] text-text mt-0.5">{k} · {Number.isFinite(numericValue) ? numericValue.toLocaleString() : '0'}t</div>
                       </div>
@@ -897,7 +897,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             {(contextLayers.rewrite_primary || contextLayers.optimize_primary) ? (
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 {contextLayers.rewrite_primary ? (
-                  <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
+                  <div className="bg-primary/15 rounded p-2 border border-primary/20">
                     <p className="text-text mb-1">
                       Rewritten Query
                       {typeof contextLayers.rewrite_alternatives === 'number' ? ` (${contextLayers.rewrite_alternatives} alts)` : ''}
@@ -906,7 +906,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   </div>
                 ) : null}
                 {contextLayers.optimize_primary ? (
-                  <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
+                  <div className="bg-primary/15 rounded p-2 border border-primary/20">
                     <p className="text-text mb-1">
                       Optimized Primary
                       {typeof contextLayers.optimize_variations_count === 'number' ? ` (${contextLayers.optimize_variations_count} vars)` : ''}
@@ -921,18 +921,18 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             ) : null}
             {contextLayers.isolated_findings ? (
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
+                <div className="bg-primary/15 rounded p-2 border border-primary/20">
                   <p className="text-text">Isolation Focus Areas</p>
                   <p className="font-semibold text-text truncate">
-                    {(contextLayers.isolated_findings.focus_areas ?? []).join(', ') || '—'}
+                    {(contextLayers.isolated_findings.focus_areas ?? []).join(', ') || '-'}
                   </p>
                 </div>
-                <div className="bg-blue-100/60 dark:bg-blue-900/30 rounded p-2">
+                <div className="bg-primary/15 rounded p-2 border border-primary/20">
                   <p className="text-text">Extraction Patterns</p>
                   <p className="font-semibold text-text">
                     {typeof contextLayers.isolated_findings.patterns === 'number'
                       ? contextLayers.isolated_findings.patterns
-                      : '—'}
+                      : '-'}
                   </p>
                 </div>
               </div>
@@ -954,7 +954,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         )}
 
         {results.cost_info && (
-          <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800 transition-colors duration-200">
+          <div className="mt-4 p-4 bg-warning/15 rounded-lg border border-warning/30 transition-colors duration-200">
             <h4 className="text-sm font-semibold text-amber-900 dark:text-amber-100 mb-2">Research costs</h4>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
               {results.cost_info.search_api_costs !== undefined && (
@@ -981,10 +981,10 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       </div>
 
       {Array.isArray(metadata?.agent_trace) && metadata.agent_trace.length > 0 && (
-        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.55s' }}>
+        <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.55s' }}>
           <button
             onClick={() => setTraceOpen(!traceOpen)}
-            className="w-full text-left flex items-center justify-between"
+            className="w-full text-left flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
             aria-expanded={traceOpen}
           >
             <h3 className="text-lg font-semibold text-text">Agentic research trace</h3>
@@ -1034,7 +1034,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       <ContextMetricsPanel />
 
       {integrated_synthesis && (
-        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.1s' }}>
+        <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.1s' }}>
           <h3 className="text-lg font-semibold text-text mb-4">Mesh network analysis</h3>
           {Array.isArray(integrated_synthesis.synergies) && integrated_synthesis.synergies.length > 0 && (
             <div className="mb-4">
@@ -1060,9 +1060,9 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           <div key={`${section.title}-${index}`} className="bg-surface rounded-lg shadow-lg overflow-hidden transition-all duration-300 animate-slide-up border border-border" style={{ animationDelay: `${0.2 + index * 0.05}s` }}>
             <button
               onClick={() => toggleSection(index)}
-              className="w-full px-6 py-4 flex items-center justify-between hover:bg-surface-subtle transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500"
+              className="w-full px-4 sm:px-6 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between hover:bg-surface-subtle transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary"
             >
-              <div className="flex items-center gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                 <h3 className="text-lg font-semibold text-text">{section.title}</h3>
                 <span className={`px-2 py-1 rounded text-xs font-medium ${getParadigmClass((section as any)?.paradigm || 'bernard')}`}>
                   {getParadigmDescription((section as any)?.paradigm || 'bernard')}
@@ -1079,7 +1079,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
             </button>
 
             {expandedSections.has(index) && (
-              <div className="px-6 pb-4 border-t border-border animate-slide-down">
+              <div className="px-4 sm:px-6 pb-4 border-t border-border animate-slide-down">
                 <div className="prose dark:prose-invert max-w-none mt-4">
                   <p className="text-text whitespace-pre-wrap">{section.content}</p>
                 </div>
@@ -1090,7 +1090,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       </div>
 
       {actionItems.length > 0 && (
-        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.3s' }}>
+        <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.3s' }}>
           <h3 className="text-lg font-semibold text-text mb-4">Detailed action items</h3>
           <div className="space-y-3">
             {actionItems.map((item: ActionItem, index: number) => (
@@ -1100,8 +1100,8 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                 </div>
                 <div className="flex-1">
                   <p className="text-text font-medium">{item.action}</p>
-                  <div className="flex items-center gap-4 mt-1 text-sm text-text-muted">
-                    <span>Timeframe: {item.timeframe || '—'}</span>
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-4 mt-1 text-sm text-text-muted">
+                    <span>Timeframe: {item.timeframe || '-'}</span>
                     <span>Owner: {item.owner || 'Unassigned'}</span>
                     <span>Due: {item.due_date ? new Date(item.due_date).toLocaleDateString() : 'Set due date'}</span>
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${getParadigmClass(item.paradigm || 'bernard')}`}>
@@ -1116,11 +1116,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
       )}
 
       {sourcesList.length > 0 && (
-        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.4s' }}>
-          <div className="flex items-center justify-between mb-4">
+        <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.4s' }}>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
             <h3 className="text-lg font-semibold text-text">Research sources</h3>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center">
+              <div className="flex flex-wrap items-center gap-2">
                 <FiFilter className="h-4 w-4 text-text-subtle" />
                 <div className="flex flex-wrap gap-2">
                   {['all', ...Object.keys(categoryDistribution)].map((cat) => (
@@ -1144,7 +1144,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                   ))}
                 </div>
               </div>
-              <div className="flex items-center gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
                 {(['high', 'medium', 'low'] as const).map(band => (
                   <Button
                     key={band}
@@ -1176,11 +1176,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           </div>
 
           <>
-            <div className="flex items-center justify-between mb-3 text-sm text-text-muted">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3 text-sm text-text-muted">
               <div>
-                {totalSourcesFiltered === 0 ? 'No sources' : `Showing ${pageStart + 1}–${pageEnd} of ${totalSourcesFiltered} sources`}
+                {totalSourcesFiltered === 0 ? 'No sources' : `Showing ${pageStart + 1}-${pageEnd} of ${totalSourcesFiltered} sources`}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <label className="whitespace-nowrap">Rows per page</label>
                 <select
                   className="border border-border rounded px-2 py-1 bg-surface text-text"
@@ -1222,7 +1222,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               {viewSources.map((source, index) => {
                 const quote = (source.key_quote || '').trim()
                 const words = quote.split(/\s+/).filter(Boolean)
-                const shortQuote = quote ? (words.slice(0, 20).join(' ') + (words.length > 20 ? '…' : '')) : ''
+                const shortQuote = quote ? (words.slice(0, 20).join(' ') + (words.length > 20 ? '...' : '')) : ''
                 const score = Number(source.credibility_score || 0)
                 const qual = qualityLabel(score)
                 const why = source.credibility_explanation || `Credibility: ${qual} (${(score * 100).toFixed(0)}%)`
@@ -1239,11 +1239,11 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     <div className="mt-2 grid md:grid-cols-3 gap-3 text-sm">
                       <div>
                         <p className="text-text-subtle">What it says</p>
-                        <p className="text-text">{source.snippet || '—'}</p>
+                        <p className="text-text">{source.snippet || '-'}</p>
                       </div>
                       <div>
                         <p className="text-text-subtle">Key quote</p>
-                        <p className="italic text-text">{quote ? `“${shortQuote}”` : '—'}</p>
+                        <p className="italic text-text">{quote ? `“${shortQuote}”` : '-'}</p>
                       </div>
                       <div>
                         <p className="text-text-subtle">Why it matters</p>
@@ -1277,7 +1277,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
               })}
             </div>
             {totalSourcesFiltered > 0 && (
-              <div className="mt-4 flex items-center justify-between text-sm text-text-muted">
+              <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-sm text-text-muted">
                 <div>
                   Page {currentPage} of {pageCount}
                 </div>
@@ -1321,14 +1321,14 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
       )}
       {Array.isArray(results.sources) && results.sources.length === 0 && (
-        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.4s' }}>
+        <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.4s' }}>
           <h3 className="text-lg font-semibold text-text mb-2">Research sources</h3>
           <p className="text-sm text-text-muted">No sources available. Try broadening the query or enabling real search.</p>
         </div>
       )}
 
       {results.cost_info && (
-        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.5s' }}>
+        <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.5s' }}>
           <h3 className="text-lg font-semibold text-text mb-4">Research metrics</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {Object.entries(results.cost_info).map(([key, value]) => (
@@ -1362,7 +1362,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
           Array.isArray(baseAnswer.sections) && baseAnswer.sections.length > 0
         )
       ) && (
-        <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.55s' }}>
+        <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.55s' }}>
           <h3 className="text-lg font-semibold text-text mb-4">Feedback</h3>
           <div className="grid grid-cols-1">
             <AnswerFeedback researchId={results.research_id} />
@@ -1370,7 +1370,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
         </div>
       )}
 
-      <div className="bg-surface rounded-lg shadow-lg p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.6s' }}>
+      <div className="bg-surface rounded-lg shadow-lg p-4 sm:p-6 transition-colors duration-200 animate-slide-up border border-border" style={{ animationDelay: '0.6s' }}>
         <h3 className="text-lg font-semibold text-text mb-4">Answer citations</h3>
         <div className="space-y-3">
           {displayedCitations.map((citation: AnswerCitation, idx: number) => {
@@ -1421,7 +1421,7 @@ export const ResultsDisplayEnhanced: React.FC<ResultsDisplayEnhancedProps> = ({ 
                     href={citation.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="ml-4 p-2 text-text-muted hover:text-text hover:bg-surface-subtle rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="ml-4 p-2 text-text-muted hover:text-text hover:bg-surface-subtle rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-primary"
                     aria-label="Open citation in new tab"
                   >
                     <FiExternalLink className="h-4 w-4" />

@@ -39,19 +39,19 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   }
 
   const variantClasses = {
-    default: 'bg-blue-500',
-    success: 'bg-green-500',
-    warning: 'bg-yellow-500',
-    danger: 'bg-red-500',
-    info: 'bg-blue-400'
+    default: 'bg-primary',
+    success: 'bg-success',
+    warning: 'bg-warning',
+    danger: 'bg-error',
+    info: 'bg-primary/80'
   }
 
   const backgroundClasses = {
     default: 'bg-surface-muted',
-    success: 'bg-green-100 dark:bg-green-900/20',
-    warning: 'bg-yellow-100 dark:bg-yellow-900/20',
-    danger: 'bg-red-100 dark:bg-red-900/20',
-    info: 'bg-blue-100 dark:bg-blue-900/20'
+    success: 'bg-success/15',
+    warning: 'bg-warning/15',
+    danger: 'bg-error/15',
+    info: 'bg-primary/15'
   }
 
   return (
@@ -81,9 +81,9 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
       >
         <div
           className={`
-            h-full rounded-full transition-all duration-500 ease-out
+            h-full rounded-full
             ${variantClasses[variant]}
-            ${animated ? 'transition-smooth' : ''}
+            ${animated ? 'transition-all duration-500 ease-out' : ''}
             ${shimmer ? 'animate-shimmer' : ''}
           `}
           style={{ width: `${percentage}%` }}
@@ -127,11 +127,11 @@ export const CircularProgress: React.FC<CircularProgressProps> = ({
   }
   
   const variantColors = {
-    default: 'stroke-blue-500',
-    success: 'stroke-green-500',
-    warning: 'stroke-yellow-500',
-    danger: 'stroke-red-500',
-    info: 'stroke-blue-400'
+    default: 'stroke-primary',
+    success: 'stroke-success',
+    warning: 'stroke-warning',
+    danger: 'stroke-error',
+    info: 'stroke-primary'
   }
   
   const diameter = sizes[size]
@@ -214,11 +214,11 @@ export const StackedProgress: React.FC<StackedProgressProps> = ({
   }
 
   const variantClasses = {
-    default: 'bg-blue-500',
-    success: 'bg-green-500',
-    warning: 'bg-yellow-500',
-    danger: 'bg-red-500',
-    info: 'bg-blue-400'
+    default: 'bg-primary',
+    success: 'bg-success',
+    warning: 'bg-warning',
+    danger: 'bg-error',
+    info: 'bg-primary/80'
   }
 
   const total = segments.reduce((sum, segment) => sum + segment.value, 0)

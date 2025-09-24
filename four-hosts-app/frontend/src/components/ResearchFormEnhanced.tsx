@@ -257,14 +257,14 @@ export const ResearchFormEnhanced: React.FC<ResearchFormEnhancedProps> = ({ onSu
           <div className="block text-sm font-medium text-text mb-3" role="group" aria-label="Paradigm Selection">
             Paradigm Selection
           </div>
-          <div className="grid grid-cols-2 xs:grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
             {paradigmOptions.map((option) => (
               <button
                 key={option.value}
                 type="button"
                 onClick={() => handleParadigmSelect(option.value)}
                 disabled={isLoading}
-                className={`relative p-3 rounded-lg border transition-colors
+                className={`relative p-3 rounded-lg border transition-colors w-full
                   ${state.paradigm === option.value
                     ? 'border-primary bg-primary/10 shadow-md'
                     : 'border-border hover:border-text-subtle bg-surface'

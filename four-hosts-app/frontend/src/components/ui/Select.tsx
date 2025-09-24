@@ -130,10 +130,10 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
             w-full px-3 py-2 text-left
             bg-surface border border-border rounded-md
             hover:border-border-subtle
-            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2
             disabled:opacity-50 disabled:cursor-not-allowed
             transition-all duration-200
-            ${error ? 'border-red-500 focus-visible:ring-red-500' : ''}
+            ${error ? 'border-error focus-visible:ring-error' : ''}
             ${className}
           `}
         >
@@ -151,7 +151,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
         </button>
 
         {error && (
-          <p id={errorId} className="mt-1 text-sm text-red-600 dark:text-red-400" role="alert">
+          <p id={errorId} className="mt-1 text-sm text-error" role="alert">
             {error}
           </p>
         )}
@@ -184,9 +184,9 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
                 }}
                 className={`
                   px-3 py-2 cursor-pointer flex items-center justify-between
-                  transition-colors duration-150
+                  transition-colors duration-200
                   ${option.value === value 
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' 
+                    ? 'bg-primary/15 text-primary'
                     : 'hover:bg-surface-subtle'
                   }
                   ${option.disabled 

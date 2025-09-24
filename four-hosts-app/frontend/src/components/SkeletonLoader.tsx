@@ -59,33 +59,41 @@ export const SkeletonLoader: React.FC<SkeletonLoaderProps> = ({
             role="status"
             aria-label="Loading form"
           >
-            <div className="h-6 w-1/3 bg-gray-200 dark:bg-gray-700 rounded mb-4 animate-shimmer" />
+            <div className="h-6 w-1/3 bg-surface-muted/80 dark:bg-surface-subtle/70 rounded mb-4 animate-shimmer" />
             <div className="space-y-4">
               <div>
-                <div className="h-4 w-1/4 bg-gray-200 dark:bg-gray-700 rounded mb-2 animate-shimmer" />
-                <div className="h-10 w-full bg-gray-200 dark:bg-gray-700 rounded animate-shimmer" style={{ animationDelay: '0.1s' }} />
+                <div className="h-4 w-1/4 bg-surface-muted/80 dark:bg-surface-subtle/70 rounded mb-2 animate-shimmer" />
+                <div className="h-10 w-full bg-surface-muted/80 dark:bg-surface-subtle/70 rounded animate-shimmer" style={{ animationDelay: '0.1s' }} />
               </div>
               <div>
-                <div className="h-4 w-1/4 bg-gray-200 dark:bg-gray-700 rounded mb-2 animate-shimmer" style={{ animationDelay: '0.2s' }} />
-                <div className="h-20 w-full bg-gray-200 dark:bg-gray-700 rounded animate-shimmer" style={{ animationDelay: '0.3s' }} />
+                <div className="h-4 w-1/4 bg-surface-muted/80 dark:bg-surface-subtle/70 rounded mb-2 animate-shimmer" style={{ animationDelay: '0.2s' }} />
+                <div className="h-20 w-full bg-surface-muted/80 dark:bg-surface-subtle/70 rounded animate-shimmer" style={{ animationDelay: '0.3s' }} />
               </div>
-              <div className="h-10 w-32 bg-gray-200 dark:bg-gray-700 rounded animate-shimmer" style={{ animationDelay: '0.4s' }} />
+              <div className="h-10 w-32 bg-surface-muted/80 dark:bg-surface-subtle/70 rounded animate-shimmer" style={{ animationDelay: '0.4s' }} />
             </div>
           </div>
         )
 
       case 'result':
         return (
-          <div className={`bg-white dark:bg-gray-800 rounded-xl p-6 shadow-md animate-pulse ${className}`}>
+          <div
+            className={[
+              'card animate-pulse bg-surface-subtle dark:bg-surface p-6 shadow-md',
+              className
+            ].filter(Boolean).join(' ')}
+            role="status"
+            aria-label="Loading result"
+          >
             <div className="flex items-center mb-4">
-              <div className="h-10 w-10 bg-gray-200 dark:bg-gray-700 rounded-full mr-4 animate-shimmer" />
-              <div className="h-6 w-1/3 bg-gray-200 dark:bg-gray-700 rounded animate-shimmer" style={{ animationDelay: '0.1s' }} />
+              <div className="h-10 w-10 bg-surface-muted/80 dark:bg-surface-subtle/70 rounded-full mr-4 animate-shimmer" />
+              <div className="h-6 w-1/3 bg-surface-muted/80 dark:bg-surface-subtle/70 rounded animate-shimmer" style={{ animationDelay: '0.1s' }} />
             </div>
             <div className="space-y-2">
-              <div className="h-4 w-full bg-gray-200 dark:bg-gray-700 rounded animate-shimmer" style={{ animationDelay: '0.2s' }} />
-              <div className="h-4 w-5/6 bg-gray-200 dark:bg-gray-700 rounded animate-shimmer" style={{ animationDelay: '0.3s' }} />
-              <div className="h-4 w-4/6 bg-gray-200 dark:bg-gray-700 rounded animate-shimmer" style={{ animationDelay: '0.4s' }} />
+              <div className="h-4 w-full bg-surface-muted/80 dark:bg-surface-subtle/70 rounded animate-shimmer" style={{ animationDelay: '0.2s' }} />
+              <div className="h-4 w-5/6 bg-surface-muted/80 dark:bg-surface-subtle/70 rounded animate-shimmer" style={{ animationDelay: '0.3s' }} />
+              <div className="h-4 w-4/6 bg-surface-muted/80 dark:bg-surface-subtle/70 rounded animate-shimmer" style={{ animationDelay: '0.4s' }} />
             </div>
+            <span className="sr-only">Loading...</span>
           </div>
         )
 

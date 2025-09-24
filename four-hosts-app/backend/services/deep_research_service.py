@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import os
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 class ResponseStatus(Enum):
     QUEUED = "queued"
@@ -33,6 +33,7 @@ from .openai_responses_client import (
     MCPTool,
     Citation,
 )
+from .context_packager import ContextPackager, ContextPackage, default_packager
 from .llm_client import (
     responses_deep_research,
     responses_retrieve,
@@ -42,7 +43,7 @@ from .classification_engine import HostParadigm, ClassificationResult
 from .context_engineering import ContextEngineeredQuery
 from .websocket_service import ResearchProgressTracker
 from .research_store import research_store
-from utils.token_budget import trim_text_to_tokens
+
 from models.evidence import EvidenceQuote
 
 # Logging
@@ -257,6 +258,9 @@ class DeepResearchService:
     def __init__(self):
         self.client: Optional[OpenAIResponsesClient] = None  # retained for backward compatibility
         self._initialized = False
+        # Context packager shared across invocations; initialize with default
+        self._packager: ContextPackager = default_packager
+        self._context_packages: Dict[str, ContextPackage] = {}
         
     async def initialize(self):
         """Initialize the service"""
@@ -322,12 +326,12 @@ class DeepResearchService:
                 config = self._get_paradigm_search_config(
                     classification.primary_paradigm, config
                 )
-            
+
             # Build system prompt (with experiment-aware variant selection)
             system_prompt = self._build_system_prompt(
                 query, classification, context_engineering, config, research_id
             )
-            
+
             # Build research prompt
             research_prompt = self._build_research_prompt(
                 query, context_engineering, config
@@ -583,7 +587,7 @@ class DeepResearchService:
         research_id: Optional[str] = None,
     ) -> str:
         """Build system prompt based on paradigm and context"""
-        parts = []
+        parts: List[str] = []
         
         # Add paradigm-specific prompt if available
         if config.include_paradigm_context and classification:
@@ -660,17 +664,19 @@ General requirements:
 - Structure findings clearly with headers and sections
 """)
         
-        prompt = "\n\n".join(parts).strip()
-        # Enforce instruction budget if available
-        try:
-            if context_engineering and getattr(context_engineering, "compress_output", None):
-                plan = getattr(context_engineering.compress_output, "budget_plan", {}) or {}
-                instr_budget = int(plan.get("instructions", 0)) if isinstance(plan, dict) else 0
-                if instr_budget > 0:
-                    prompt = trim_text_to_tokens(prompt, instr_budget)
-        except Exception:
-            pass
-        return prompt
+        packaged = self._package_segments(
+            stage="system_prompt",
+            context_engineering=context_engineering,
+            instructions=["\n\n".join(parts).strip()],
+            knowledge=[],
+            scratchpad=[],
+            tools=[],
+            metadata={"query": query, "mode": config.mode.value if hasattr(config.mode, "value") else str(config.mode)},
+        )
+        segment = packaged.segment("instructions")
+        if not segment:
+            return "\n\n".join(parts).strip()
+        return "\n\n".join(item["content"] for item in segment.content if item.get("content"))
     
     def _build_research_prompt(
         self,
@@ -693,17 +699,75 @@ General requirements:
         elif config.mode == DeepResearchMode.COMPREHENSIVE:
             parts.append("\nProvide a comprehensive analysis from multiple perspectives.")
         
-        prompt = "\n".join(parts)
-        # Enforce knowledge budget if available
+        packaged = self._package_segments(
+            stage="research_prompt",
+            context_engineering=context_engineering,
+            instructions=[],
+            knowledge=["\n".join(parts)],
+            scratchpad=[],
+            tools=[],
+            metadata={"query": query, "mode": config.mode.value if hasattr(config.mode, "value") else str(config.mode)},
+        )
+        segment = packaged.segment("knowledge")
+        if not segment:
+            return "\n".join(parts)
+        return "\n\n".join(item["content"] for item in segment.content if item.get("content"))
+
+    # ─────────── Context Packaging Utilities ───────────
+    def _package_segments(
+        self,
+        *,
+        stage: str,
+        context_engineering: Optional[ContextEngineeredQuery],
+        instructions: Iterable[Any],
+        knowledge: Iterable[Any],
+        scratchpad: Iterable[Any],
+        tools: Iterable[Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> ContextPackage:
+        packager = self._resolve_packager(context_engineering)
+        package = packager.package(
+            instructions=list(instructions or []),
+            knowledge=list(knowledge or []),
+            scratchpad=list(scratchpad or []),
+            tools=list(tools or []),
+            metadata=metadata,
+        )
+        self._context_packages[stage] = package
+        return package
+
+    def _resolve_packager(
+        self, context_engineering: Optional[ContextEngineeredQuery]
+    ) -> ContextPackager:
         try:
-            if context_engineering and getattr(context_engineering, "compress_output", None):
-                plan = getattr(context_engineering.compress_output, "budget_plan", {}) or {}
-                knowledge_budget = int(plan.get("knowledge", 0)) if isinstance(plan, dict) else 0
-                if knowledge_budget > 0:
-                    prompt = trim_text_to_tokens(prompt, knowledge_budget)
-        except Exception:
-            pass
-        return prompt
+            compress_output = getattr(context_engineering, "compress_output", None) if context_engineering else None
+            if not compress_output:
+                return self._packager
+
+            token_budget = int(getattr(compress_output, "token_budget", 0) or 0)
+            if token_budget <= 0:
+                token_budget = self._packager.total_budget
+
+            allocation_plan: Optional[Dict[str, float]] = None
+            plan_tokens = getattr(compress_output, "budget_plan", None)
+            if isinstance(plan_tokens, dict) and plan_tokens:
+                total = sum(max(int(v), 0) for v in plan_tokens.values())
+                if total > 0:
+                    allocation_plan = {
+                        k: max(int(v), 0) / total for k, v in plan_tokens.items()
+                    }
+
+            if allocation_plan:
+                return ContextPackager(total_budget=token_budget, allocation_plan=allocation_plan)
+            if token_budget != self._packager.total_budget:
+                return ContextPackager(total_budget=token_budget, allocation_plan=self._packager.allocation_plan)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.debug("deep_research.packager_resolve_error", error=str(exc))
+        return self._packager
+
+    def get_packaged_context(self, stage: str) -> Optional[ContextPackage]:
+        """Expose the most recent context package for observability/tests."""
+        return self._context_packages.get(stage)
     
     # ─────────── Response Processing ───────────
     def _process_response(

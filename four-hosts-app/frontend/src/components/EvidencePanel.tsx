@@ -36,7 +36,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
   return (
     <Card className="mt-4">
       <CardHeader className="mb-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-sm">Evidence quotes</CardTitle>
           <span className="text-xs text-text-muted">{quotes.length} total</span>
         </div>
@@ -65,10 +65,10 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
             const stableKey = q.id || `quote-${encoded.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10)}-${idx}`
             return (
             <li key={stableKey} className="rounded-md border border-border p-3 bg-surface">
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex-1">
                   <p className="text-sm text-text">“{q.quote}”</p>
-                  <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-muted">
                     {credibilityIcon(q.credibility_score)}
                     {q.domain ? <span className="font-medium text-text">{q.domain}</span> : null}
                     {q.published_date ? <span>• {new Date(q.published_date).toLocaleDateString()}</span> : null}
@@ -79,7 +79,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
                     href={q.url}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center text-xs text-primary hover:opacity-80 whitespace-nowrap"
+                    className="inline-flex items-center text-xs text-primary hover:opacity-80 whitespace-nowrap self-start sm:self-auto"
                     aria-label="Open source in new tab"
                   >
                     Source <FiExternalLink className="h-3.5 w-3.5 ml-1" />
@@ -90,7 +90,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
           )})}
         </ul>
         {quotes.length > maxInitial && (
-          <div className="mt-3">
+          <div className="mt-3 flex justify-center sm:justify-start">
             <Button
               variant="ghost"
               size="sm"
