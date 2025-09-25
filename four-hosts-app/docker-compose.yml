@@ -35,7 +35,8 @@ services:
   postgres:
     # Using 15-alpine to match existing data directory initialized under PG 15.
     # Upgrade path: run 15 -> dump or pg_upgrade to 16, then retag.
-    image: postgres:15-alpine
+    # Using AWS ECR public registry to avoid Docker Hub authentication issues
+    image: public.ecr.aws/docker/library/postgres:15-alpine
     # container_name removed to avoid conflicts when running multiple stacks.
     # Docker Compose will auto-name the container (project_service_index) and
     # service DNS remains 'postgres' for inter-service communication.
@@ -68,7 +69,8 @@ services:
   # ==========================================================================
   # High-performance cache for sessions, rate limiting, and temporary data
   redis:
-    image: redis:7-alpine
+    # Using AWS ECR public registry to avoid Docker Hub authentication issues
+    image: public.ecr.aws/docker/library/redis:7-alpine
     # container_name removed to prevent collision with backend-only compose file.
     # Port mapping removed: services communicate over internal network at redis:6379.
     # Exposing Redis to host is unnecessary for normal app operation and caused

@@ -4,8 +4,9 @@ Security middleware for the Four Hosts Research API
 
 import secrets
 import structlog
+import time
 
-from fastapi import Request, Response
+from fastapi import Request, Response, HTTPException
 from fastapi.responses import JSONResponse
 
 from core.config import is_production
@@ -104,34 +105,69 @@ async def security_middleware(request: Request, call_next):
 
 
 def get_csrf_token(request: Request, response: Response) -> dict:
-    """Generate or return existing CSRF token"""
-    logger.info("CSRF token endpoint accessed",
-               client=request.client.host if request.client else "unknown")
+    """Generate or return existing CSRF token with enhanced error handling"""
 
-    # Check if a valid CSRF token already exists
-    existing_token = request.cookies.get("csrf_token")
+    try:
+        logger.info("CSRF token endpoint accessed",
+                   client=request.client.host if request.client else "unknown",
+                   user_agent=request.headers.get("user-agent", "unknown"))
 
-    if existing_token:
-        logger.debug("Returning existing CSRF token")
-        return {"csrf_token": existing_token}
+        # Check if a valid CSRF token already exists
+        existing_token = request.cookies.get("csrf_token")
 
-    # Generate a new token only if none exists
-    token = secrets.token_urlsafe(16)
-    logger.debug("Generated new CSRF token")
+        if existing_token:
+            logger.debug("Returning existing CSRF token")
+            return {"csrf_token": existing_token}
 
-    # Determine cookie attributes from actual scheme to avoid setting
-    # Secure cookies over HTTP during local development or behind proxies.
-    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
-    is_https = forwarded_proto == "https" or request.url.scheme == "https"
-    same_site = "none" if is_https else "lax"
-    secure_flag = True if is_https else False
+        # Generate a new token with retry logic for entropy
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                token = secrets.token_urlsafe(16)
+                logger.debug("Generated new CSRF token", attempt=attempt + 1)
 
-    response.set_cookie(
-        key="csrf_token",
-        value=token,
-        httponly=False,
-        secure=secure_flag,
-        samesite=same_site,
-        path="/",
-    )
-    return {"csrf_token": token}
+                # Determine cookie attributes from actual scheme to avoid setting
+                # Secure cookies over HTTP during local development or behind proxies.
+                forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+                is_https = forwarded_proto == "https" or request.url.scheme == "https"
+                same_site = "none" if is_https else "lax"
+                secure_flag = True if is_https else False
+
+                # Set cookie with proper security flags
+                response.set_cookie(
+                    key="csrf_token",
+                    value=token,
+                    httponly=False,  # Allow JavaScript access for CSRF tokens
+                    secure=secure_flag,
+                    samesite=same_site,
+                    path="/",
+                    max_age=3600,  # 1 hour expiry
+                )
+
+                logger.info("CSRF token generated successfully",
+                           token_length=len(token),
+                           is_https=is_https,
+                           same_site=same_site)
+
+                return {"csrf_token": token}
+
+            except Exception as cookie_error:
+                logger.warning("Cookie setting failed",
+                              attempt=attempt + 1,
+                              error=str(cookie_error))
+                if attempt == max_retries - 1:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to set CSRF cookie after multiple attempts"
+                    )
+                time.sleep(0.1)  # Small delay before retry
+
+        # This should never be reached, but just in case
+        raise HTTPException(status_code=500, detail="CSRF token generation failed")
+
+    except Exception as e:
+        logger.error("CSRF token generation failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    client=request.client.host if request.client else "unknown")
+        raise HTTPException(status_code=500, detail="CSRF token unavailable") from e

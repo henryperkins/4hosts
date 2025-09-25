@@ -39,60 +39,81 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 @router.post("/register", response_model=Token)
 async def register(user_data: UserCreate, request: Request, response: Response):
     """Register a new user"""
-    # Convert to auth module's UserCreate model
     from services.auth_service import UserCreate as AuthUserCreate
 
-    auth_user_data = AuthUserCreate(
-        email=user_data.email,
-        username=user_data.username,
-        password=user_data.password,
-        role=user_data.role,
-    )
+    request_id = getattr(request.state, "request_id", "unknown")
+    try:
+        auth_user_data = AuthUserCreate(
+            email=user_data.email,
+            username=user_data.username,
+            password=user_data.password,
+            role=user_data.role,
+        )
 
-    # Use async context manager for database session
-    async with get_db_context() as db:
-        user = await real_auth_service.create_user(auth_user_data, db)
+        # Create user
+        async with get_db_context() as db:
+            user = await real_auth_service.create_user(auth_user_data, db)
 
-    access_token = create_access_token(
-        {"user_id": str(user.id), "email": user.email, "role": user.role.value}
-    )
+        # Issue tokens
+        access_token = create_access_token(
+            {"user_id": str(user.id), "email": user.email, "role": user.role.value}
+        )
+        refresh_token = await create_refresh_token(
+            user_id=str(user.id), device_id=None, ip_address=None, user_agent=None
+        )
 
-    refresh_token = await create_refresh_token(
-        user_id=str(user.id), device_id=None, ip_address=None, user_agent=None
-    )
+        # Cookie attributes (respect proxies)
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+        is_https = forwarded_proto == "https" or request.url.scheme == "https"
+        same_site = "none" if is_https else "lax"
+        secure_flag = True if is_https else False
 
-    # Align behavior with /auth/login: set tokens as httpOnly cookies
-    # Determine cookie attributes based on actual scheme to avoid Secure over HTTP in dev
-    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
-    is_https = forwarded_proto == "https" or request.url.scheme == "https"
-    same_site = "none" if is_https else "lax"
-    secure_flag = True if is_https else False
+        # Set cookies
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=secure_flag,
+            samesite=same_site,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            path="/",
+        )
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,
+            secure=secure_flag,
+            samesite=same_site,
+            max_age=60 * 60 * 24 * 7,  # 7 days
+            path="/",
+        )
 
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=secure_flag,
-        samesite=same_site,
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/",
-    )
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=secure_flag,
-        samesite=same_site,
-        max_age=60 * 60 * 24 * 7,  # 7 days
-        path="/",
-    )
+        logger.info(
+            "auth.register.success",
+            user_id=str(user.id),
+            email=user.email,
+            request_id=request_id,
+        )
 
-    return Token(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer",
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    )
+        return Token(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer",
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Emit full stack trace for diagnostics
+        logger.exception("auth.register.failed", error=str(e), request_id=request_id)
+        # In non-production environments, surface the error message to speed up debugging
+        try:
+            from core.config import get_environment
+            is_prod = get_environment() == "production"
+        except Exception:
+            is_prod = True
+        detail = "Registration failed" if is_prod else f"Registration failed: {str(e)}"
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.post("/login")

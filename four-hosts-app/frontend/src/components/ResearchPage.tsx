@@ -125,7 +125,7 @@ export const ResearchPage = () => {
   }
 
   // React Query polling for results
-  const { data: polledResults } = useQuery({
+  const { data: polledResults, error: queryError } = useQuery({
     queryKey: ['research-results', currentResearchId],
     queryFn: () => api.getResearchResults(currentResearchId as string),
     // Keep polling enabled until we have final results OR explicitly stopped
@@ -140,14 +140,18 @@ export const ResearchPage = () => {
       return false
     },
     staleTime: 1000,
-    onError: (err) => {
-      const message = err instanceof Error ? err.message : 'Unable to check research status.'
+  })
+
+  // Handle query errors separately (React Query v5 doesn't have onError)
+  useEffect(() => {
+    if (queryError) {
+      const message = queryError instanceof Error ? queryError.message : 'Unable to check research status.'
       setError(message)
       setIsLoading(false)
       setShowProgress(false)
       setStopPolling(true)
-    },
-  })
+    }
+  }, [queryError])
 
   // Apply polled results
   useEffect(() => {

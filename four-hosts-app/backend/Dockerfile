@@ -1,5 +1,6 @@
 # Multi-stage Dockerfile for Four Hosts Backend
-FROM python:3.12-slim AS builder
+# Using alternative registry to avoid Docker Hub authentication issues
+FROM public.ecr.aws/docker/library/python:3.12-slim AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -20,7 +21,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
 
 # --- Production Stage ---
-FROM python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \

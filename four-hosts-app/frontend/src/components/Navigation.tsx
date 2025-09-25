@@ -26,7 +26,7 @@ export const Navigation = () => {
     bernard: 'hover:text-paradigm-bernard',
     teddy: 'hover:text-paradigm-teddy',
     maeve: 'hover:text-paradigm-maeve'
-  }), [])
+  } as Record<string, string>), [])
 
   const getParadigmHoverClass = useCallback((paradigm?: string) => {
     if (!paradigm) return ''

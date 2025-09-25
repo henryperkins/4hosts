@@ -706,7 +706,7 @@ async def execute_real_research(
             if override_ui:
                 metadata["override"] = {
                     "applied": True,
-                    "paradigm": getattr(override_ui, "value", str(override_ui)),
+                    "paradigm": getattr(override_ui, "value", str(override_ui)) if hasattr(override_ui, "value") else str(override_ui),
                 }
         except Exception:
             pass
@@ -1101,7 +1101,7 @@ async def submit_research(
                 # Preserve engine suggestion as secondary if not already set
                 if not classification.secondary or classification.secondary == override_ui:
                     classification.secondary = prev
-                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)), current=getattr(override_ui, "value", str(override_ui)))
+                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)) if hasattr(prev, "value") else str(prev), current=getattr(override_ui, "value", str(override_ui)) if hasattr(override_ui, "value") else str(override_ui))
         except Exception:
             pass
 
@@ -1151,7 +1151,7 @@ async def submit_research(
                 research_id,
                 str(current_user.user_id),
                 research.query,
-                classification.primary.value,
+                (getattr(classification.primary, "value", str(classification.primary))),
                 research.options.depth.value,
             )
 
@@ -1163,7 +1163,7 @@ async def submit_research(
                     "research_id": research_id,
                     "user_id": str(current_user.user_id),
                     "query": research.query,
-                    "paradigm": classification.primary.value,
+                    "paradigm": (getattr(classification.primary, "value", str(classification.primary))),
                 },
             )
 
@@ -1516,7 +1516,7 @@ async def submit_deep_research(
                 classification.primary = override_ui
                 if not classification.secondary or classification.secondary == override_ui:
                     classification.secondary = prev
-                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)), current=getattr(override_ui, "value", str(override_ui)))
+                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)) if hasattr(prev, "value") else str(prev), current=getattr(override_ui, "value", str(override_ui)) if hasattr(override_ui, "value") else str(override_ui))
         except Exception:
             pass
 
@@ -1548,7 +1548,7 @@ async def submit_deep_research(
                 research_id,
                 str(current_user.user_id),
                 research.query,
-                classification.primary.value,
+                (getattr(classification.primary, "value", str(classification.primary))),
                 ResearchDepth.DEEP_RESEARCH.value,
             )
 
@@ -1712,7 +1712,7 @@ async def resume_deep_research(
                 classification.primary = override_ui
                 if not classification.secondary or classification.secondary == override_ui:
                     classification.secondary = prev
-                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)), current=getattr(override_ui, "value", str(override_ui)))
+                logger.info("classification.override_applied", research_id=research_id, user_id=str(getattr(current_user, "user_id", "unknown")), previous=getattr(prev, "value", str(prev)) if hasattr(prev, "value") else str(prev), current=getattr(override_ui, "value", str(override_ui)) if hasattr(override_ui, "value") else str(override_ui))
         except Exception:
             pass
         await research_store.update_field(research_id, "paradigm_classification", classification.dict())
@@ -1734,7 +1734,7 @@ async def resume_deep_research(
                 research_id,
                 str(current_user.user_id),
                 rq.query,
-                (classification.primary.value if classification else research.get("paradigm_classification", {}).get("primary", "unknown")),
+                ((getattr(classification.primary, "value", str(classification.primary)) if classification else research.get("paradigm_classification", {}).get("primary", "unknown"))),
                 ResearchDepth.DEEP_RESEARCH.value,
             )
         except Exception:

@@ -35,6 +35,28 @@
       ],
       "env": {
         "TAVILY_API_KEY": "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"
+      },
+      "alwaysAllow": [
+        "tavily-extract"
+      ]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--browser=chromium",
+        "--headless",
+        "--viewport-size=1280,800"
+      ],
+      "env": {
+        "PLAYWRIGHT_BROWSERS_PATH": "0"
+      }
+    },
+    "cloudflare-docs": {
+      "transport": {
+        "type": "sse",
+        "url": "https://docs.mcp.cloudflare.com/sse"
       }
     }
   }

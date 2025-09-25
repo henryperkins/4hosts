@@ -1,5 +1,6 @@
 # Multi-stage Dockerfile for Four Hosts Frontend
-FROM node:22-alpine AS builder
+# Using alternative registry to avoid Docker Hub authentication issues
+FROM public.ecr.aws/docker/library/node:22-alpine AS builder
 
 # Set working directory
 WORKDIR /app
@@ -17,7 +18,7 @@ COPY . .
 RUN npm run build
 
 # --- Production Stage ---
-FROM nginx:alpine
+FROM public.ecr.aws/docker/library/nginx:alpine
 
 # Install runtime dependencies
 RUN apk add --no-cache \
