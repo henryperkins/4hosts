@@ -56,7 +56,7 @@ try:
     import fitz  # PyMuPDF
 except Exception:
     fitz = None  # Optional; PDF parsing will be skipped if unavailable
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from dotenv import load_dotenv
 
 # Circuit breaker for resilient external API calls
@@ -265,8 +265,9 @@ def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = N
         pass
     try:
         html_tag = soup.find("html")
-        if html_tag and html_tag.has_attr("lang"):
-            meta["language"] = (html_tag.get("lang") or "").strip() or None
+        if isinstance(html_tag, Tag) and html_tag.has_attr("lang"):
+            lang_val = html_tag.get("lang")
+            meta["language"] = (lang_val or "").strip() if isinstance(lang_val, str) else None
     except Exception:
         pass
     # Canonical
@@ -275,14 +276,20 @@ def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = N
             "link",
             rel=lambda v: bool(v and "canonical" in str(v).lower())
         )
-        if link_canon and link_canon.get("href"):
-            meta["canonical_url"] = link_canon.get("href")
+        if isinstance(link_canon, Tag):
+            href_val = link_canon.get("href")
+            if href_val:
+                meta["canonical_url"] = href_val
     except Exception:
         pass
     # OG / Twitter / generic meta
     try:
         for m in soup.find_all("meta"):
-            k = (m.get("property") or m.get("name") or "").strip().lower()
+            if not isinstance(m, Tag):
+                continue
+            prop_val = m.get("property")
+            name_val = m.get("name")
+            k = (str(prop_val) if prop_val else str(name_val) if name_val else "").strip().lower()
             v = m.get("content")
             if not k or v is None:
                 continue
@@ -296,7 +303,7 @@ def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = N
     ld_main = {}
     try:
         import json as _json
-        for s in soup.find_all("script", type=lambda t: t and "ld+json" in t):
+        for s in soup.find_all("script", type=lambda t: bool(t and "ld+json" in t)):
             try:
                 data = _json.loads(s.get_text() or "{}")
             except Exception:
@@ -321,7 +328,10 @@ def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = N
     # citation_author may appear multiple times
     try:
         for m in soup.find_all("meta", attrs={"name": "citation_author"}):
-            val = (m.get("content") or "").strip()
+            if not isinstance(m, Tag):
+                continue
+            content_val = m.get("content")
+            val = (str(content_val) if content_val else "").strip()
             if val:
                 authors.append(val)
     except Exception:
@@ -403,7 +413,13 @@ def _clean_html_noise(soup: BeautifulSoup) -> None:
     )
     for el in soup.find_all(True):
         try:
-            ident = (" ".join([el.get("id") or "", " ".join(el.get("class") or [])])).lower()
+            if not isinstance(el, Tag):
+                continue
+            id_val = el.get("id")
+            class_val = el.get("class")
+            id_str = str(id_val) if id_val else ""
+            class_str = " ".join(str(c) for c in class_val) if isinstance(class_val, list) else str(class_val) if class_val else ""
+            ident = (" ".join([id_str, class_str])).lower()
             if any(k in ident for k in negative):
                 el.decompose()
         except Exception:
@@ -453,7 +469,9 @@ def _assemble_text_from_block(el, max_chars: int | None = None) -> str:
     parts: list[str] = []
     for node in el.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre"], recursive=True):
         try:
-            tag = node.name.lower()
+            if not isinstance(node, Tag):
+                continue
+            tag = node.name.lower() if node.name else ""
             txt = node.get_text(" ", strip=True)
             if not txt:
                 continue
@@ -543,7 +561,9 @@ def _structured_text_fallback(soup: BeautifulSoup, max_chars: int | None) -> str
         pass
     for el in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre"]):
         try:
-            tag = el.name.lower()
+            if not isinstance(el, Tag):
+                continue
+            tag = el.name.lower() if el.name else ""
             text = el.get_text(" ", strip=True)
             if not text:
                 continue
@@ -607,7 +627,8 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str, with_met
                     stop_at_refs = os.getenv("SEARCH_PDF_STOP_AT_REFERENCES", "1") in {"1", "true", "yes"}
                     parts: list[str] = []
                     font_sizes: list[float] = []
-                    for i, p in enumerate(pdf):
+                    # PyMuPDF stubs may not fully annotate iteration
+                    for i, p in enumerate(pdf):  # type: ignore[arg-type]
                         if i >= max_pages:
                             break
                         if structured:
@@ -891,8 +912,8 @@ class SearchConfig:
         environment (e.g. `export SEARCH_MIN_RELEVANCE=0.12`).  The value is
         clamped to the range 0–1 to avoid accidental misconfiguration.
         """
+        env_val = os.getenv("SEARCH_MIN_RELEVANCE")
         try:
-            env_val = os.getenv("SEARCH_MIN_RELEVANCE")
             if env_val is not None:
                 v = float(env_val)
                 # Clamp between 0.0 and 1.0
@@ -1193,12 +1214,12 @@ class BraveSearchAPI(BaseSearchAPI):
             headers = {"X-Subscription-Token": self.api_key, "Accept": "application/json"}
             async with self._sess().get(self.base, params=params, headers=headers) as r:
                 if r.status != 200:
-                    attrs["http_status"] = r.status
+                    attrs["http_status"] = str(r.status)
                     return []
                 data = await r.json()
-            attrs["http_status"] = 200
+            attrs["http_status"] = "200"
             attrs["success"] = True
-            attrs["latency_ms"] = int((time.perf_counter() - start) * 1000)
+            attrs["latency_ms"] = str(int((time.perf_counter() - start) * 1000))
         results: List[SearchResult] = []
         for item in data.get("web", {}).get("results", []):
             # Best-effort published date
@@ -1292,7 +1313,7 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                     if 500 <= r.status <= 599:
                         raise aiohttp.ClientError(f"Google CSE {r.status}")
                     if r.status != 200:
-                        attrs["http_status"] = r.status
+                        attrs["http_status"] = str(r.status)
                         return []
                     data = await r.json()
                     if isinstance(data, dict) and data.get("error"):
@@ -1308,19 +1329,19 @@ class GoogleCustomSearchAPI(BaseSearchAPI):
                 logger.warning(f"Google Search timeout for query: {query[:50]}")
                 return []
 
-            attrs["http_status"] = 200
+            attrs["http_status"] = "200"
             attrs["success"] = True
             info = data.get("searchInformation", {}) if isinstance(data, dict) else {}
             if isinstance(info, dict):
                 total = info.get("totalResults")
                 if total:
-                    attrs["total_results"] = total
+                    attrs["total_results"] = str(total)
                 try:
                     if info.get("searchTime") is not None:
-                        attrs["search_time_ms"] = int(float(info["searchTime"]) * 1000)
+                        attrs["search_time_ms"] = str(int(float(info["searchTime"]) * 1000))
                 except Exception:
                     pass
-            attrs["latency_ms"] = int((time.perf_counter() - start) * 1000)
+            attrs["latency_ms"] = str(int((time.perf_counter() - start) * 1000))
         items = data.get("items", []) or []
         results: List[SearchResult] = []
         for it in items:
@@ -2077,7 +2098,8 @@ class SearchAPIManager:
 
         # Prefer config.timeout if provided; otherwise fall back to env variable.
         try:
-            timeout = float(cfg.timeout) if getattr(cfg, "timeout", None) else float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
+            cfg_timeout = getattr(cfg, "timeout", None)
+            timeout = float(cfg_timeout) if cfg_timeout is not None else float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
         except Exception:
             timeout = float(os.getenv("SEARCH_PER_PROVIDER_TIMEOUT_SEC", "15"))
         try:
@@ -2176,7 +2198,8 @@ class SearchAPIManager:
         results = []
         # Prefer per-call timeout if provided
         try:
-            timeout = float(cfg.timeout) if getattr(cfg, "timeout", None) else float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
+            cfg_timeout = getattr(cfg, "timeout", None)
+            timeout = float(cfg_timeout) if cfg_timeout is not None else float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
         except Exception:
             timeout = float(os.getenv("SEARCH_ACADEMIC_TIMEOUT_SEC", "20"))
         done, pending = await asyncio.wait(tasks.values(), timeout=timeout, return_when=asyncio.ALL_COMPLETED)
@@ -2606,7 +2629,7 @@ class SearchAPIManager:
     async def search_with_plan(
         self,
         planned: Sequence["QueryCandidate"],
-        config: SearchConfig = None
+        config: Optional[SearchConfig] = None
     ) -> Dict[str, List[SearchResult]]:
         """Execute planned queries across providers in a single prioritized call.
 

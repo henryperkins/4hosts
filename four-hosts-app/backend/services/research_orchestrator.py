@@ -9,7 +9,7 @@ import os
 import structlog
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 
@@ -27,22 +27,16 @@ from models.context_models import (
 from models.paradigms import normalize_to_internal_code
 
 # Local imports - services
-from services.agentic_process import (
-    evaluate_coverage_from_sources,
-    run_followups,
-)
+from services.agentic_process import run_followups
 from services.cache import cache_manager
-from services.credibility import analyze_source_credibility_batch, get_source_credibility_safe, get_source_credibility
+from services.credibility import analyze_source_credibility_batch, get_source_credibility
 from services.exa_research import exa_research_client
 from services.llm_client import llm_client
 from services.paradigm_search import get_search_strategy, SearchContext, get_paradigm_focus
 from services.query_planning import PlannerConfig, build_planner_config
 from services.query_planning.planning_utils import (
-    Budget,
     BudgetAwarePlanner,
     CostMonitor,
-    Plan,
-    PlannerCheckpoint,
     RetryPolicy,
     SearchMetrics,
     ToolCapability,
@@ -64,14 +58,13 @@ from services.evaluation.context_evaluator import evaluate_context_package, eval
 
 # Local imports - utilities
 from utils.cost_attribution import attribute_search_costs
-from utils.evidence_utils import deduplicate_evidence_quotes, deduplicate_evidence_matches, ensure_match
+from utils.evidence_utils import deduplicate_evidence_quotes, deduplicate_evidence_matches
 from utils.retry import instrumented_retry
 from utils.type_coercion import as_int
-from utils.url_utils import clean_url, normalize_url, extract_domain, canonicalize_url, is_valid_url
+from utils.url_utils import extract_domain, canonicalize_url, is_valid_url
 from utils.source_normalization import normalize_source_fields, compute_category_distribution, extract_dedup_metrics, dedupe_by_url
 from utils.date_utils import get_current_utc, get_current_iso
 from utils.token_budget import select_items_within_budget, compute_budget_plan
-from utils.grounding import compute_grounding_coverage
 
 # Local imports - core
 from core.config import (
@@ -101,12 +94,12 @@ try:
         DeepResearchMode,
         DeepResearchConfig,
     )
+    _DEEP_RESEARCH_AVAILABLE = True
 except Exception:
     deep_research_service = None  # type: ignore
-    # Minimal stubs to avoid NameError when feature is disabled/missing
-    class DeepResearchMode:  # type: ignore
-        PARADIGM_FOCUSED = type("E", (), {"value": "PARADIGM_FOCUSED"})()
+    DeepResearchMode = None  # type: ignore
     DeepResearchConfig = None  # type: ignore
+    _DEEP_RESEARCH_AVAILABLE = False
 
 # Optional: global metrics facade (safe import)
 try:
@@ -200,43 +193,6 @@ class UnifiedResearchOrchestrator:
             if os.getenv("AGENTIC_MAX_ITERATIONS"):
                 try:
                     self.agentic_config["max_iterations"] = int(os.getenv("AGENTIC_MAX_ITERATIONS", "2") or 2)
-                except Exception:
-                    pass
-
-                # ------------------------------------------------------
-                # Grounding coverage – what fraction of answer sentences
-                # reference at least one citation marker.
-                # ------------------------------------------------------
-                try:
-                    content_str: str
-                    citations_list: List[Dict[str, Any]]
-
-                    if isinstance(synthesized_answer, dict):
-                        content_str = synthesized_answer.get("answer") or synthesized_answer.get("content") or ""
-                        citations_list = synthesized_answer.get("citations") or []
-                    else:
-                        content_str = getattr(synthesized_answer, "content", "") or ""
-                        citations_list = getattr(synthesized_answer, "citations", []) or []
-
-                    coverage_ratio, total_sent, cited_sent = compute_grounding_coverage(
-                        content_str,
-                        citations_list,
-                    )
-
-                    processed_results.setdefault("metadata", {})["grounding_coverage"] = coverage_ratio
-                    processed_results["metadata"]["sentences_total"] = total_sent
-                    processed_results["metadata"]["sentences_cited"] = cited_sent
-
-                    # Trace entry for synthesis completion
-                    agent_trace.append(
-                        {
-                            "phase": "synthesis",
-                            "coverage_ratio": coverage_ratio,
-                            "sentences_total": total_sent,
-                            "sentences_cited": cited_sent,
-                            "ts": time.time(),
-                        }
-                    )
                 except Exception:
                     pass
             if os.getenv("AGENTIC_COVERAGE_THRESHOLD"):
@@ -1132,16 +1088,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 return {"status": "cancelled", "message": "Research was cancelled"}
 
         # Execute deep research if enabled
-        if enable_deep_research:
+        if enable_deep_research and deep_research_service and DeepResearchMode:
             # Temporarily allow unlinked citations for deep research path
             prev_allow_unlinked = bool(self.diagnostics.get("allow_unlinked_citations", False))
             self.diagnostics["allow_unlinked_citations"] = True
             try:
+                deep_mode = deep_research_mode if deep_research_mode else DeepResearchMode.PARADIGM_FOCUSED
                 deep_results = await self._execute_deep_research_integration(
                     context_engineered,
                     classification,
                     user_context,
-                    deep_research_mode or DeepResearchMode.PARADIGM_FOCUSED,
+                    deep_mode,
                     progress_callback,
                     research_id
                 )
@@ -2315,9 +2272,11 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         max_results: Optional[int] = None
     ) -> SearchConfig:
         """Build search configuration from user context and paradigm."""
+        default_limit = int(os.getenv("DEFAULT_SOURCE_LIMIT", "200"))
         if max_results is None:
-            default_limit = int(os.getenv("DEFAULT_SOURCE_LIMIT", "200"))
-        max_results = int(getattr(user_context, "source_limit", default_limit) or default_limit)
+            max_results = int(getattr(user_context, "source_limit", default_limit) or default_limit)
+        else:
+            max_results = int(max_results)
 
         return SearchConfig(
             max_results=max_results,
@@ -3408,9 +3367,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 ul = opts.get("user_location")
                 if isinstance(ul, dict):
                     deep_config.user_location = ul
-                # search_context_size: map small/medium/large -> LOW/MEDIUM/HIGH
+                # search_context_size: map small/medium/large -> enum values
                 scs = str(opts.get("search_context_size") or "").lower().strip()
-                from services.openai_responses_client import SearchContextSize as _SCS
+                from services.deep_research_service import SearchContextSize as _SCS
                 if scs in {"small", "low"}:
                     deep_config.search_context_size = _SCS.LOW
                 elif scs in {"large", "high"}:
