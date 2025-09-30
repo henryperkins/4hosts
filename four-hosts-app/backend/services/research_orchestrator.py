@@ -344,6 +344,14 @@ class UnifiedResearchOrchestrator:
         except Exception as e:
             logger.warning(f"Brave MCP initialization failed: {e}")
 
+        # Try to initialize Azure AI Foundry MCP
+        try:
+            from services.azure_ai_foundry_mcp_integration import initialize_azure_ai_foundry_mcp
+            self.azure_ai_foundry_enabled = await initialize_azure_ai_foundry_mcp()
+        except Exception as e:
+            logger.warning(f"Azure AI Foundry MCP initialization failed: {e}")
+            self.azure_ai_foundry_enabled = False
+
         logger.info("✓ Unified Research Orchestrator V2 initialized")
         # Register default tool capabilities for budget tracking
         try:

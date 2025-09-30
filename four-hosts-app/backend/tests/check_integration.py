@@ -14,16 +14,30 @@ def check_file_structure():
         "services/llm_client.py",
         "services/answer_generator.py",
         "services/answer_generator_continued.py",
-        ".env.example",
+        "services/mcp_integration.py",
+        "services/brave_mcp_integration.py",
+        "services/azure_ai_foundry_mcp_integration.py",
         "requirements.txt",
         "README_AZURE_OPENAI.md",
     ]
+    
+    optional_files = [
+        ".env.example",
+        "../../start-app.sh",
+    ]
 
     print("📁 File Structure Check")
+    print("   Required files:")
     for file_path in required_files:
         full_path = Path(file_path)
         status = "✅" if full_path.exists() else "❌"
-        print(f"   {status} {file_path}")
+        print(f"      {status} {file_path}")
+    
+    print("   Optional files:")
+    for file_path in optional_files:
+        full_path = Path(file_path)
+        status = "✅" if full_path.exists() else "ℹ️"
+        print(f"      {status} {file_path}")
 
 
 def check_code_integrity():
@@ -75,12 +89,40 @@ def check_code_integrity():
             print(f"      LLM usage: {'✅' if has_llm_usage else '❌'}")
             print(f"      Mock replacement: {'✅' if has_mock_replacement else '❌'}")
 
+    # Check MCP integration files
+    mcp_files = [
+        ("services/mcp_integration.py", "Core MCP integration"),
+        ("services/brave_mcp_integration.py", "Brave MCP integration"),
+        ("services/azure_ai_foundry_mcp_integration.py", "Azure AI Foundry MCP integration"),
+    ]
+    
+    print("\n   🔌 MCP Integration Check:")
+    for file_path, description in mcp_files:
+        path = Path(file_path)
+        if path.exists():
+            with open(path, "r") as f:
+                content = f.read()
+            
+            # Basic structure checks
+            has_class = "class " in content
+            has_config = "Config" in content
+            has_initialize = "initialize" in content
+            has_paradigm = "paradigm" in content.lower()
+            
+            print(f"      📄 {description}:")
+            print(f"         Class definition: {'✅' if has_class else '❌'}")
+            print(f"         Configuration: {'✅' if has_config else '❌'}")
+            print(f"         Initialize method: {'✅' if has_initialize else '❌'}")
+            print(f"         Paradigm support: {'✅' if has_paradigm else '❌'}")
+        else:
+            print(f"      📄 {description}: ❌ File not found")
+
 
 def check_environment_setup():
     """Check environment variable setup"""
     print("\n⚙️ Environment Setup Check")
 
-    # Check .env.example content
+    # Check .env.example content if it exists
     env_example_path = Path(".env.example")
     if env_example_path.exists():
         with open(env_example_path, "r") as f:
@@ -99,6 +141,45 @@ def check_environment_setup():
                 print(f"   ✅ {var} configured in .env.example")
             else:
                 print(f"   ❌ {var} missing from .env.example")
+    else:
+        print("   ℹ️ No .env.example found - checking start-app.sh template")
+
+    # Check start-app.sh for environment variable template
+    start_app_path = Path("../../start-app.sh")
+    if start_app_path.exists():
+        with open(start_app_path, "r") as f:
+            content = f.read()
+
+        azure_openai_vars = [
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_OPENAI_DEPLOYMENT",
+        ]
+        
+        azure_ai_foundry_vars = [
+            "AZURE_AI_PROJECT_ENDPOINT",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_RESOURCE_GROUP_NAME",
+            "AZURE_AI_PROJECT_NAME",
+            "AZURE_TENANT_ID",
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_AI_FOUNDRY_MCP_URL",
+        ]
+
+        print("\n   📋 Azure OpenAI Configuration in start-app.sh:")
+        for var in azure_openai_vars:
+            if var in content:
+                print(f"      ✅ {var} configured in start-app.sh")
+            else:
+                print(f"      ❌ {var} missing from start-app.sh")
+        
+        print("\n   🧠 Azure AI Foundry Configuration in start-app.sh:")
+        for var in azure_ai_foundry_vars:
+            if var in content:
+                print(f"      ✅ {var} configured in start-app.sh")
+            else:
+                print(f"      ❌ {var} missing from start-app.sh")
 
     # Check requirements.txt
     requirements_path = Path("requirements.txt")
@@ -112,6 +193,8 @@ def check_environment_setup():
         print("\n   📦 Dependencies:")
         print(f"      OpenAI package: {'✅' if has_openai else '❌'}")
         print(f"      Azure Identity: {'✅' if has_azure_identity else '❌'}")
+    else:
+        print("   ❌ requirements.txt not found")
 
 
 def check_documentation():
