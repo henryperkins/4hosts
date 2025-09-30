@@ -1,6 +1,38 @@
 import React from 'react'
 import { useResearchDisplay } from './useResearchDisplay'
 
+// Shared component for rendering synergies and conflicts/tensions
+const SynthesisGrid: React.FC<{
+  synergies?: string[]
+  conflicts?: Array<{ description?: string } | string>
+  conflictLabel?: 'Conflicts' | 'Tensions'
+}> = ({ synergies, conflicts, conflictLabel = 'Conflicts' }) => (
+  <div className="grid gap-3 md:grid-cols-2">
+    {synergies && synergies.length > 0 ? (
+      <div>
+        <h4 className="text-sm font-semibold text-text">Synergies</h4>
+        <ul className="list-disc pl-5 text-sm text-text-muted space-y-1">
+          {synergies.map((item, idx) => (
+            <li key={`synergy-${idx}`}>{item}</li>
+          ))}
+        </ul>
+      </div>
+    ) : null}
+    {conflicts && conflicts.length > 0 ? (
+      <div>
+        <h4 className="text-sm font-semibold text-text">{conflictLabel}</h4>
+        <ul className="list-disc pl-5 text-sm text-text-muted space-y-1">
+          {conflicts.map((item, idx) => (
+            <li key={`${conflictLabel.toLowerCase()}-${idx}`}>
+              {typeof item === 'string' ? item : (item.description || 'Conflict item')}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null}
+  </div>
+)
+
 export const MeshAnalysis: React.FC = () => {
   const {
     data: { integratedSynthesis, meshSynthesis },
@@ -18,28 +50,11 @@ export const MeshAnalysis: React.FC = () => {
               {integratedSynthesis.integrated_summary}
             </p>
           ) : null}
-          <div className="grid gap-3 md:grid-cols-2">
-            {integratedSynthesis.synergies && integratedSynthesis.synergies.length ? (
-              <div>
-                <h4 className="text-sm font-semibold text-text">Synergies</h4>
-                <ul className="list-disc pl-5 text-sm text-text-muted space-y-1">
-                  {integratedSynthesis.synergies.map((item, idx) => (
-                    <li key={`synergy-${idx}`}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {integratedSynthesis.conflicts_identified && integratedSynthesis.conflicts_identified.length ? (
-              <div>
-                <h4 className="text-sm font-semibold text-text">Conflicts</h4>
-                <ul className="list-disc pl-5 text-sm text-text-muted space-y-1">
-                  {integratedSynthesis.conflicts_identified.map((conflict, idx) => (
-                    <li key={`conflict-${idx}`}>{conflict.description}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
+          <SynthesisGrid
+            synergies={integratedSynthesis.synergies}
+            conflicts={integratedSynthesis.conflicts_identified}
+            conflictLabel="Conflicts"
+          />
         </div>
       ) : null}
 
@@ -49,28 +64,11 @@ export const MeshAnalysis: React.FC = () => {
           {meshSynthesis.integrated ? (
             <p className="text-sm text-text-muted mb-3 whitespace-pre-line">{meshSynthesis.integrated}</p>
           ) : null}
-          <div className="grid gap-3 md:grid-cols-2">
-            {meshSynthesis.synergies && meshSynthesis.synergies.length ? (
-              <div>
-                <h4 className="text-sm font-semibold text-text">Synergies</h4>
-                <ul className="list-disc pl-5 text-sm text-text-muted space-y-1">
-                  {meshSynthesis.synergies.map((item: string, idx: number) => (
-                    <li key={`mesh-synergy-${idx}`}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {meshSynthesis.tensions && meshSynthesis.tensions.length ? (
-              <div>
-                <h4 className="text-sm font-semibold text-text">Tensions</h4>
-                <ul className="list-disc pl-5 text-sm text-text-muted space-y-1">
-                  {meshSynthesis.tensions.map((item: string, idx: number) => (
-                    <li key={`mesh-tension-${idx}`}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
+          <SynthesisGrid
+            synergies={meshSynthesis.synergies}
+            conflicts={meshSynthesis.tensions}
+            conflictLabel="Tensions"
+          />
         </div>
       ) : null}
     </section>

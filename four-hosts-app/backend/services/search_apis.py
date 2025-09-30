@@ -15,27 +15,42 @@ import hashlib
 import json
 import structlog
 import os
-import random
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Callable, Awaitable, Union, TYPE_CHECKING
-from urllib.parse import unquote, urlparse, urlunparse
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Callable,
+    Awaitable,
+    Union,
+    TYPE_CHECKING,
+)
+from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
 import aiohttp
 
 # Import URL utilities
-from utils.url_utils import (
-    normalize_url, is_valid_url, extract_domain, extract_doi,
-    clean_url, sanitize_url, extract_base_domain
+from ..utils.url_utils import (
+    normalize_url,
+    is_valid_url,
+    extract_domain,
+    extract_doi,
 )
 # Import retry utilities
 from utils.retry import (
-    handle_rate_limit, RateLimitedError as RetryRateLimitedError,
-    parse_retry_after, calculate_exponential_backoff,
-    get_search_retry_decorator, get_api_retry_decorator
+    handle_rate_limit,
+    RateLimitedError as RetryRateLimitedError,
+    parse_retry_after,
+    get_search_retry_decorator,
+    get_api_retry_decorator,
 )
 try:
     import fitz  # PyMuPDF
@@ -43,12 +58,6 @@ except Exception:
     fitz = None  # Optional; PDF parsing will be skipped if unavailable
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 # Circuit breaker for resilient external API calls
 from utils.circuit_breaker import (
@@ -99,20 +108,11 @@ def _structured_log(level: str, event: str, meta: Dict[str, Any]):
 # --------------------------------------------------------------------------- #
 #                        SHARED UTILITY FUNCTIONS                             #
 # --------------------------------------------------------------------------- #
-
-
-
-
 # safe_parse_date moved to utils.date_utils
-
-
-
-
 
 def ngram_tokenize(text: str, n: int = 3) -> List[str]:
     toks = tokenize(text)
     return [" ".join(toks[i: i + n]) for i in range(max(0, len(toks) - n + 1))]
-
 
 # extract_doi moved to utils.url_utils
 
@@ -136,7 +136,6 @@ def ensure_snippet_content(result: "SearchResult"):
         result.raw_data.setdefault("content_type", "snippet_only")
 
 
-
 def normalize_result_text_fields(result: "SearchResult") -> None:
     """Normalize user-visible fields for safe display/logging.
 
@@ -153,6 +152,7 @@ def normalize_result_text_fields(result: "SearchResult") -> None:
         result.snippet = sanitize_text(result.snippet, max_len=max_snippet)
     except Exception:
         pass
+
 
 def _safe_truncate_query(q: str, limit: int) -> str:
     """Truncate without cutting mid-token or leaving unmatched quotes.
@@ -242,11 +242,13 @@ async def _rate_limit_backoff(
     # Note: handle_rate_limit already slept, but we need to raise for retry handlers
     raise RateLimitedError(f"Rate limited on {url}")
 
+
 def _first_non_empty(*vals: Optional[str]) -> Optional[str]:
     for v in vals:
         if isinstance(v, str) and v.strip():
             return v.strip()
     return None
+
 
 def _extract_metadata_from_html(html: str, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Extract structured metadata from HTML head (OG tags, JSON-LD, citation_*, canonical).
@@ -407,17 +409,20 @@ def _clean_html_noise(soup: BeautifulSoup) -> None:
         except Exception:
             continue
 
+
 def _node_text_len(el) -> int:
     try:
         return len(el.get_text(" ", strip=True))
     except Exception:
         return 0
 
+
 def _link_text_len(el) -> int:
     try:
         return sum(len(a.get_text(" ", strip=True) or "") for a in el.find_all("a"))
     except Exception:
         return 0
+
 
 def _punct_count(el) -> int:
     try:
@@ -426,6 +431,7 @@ def _punct_count(el) -> int:
         return len(_re.findall(r"[\.!?,;:]", txt))
     except Exception:
         return 0
+
 
 def _score_block(el) -> float:
     # Core readability-esque scoring: text mass, low link density, punctuation density, headings bonus
@@ -441,6 +447,7 @@ def _score_block(el) -> float:
     except Exception:
         pass
     return (tlen * (1.0 - min(0.9, lden)) * (1.0 + min(0.5, pden))) * (1.0 + bonus)
+
 
 def _assemble_text_from_block(el, max_chars: int | None = None) -> str:
     parts: list[str] = []
@@ -462,6 +469,7 @@ def _assemble_text_from_block(el, max_chars: int | None = None) -> str:
             continue
     out = "\n".join(parts).strip()
     return out[:max_chars] if max_chars else out
+
 
 def _extract_main_text(html: str, base_url: str | None = None, max_chars: int | None = None) -> str:
     """Heuristic main-content extractor with graceful fallbacks.
@@ -551,6 +559,7 @@ def _structured_text_fallback(soup: BeautifulSoup, max_chars: int | None) -> str
             continue
     out = "\n".join(pieces).strip() or soup.get_text(" ", strip=True)
     return out[:max_chars] if max_chars else out
+
 
 async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str, with_meta: bool = False) -> Union[str, Tuple[str, Dict[str, Any]]]:
     """GET `url`, honour 429 back-off, return plaintext (PDF or HTML).
@@ -682,17 +691,6 @@ async def fetch_and_parse_url(session: aiohttp.ClientSession, url: str, with_met
             return text, meta
         else:
             return text
-
-
-
-
-# --------------------------------------------------------------------------- #
-#                            DOMAIN HELPERS                                   #
-# --------------------------------------------------------------------------- #
-
-# URLNormalizer moved to utils.url_utils
-# Using normalize_url and is_valid_url directly from url_utils
-
 
 # --------------------------------------------------------------------------- #
 #                            FETCHER WRAPPER                                  #
@@ -916,15 +914,31 @@ class SearchConfig:
 
 
 # --------------------------------------------------------------------------- #
-#                         RATE LIMITER (client-side)                          #
-# --------------------------------------------------------------------------- #
-# Use ClientRateLimiter from services.rate_limiter directly.
-
-
-# --------------------------------------------------------------------------- #
 #                           Query Optimiser                                   #
 # --------------------------------------------------------------------------- #
 
+# Module-level singleton to avoid repeated instantiation
+_query_optimizer_instance = None
+
+
+def _get_query_optimizer():
+    """Get or create shared QueryOptimizer instance."""
+    global _query_optimizer_instance
+    if _query_optimizer_instance is None:
+        try:
+            from services.query_planning.optimizer import QueryOptimizer  # type: ignore
+            _query_optimizer_instance = QueryOptimizer()
+        except Exception:
+            # Minimal fallback: expose optimize_query and get_key_terms
+            class _QO:
+                def optimize_query(self, q: str) -> str:
+                    return q or ""
+
+                def get_key_terms(self, q: str) -> list[str]:
+                    return [t for t in re.split(r"\W+", q or "") if t]
+
+            _query_optimizer_instance = _QO()  # type: ignore
+    return _query_optimizer_instance
 
 
 # --------------------------------------------------------------------------- #
@@ -935,28 +949,18 @@ class ContentRelevanceFilter:
     """Simple relevance scoring; uses shared utilities."""
 
     def __init__(self):
-        # Lazy import to avoid import-time failures when planner modules
-        # are unavailable in minimal test contexts.
-        try:
-            from services.query_planning.optimizer import QueryOptimizer  # type: ignore
-            self.qopt = QueryOptimizer()
-        except Exception:
-            # Minimal fallback: expose optimize_query and get_key_terms
-            class _QO:
-                def optimize_query(self, q: str) -> str:
-                    return q or ""
-
-                def get_key_terms(self, q: str) -> list[str]:
-                    return [t for t in re.split(r"\W+", q or "") if t]
-
-            self.qopt = _QO()  # type: ignore
+        # Use shared singleton instance for efficiency
+        self.qopt = _get_query_optimizer()
         self.consensus_threshold = 0.7
 
     def _term_frequency(self, text: str, terms: List[str]) -> float:
         if not terms or not text:
             return 0.1  # Give minimal score instead of 0
+        # Pre-compute lowercase once for efficiency
+        text_lower = text.lower()
+        terms_lower = [t.lower() for t in terms]
         # More forgiving: count partial matches and give bonus for any match
-        matches = sum(1 for t in terms if t.lower() in text.lower())
+        matches = sum(1 for t in terms_lower if t in text_lower)
         if matches > 0:
             # At least one term matched, give a base score + frequency bonus
             return min(0.3 + (matches / len(terms)) * 0.7, 1.0)
@@ -965,8 +969,11 @@ class ContentRelevanceFilter:
     def _title_relevance(self, title: str, terms: List[str]) -> float:
         if not terms or not title:
             return 0.1  # Give minimal score instead of 0
+        # Pre-compute lowercase once for efficiency
+        title_lower = title.lower()
+        terms_lower = [t.lower() for t in terms]
         # More forgiving for title matches
-        matches = sum(1 for t in terms if t.lower() in title.lower())
+        matches = sum(1 for t in terms_lower if t in title_lower)
         if matches > 0:
             # Title matches are valuable, give higher base score
             return min(0.4 + (matches / len(terms)) * 0.6, 1.0)
@@ -991,23 +998,26 @@ class ContentRelevanceFilter:
     def score(self, res: SearchResult, query: str, key_terms: List[str], cfg: SearchConfig) -> float:
         text = (res.title or "").lower() + " " + (res.snippet or "").lower()
 
-        # More balanced scoring with higher base scores
+        # Rebalanced scoring system (weights sum to ~1.0)
+        # Core relevance: 60% (term freq 25%, title 20%, freshness 15%)
         score = 0.25 * self._term_frequency(text, key_terms)
         score += 0.20 * self._title_relevance((res.title or "").lower(), key_terms)
         score += 0.15 * self._freshness(res.published_date)
-        score += 0.15  # Base metadata bonus increased
 
-        # Bonus for having content
+        # Quality signals: 25% (content completeness + domain authority)
+        quality_bonus = 0.0
         if res.snippet and len(res.snippet) > 50:
-            score += 0.1
+            quality_bonus += 0.10
         if res.title and len(res.title) > 10:
-            score += 0.05
-
-        # Domain authority bonus for known good sources
+            quality_bonus += 0.05
         if res.domain:
             domain_lower = res.domain.lower()
             if any(auth in domain_lower for auth in ['.edu', '.gov', 'wikipedia', 'nature.com', 'science.org']):
-                score += 0.1
+                quality_bonus += 0.10
+        score += min(0.25, quality_bonus)
+
+        # Base completeness bonus: 15% (for having basic metadata)
+        score += 0.15
 
         return min(1.0, score)
 
@@ -1066,19 +1076,14 @@ async def _report_provider_progress(pt, rid, msg, done, total):
 #                       BASE SEARCH API                                       #
 # --------------------------------------------------------------------------- #
 
+
 class BaseSearchAPI:
     def __init__(self, api_key: str = "", rate: int = 60):
         self.api_key = api_key
         self.rate = ClientRateLimiter(calls_per_minute=rate)
         self.session: Optional[aiohttp.ClientSession] = None
-        try:
-            from services.query_planning.optimizer import QueryOptimizer  # type: ignore
-            self.qopt = QueryOptimizer()
-        except Exception:
-            class _QO:
-                def optimize_query(self, q: str) -> str:
-                    return q or ""
-            self.qopt = _QO()  # type: ignore
+        # Use shared singleton instance for efficiency
+        self.qopt = _get_query_optimizer()
         self.rfilter = ContentRelevanceFilter()
 
     async def __aenter__(self):
@@ -1898,7 +1903,6 @@ class SearchAPIManager:
             except Exception:
                 pass
             return await self.search_all_parallel(planned, cfg, progress_callback, research_id)
-        seed_query = planned[0].query
         all_results = []
         now_ts = time.time()
         min_results = int(os.getenv("SEARCH_MIN_RESULTS_THRESHOLD", "5"))
@@ -2181,25 +2185,18 @@ class SearchAPIManager:
         name_by_task = {task: name for name, task in tasks.items()}
 
         for task in done:
+            task_results = []
             try:
                 task_results = task.result()
                 if task_results:
                     results.extend(task_results)
             except Exception:
                 pass
-            # Emit completion for finished providers
-            if progress_callback and research_id:
-                try:
-                    pname = name_by_task.get(task)
-                    if pname:
-                        count = len(task_results) if isinstance(task_results, list) else 0
-                        await progress_callback.report_search_completed(research_id, seed_query, count)
-                except Exception:
-                    pass
+            # Note: completion events are reported by _search_provider_silent
 
+        # Cancel pending tasks and report completion with zero results
         for task in pending:
             task.cancel()
-            # Optionally report completion with zero results for timeouts
             if progress_callback and research_id:
                 try:
                     pname = name_by_task.get(task)
@@ -2207,6 +2204,10 @@ class SearchAPIManager:
                         await progress_callback.report_search_completed(research_id, seed_query, 0)
                 except Exception:
                     pass
+
+        # Drain cancelled tasks to prevent warnings and resource leaks
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
         return results
 
@@ -2483,6 +2484,10 @@ class SearchAPIManager:
                 except Exception:
                     pass
                 logger.warning(f"{name} timed out; skipping")
+
+            # Drain cancelled tasks to prevent warnings and resource leaks
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         else:
             all_res = []
 
@@ -2563,15 +2568,6 @@ class SearchAPIManager:
             except Exception:
                 fetch_budget = 0.0
             if fetch_budget <= 0.0:
-                # Derive a sensible default from overall and per-provider timeouts with a small cushion
-                try:
-                    task_to = float(os.getenv("SEARCH_TASK_TIMEOUT_SEC", "30") or 30.0)
-                except Exception:
-                    task_to = 30.0
-                try:
-                    prov_to = float(os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC", "25") or 25.0)
-                except Exception:
-                    prov_to = 25.0
                 # Dynamic content fetch budget based on result count
                 # Minimum 10s to give content fetching a real chance
                 # Scale with results: 0.5s per result up to 30s max
@@ -2717,7 +2713,7 @@ def create_search_manager() -> SearchAPIManager:
     if exa_key and os.getenv("SEARCH_DISABLE_EXA", "0").lower() not in {"1", "true", "yes"}:
         exa_api = ExaSearchAPI(exa_key, base_url=os.getenv("EXA_BASE_URL"))
         exa_primary = os.getenv("EXA_SEARCH_AS_PRIMARY", "0").lower() in {"1", "true", "yes"}
-        mgr.add_api("exa", exa_api, is_primary=exa_primary, is_fallback=(not exa_primary))
+        mgr.add_api("exa", exa_api, is_primary=exa_primary, is_fallback=not exa_primary)
 
     # Academic/open providers
     if os.getenv("SEARCH_DISABLE_ARXIV", "0") not in {"1", "true", "yes"}:

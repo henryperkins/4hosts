@@ -36,13 +36,72 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Azure AI Foundry MCP Server (HTTP Bridge)
+  azure-ai-foundry-mcp:
+    build:
+      context: ./mcp-http-bridge
+      dockerfile: Dockerfile
+    image: azure-ai-foundry-mcp:latest
+    container_name: azure-ai-foundry-mcp
+    environment:
+      # Bridge configuration
+      - BRIDGE_HOST=0.0.0.0
+      - BRIDGE_PORT=8081
+
+      # Azure AI Foundry credentials (passed to MCP server subprocess)
+      - AZURE_AI_PROJECT_ENDPOINT=${AZURE_AI_PROJECT_ENDPOINT}
+      - AZURE_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+      - AZURE_RESOURCE_GROUP_NAME=${AZURE_RESOURCE_GROUP_NAME}
+      - AZURE_AI_PROJECT_NAME=${AZURE_AI_PROJECT_NAME}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+
+      # Optional: GitHub token for models
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+
+      # Optional: Azure AI Search
+      - AZURE_AI_SEARCH_ENDPOINT=${AZURE_AI_SEARCH_ENDPOINT:-}
+      - AZURE_AI_SEARCH_API_KEY=${AZURE_AI_SEARCH_API_KEY:-}
+      - AZURE_AI_SEARCH_API_VERSION=${AZURE_AI_SEARCH_API_VERSION:-}
+
+      # Optional: Feature flags
+      - AZURE_AI_ENABLE_WEB_SEARCH=${AZURE_AI_ENABLE_WEB_SEARCH:-false}
+      - AZURE_AI_ENABLE_CODE_INTERPRETER=${AZURE_AI_ENABLE_CODE_INTERPRETER:-false}
+    ports:
+      - "127.0.0.1:8081:8081"
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
+    restart: unless-stopped
+    networks:
+      - fourhosts-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s  # Increased for initial setup
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'  # Increased for subprocess
+          memory: 2G   # Increased for uv + MCP server
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
   # Optional: Additional MCP servers can be added here
   # filesystem-mcp:
   #   image: your-org/filesystem-mcp:latest
   #   environment:
   #     - MCP_AUTH_TOKEN=${MCP_FILESYSTEM_TOKEN}
   #   ports:
-  #     - "8081:8080"
+  #     - "8082:8080"
   #   networks:
   #     - fourhosts-network
 

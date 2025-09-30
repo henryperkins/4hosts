@@ -4,14 +4,13 @@ Tests cover relevance scoring, spam detection, and filtering accuracy.
 """
 
 import pytest
-import asyncio
 from typing import List
 from services.query_planning.relevance_filter import EarlyRelevanceFilter
 from services.search_apis import SearchResult
 
 
 class TestEarlyRelevanceFilter:
-    """Test suite for EarlyRelevanceFilter spam detection and relevance scoring."""
+    """Test suite covering spam detection and paradigm relevance scoring."""
 
     @pytest.fixture
     def relevance_filter(self) -> EarlyRelevanceFilter:
@@ -30,26 +29,44 @@ class TestEarlyRelevanceFilter:
             SearchResult(
                 title="Machine Learning Algorithms: A Comprehensive Guide",
                 url="https://example.com/ml-guide",
-                snippet="This guide covers various machine learning algorithms including supervised and unsupervised learning methods.",
+                snippet=(
+                    "This guide covers various machine learning algorithms "
+                    "including supervised and unsupervised learning methods."
+                ),
                 source="test",
                 domain="example.com",
-                content="Detailed explanation of machine learning algorithms with examples and code samples."
+                content=(
+                    "Detailed explanation of machine learning algorithms with "
+                    "examples and code samples."
+                ),
             ),
             SearchResult(
                 title="Deep Learning Neural Networks",
                 url="https://example.com/deep-learning",
-                snippet="Introduction to neural networks and deep learning architectures used in modern AI systems.",
+                snippet=(
+                    "Introduction to neural networks and deep learning "
+                    "architectures used in modern AI systems."
+                ),
                 source="test",
                 domain="example.com",
-                content="Comprehensive overview of deep learning techniques and neural network architectures."
+                content=(
+                    "Comprehensive overview of deep learning techniques and "
+                    "neural network architectures."
+                ),
             ),
             SearchResult(
                 title="Supervised vs Unsupervised Learning",
                 url="https://example.com/supervised-learning",
-                snippet="Comparison of supervised and unsupervised learning approaches in machine learning.",
+                snippet=(
+                    "Comparison of supervised and unsupervised learning "
+                    "approaches in machine learning."
+                ),
                 source="test",
                 domain="example.com",
-                content="Detailed comparison with examples of when to use each approach."
+                content=(
+                    "Detailed comparison with examples of when to use each "
+                    "approach."
+                ),
             )
         ]
 
@@ -60,34 +77,46 @@ class TestEarlyRelevanceFilter:
             SearchResult(
                 title="Buy Cheap Viagra Online - Best Prices!",
                 url="https://spam-site.com/viagra",
-                snippet="Get the best deals on prescription medications. Fast shipping worldwide.",
+                snippet=(
+                    "Get the best deals on prescription medications. Fast "
+                    "shipping worldwide."
+                ),
                 source="spam",
                 domain="spam-site.com",
-                content="Pharmacy spam content with drug advertisements."
+                content="Pharmacy spam content with drug advertisements.",
             ),
             SearchResult(
                 title="Click Here to Win iPhone - Free Giveaway!",
                 url="https://scam-site.com/iphone-giveaway",
-                snippet="Enter our contest to win a free iPhone 15. No purchase necessary!",
+                snippet=(
+                    "Enter our contest to win a free iPhone 15. "
+                    "No purchase necessary!"
+                ),
                 source="scam",
                 domain="scam-site.com",
-                content="Scam content with fake giveaway promotions."
+                content="Scam content with fake giveaway promotions.",
             ),
             SearchResult(
                 title="Lose Weight Fast - Miracle Diet Pills",
                 url="https://miracle-diet.com/pills",
-                snippet="Amazing weight loss results in just 7 days. Buy now and save 50%!",
+                snippet=(
+                    "Amazing weight loss results in just 7 days. "
+                    "Buy now and save 50%!"
+                ),
                 source="spam",
                 domain="miracle-diet.com",
-                content="Spam content promoting weight loss supplements."
+                content="Spam content promoting weight loss supplements.",
             ),
             SearchResult(
                 title="Work from Home - Make $5000/Week",
                 url="https://get-rich-quick.com/work-home",
-                snippet="Earn money online with our proven system. Start today!",
+                snippet=(
+                    "Earn money online with our proven system. "
+                    "Start today!"
+                ),
                 source="scam",
                 domain="get-rich-quick.com",
-                content="Get rich quick scheme promotion."
+                content="Get rich quick scheme promotion.",
             )
         ]
 
@@ -141,7 +170,7 @@ class TestEarlyRelevanceFilter:
                 snippet=f"Get the best {spam_word} offers now!",
                 source="spam",
                 domain="spam-site.com",
-                content=f"Spam content about {spam_word}"
+                content=f"Spam content about {spam_word}",
             )
 
             is_relevant = relevance_filter.is_relevant(spam_result, query, "bernard")
@@ -161,7 +190,7 @@ class TestEarlyRelevanceFilter:
                 snippet="Test snippet",
                 source="test",
                 domain=domain,
-                content="Test content"
+                content="Test content",
             )
 
             is_relevant = relevance_filter.is_relevant(blocked_result, query, "bernard")
@@ -202,32 +231,65 @@ class TestEarlyRelevanceFilter:
         """Test that filtering behavior varies by paradigm."""
         query = "artificial intelligence research"
 
-        # Academic result
         academic_result = SearchResult(
             title="AI Research Paper",
             url="https://stanford.edu/ai-research",
-            snippet="Scientific study on artificial intelligence",
+            snippet=(
+                "Scientific study on artificial intelligence with "
+                "peer-reviewed methodology."
+            ),
             source="stanford",
             domain="stanford.edu",
-            content="Academic research content"
+            content="Academic research content",
         )
 
-        # Commercial result
         commercial_result = SearchResult(
             title="AI Marketing Tool",
             url="https://marketing-site.com/ai-tool",
-            snippet="Use AI for better marketing campaigns",
+            snippet=(
+                "Use AI for better marketing campaigns and boost ROI quickly."
+            ),
             source="commercial",
             domain="marketing-site.com",
-            content="Commercial marketing content"
+            content="Commercial marketing content",
         )
 
-        # Test with Bernard paradigm (should prefer academic)
         bernard_academic = relevance_filter.is_relevant(academic_result, query, "bernard")
         bernard_commercial = relevance_filter.is_relevant(commercial_result, query, "bernard")
+        maeve_commercial = relevance_filter.is_relevant(commercial_result, query, "maeve")
 
-        # Academic should be relevant, commercial may or may not be
-        assert bernard_academic == True
+        assert bernard_academic is True
+        assert bernard_commercial is False
+        assert maeve_commercial is True
+
+    def test_paradigm_alignment_bonus(self, relevance_filter: EarlyRelevanceFilter):
+        """Preferred domains and paradigm keywords should boost alignment."""
+        query = "expose corruption at multinational corporations"
+        dolores_aligned = SearchResult(
+            title="Power Investigation uncovers systemic corruption",
+            url="https://www.propublica.org/article/systemic-power-investigation",
+            snippet=(
+                "Whistleblower evidence shows systemic power abuse and "
+                "corruption cover-up."
+            ),
+            source="propublica",
+            domain="propublica.org",
+            content="Detailed investigative report",
+        )
+        neutral_result = SearchResult(
+            title="Company press release about compliance",
+            url="https://example.com/compliance-report",
+            snippet=(
+                "Official statement outlining compliance improvements "
+                "and policies."
+            ),
+            source="company",
+            domain="example.com",
+            content="Corporate content",
+        )
+
+        assert relevance_filter.is_relevant(dolores_aligned, query, "dolores") is True
+        assert relevance_filter.is_relevant(neutral_result, query, "dolores") is False
 
     def test_duplicate_site_detection(self, relevance_filter: EarlyRelevanceFilter):
         """Test that duplicate/mirror sites are detected."""
@@ -249,7 +311,7 @@ class TestEarlyRelevanceFilter:
                 snippet="Test snippet",
                 source="test",
                 domain=domain,
-                content="Test content"
+                content="Test content",
             )
 
             is_relevant = relevance_filter.is_relevant(duplicate_result, query, "bernard")
@@ -267,7 +329,7 @@ class TestEarlyRelevanceFilter:
             snippet="Research on machine learning",
             source="test",
             domain="example.com",
-            content="Research content"
+            content="Research content",
         )
 
         # Should not crash and should return a boolean
@@ -283,7 +345,7 @@ class TestEarlyRelevanceFilter:
             snippet="Test snippet",
             source="test",
             domain="example.com",
-            content="Test content"
+            content="Test content",
         )
 
         # Call multiple times
@@ -305,7 +367,7 @@ class TestEarlyRelevanceFilter:
             snippet=None,
             source="test",
             domain=None,
-            content=None
+            content=None,
         )
 
         # Should not crash and should return a boolean

@@ -145,7 +145,7 @@ async def lifespan(app: FastAPI):
 
         # Configure default MCP servers
         try:
-            from services.mcp_integration import configure_default_servers
+            from services.mcp.mcp_integration import configure_default_servers
             configure_default_servers()
             logger.info("✓ Default MCP servers configured")
         except Exception as e:

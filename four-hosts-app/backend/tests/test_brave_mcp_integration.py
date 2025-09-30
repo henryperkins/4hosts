@@ -6,7 +6,7 @@ import asyncio
 import pytest
 from unittest.mock import Mock, patch, AsyncMock
 
-from services.brave_mcp_integration import (
+from services.mcp.brave_mcp_integration import (
     BraveMCPConfig,
     BraveMCPIntegration,
     BraveSearchType,
@@ -223,7 +223,7 @@ class TestBraveMCPIntegrationE2E:
     )
     async def test_initialize_brave_mcp(self):
         """Test actual initialization of Brave MCP"""
-        from services.brave_mcp_integration import initialize_brave_mcp
+        from services.mcp.brave_mcp_integration import initialize_brave_mcp
         
         result = await initialize_brave_mcp()
         assert result is True

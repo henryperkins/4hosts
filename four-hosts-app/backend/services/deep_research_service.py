@@ -346,10 +346,16 @@ class DeepResearchService:
             # Configure web search if enabled
             web_search_config = None
             if config.enable_web_search:
-                web_search_config = WebSearchTool(
-                    search_context_size=config.search_context_size,
-                    user_location=config.user_location
-                )
+                web_search_config = {
+                    "type": "web_search_preview",
+                    "search_context_size": (
+                        config.search_context_size.value
+                        if isinstance(config.search_context_size, SearchContextSize)
+                        else config.search_context_size
+                    ),
+                }
+                if config.user_location:
+                    web_search_config["user_location"] = config.user_location
             
             # Stage 1: Evidence gathering (web_search, optional code interpreter)
             # Always run stage 1 with store=True so we can chain reliably.
@@ -370,7 +376,7 @@ class DeepResearchService:
                     mcp_tools = config.mcp_servers
                 else:
                     if os.getenv("ENABLE_MCP_DEFAULT", "0").lower() in {"1", "true", "yes"}:
-                        from .mcp_integration import mcp_integration
+                        from .mcp.mcp_integration import mcp_integration
                         mcp_tools = mcp_integration.get_responses_mcp_tools()
             except Exception:
                 mcp_tools = []

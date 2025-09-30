@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
-import api from '../services/api'
-import { validateContextMetrics } from '../utils/validation'
-import { Button } from './ui/Button'
+import api from '../../services/api'
+import { validateContextMetrics } from '../../utils/validation'
+import { Button } from '../ui/Button'
 
 type LayerMetrics = {
   write?: number

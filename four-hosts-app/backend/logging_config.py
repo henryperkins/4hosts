@@ -27,22 +27,6 @@ __all__ = [
 ]
 
 
-def _add_request_research_ids(  # type: ignore[override]
-    logger: structlog.BoundLogger, method_name: str, event_dict: Dict[str, Any]
-):
-    """Merge any *request_id* and *research_id* from contextvars into logs."""
-
-    try:  # optional dependency path
-        from structlog.contextvars import merge_contextvars  # type: ignore
-        event_dict = merge_contextvars(logger, method_name, event_dict)
-    except ImportError:  # structlog extras missing
-        pass
-    except Exception:  # noqa: BLE001 - defensive
-        pass
-
-    return event_dict
-
-
 def configure_logging(force: bool = False) -> None:  # noqa: D401
     """Setup structlog + stdlib bridging exactly once.
 
@@ -71,22 +55,18 @@ def configure_logging(force: bool = False) -> None:  # noqa: D401
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
-        _add_request_research_ids,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
     ]
 
     # Root handler uses ProcessorFormatter so stdlib logs share processors
-    class _ProcessorFormatter(structlog.stdlib.ProcessorFormatter):
-        pass
-
-    formatter = _ProcessorFormatter(
+    # Standardized processor order for consistency with structlog chain
+    formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=[structlog.contextvars.merge_contextvars],
         processors=[
             structlog.stdlib.add_logger_name,
             structlog.stdlib.add_log_level,
-            _add_request_research_ids,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.format_exc_info,
             renderer,
@@ -125,8 +105,7 @@ def bind_request_context(
     try:
         from structlog.contextvars import bind_contextvars  # type: ignore
     except ImportError:
-        return
-    except Exception:  # noqa: BLE001
+        # structlog contextvars not available (missing extras)
         return
 
     payload: Dict[str, str] = {}
@@ -137,8 +116,13 @@ def bind_request_context(
     if payload:
         try:
             bind_contextvars(**payload)
-        except Exception:  # noqa: BLE001
-            pass
+        except (TypeError, ValueError, AttributeError) as e:
+            # Known safe errors during context binding - log and continue
+            # Don't let context binding failures break the application
+            import logging
+            logging.getLogger(__name__).debug(
+                "Failed to bind context: %s", e, exc_info=True
+            )
 
 
 def get_logger(name: Optional[str] = None):

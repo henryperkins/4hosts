@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { Alert } from './ui/Alert'
 import { ResearchFormEnhanced } from './ResearchFormEnhanced'
 import { ResearchProgress } from './ResearchProgress'
-import { ResultsDisplayEnhanced } from './ResultsDisplayEnhanced'
+import { ResearchDisplayContainer } from './research-display/ResearchDisplayContainer'
 import ParadigmDisplay from './ParadigmDisplay'
 import { ClassificationFeedback } from './feedback/ClassificationFeedback'
 import api from '../services/api'
@@ -310,7 +310,7 @@ export const ResearchPage = () => {
 
       {results && !showProgress && (
         <div className="animate-fade-in">
-          <ResultsDisplayEnhanced results={results} />
+          <ResearchDisplayContainer results={results} />
         </div>
       )}
     </div>

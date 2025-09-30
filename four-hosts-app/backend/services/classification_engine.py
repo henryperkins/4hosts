@@ -1020,11 +1020,12 @@ class ClassificationEngine:
         global llm_client, LLM_AVAILABLE
         if use_llm and not LLM_AVAILABLE:
             try:
-                from .llm_client import llm_client as _llm_client
-                llm_client = _llm_client
+                # Import module, not attribute, to avoid circular import issues
+                import services.llm_client as llm_module
+                llm_client = llm_module.llm_client
                 LLM_AVAILABLE = True
                 logger.info("LLM client successfully imported")
-            except ImportError as e:
+            except (ImportError, AttributeError) as e:
                 logger.warning(
                     f"LLM client not available - using rule-based classification: {e}"
                 )

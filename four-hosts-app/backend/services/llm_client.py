@@ -77,7 +77,7 @@ VALID_VERBOSITY = {"low", "medium", "high"}
 # ────────────────────────────────────────────────────────────
 #  Helper Functions
 # ────────────────────────────────────────────────────────────
-def _normalize_paradigm_code(value: Union[str, HostParadigm]) -> str:
+def _normalize_paradigm_code(value: Union[str, "HostParadigm"]) -> str:
     """Normalize paradigm to internal code (e.g., 'analytical' -> 'bernard')."""
     try:
         from models.paradigms import normalize_to_internal_code
@@ -200,7 +200,7 @@ class LLMClient:
         prompt: str,
         *,
         model: Optional[str] = None,
-        paradigm: Union[str, HostParadigm] = "bernard",
+        paradigm: Union[str, "HostParadigm"] = "bernard",
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: Optional[float] = None,
         top_p: float = 0.9,
@@ -400,7 +400,7 @@ class LLMClient:
         schema: Dict[str, Any],
         *,
         model: Optional[str] = None,
-        paradigm: Union[str, HostParadigm] = "bernard",
+        paradigm: Union[str, "HostParadigm"] = "bernard",
     ) -> Dict[str, Any]:
         """Generate JSON output matching the provided schema."""
         logger.info(
@@ -431,7 +431,7 @@ class LLMClient:
         self,
         prompt: str,
         *,
-        paradigm: Union[str, HostParadigm],
+        paradigm: Union[str, "HostParadigm"],
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 0.7,
         model: Optional[str] = None,

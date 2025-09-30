@@ -638,7 +638,30 @@ def get_system_health_report() -> Dict[str, Any]:
 
 # Create enhanced instances for use
 enhanced_answer_orchestrator = EnhancedAnswerGenerationOrchestrator()
-enhanced_classification_engine = EnhancedClassificationEngine()
+
+# Lazy initialization to avoid circular import during module load
+_enhanced_classification_engine: Optional[EnhancedClassificationEngine] = None
+
+def get_enhanced_classification_engine() -> EnhancedClassificationEngine:
+    """Get or create the enhanced classification engine instance (lazy initialization)"""
+    global _enhanced_classification_engine
+    if _enhanced_classification_engine is None:
+        _enhanced_classification_engine = EnhancedClassificationEngine()
+    return _enhanced_classification_engine
+
+
+class _LazyEnhancedClassificationEngine:
+    """Proxy that lazily instantiates the enhanced classification engine."""
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(get_enhanced_classification_engine(), item)
+
+    def __call__(self) -> EnhancedClassificationEngine:
+        return get_enhanced_classification_engine()
+
+
+# Expose as module variable for backward compatibility while keeping lazy init behavior
+enhanced_classification_engine = _LazyEnhancedClassificationEngine()
 
 
 # Admin API endpoints for monitoring and control

@@ -4,8 +4,7 @@ import { FiAlertCircle } from 'react-icons/fi'
 import { SkeletonLoader } from './SkeletonLoader'
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from './ui/Card'
 import { Button } from './ui/Button'
-// Alert component not currently used
-import { ResultsDisplayEnhanced } from './ResultsDisplayEnhanced'
+import { ResearchDisplayContainer } from './research-display/ResearchDisplayContainer'
 import api from '../services/api'
 import type { ResearchResult } from '../types'
 
@@ -145,7 +144,7 @@ export const ResearchResultPage = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <ResultsDisplayEnhanced results={results} />
+      <ResearchDisplayContainer results={results} />
     </div>
   )
 }

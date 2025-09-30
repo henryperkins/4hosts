@@ -13,6 +13,7 @@ import aiohttp
 from pydantic import BaseModel, HttpUrl
 from datetime import datetime, timezone
 from services.websocket_service import WSMessage, WSEventType, progress_tracker  # type: ignore
+from services.mcp.mcp_telemetry import track_mcp_call, complete_mcp_call, mcp_telemetry  # type: ignore
 
 from logging_config import configure_logging
 
@@ -132,13 +133,24 @@ class MCPIntegration:
     
     async def _execute_tool(self, server: MCPServer, tool_name: str, parameters: Dict[str, Any]) -> Any:
         """Execute a tool on a remote MCP server"""
-        # Extract research_id for progress broadcasting if provided
+        # Extract research_id and paradigm for tracking
         research_id = None
+        paradigm = None
         try:
             if isinstance(parameters, dict):
                 research_id = parameters.get("research_id")
+                paradigm = parameters.get("paradigm")
         except Exception:
-            research_id = None
+            pass
+
+        # Start telemetry tracking
+        call_id = track_mcp_call(
+            tool_name=tool_name,
+            server_name=server.name,
+            paradigm=paradigm,
+            research_id=research_id,
+            parameters=parameters,
+        )
 
         # Notify start of MCP tool execution
         if research_id:
@@ -166,48 +178,61 @@ class MCPIntegration:
             },
             id=f"exec_{tool_name}"
         )
-        
-        response = await self._send_request(server, request)
-        # Notify completion of MCP tool execution
-        if research_id:
-            try:
-                await progress_tracker.connection_manager.broadcast_to_research(
-                    str(research_id),
-                    WSMessage(
-                        type=WSEventType.MCP_TOOL_COMPLETED,
-                        data={
-                            "research_id": str(research_id),
-                            "server": server.name,
-                            "tool": tool_name,
-                            "status": "error" if response.error else "ok",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        },
-                    ),
-                )
-            except Exception:
-                pass
-        
-        if research_id and not response.error:
-            research_key = str(research_id)
-            try:
-                state = progress_tracker.research_progress.get(research_key)
-                current = int(state.get("mcp_tools_used", 0) or 0) + 1 if state else None
-            except Exception:
-                current = None
-            if current is not None:
+
+        try:
+            response = await self._send_request(server, request)
+
+            # Notify completion of MCP tool execution
+            if research_id:
                 try:
-                    await progress_tracker.update_progress(
-                        research_key,
-                        mcp_tools_used=current,
+                    await progress_tracker.connection_manager.broadcast_to_research(
+                        str(research_id),
+                        WSMessage(
+                            type=WSEventType.MCP_TOOL_COMPLETED,
+                            data={
+                                "research_id": str(research_id),
+                                "server": server.name,
+                                "tool": tool_name,
+                                "status": "error" if response.error else "ok",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        ),
                     )
                 except Exception:
                     pass
 
-        if response.error:
-            logger.warning(f"Tool execution error: {response.error}")
-            raise Exception(f"MCP tool execution failed: {response.error}")
-        
-        return response.result
+            if research_id and not response.error:
+                research_key = str(research_id)
+                try:
+                    state = progress_tracker.research_progress.get(research_key)
+                    current = int(state.get("mcp_tools_used", 0) or 0) + 1 if state else None
+                except Exception:
+                    current = None
+                if current is not None:
+                    try:
+                        await progress_tracker.update_progress(
+                            research_key,
+                            mcp_tools_used=current,
+                        )
+                    except Exception:
+                        pass
+
+            if response.error:
+                # Complete telemetry with error
+                complete_mcp_call(call_id, success=False, error=str(response.error))
+                logger.warning(f"Tool execution error: {response.error}")
+                raise Exception(f"MCP tool execution failed: {response.error}")
+
+            # Complete telemetry with success
+            result_size = len(str(response.result)) if response.result else 0
+            complete_mcp_call(call_id, success=True, result_size=result_size)
+
+            return response.result
+
+        except Exception as e:
+            # Complete telemetry with exception
+            complete_mcp_call(call_id, success=False, error=str(e))
+            raise
     
     async def _send_request(self, server: MCPServer, request: MCPRequest) -> MCPResponse:
         """Send a request to an MCP server"""

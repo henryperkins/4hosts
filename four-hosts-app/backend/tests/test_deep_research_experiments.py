@@ -19,7 +19,7 @@ async def test_build_system_prompt_variant_v2(monkeypatch):
         DeepResearchConfig,
         HostParadigm,
     )
-    import backend.services.deep_research_service as drs
+    drs = importlib.import_module("backend.services.deep_research_service")
     importlib.reload(drs)
 
     svc = DeepResearchService()
@@ -46,7 +46,7 @@ async def test_build_system_prompt_variant_v1(monkeypatch):
         DeepResearchConfig,
         HostParadigm,
     )
-    import backend.services.deep_research_service as drs
+    drs = importlib.import_module("backend.services.deep_research_service")
     importlib.reload(drs)
 
     svc = DeepResearchService()
@@ -60,4 +60,3 @@ async def test_build_system_prompt_variant_v1(monkeypatch):
     )
     assert cfg.prompt_variant == "v1"
     assert "rigorous analytical and empirical focus" in prompt
-

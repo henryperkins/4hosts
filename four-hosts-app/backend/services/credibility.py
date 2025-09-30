@@ -6,7 +6,6 @@ Implements domain authority checking, bias detection, and source reputation scor
 import asyncio
 import aiohttp
 # json unused
-import logging
 import structlog
 from typing import Dict, List, Any, Optional, Tuple, Callable, Awaitable
 from dataclasses import dataclass, field
@@ -157,12 +156,20 @@ class DomainAuthorityChecker:
         self.moz_backoff_until = None
 
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
             await self.session.close()
+            self.session = None
+
+    async def close(self):
+        """Close the HTTP session. Call this when done using the checker."""
+        if self.session:
+            await self.session.close()
+            self.session = None
 
     async def get_domain_authority(self, domain: str) -> Optional[float]:
         """Get domain authority score (0-100)"""
@@ -221,7 +228,12 @@ class DomainAuthorityChecker:
         if self.moz_backoff_until and get_current_utc() < self.moz_backoff_until:
             logger.debug(f"Moz API in backoff period, skipping DA check for {domain}")
             return None
-        
+
+        # Ensure session exists (delegate to context manager pattern)
+        if self.session is None:
+            async with self:
+                return await self._get_moz_domain_authority(domain)
+
         try:
             import hmac
             import hashlib
@@ -1141,46 +1153,77 @@ class SourceReputationDatabase:
         
         # Start with base score components (60% of total)
         base_score = 0.0
+        components: Dict[str, float] = {
+            "authority": 0.0,
+            "bias": 0.0,
+            "factual": 0.0,
+            "recency": 0.0,
+            "controversy": 0.0,
+            "cross_source": 0.0,
+            "paradigm_adjustment": 0.0,
+        }
         
         # Domain authority (20% of total)
         if domain_authority is not None:
             da_score = domain_authority / 100.0
-            base_score += da_score * weights["authority_weight"] * 0.2
+            components["authority"] = da_score * weights["authority_weight"] * 0.2
+            base_score += components["authority"]
         
         # Bias score (15% of total)
         if bias_score is not None:
-            base_score += bias_score * 0.15
+            components["bias"] = bias_score * 0.15
+            base_score += components["bias"]
         
         # Factual accuracy (25% of total)
         fact_scores = {"high": 1.0, "medium": 0.7, "low": 0.3, "mixed": 0.5}
         if fact_check_rating in fact_scores:
-            base_score += fact_scores[fact_check_rating] * weights["factual_weight"] * 0.25
+            components["factual"] = (
+                fact_scores[fact_check_rating] * weights["factual_weight"] * 0.25
+            )
+            base_score += components["factual"]
         
         # New factors (40% of total)
         
         # Recency (15% of total)
-        base_score += recency_score * 0.15
+        components["recency"] = recency_score * 0.15
+        base_score += components["recency"]
         
         # Controversy penalty (15% of total) - inverted
         controversy_penalty = (1.0 - controversy_score) * 0.15
-        base_score += controversy_penalty
+        components["controversy"] = controversy_penalty
+        base_score += components["controversy"]
         
         # Cross-source agreement (10% of total)
         if cross_source_agreement is not None:
-            base_score += cross_source_agreement * 0.10
+            components["cross_source"] = cross_source_agreement * 0.10
+            base_score += components["cross_source"]
         else:
             # If no cross-source data, redistribute weight
-            base_score += 0.05  # Neutral contribution
+            components["cross_source"] = 0.05
+            base_score += components["cross_source"]  # Neutral contribution
         
         # Apply paradigm-specific adjustments
         if paradigm == "dolores" and controversy_score > 0.5:
             # Revolutionary paradigm values controversial topics
-            base_score += 0.05
+            components["paradigm_adjustment"] = 0.05
+            base_score += components["paradigm_adjustment"]
         elif paradigm == "bernard" and controversy_score > 0.7:
             # Analytical paradigm penalizes high controversy
-            base_score -= 0.1
-        
-        return max(0.0, min(1.0, base_score))
+            components["paradigm_adjustment"] = -0.1
+            base_score += components["paradigm_adjustment"]
+
+        final_score = max(0.0, min(1.0, base_score))
+        logger.debug(
+            "Credibility score breakdown",
+            stage="credibility_scoring",
+            domain=domain,
+            paradigm=paradigm,
+            components=components,
+            unclamped_score=base_score,
+            final_score=final_score,
+        )
+
+        return final_score
 
     def _identify_reputation_factors(
         self,

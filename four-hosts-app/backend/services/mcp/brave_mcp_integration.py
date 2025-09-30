@@ -8,7 +8,7 @@ import structlog
 from typing import Dict, List, Any, Optional
 from enum import Enum
 
-from services.mcp_integration import MCPServer, MCPCapability, mcp_integration
+from services.mcp.mcp_integration import MCPServer, MCPCapability, mcp_integration
 
 from logging_config import configure_logging
 

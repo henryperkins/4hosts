@@ -10,6 +10,8 @@ import { ActionItemsList } from './ActionItemsList'
 import { AnswerSections } from './AnswerSections'
 import { ResearchSources } from './ResearchSources'
 import { ResearchMetrics } from './ResearchMetrics'
+import { EvidencePanel } from './EvidencePanel'
+import { ContextMetricsPanel } from './ContextMetricsPanel'
 import { AgentTrace } from './AgentTrace'
 import { MeshAnalysis } from './MeshAnalysis'
 import { AnswerCitations } from './AnswerCitations'
@@ -32,6 +34,8 @@ export const ResearchDisplayContainer: React.FC<ResearchDisplayContainerProps> =
         <AnswerSections />
         <ResearchSources />
         <ResearchMetrics />
+        <EvidencePanel quotes={data.evidenceQuotes} />
+        <ContextMetricsPanel />
         <AgentTrace />
         <MeshAnalysis />
         <AnswerCitations />

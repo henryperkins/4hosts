@@ -1,8 +1,8 @@
 import React from 'react'
-import { FiExternalLink, FiShield, FiAlertTriangle, FiAlertCircle } from 'react-icons/fi'
-import { Card, CardHeader, CardTitle, CardContent } from './ui/Card'
-import { Button } from './ui/Button'
-import { getCredibilityBand } from '../utils/credibility'
+import { FiExternalLink } from 'react-icons/fi'
+import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card'
+import { Button } from '../ui/Button'
+import { getCredibilityIcon } from '../../utils/research-display'
 
 interface EvidenceQuote {
   id?: string
@@ -62,14 +62,6 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
 
   if (!hasQuotes) return null
 
-  const credibilityIcon = (score?: number) => {
-    if (typeof score !== 'number') return null
-    const band = getCredibilityBand(score)
-    if (band === 'high') return <FiShield className="h-3.5 w-3.5 text-success" aria-label="High credibility" />
-    if (band === 'medium') return <FiAlertTriangle className="h-3.5 w-3.5 text-primary" aria-label="Medium credibility" />
-    return <FiAlertCircle className="h-3.5 w-3.5 text-error" aria-label="Low credibility" />
-  }
-
   return (
     <Card className="mt-4">
       <CardHeader className="mb-3">
@@ -86,9 +78,9 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ quotes, maxInitial
             <li key={stableKey} className="rounded-md border border-border p-3 bg-surface">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex-1">
-                  <p className="text-sm text-text">“{q.quote}”</p>
+                  <p className="text-sm text-text">"{q.quote}"</p>
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-muted">
-                    {credibilityIcon(q.credibility_score)}
+                    {q.credibility_score !== undefined && getCredibilityIcon(q.credibility_score)}
                     {q.domain ? <span className="font-medium text-text">{q.domain}</span> : null}
                     {q.published_date ? <span>• {new Date(q.published_date).toLocaleDateString(locale)}</span> : null}
                   </div>

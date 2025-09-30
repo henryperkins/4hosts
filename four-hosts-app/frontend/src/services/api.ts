@@ -30,9 +30,40 @@ import {
   validateMetricsData
 } from '../utils/validation'
 import { isValidParadigm } from '../constants/paradigm'
+type AuthStore = typeof import('../store/authStore')['useAuthStore']
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '' // keep empty to use Vite proxy-relative paths in dev
 const API_PREFIX = '/v1'
+
+let authStorePromise: Promise<AuthStore> | null = null
+
+function canUseAuthStore(): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  try {
+    // Accessing sessionStorage can throw (Safari private mode), so probe inside try/catch
+    return typeof window.sessionStorage !== 'undefined'
+  } catch {
+    // Even if storage is blocked, we still want the auth store for in-memory fallback
+    return true
+  }
+}
+
+async function getAuthStore(): Promise<AuthStore | null> {
+  if (!canUseAuthStore()) {
+    return null
+  }
+  if (!authStorePromise) {
+    authStorePromise = import('../store/authStore').then(mod => mod.useAuthStore)
+  }
+  try {
+    return await authStorePromise
+  } catch (error) {
+    authStorePromise = null
+    throw error
+  }
+}
 
 function normalizePath(url: string): string {
   try {
@@ -178,6 +209,8 @@ class APIService {
       credentials: 'include'
     });
 
+    let authStore: AuthStore | null = null
+
     // Handle CSRF token mismatch
     if (response.status === 403 && !csrfRetry) {
       try {
@@ -203,8 +236,8 @@ class APIService {
         '/v1/auth/refresh', '/auth/refresh',
         '/v1/api/session/create', '/api/session/create'
       ].some(p => lowerPath === p)
-      const { useAuthStore } = await import('../store/authStore')
-      const isAuthed = useAuthStore.getState().isAuthenticated
+      authStore = await getAuthStore()
+      const isAuthed = authStore?.getState().isAuthenticated ?? false
 
       if (!isAuthed && isAuthBootstrap) {
         // Do not attempt refresh loops for initial unauthenticated requests
@@ -239,8 +272,8 @@ class APIService {
       } catch (error) {
         console.error('Token refresh failed:', error)
         // Clear auth state on token refresh failure
-        const { useAuthStore } = await import('../store/authStore')
-        useAuthStore.getState().reset()
+        const store = authStore ?? await getAuthStore()
+        store?.getState().reset()
         return Promise.reject(error)
       } finally {
         this.refreshPromise = null
@@ -368,8 +401,8 @@ class APIService {
     this.disconnectWebSocket()
 
     // Clear auth store state to ensure frontend/backend sync
-    const { useAuthStore } = await import('../store/authStore')
-    useAuthStore.getState().reset()
+    const store = await getAuthStore()
+    store?.getState().reset()
   }
 
   async getCurrentUser(): Promise<User> {

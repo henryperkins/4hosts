@@ -22,11 +22,14 @@ import pytest
 #  Ensure project modules are importable across test collection
 # ---------------------------------------------------------------------------
 
-# Add the backend directory (one level above this file) to PYTHONPATH so imports
-# like `import services.xxx` resolve without needing to invoke pytest from that
-# exact folder.
+# Add the repository root (which contains the `backend` package) to PYTHONPATH so
+# imports like `from backend.services import …` resolve regardless of invocation
+# directory.
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(__file__))
+_REPO_ROOT = os.path.dirname(_BACKEND_DIR)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 

@@ -6,7 +6,7 @@ import asyncio
 import pytest
 from unittest.mock import Mock, patch, AsyncMock
 
-from services.azure_ai_foundry_mcp_integration import (
+from services.mcp.azure_ai_foundry_mcp_integration import (
     AzureAIFoundryMCPConfig,
     AzureAIFoundryMCPIntegration,
     AzureAIFoundryCapability,
@@ -174,7 +174,7 @@ class TestAzureAIFoundryMCPIntegrationE2E:
     )
     async def test_initialize_azure_ai_foundry_mcp(self):
         """Test actual initialization of Azure AI Foundry MCP"""
-        from services.azure_ai_foundry_mcp_integration import initialize_azure_ai_foundry_mcp
+        from services.mcp.azure_ai_foundry_mcp_integration import initialize_azure_ai_foundry_mcp
         
         # This test requires actual Azure AI Foundry MCP server
         result = await initialize_azure_ai_foundry_mcp()

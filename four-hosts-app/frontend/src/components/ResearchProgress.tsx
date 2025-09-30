@@ -754,6 +754,12 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
           timeoutTimerRef.current = null
         }
       } else {
+        // Clear any existing timeout before setting new one
+        if (timeoutTimerRef.current) {
+          clearTimeout(timeoutTimerRef.current)
+          timeoutTimerRef.current = null
+        }
+
         const cb = wsCallbackRef.current
         if (cb) {
           api.connectWebSocket(safeResearchId, cb)
@@ -761,9 +767,8 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ researchId, 
         if (wsPausedRef.current) {
           setLiveAnnouncement('Resumed live updates.')
         }
-        if (timeoutTimerRef.current) {
-          clearTimeout(timeoutTimerRef.current)
-        }
+
+        // Set new timeout
         timeoutTimerRef.current = setTimeout(() => {
           setPollingTimeout(true)
           setCurrentStatus('failed')

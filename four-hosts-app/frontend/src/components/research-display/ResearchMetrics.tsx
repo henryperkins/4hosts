@@ -1,11 +1,9 @@
 import React from 'react'
 import { useResearchDisplay } from './useResearchDisplay'
-import { EvidencePanel } from '../EvidencePanel'
-import { ContextMetricsPanel } from '../ContextMetricsPanel'
 
 export const ResearchMetrics: React.FC = () => {
   const {
-    data: { contextLayers, biasCheck, categoryDistribution, biasDistribution, credibilityDistribution, evidenceQuotes },
+    data: { contextLayers, biasCheck, categoryDistribution, biasDistribution, credibilityDistribution },
   } = useResearchDisplay()
 
   const hasDistributions =
@@ -59,9 +57,6 @@ export const ResearchMetrics: React.FC = () => {
           </div>
         ) : null}
       </div>
-
-      <EvidencePanel quotes={evidenceQuotes} />
-      <ContextMetricsPanel />
     </section>
   )
 }

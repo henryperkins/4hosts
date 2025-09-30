@@ -3,9 +3,7 @@ Answer Generation System - Consolidated and Deduped
 Combines all answer generation functionality into a single, clean module
 """
 
-import asyncio
 import re
-import json
 import traceback
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
@@ -14,7 +12,7 @@ from dataclasses import dataclass, field
 
 import os
 from utils.url_utils import extract_domain
-from utils.date_utils import safe_parse_date, iso_or_none
+from utils.date_utils import safe_parse_date
 from models.context_models import (
     HostParadigm,
 )
@@ -39,6 +37,14 @@ from utils.injection_hygiene import (
 )
 import structlog
 from functools import lru_cache  # added
+from math import log1p
+
+try:
+    _ctx_default = int(os.getenv("EVIDENCE_CONTEXT_MAX_CHARS", "500") or "500")
+except ValueError:
+    _ctx_default = 500
+EVIDENCE_CONTEXT_MAX_CHARS_DEFAULT = max(160, _ctx_default)
+_DENSITY_NORM_BASE = log1p(6.0)
 
 logger = structlog.get_logger(__name__)
 
@@ -282,6 +288,35 @@ class BaseAnswerGenerator:
         except Exception:
             return {}
 
+    def _context_char_limit(self) -> int:
+        """Resolve the max context characters, matching evidence builder defaults."""
+        raw = os.getenv("EVIDENCE_CONTEXT_MAX_CHARS")
+        if raw:
+            try:
+                return max(160, int(raw))
+            except ValueError:
+                logger.warning(
+                    "Invalid EVIDENCE_CONTEXT_MAX_CHARS override",
+                    stage="evidence_context",
+                    value=raw,
+                )
+        return EVIDENCE_CONTEXT_MAX_CHARS_DEFAULT
+
+    def _evidence_density_score(self, url_hits: int, domain_hits: int) -> float:
+        """Apply diminishing returns and domain caps to evidence density."""
+        combined = max(url_hits, domain_hits, 0)
+        if combined <= 0:
+            return 0.0
+        try:
+            base = _DENSITY_NORM_BASE if _DENSITY_NORM_BASE > 0 else log1p(6.0)
+        except Exception:
+            base = log1p(6.0)
+        density = min(1.0, log1p(float(combined)) / base)
+        if domain_hits > 3:
+            penalty = min(0.4, 0.08 * (domain_hits - 3))
+            density *= max(0.4, 1.0 - penalty)
+        return max(0.0, min(1.0, density))
+
     # ─────────── Experiments (A/B) helpers ───────────
     def _resolve_prompt_variant(self, context: SynthesisContext, experiment_name: str = "answer_generation_prompt") -> str:
         # Respect explicit option first
@@ -334,9 +369,9 @@ class BaseAnswerGenerator:
         return ""
 
     def _top_relevant_results(self, context: SynthesisContext, k: int = 5) -> List[Dict[str, Any]]:
-        """Select top-k sources using credibility, evidence density, and recency with domain diversity.
+        """Select top-k sources using credibility, damped evidence density, and recency.
 
-        Score = 0.6*credibility + 0.25*evidence_density + 0.15*recency, then diversify by domain.
+        Score = 0.6*credibility + 0.25*density + 0.15*recency, followed by domain diversification.
         """
         logger.info(
             "Starting source ranking and selection",
@@ -389,8 +424,10 @@ class BaseAnswerGenerator:
             cred = float(r.get("credibility_score", 0.0) or 0.0)
             u = (r.get("url") or "").strip()
             d = _domain_of(r)
-            evid = ev_counts_by_url.get(u, 0) or ev_counts_by_domain.get(d, 0)
-            evid_norm = min(1.0, evid / 3.0)  # 0..1 for 0..3+ quotes
+            # Type-safe evidence count extraction
+            url_hits = int(ev_counts_by_url.get(u, 0) or 0)
+            domain_hits = int(ev_counts_by_domain.get(d, 0) or 0)
+            evid_norm = self._evidence_density_score(url_hits, domain_hits)
             rec = _recency_score(r.get("published_date"))
             score = 0.6 * cred + 0.25 * evid_norm + 0.15 * rec
             scored.append((score, r))
@@ -479,7 +516,7 @@ class BaseAnswerGenerator:
         # Build items compatible with select_items_within_budget (uses estimate_tokens_for_result)
         items_for_budget: List[Dict[str, Any]] = []
         include_ctx = inline_ctx and (os.getenv("EVIDENCE_INCLUDE_CONTEXT", "1") in {"1", "true", "yes"})
-        ctx_max = int(os.getenv("EVIDENCE_CONTEXT_MAX_CHARS", "220"))
+        ctx_max = self._context_char_limit()
         for q in quotes:
             items_for_budget.append({
                 "id": self._qval(q, "id", ""),
@@ -527,7 +564,7 @@ class BaseAnswerGenerator:
             quotes = []
         if not quotes:
             return "(no context windows)"
-        ctx_max = int(os.getenv("EVIDENCE_CONTEXT_MAX_CHARS", "220"))
+        ctx_max = self._context_char_limit()
         lines: List[str] = []
         for q in quotes:
             qid = self._qval(q, "id", "")
@@ -811,6 +848,75 @@ class BaseAnswerGenerator:
             rows.append(f"{theme} | {covered} | {dom}")
         return "\n".join(rows)
 
+    def _paradigm_evidence_highlights(
+        self,
+        context: SynthesisContext,
+        max_items: int = 5,
+    ) -> str:
+        """Surface quotes containing paradigm-aligned keywords."""
+        paradigm_value = (
+            getattr(context, "paradigm", None) or self.paradigm or ""
+        )
+        paradigm_enum = normalize_to_enum(paradigm_value)
+        keywords = [
+            kw.lower()
+            for kw in PARADIGM_KEYWORDS.get(paradigm_enum, [])
+        ]
+        if not keywords:
+            return "(no paradigm keyword matches)"
+        try:
+            eb = getattr(context, "evidence_bundle", None)
+            quotes = list(getattr(eb, "quotes", []) or []) if eb else []
+        except Exception:
+            quotes = []
+        highlights: List[str] = []
+        for quote in quotes:
+            raw_text = self._qval(quote, "quote", "") or ""
+            text_lower = raw_text.lower()
+            matched = [kw for kw in keywords if kw in text_lower]
+            if not matched:
+                continue
+            qid = self._qval(quote, "id", "")
+            domain = (self._qval(quote, "domain", "") or "").lower()
+            snippet = sanitize_snippet(raw_text, max_len=160)
+            prefix = f"- [{qid}][{domain}] keywords: {', '.join(matched[:3])}"
+            highlights.append(f"{prefix}\n  {snippet}")
+            if len(highlights) >= max_items:
+                break
+        if highlights:
+            return "\n".join(highlights)
+        return "(no quotes include paradigm keywords)"
+
+    def _source_coverage_report(
+        self,
+        context: SynthesisContext,
+        max_rows: int = 6,
+    ) -> str:
+        """Summarise quote distribution across domains."""
+        try:
+            eb = getattr(context, "evidence_bundle", None)
+            by_domain = dict(getattr(eb, "by_domain", {}) or {}) if eb else {}
+        except Exception:
+            by_domain = {}
+        if not by_domain:
+            return "(no evidence coverage recorded)"
+        total_quotes = sum(by_domain.values())
+        lines: List[str] = [f"Total quotes: {total_quotes}"]
+        sorted_domains = sorted(
+            by_domain.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        for domain, count in sorted_domains[:max_rows]:
+            share = (count / total_quotes) * 100 if total_quotes else 0.0
+            lines.append(f"- {domain}: {count} quote(s) ({share:.1f}%)")
+        if len(sorted_domains) > max_rows:
+            remainder = len(sorted_domains) - max_rows
+            lines.append(f"- +{remainder} additional domains")
+        return "\n".join(lines)
+
+
+
     def _get_isolated_findings(self, context: SynthesisContext) -> Dict[str, Any]:
         """Return isolation findings from canonical EvidenceBundle when available."""
         try:
@@ -822,7 +928,8 @@ class BaseAnswerGenerator:
                     "focus_areas": list(getattr(eb, "focus_areas", []) or []),
                 }
         except Exception:
-            return {"matches": [], "by_domain": {}, "focus_areas": []}
+            pass
+        return {"matches": [], "by_domain": {}, "focus_areas": []}
 
     def create_citation(self, source: Dict[str, Any], fact_type: str = "reference") -> Citation:
         """Create a citation from a source"""
@@ -975,7 +1082,7 @@ class BaseAnswerGenerator:
                 f"Evidence coverage appears {evidence}. Curate practical resources from trusted domains and prioritize accessibility."
             )
             recs.append("Offer next-step guidance and local options where available.")
-        return " " .join(recs)
+        return " ".join(recs)
 
     async def _maybe_dynamic_actions(
         self,
@@ -1129,6 +1236,8 @@ class BaseAnswerGenerator:
         ctx_windows_block: str,
         iso_block: str,
         coverage_tbl: str,
+        paradigm_highlights: str,
+        coverage_report: str,
         summaries_block: str,
         target_words: int,
         variant_extra: str,
@@ -1146,7 +1255,7 @@ class BaseAnswerGenerator:
         ctx_windows_line = (
             f"Context Windows (for quotes):\n{ctx_windows_block}" if ctx_windows_block and "disabled" not in ctx_windows_block else ""
         )
-        tmpl = """{{ guard }}\nWrite the "{{ section_title }}" section focusing on: {{ section_focus }}\nQuery: {{ query }}\nSource Metadata (assess credibility before citing):\n{{ source_cards }}\nEvidence Quotes (primary evidence; cite by [qid]):\n{{ evidence_block }}\n{% if ctx_windows_line %}{{ ctx_windows_line }}\n{% endif %}Isolated Findings:\n{{ iso_block }}\nCoverage Table (Theme | Covered? | Best Domain):\n{{ coverage_tbl }}\nFull Document Context (cite using [d###]):\n{{ summaries_block }}\n\nParadigm Directives:\n{% for d in paradigm_directives %}- {{ d }}\n{% endfor %}Additional Requirements:\n{% for r in extra_requirements %}- {{ r }}\n{% endfor %}{% if citation_guidelines %}Citation Guidelines:\n{{ citation_guidelines }}\n{% endif %}STRICT: Do not fabricate claims beyond the evidence quotes above.\n{{ variant_extra }}\nLength: {{ target_words }} words\n"""
+        tmpl = """{{ guard }}\nWrite the "{{ section_title }}" section focusing on: {{ section_focus }}\nQuery: {{ query }}\nSource Metadata (assess credibility before citing):\n{{ source_cards }}\nEvidence Quotes (primary evidence; cite by [qid]):\n{{ evidence_block }}\n{% if ctx_windows_line %}{{ ctx_windows_line }}\n{% endif %}Isolated Findings:\n{{ iso_block }}\nCoverage Table (Theme | Covered? | Best Domain):\n{{ coverage_tbl }}\nParadigm Keyword Highlights:\n{{ paradigm_highlights }}\nSource Coverage Report:\n{{ coverage_report }}\nFull Document Context (cite using [d###]):\n{{ summaries_block }}\n\nParadigm Directives:\n{% for d in paradigm_directives %}- {{ d }}\n{% endfor %}Additional Requirements:\n{% for r in extra_requirements %}- {{ r }}\n{% endfor %}{% if citation_guidelines %}Citation Guidelines:\n{{ citation_guidelines }}\n{% endif %}STRICT: Do not fabricate claims beyond the evidence quotes above.\n{{ variant_extra }}\nLength: {{ target_words }} words\n"""
         env = self._get_jinja_env()
         if env:
             return env.from_string(tmpl).render(
@@ -1159,6 +1268,8 @@ class BaseAnswerGenerator:
                 ctx_windows_line=ctx_windows_line,
                 iso_block=iso_block,
                 coverage_tbl=coverage_tbl,
+                paradigm_highlights=paradigm_highlights,
+                coverage_report=coverage_report,
                 summaries_block=summaries_block,
                 target_words=target_words,
                 variant_extra=variant_extra,
@@ -1176,6 +1287,8 @@ class BaseAnswerGenerator:
             f"{guard}\nWrite the \"{section_title}\" section focusing on: {section_focus}\nQuery: {query}\n"
             f"Source Metadata (assess credibility before citing):\n{source_cards}\nEvidence Quotes (primary evidence; cite by [qid]):\n{evidence_block}\n"
             f"{ctx_windows_line + '\n' if ctx_windows_line else ''}Isolated Findings:\n{iso_block}\nCoverage Table (Theme | Covered? | Best Domain):\n{coverage_tbl}\n"
+            f"Paradigm Keyword Highlights:\n{paradigm_highlights}\n"
+            f"Source Coverage Report:\n{coverage_report}\n"
             f"Full Document Context (cite using [d###]):\n{summaries_block}\n\nParadigm Directives:\n{directives_txt}\n\nAdditional Requirements:\n{reqs_txt}\n"
             f"{citation_block}"
             f"STRICT: Do not fabricate claims beyond the evidence quotes above.\n{variant_extra}\nLength: {target_words} words\n"
@@ -1359,6 +1472,8 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
             ctx_windows_block = self._context_windows_block(context) if use_windows else "(context windows disabled)"
             summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
+            paradigm_highlights = self._paradigm_evidence_highlights(context)
+            coverage_report = self._source_coverage_report(context)
             source_cards = self._source_cards_block(context) if os.getenv("SOURCE_CARDS_ENABLE", "1") in {"1", "true", "yes"} else "(source cards disabled)"
             variant_extra = self._variant_addendum(context, "dolores")
             prompt = self.build_prompt(
@@ -1371,6 +1486,8 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
                 ctx_windows_block=ctx_windows_block,
                 iso_block=iso_block,
                 coverage_tbl=coverage_tbl,
+                paradigm_highlights=paradigm_highlights,
+                coverage_report=coverage_report,
                 summaries_block=summaries_block,
                 target_words=int(SYNTHESIS_BASE_WORDS * section_def['weight']),
                 variant_extra=variant_extra,
@@ -1404,6 +1521,71 @@ class DoloresAnswerGenerator(BaseAnswerGenerator):
 
     def _generate_fallback_content(self, section_def: Dict[str, Any], results: List[Dict[str, Any]]) -> str:
         return self.render_generic_fallback(section_def, results)
+
+    def _generate_action_items(self, context: SynthesisContext) -> List[Dict[str, Any]]:
+        """Generate revolutionary action items focused on exposing injustice and driving change"""
+        action_items = []
+
+        # Action items focused on investigation and accountability
+        action_items.append({
+            "action": "Document and expose systemic patterns",
+            "priority": "high",
+            "description": "Compile evidence of recurring injustices and power dynamics with verifiable sources",
+            "timeline": "2-4 weeks"
+        })
+
+        action_items.append({
+            "action": "Amplify marginalized voices",
+            "priority": "high",
+            "description": "Center testimonies and experiences of those directly impacted by systemic issues",
+            "timeline": "1-2 weeks"
+        })
+
+        action_items.append({
+            "action": "Build coalition for accountability",
+            "priority": "medium",
+            "description": "Connect affected communities, advocates, and whistleblowers to organize collective action",
+            "timeline": "4-6 weeks"
+        })
+
+        return action_items
+
+    def _extract_insights(self, content: str) -> List[str]:
+        """Extract key insights focused on systemic issues and calls to action"""
+        insights = []
+
+        # Look for patterns indicating systemic issues
+        sentences = re.split(r'(?<=[.!?])\s+', content)
+
+        # Keywords that indicate important insights for Dolores paradigm
+        keywords = [
+            "systemic", "pattern", "injustice", "accountability", "power",
+            "corruption", "oppression", "victim", "impact", "expose",
+            "reveal", "whistleblow", "document", "evidence"
+        ]
+
+        for sentence in sentences:
+            lowered = sentence.lower()
+            # Check if sentence contains relevant keywords
+            if any(keyword in lowered for keyword in keywords):
+                cleaned = sentence.strip()
+                if cleaned and len(cleaned) > 20:  # Ignore very short sentences
+                    insights.append(cleaned)
+
+            if len(insights) >= 5:
+                break
+
+        # If we didn't find enough keyword-based insights, extract bullet points
+        if len(insights) < 3:
+            bullets = [line.strip("-• \t") for line in content.splitlines()
+                      if line.strip().startswith(('-', '•'))]
+            for bullet in bullets:
+                if bullet and bullet not in insights:
+                    insights.append(bullet[:300])
+                if len(insights) >= 5:
+                    break
+
+        return insights[:5]  # Limit to top 5 insights
 
 class BernardAnswerGenerator(BaseAnswerGenerator):
     """Analytical paradigm answer generator with enhanced statistical analysis"""
@@ -1586,6 +1768,8 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
             ctx_windows_block = self._context_windows_block(context) if use_windows else "(context windows disabled)"
             summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
+            paradigm_highlights = self._paradigm_evidence_highlights(context)
+            coverage_report = self._source_coverage_report(context)
             source_cards = self._source_cards_block(context) if os.getenv("SOURCE_CARDS_ENABLE", "1") in {"1", "true", "yes"} else "(source cards disabled)"
             variant_extra = self._variant_addendum(context, "bernard")
             meta_line = f"Meta-analysis results: {meta_analysis}\n" if meta_analysis else ""
@@ -1599,6 +1783,8 @@ class BernardAnswerGenerator(BaseAnswerGenerator):
                 ctx_windows_block=ctx_windows_block,
                 iso_block=iso_block,
                 coverage_tbl=coverage_tbl,
+                paradigm_highlights=paradigm_highlights,
+                coverage_report=coverage_report,
                 summaries_block=summaries_block,
                 target_words=int(SYNTHESIS_BASE_WORDS * section_def['weight']),
                 variant_extra=variant_extra,
@@ -1997,6 +2183,8 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
             ctx_windows_block = self._context_windows_block(context) if use_windows else "(context windows disabled)"
             summaries_block = self._source_summaries_block(context) if EVIDENCE_INCLUDE_SUMMARIES else "(summaries disabled)"
             coverage_tbl = self._coverage_table(context)
+            paradigm_highlights = self._paradigm_evidence_highlights(context)
+            coverage_report = self._source_coverage_report(context)
             source_cards = self._source_cards_block(context) if os.getenv("SOURCE_CARDS_ENABLE", "1") in {"1", "true", "yes"} else "(source cards disabled)"
             variant_extra = self._variant_addendum(context, "maeve")
             prompt = self.build_prompt(
@@ -2009,6 +2197,8 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                 ctx_windows_block=ctx_windows_block,
                 iso_block=iso_block,
                 coverage_tbl=coverage_tbl,
+                paradigm_highlights=paradigm_highlights,
+                coverage_report=coverage_report,
                 summaries_block=summaries_block,
                 target_words=int(SYNTHESIS_BASE_WORDS * section_def['weight']),
                 variant_extra=variant_extra,
@@ -2489,6 +2679,9 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             except Exception:
                 pass
             iso_block = "\n".join(iso_lines) if iso_lines else "(no isolated findings)"
+            coverage_tbl = self._coverage_table(context)
+            paradigm_highlights = self._paradigm_evidence_highlights(context)
+            coverage_report = self._source_coverage_report(context)
             variant_extra = self._variant_addendum(context, "teddy")
             prompt = f"""{guardrail_instruction}
             Write the "{section_def['title']}" section focusing on: {section_def['focus']}
@@ -2502,6 +2695,15 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
             - STRICT: Ground all examples in the Isolated Findings below
             Isolated Findings:
             {iso_block}
+
+            Coverage Table (Theme | Covered? | Best Domain):
+            {coverage_tbl}
+
+            Paradigm Keyword Highlights:
+            {paradigm_highlights}
+
+            Source Coverage Report:
+            {coverage_report}
 
             {variant_extra}
             Length: {int(SYNTHESIS_BASE_WORDS * section_def['weight'])} words
@@ -2538,6 +2740,90 @@ class TeddyAnswerGenerator(BaseAnswerGenerator):
         content = self.render_generic_fallback(section_def, results, intro=f"This section provides: {section_def.get('focus','supportive focus')}")
         content += "\nRemember: You are not alone. Help is available, and together we can make a difference.\n"
         return content
+
+    def _generate_supportive_summary(self, sections: List[AnswerSection]) -> str:
+        """Generate a supportive, empowering summary from sections"""
+        if not sections:
+            return "Resources and support are available to help."
+
+        # Collect key insights from sections
+        key_points = []
+        for section in sections[:2]:  # First 2 sections
+            key_points.extend(section.key_insights[:2])  # First 2 insights per section
+
+        # Create a warm, hopeful summary
+        if key_points:
+            summary_parts = []
+            for point in key_points[:3]:  # Top 3 points
+                summary_parts.append(point[:150])  # Truncate long points
+            return " | ".join(summary_parts) + " | Support and resources are available."
+
+        return "Help is available. You are not alone, and together we can make a positive difference."
+
+    def _generate_supportive_actions(self, context: SynthesisContext) -> List[Dict[str, Any]]:
+        """Generate supportive action items focused on accessing help and building community"""
+        action_items = []
+
+        # Focus on practical, accessible support options
+        action_items.append({
+            "action": "Connect with support resources",
+            "priority": "high",
+            "description": "Reach out to available community resources, hotlines, or support groups that can provide immediate assistance",
+            "timeline": "Immediate"
+        })
+
+        action_items.append({
+            "action": "Build a support network",
+            "priority": "medium",
+            "description": "Connect with others who understand your situation and can offer peer support and shared experiences",
+            "timeline": "1-2 weeks"
+        })
+
+        action_items.append({
+            "action": "Explore available assistance programs",
+            "priority": "medium",
+            "description": "Research and apply for relevant support programs, benefits, or services that match your needs",
+            "timeline": "2-4 weeks"
+        })
+
+        return action_items
+
+    def _extract_supportive_insights(self, content: str) -> List[str]:
+        """Extract supportive insights focused on resources and community care"""
+        insights = []
+
+        # Look for supportive, resource-oriented content
+        sentences = re.split(r'(?<=[.!?])\s+', content)
+
+        # Keywords that indicate important supportive insights
+        keywords = [
+            "support", "help", "resource", "available", "community",
+            "care", "assistance", "service", "program", "access",
+            "connection", "network", "guidance", "option"
+        ]
+
+        for sentence in sentences:
+            lowered = sentence.lower()
+            # Check if sentence contains relevant keywords
+            if any(keyword in lowered for keyword in keywords):
+                cleaned = sentence.strip()
+                if cleaned and len(cleaned) > 20:  # Ignore very short sentences
+                    insights.append(cleaned)
+
+            if len(insights) >= 5:
+                break
+
+        # If we didn't find enough keyword-based insights, extract bullet points
+        if len(insights) < 3:
+            bullets = [line.strip("-• \t") for line in content.splitlines()
+                      if line.strip().startswith(('-', '•'))]
+            for bullet in bullets:
+                if bullet and bullet not in insights:
+                    insights.append(bullet[:300])
+                if len(insights) >= 5:
+                    break
+
+        return insights[:5]  # Limit to top 5 insights
 
 
 # ============================================================================
