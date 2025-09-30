@@ -4,8 +4,8 @@ Research routes for the Four Hosts Research API
 
 import structlog
 import uuid
-from datetime import datetime, timedelta
-from typing import Any, Optional, cast, Dict
+from datetime import datetime, timedelta, date
+from typing import Any, Optional, cast, Dict, List
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Request
 from fastapi.responses import JSONResponse
@@ -57,6 +57,7 @@ from services.rate_limiter import RateLimitExceeded
 from utils.error_handling import log_exception
 from utils.text_sanitize import sanitize_text
 from utils.security import validate_and_sanitize_url
+from utils.url_utils import canonicalize_url, extract_domain
 from utils.domain_categorizer import categorize
 from utils.date_utils import get_current_utc
 
@@ -69,6 +70,25 @@ router = APIRouter(prefix="/research", tags=["research"])
 # Mock services for now - these will be injected
 progress_tracker = _ws_progress_tracker
 webhook_manager: WebhookManager | None = None
+
+
+def _resolve_research_depth(source: Any) -> ResearchDepth:
+    """Return a canonical depth enum from mixed request/store payloads."""
+    if isinstance(source, ResearchDepth):
+        return source
+    if isinstance(source, ResearchQuery):
+        return _resolve_research_depth(getattr(source, "options", None))
+    if isinstance(source, ResearchOptions):
+        return _resolve_research_depth(getattr(source, "depth", None))
+    if isinstance(source, dict):
+        return _resolve_research_depth(source.get("depth"))
+    if isinstance(source, str):
+        value = source.strip().lower()
+        try:
+            return ResearchDepth(value)
+        except ValueError:
+            return ResearchDepth.STANDARD
+    return ResearchDepth.STANDARD
 
 
 def _build_classification_details_for_ui(cls: Any) -> Dict[str, Any]:
@@ -361,12 +381,13 @@ async def execute_real_research(
         # Resolve user role string (e.g., 'PRO') for orchestrator context
         user_role_name = user_role.name if isinstance(user_role, UserRole) else str(user_role).upper()
         max_sources = int(research.options.max_sources)
-        depth_name = research.options.depth.value if hasattr(research, 'options') else 'standard'
+        depth_enum = _resolve_research_depth(research)
+        depth_name = depth_enum.value
         # Depth-aware tuning of sources and concurrency
-        if depth_name == 'quick':
+        if depth_enum == ResearchDepth.QUICK:
             max_sources = max(10, int(max_sources * 0.5))
             query_concurrency = 2
-        elif depth_name == 'deep':
+        elif depth_enum == ResearchDepth.DEEP:
             max_sources = min(200, int(max_sources * 2))
             query_concurrency = 6
         else:
@@ -386,7 +407,7 @@ async def execute_real_research(
         # - Only auto-enable when the request explicitly asks for deep research
         #   (depth == deep_research). Do NOT enable deep when real search is
         #   disabled — deep research augments search, it does not replace it.
-        enable_deep = (research.options.depth == ResearchDepth.DEEP_RESEARCH)
+        enable_deep = depth_enum == ResearchDepth.DEEP_RESEARCH
 
         orch_resp = await research_orchestrator.execute_research(
             classification=cls,  # type: ignore[arg-type]
@@ -407,6 +428,9 @@ async def execute_real_research(
         citations_payload = []
         action_items_payload = []
         summary_text = ""
+        valid_citation_ids: set[str] = set()
+        invalid_citations: List[Dict[str, Any]] = []
+        quality_warnings: List[Dict[str, Any]] = []
         if answer_obj:
             try:
                 summary_text = (
@@ -414,6 +438,51 @@ async def execute_real_research(
                     or getattr(answer_obj, "content_md", None)
                     or ""
                 )
+
+                evidence_quotes_lookup: Dict[str, Dict[str, Any]] = {}
+                evidence_urls: Dict[str, set[str]] = {}
+                result_url_set: set[str] = set()
+                try:
+                    raw_evidence = list((orch_resp.get("metadata", {}) or {}).get("evidence_quotes", []) or [])
+                except Exception:
+                    raw_evidence = []
+                if not raw_evidence:
+                    try:
+                        meta = getattr(answer_obj, "metadata", {}) or {}
+                        raw_evidence = list(meta.get("evidence_quotes", []) or [])
+                    except Exception:
+                        raw_evidence = []
+                for quote in raw_evidence:
+                    if not isinstance(quote, dict):
+                        continue
+                    qid = str(quote.get("id", "")).strip()
+                    url = (quote.get("url") or "").strip()
+                    if not url:
+                        continue
+                    try:
+                        canonical = canonicalize_url(url)
+                    except Exception:
+                        canonical = url
+                    if canonical:
+                        evidence_urls.setdefault(canonical, set()).add(qid)
+                    if qid:
+                        evidence_quotes_lookup[qid] = quote
+                try:
+                    for raw in orch_resp.get("results", []) or []:
+                        if isinstance(raw, dict):
+                            url = (raw.get("url") or "").strip()
+                        else:
+                            url = (getattr(raw, "url", "") or "").strip()
+                        if not url:
+                            continue
+                        try:
+                            canonical = canonicalize_url(url)
+                        except Exception:
+                            canonical = url
+                        if canonical:
+                            result_url_set.add(canonical)
+                except Exception:
+                    result_url_set = set()
 
                 # Sections
                 raw_sections = getattr(answer_obj, "sections", []) or []
@@ -471,20 +540,88 @@ async def execute_real_research(
                                 expl = domain_map[dom].get("credibility_explanation")
                                 # Prefer backend credibility score if better populated
                                 cred_val = float(domain_map[dom].get("credibility_score") or cred_val)
-                            citations_payload.append(
-                                {
-                                    "id": getattr(c, "id", ""),
-                                    "source": getattr(c, "domain", ""),
-                                    "title": getattr(c, "source_title", ""),
-                                    "url": getattr(c, "source_url", ""),
-                                    "credibility_score": cred_val,
-                                    "source_category": cat,
-                                    "credibility_explanation": expl,
-                                    "paradigm_alignment": primary_paradigm,
-                                }
-                            )
+                            citation_id = str(getattr(c, "id", "") or "").strip()
+                            raw_url = (getattr(c, "source_url", "") or "").strip()
+                            valid = False
+                            canonical = ""
+                            if raw_url:
+                                try:
+                                    canonical = canonicalize_url(raw_url)
+                                except Exception:
+                                    canonical = raw_url
+                            if citation_id and citation_id in evidence_quotes_lookup:
+                                valid = True
+                            elif canonical and canonical in evidence_urls:
+                                valid = True
+                                if not citation_id:
+                                    try:
+                                        fallback_ids = sorted(evidence_urls.get(canonical, []))
+                                        if fallback_ids:
+                                            citation_id = next((fid for fid in fallback_ids if fid), fallback_ids[0])
+                                    except Exception:
+                                        citation_id = citation_id
+                            elif canonical and canonical in result_url_set:
+                                valid = True
+                            if valid:
+                                if citation_id:
+                                    valid_citation_ids.add(citation_id)
+                                citations_payload.append(
+                                    {
+                                        "id": citation_id,
+                                        "source": getattr(c, "domain", ""),
+                                        "title": getattr(c, "source_title", ""),
+                                        "url": raw_url,
+                                        "credibility_score": cred_val,
+                                        "source_category": cat,
+                                        "credibility_explanation": expl,
+                                        "paradigm_alignment": primary_paradigm,
+                                        "verified": True,
+                                    }
+                                )
+                            else:
+                                invalid_citations.append(
+                                    {
+                                        "id": citation_id,
+                                        "url": raw_url,
+                                        "domain": getattr(c, "domain", ""),
+                                    }
+                                )
                         except Exception:
                             continue
+                if invalid_citations:
+                    quality_warnings.append(
+                        {
+                            "issue": "invalid_citations_removed",
+                            "count": len(invalid_citations),
+                        }
+                    )
+                for section in sections_payload:
+                    raw_ids = list(section.get("citations", []) or [])
+                    filtered_ids = [cid for cid in raw_ids if cid in valid_citation_ids]
+                    if len(filtered_ids) < len(raw_ids):
+                        quality_warnings.append(
+                            {
+                                "issue": "section_citations_filtered",
+                                "section": section.get("title", ""),
+                                "removed": len(raw_ids) - len(filtered_ids),
+                            }
+                        )
+                    if not filtered_ids:
+                        quality_warnings.append(
+                            {
+                                "issue": "section_missing_citations",
+                                "section": section.get("title", ""),
+                            }
+                        )
+                        try:
+                            section_conf = float(section.get("confidence", 0.8) or 0.8)
+                        except Exception:
+                            section_conf = 0.8
+                        section["confidence"] = min(section_conf, 0.45)
+                    section["citations"] = filtered_ids
+                    section["sources_count"] = len(filtered_ids)
+                if not valid_citation_ids:
+                    quality_warnings.append({"issue": "no_valid_citations"})
                 # Action items: ensure required FE fields with sensible defaults
                 try:
                     raw_actions = list(getattr(answer_obj, "action_items", []) or [])
@@ -510,6 +647,8 @@ async def execute_real_research(
             except Exception:
                 pass
 
+        final_status = ResearchStatus.COMPLETED
+
         answer_payload = {
             "summary": summary_text,
             "sections": sections_payload,
@@ -518,19 +657,58 @@ async def execute_real_research(
             "metadata": getattr(answer_obj, "metadata", {}) or {},
         }
 
-        # If orchestrator signaled insufficient data and no summary exists, add a user-facing note
+        validation_snapshot = {
+            "invalid_citations": invalid_citations,
+            "quality_warnings": quality_warnings,
+            "valid_citation_count": len(valid_citation_ids),
+        }
         try:
-            md_insuff = (orch_resp.get("metadata") or {}).get("insufficient_data")
-            if (not answer_payload.get("summary")) and isinstance(md_insuff, dict):
-                reason = md_insuff.get("reason", "insufficient_data")
-                cnt = md_insuff.get("results_count")
-                answer_payload["summary"] = (
-                    f"Insufficient high-quality evidence to synthesize an answer. "
-                    f"Reason: {reason.replace('_', ' ')}"
-                    + (f"; results={cnt}" if cnt is not None else "")
-                )
+            metadata_obj = answer_payload.get("metadata")
+            if isinstance(metadata_obj, dict):
+                metadata_obj.setdefault("validation", {}).update(validation_snapshot)
         except Exception:
             pass
+        try:
+            orch_resp.setdefault("metadata", {})["validation"] = validation_snapshot
+        except Exception:
+            pass
+
+        if final_status == ResearchStatus.COMPLETED and not valid_citation_ids:
+            final_status = ResearchStatus.PARTIAL
+
+        # Guard against skipped or failed synthesis
+        md_insuff = (orch_resp.get("metadata") or {}).get("insufficient_data")
+        summary_missing = not (answer_obj and getattr(answer_obj, "summary", None))
+        if summary_missing:
+            if isinstance(md_insuff, dict):
+                reason = md_insuff.get("reason", "insufficient_data")
+                cnt = md_insuff.get("results_count")
+                avg = md_insuff.get("avg_credibility")
+                observed_count = cnt if cnt is not None else len(orch_resp.get("results", []) or [])
+                avg_fragment = (
+                    f", avg_credibility={avg:.2f}"
+                    if isinstance(avg, (int, float))
+                    else ""
+                )
+                answer_payload["summary"] = (
+                    f"Analysis incomplete: {observed_count} sources collected but did not meet quality thresholds "
+                    f"(reason: {reason.replace('_', ' ')}{avg_fragment})."
+                )
+                final_status = ResearchStatus.PARTIAL
+            else:
+                logger.error(
+                    "Synthesis failed without insufficient-data flag",
+                    research_id=research_id,
+                )
+                try:
+                    await research_store.update_field(
+                        research_id,
+                        "status",
+                        ResearchStatus.FAILED,
+                    )
+                except Exception:
+                    logger.warning("Failed to mark research %s as FAILED after synthesis error", research_id)
+                raise RuntimeError("Answer synthesis failed unexpectedly")
 
         # Convert sources from orchestrator response results (already compressed/normalized)
         sources_payload = []
@@ -550,6 +728,14 @@ async def execute_real_research(
                         src_cat = categorize(domain, content_type=md.get("content_type"), meta=md)
                     except Exception:
                         src_cat = None
+                published_raw = md.get("published_date")
+                if isinstance(published_raw, (datetime, date)):
+                    published_value = published_raw.isoformat()
+                elif published_raw is None:
+                    published_value = None
+                else:
+                    published_value = str(published_raw).strip() or None
+
                 sources_payload.append(
                     {
                         "title": title,
@@ -557,7 +743,7 @@ async def execute_real_research(
                         "snippet": snippet,
                         "domain": domain,
                         "credibility_score": float(r.credibility_score if r.credibility_score is not None else 0.5),
-                        "published_date": md.get("published_date"),
+                        "published_date": published_value,
                         "source_type": md.get("result_type", "web"),
                         "source_category": src_cat,
                         "credibility_explanation": md.get("credibility_explanation"),
@@ -676,7 +862,7 @@ async def execute_real_research(
             "processing_time_seconds": float(exec_meta.get("processing_time_seconds", 0.0) or 0.0),
             "synthesis_quality": getattr(answer_obj, "synthesis_quality", None),
             "paradigms_used": [paradigm_analysis["primary"]["paradigm"]],
-            "research_depth": research.options.depth.value if hasattr(research, "options") else "standard",
+            "research_depth": depth_enum.value,
             "context_layers": context_layers,
             "agent_trace": agent_trace,
             "contradictions": exec_meta.get("contradictions", {"count": 0, "examples": []}),
@@ -699,6 +885,21 @@ async def execute_real_research(
                 "margin": margin,
             },
         }
+
+        if final_status == ResearchStatus.PARTIAL:
+            try:
+                reason_note = "insufficient evidence"
+                if isinstance(md_insuff, dict):
+                    reason_note = md_insuff.get("reason", reason_note).replace("_", " ")
+                metadata.setdefault("warnings", []).append(
+                    {
+                        "code": "synthesis.skipped",
+                        "message": f"Answer synthesis skipped – {reason_note}.",
+                    }
+                )
+                metadata["degraded"] = True
+            except Exception:
+                pass
 
         # Record override info in metadata for transparency (if any)
         try:
@@ -919,7 +1120,7 @@ async def execute_real_research(
         final_result = {
             "research_id": research_id,
             "query": research.query,
-            "status": ResearchStatus.COMPLETED,
+            "status": final_status,
             "paradigm_analysis": paradigm_analysis,
             "answer": answer_payload,
             "integrated_synthesis": integrated_synthesis,
@@ -937,7 +1138,7 @@ async def execute_real_research(
         # Validate final result against API contract; log and mark degraded on failure but do not block
         try:
             validated = ResearchFinalResult(**final_result)
-            final_result = validated.dict()
+            final_result = validated.dict(exclude_none=True)
         except Exception as e:
             log_exception("final_result.validation_failed", e, research_id=research_id)
             try:
@@ -953,7 +1154,7 @@ async def execute_real_research(
         # Persist results and status together to avoid race conditions
         await research_store.update_fields(
             research_id,
-            {"results": final_result, "status": ResearchStatus.COMPLETED},
+            {"results": final_result, "status": final_status},
         )
 
         await persist_completion(
@@ -1134,6 +1335,8 @@ async def submit_research(
             classification=classification.dict(),
         )
 
+        depth_enum = _resolve_research_depth(research)
+
         # Execute real research
         background_tasks.add_task(
             execute_real_research,
@@ -1152,7 +1355,7 @@ async def submit_research(
                 str(current_user.user_id),
                 research.query,
                 (getattr(classification.primary, "value", str(classification.primary))),
-                research.options.depth.value,
+                depth_enum.value,
             )
 
         # Trigger webhook (if available)
@@ -1168,12 +1371,12 @@ async def submit_research(
             )
 
         # Estimate duration based on depth
-        depth_name = research.options.depth.value if hasattr(research, 'options') else 'standard'
-        if depth_name in ('quick',):
+        depth_name = depth_enum.value
+        if depth_enum == ResearchDepth.QUICK:
             eta_minutes = 1
-        elif depth_name in ('standard',):
+        elif depth_enum == ResearchDepth.STANDARD:
             eta_minutes = 4
-        elif depth_name in ('deep',):
+        elif depth_enum == ResearchDepth.DEEP:
             eta_minutes = 8
         else:  # deep_research
             eta_minutes = 12
@@ -1585,8 +1788,10 @@ async def get_deep_research_status(current_user=Depends(get_current_user)):
     try:
         records = await research_store.get_user_research(str(current_user.user_id), limit=200)
         deep_records = [
-            r for r in records
-            if (r.get("options") or {}).get("depth") in (ResearchDepth.DEEP_RESEARCH, ResearchDepth.DEEP)
+            r
+            for r in records
+            if _resolve_research_depth(r.get("options") or {})
+            in (ResearchDepth.DEEP_RESEARCH, ResearchDepth.DEEP)
         ]
 
         active = [

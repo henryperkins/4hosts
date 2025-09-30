@@ -415,13 +415,28 @@ class DoloresSearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
         )
         score += min(0.2, keyword_matches * 0.05)
 
-        # Get credibility score with Dolores paradigm context
-        try:
-            credibility = await get_source_credibility(result.domain, "dolores")
-            dolores_alignment = credibility.paradigm_alignment.get("dolores", 0.5)
+        dolores_alignment = None
+        precomputed_score = getattr(result, "credibility_score", None)
+        meta = getattr(result, "metadata", None)
+        if isinstance(meta, dict):
+            alignments = meta.get("paradigm_alignment")
+            if isinstance(alignments, dict):
+                dolores_alignment = alignments.get("dolores")
+
+        if precomputed_score is None or dolores_alignment is None:
+            try:
+                credibility = await get_source_credibility(result.domain, "dolores")
+                precomputed_score = getattr(credibility, "overall_score", precomputed_score)
+                dolores_alignment = (credibility.paradigm_alignment or {}).get("dolores", dolores_alignment)
+                setattr(result, "credibility_score", precomputed_score)
+                meta = meta if isinstance(meta, dict) else {}
+                meta.setdefault("paradigm_alignment", dict(credibility.paradigm_alignment or {}))
+                setattr(result, "metadata", meta)
+            except Exception:
+                pass
+
+        if dolores_alignment is not None:
             score += dolores_alignment * 0.3
-        except:
-            pass  # Continue without credibility bonus
 
         return min(1.0, score)
 
@@ -629,13 +644,25 @@ class TeddySearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
         keyword_matches = sum(1 for keyword in care_keywords if keyword in text)
         score += min(0.25, keyword_matches * 0.05)
 
-        # Credibility with Teddy alignment
-        try:
-            credibility = await get_source_credibility(result.domain, "teddy")
-            teddy_alignment = credibility.paradigm_alignment.get("teddy", 0.5)
+        teddy_alignment = None
+        meta = getattr(result, "metadata", None)
+        if isinstance(meta, dict):
+            alignments = meta.get("paradigm_alignment")
+            if isinstance(alignments, dict):
+                teddy_alignment = alignments.get("teddy")
+
+        if teddy_alignment is None:
+            try:
+                credibility = await get_source_credibility(result.domain, "teddy")
+                teddy_alignment = (credibility.paradigm_alignment or {}).get("teddy", 0.5)
+                meta = meta if isinstance(meta, dict) else {}
+                meta.setdefault("paradigm_alignment", dict(credibility.paradigm_alignment or {}))
+                setattr(result, "metadata", meta)
+            except Exception:
+                teddy_alignment = None
+
+        if teddy_alignment is not None:
             score += teddy_alignment * 0.3
-        except:
-            pass
 
         return min(1.0, score)
 
@@ -859,16 +886,32 @@ class BernardSearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
         keyword_matches = sum(1 for keyword in research_keywords if keyword in text)
         score += min(0.3, keyword_matches * 0.05)
 
-        # High credibility requirements
-        try:
-            credibility = await get_source_credibility(result.domain, "bernard")
-            if credibility.overall_score < 0.7:
-                score *= 0.7  # Penalty for low credibility
-            else:
-                bernard_alignment = credibility.paradigm_alignment.get("bernard", 0.5)
-                score += bernard_alignment * 0.4
-        except:
-            score *= 0.8  # Slight penalty if credibility can't be verified
+        bernard_alignment = None
+        cred_score = getattr(result, "credibility_score", None)
+        meta = getattr(result, "metadata", None)
+        if isinstance(meta, dict):
+            alignments = meta.get("paradigm_alignment")
+            if isinstance(alignments, dict):
+                bernard_alignment = alignments.get("bernard")
+
+        if cred_score is None or bernard_alignment is None:
+            try:
+                credibility = await get_source_credibility(result.domain, "bernard")
+                cred_score = getattr(credibility, "overall_score", cred_score)
+                bernard_alignment = (credibility.paradigm_alignment or {}).get("bernard", bernard_alignment)
+                setattr(result, "credibility_score", cred_score)
+                meta = meta if isinstance(meta, dict) else {}
+                meta.setdefault("paradigm_alignment", dict(credibility.paradigm_alignment or {}))
+                setattr(result, "metadata", meta)
+            except Exception:
+                cred_score = cred_score if cred_score is not None else 0.5
+
+        if cred_score is not None and cred_score < 0.7:
+            score *= 0.7
+        elif bernard_alignment is not None:
+            score += bernard_alignment * 0.4
+        else:
+            score *= 0.8
 
         return min(1.0, score)
 
@@ -1084,13 +1127,25 @@ class MaeveSearchStrategy(StrategyFilterRankMixin, BaseSearchStrategy):
         action_matches = sum(1 for keyword in action_keywords if keyword in text)
         score += min(0.15, action_matches * 0.05)
 
-        # Credibility with Maeve alignment
-        try:
-            credibility = await get_source_credibility(result.domain, "maeve")
-            maeve_alignment = credibility.paradigm_alignment.get("maeve", 0.5)
+        maeve_alignment = None
+        meta = getattr(result, "metadata", None)
+        if isinstance(meta, dict):
+            alignments = meta.get("paradigm_alignment")
+            if isinstance(alignments, dict):
+                maeve_alignment = alignments.get("maeve")
+
+        if maeve_alignment is None:
+            try:
+                credibility = await get_source_credibility(result.domain, "maeve")
+                maeve_alignment = (credibility.paradigm_alignment or {}).get("maeve", 0.5)
+                meta = meta if isinstance(meta, dict) else {}
+                meta.setdefault("paradigm_alignment", dict(credibility.paradigm_alignment or {}))
+                setattr(result, "metadata", meta)
+            except Exception:
+                maeve_alignment = None
+
+        if maeve_alignment is not None:
             score += maeve_alignment * 0.3
-        except:
-            pass
 
         return min(1.0, score)
 

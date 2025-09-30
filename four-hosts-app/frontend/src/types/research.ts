@@ -35,6 +35,20 @@ export interface ParadigmAnalysis {
   secondary?: ParadigmSummary;
 }
 
+export interface MeshSynthesisStance {
+  paradigm?: string;
+  perspective?: string;
+  key_points?: string[];
+}
+
+export interface MeshSynthesis {
+  integrated?: string;
+  synthesis?: string;
+  stances?: MeshSynthesisStance[];
+  synergies?: string[];
+  tensions?: string[];
+}
+
 export interface SourceResult {
   title: string;
   url: string;
@@ -54,7 +68,7 @@ export interface ResearchFinalResult {
   paradigm_analysis: ParadigmAnalysis;
   answer: AnswerPayload;
   integrated_synthesis?: Record<string, unknown> | null;
-  mesh_synthesis?: Record<string, unknown> | null;
+  mesh_synthesis?: MeshSynthesis | null;
   sources: SourceResult[];
   metadata: Record<string, unknown>;
   cost_info?: Record<string, unknown>;

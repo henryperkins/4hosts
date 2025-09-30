@@ -26,6 +26,7 @@ class ResearchStatus(str, Enum):
     PROCESSING = "processing"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    PARTIAL = "partial"
     FAILED = "failed"
     CANCELLED = "cancelled"
 

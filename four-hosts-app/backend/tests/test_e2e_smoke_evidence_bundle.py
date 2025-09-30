@@ -55,7 +55,7 @@ async def test_e2e_smoke_evidence_bundle(monkeypatch):
     from models.evidence import EvidenceQuote, EvidenceBundle
     import services.evidence_builder as eb
 
-    async def fake_build_evidence_bundle(query, results, max_docs=5, quotes_per_doc=1, include_full_content=True, **_):
+    async def fake_build_evidence_bundle(query, results, max_docs=5, quotes_per_doc=1, include_full_content=True, paradigm=None, **_):
         quote = EvidenceQuote(
             id="q001",
             url="https://example.com/a",

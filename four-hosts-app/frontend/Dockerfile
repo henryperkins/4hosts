@@ -32,14 +32,22 @@ COPY default.conf /etc/nginx/conf.d/default.conf
 # Copy built application from builder (Vite builds to dist)
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Add non-root user
-RUN addgroup -g 1001 -S appuser && \
-    adduser -S -u 1001 -G appuser appuser && \
-    chown -R appuser:appuser /usr/share/nginx/html && \
-    chown -R appuser:appuser /var/cache/nginx && \
-    chown -R appuser:appuser /var/log/nginx && \
-    touch /var/run/nginx.pid && \
-    chown -R appuser:appuser /var/run/nginx.pid
+# Set proper permissions for nginx user (worker processes run as nginx, not root)
+RUN chown -R nginx:nginx /usr/share/nginx/html && \
+    chmod -R 755 /usr/share/nginx/html
+
+# Create nginx cache directories with proper permissions
+RUN mkdir -p /var/cache/nginx/client_temp \
+             /var/cache/nginx/proxy_temp \
+             /var/cache/nginx/fastcgi_temp \
+             /var/cache/nginx/uwsgi_temp \
+             /var/cache/nginx/scgi_temp && \
+    chown -R nginx:nginx /var/cache/nginx && \
+    chmod -R 755 /var/cache/nginx
+
+# Note: nginx master process runs as root (required to bind to ports 80/443)
+# Worker processes run as 'nginx' user as configured in nginx.conf
+# This is standard practice for nginx containers
 
 # Expose ports
 EXPOSE 80 443

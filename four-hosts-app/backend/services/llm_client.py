@@ -58,8 +58,21 @@ _PARADIGM_REASONING: Dict[str, str] = {
     "bernard": "low",     # Analytical - fast, precise
     "maeve": "medium",    # Strategic - balanced depth
     "dolores": "medium",  # Revolutionary - thoughtful
-    "teddy": "low",       # Supportive - quick responses
+    "teddy": "minimal",   # Supportive - fastest responses
 }
+
+# Paradigm-specific verbosity (GPT-5 only)
+_PARADIGM_VERBOSITY: Dict[str, str] = {
+    "bernard": "medium",  # Analytical - balanced detail
+    "maeve": "low",       # Strategic - concise, actionable
+    "dolores": "high",    # Revolutionary - comprehensive exploration
+    "teddy": "medium",    # Supportive - clear and friendly
+}
+
+# Valid values for parameters
+VALID_REASONING_EFFORT = {"minimal", "low", "medium", "high"}
+VALID_REASONING_SUMMARY = {"auto", "concise", "detailed"}
+VALID_VERBOSITY = {"low", "medium", "high"}
 
 # ────────────────────────────────────────────────────────────
 #  Helper Functions
@@ -199,10 +212,37 @@ class LLMClient:
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         stream: bool = False,
         reasoning_effort: Optional[str] = None,
+        reasoning_summary: Optional[str] = None,
+        verbosity: Optional[str] = None,
     ) -> Union[str, AsyncIterator[str]]:
         """
         Generate completion with paradigm awareness.
         This is the primary interface used throughout the application.
+
+        Args:
+            prompt: The user prompt/question
+            model: Model name (defaults to paradigm-specific model)
+            paradigm: Paradigm for tone/style (bernard/maeve/dolores/teddy)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature (0-2) - not used for reasoning models
+            top_p: Nucleus sampling (0-1) - not used for reasoning models
+            frequency_penalty: Frequency penalty (-2 to 2) - not used for reasoning models
+            presence_penalty: Presence penalty (-2 to 2) - not used for reasoning models
+            response_format: Response format config (e.g., {"type": "json_object"})
+            json_schema: JSON schema for structured outputs
+            tools: List of tools/functions available to the model
+            tool_choice: How to select tools ("auto", "required", or specific tool)
+            stream: Whether to stream the response
+            reasoning_effort: Reasoning depth for o-series/GPT-5 models
+                            ("minimal", "low", "medium", "high")
+            reasoning_summary: Get reasoning summaries for transparency
+                             ("auto", "concise", "detailed")
+                             Note: GPT-5 supports auto/detailed, o-series supports all
+            verbosity: Output conciseness for GPT-5 models only
+                      ("low", "medium", "high")
+
+        Returns:
+            Generated text or async iterator for streaming
         """
         self._ensure_initialized()
 
@@ -219,6 +259,10 @@ class LLMClient:
 
         if reasoning_effort is None:
             reasoning_effort = _PARADIGM_REASONING.get(paradigm_key, "medium")
+
+        # Auto-set verbosity for GPT-5 models based on paradigm if not specified
+        if verbosity is None and model and model.startswith("gpt-5"):
+            verbosity = _PARADIGM_VERBOSITY.get(paradigm_key, "medium")
 
         # For o-series models, delegate to Responses API
         if _is_o_series(model) or response_format or json_schema:
@@ -238,6 +282,8 @@ class LLMClient:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     reasoning_effort=reasoning_effort,
+                    reasoning_summary=reasoning_summary,
+                    verbosity=verbosity,
                     response_format=response_format,
                     json_schema=json_schema,
                     stream=stream
@@ -286,7 +332,7 @@ class LLMClient:
                 response = await client.chat.completions.create(
                     model=self._get_deployment_name(model),
                     messages=messages,
-                    max_tokens=max_tokens,
+                    max_completion_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
                     frequency_penalty=frequency_penalty,
@@ -440,6 +486,8 @@ class LLMClient:
         max_tokens: int,
         temperature: float,
         reasoning_effort: str,
+        reasoning_summary: Optional[str],
+        verbosity: Optional[str],
         response_format: Optional[Dict[str, Any]],
         json_schema: Optional[Dict[str, Any]],
         stream: bool
@@ -463,23 +511,56 @@ class LLMClient:
             "store": True,
         }
 
-        # Add reasoning for o-series
+        # Add reasoning for o-series and GPT-5
         if _is_o_series(model):
-            request_data["reasoning"] = {"effort": reasoning_effort}
+            reasoning_config = {"effort": reasoning_effort}
+
+            # Add reasoning summary if specified
+            # GPT-5 models support: auto, detailed (not concise)
+            # O-series models support: auto, concise, detailed
+            if reasoning_summary:
+                reasoning_config["summary"] = reasoning_summary
+                logger.info(
+                    "Reasoning summary enabled",
+                    model=model,
+                    summary_type=reasoning_summary,
+                    reasoning_effort=reasoning_effort
+                )
+            elif model.startswith("gpt-5"):
+                # Default to "auto" for GPT-5 models to enable reasoning transparency
+                reasoning_config["summary"] = "auto"
+                logger.debug("Auto-enabled reasoning summary for GPT-5", model=model)
+
+            request_data["reasoning"] = reasoning_config
+
+        # Handle text formatting and verbosity (GPT-5 specific)
+        text_config = {}
 
         # Handle structured output
         if json_schema:
-            request_data["text"] = {
-                "format": {
-                    "type": "json_schema",
-                    "name": json_schema.get("name", "JSONSchema"),
-                    "schema": json_schema.get("schema", json_schema)
-                }
+            text_config["format"] = {
+                "type": "json_schema",
+                "name": json_schema.get("name", "JSONSchema"),
+                "schema": json_schema.get("schema", json_schema)
             }
             request_data["instructions"] = "You must respond with valid JSON that matches the required schema."
         elif response_format and response_format.get("type") == "json_object":
-            request_data["text"] = {"format": {"type": "json_object"}}
+            text_config["format"] = {"type": "json_object"}
             request_data["instructions"] = "You must respond with valid JSON."
+
+        # Add verbosity for GPT-5 models (low, medium, high)
+        if model.startswith("gpt-5") and verbosity:
+            text_config["verbosity"] = verbosity
+            logger.info(
+                "GPT-5 verbosity configured",
+                model=model,
+                verbosity=verbosity,
+                paradigm=paradigm_key
+            )
+
+        # Only add text config if we have something to add
+        if text_config:
+            request_data["text"] = text_config
 
         from time import time as _now
         with _otel_span(

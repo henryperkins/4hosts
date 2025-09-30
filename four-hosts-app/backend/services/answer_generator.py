@@ -70,6 +70,64 @@ STRATEGIC_PATTERNS = STRATEGIC_PATTERN_OPERATIONS
 
 PARADIGM_KEYWORDS: Dict[HostParadigm, List[str]] = CANON_PARADIGM_KEYWORDS
 
+PARADIGM_THEMES: Dict[str, List[str]] = {
+    "bernard": [
+        "empirical evidence",
+        "methodology",
+        "statistical significance",
+        "data quality",
+        "replication",
+        "limitations",
+    ],
+    "maeve": [
+        "competitive advantage",
+        "market positioning",
+        "roi potential",
+        "implementation roadmap",
+        "risk mitigation",
+        "success metrics",
+    ],
+    "dolores": [
+        "systemic patterns",
+        "power structures",
+        "documented injustice",
+        "accountability",
+        "whistleblower evidence",
+        "impacted communities",
+    ],
+    "teddy": [
+        "resource availability",
+        "accessibility",
+        "eligibility criteria",
+        "support networks",
+        "cost considerations",
+        "crisis options",
+    ],
+}
+
+PARADIGM_CITATION_INSTRUCTIONS: Dict[str, str] = {
+    "bernard": (
+        "Prioritize peer-reviewed or government sources. Include study design details and sample sizes when available. "
+        "Flag methodological limitations explicitly."
+    ),
+    "maeve": (
+        "Prefer industry reports, case studies, and recent analyst briefings. Tie each citation to measurable ROI or timeline data when possible."
+    ),
+    "dolores": (
+        "Cite investigative journalism, primary documents, or whistleblower accounts. Cross-check serious allegations with at least two independent sources."
+    ),
+    "teddy": (
+        "Reference nonprofit and government resources. Provide contact details or application steps when cited resources offer direct support."
+    ),
+}
+
+PARADIGM_GUARDRAILS: Dict[str, str] = {
+    "bernard": "Ensure every claim is supported by quantifiable evidence from the quotes provided.",
+    "maeve": "Tie recommendations to actionable metrics and avoid speculative promises without evidence.",
+    "dolores": "Corroborate systemic claims with multiple sources and avoid inflammatory language without proof.",
+    "teddy": "Verify resource availability dates and include access instructions when suggesting support options.",
+}
+
 
 # ============================================================================
 # V1 COMPATIBILITY DATACLASSES (Citation/AnswerSection/GeneratedAnswer)
@@ -482,7 +540,7 @@ class BaseAnswerGenerator:
         return "\n".join(lines) if lines else "(no context windows)"
 
     def _source_cards_block(self, context: SynthesisContext, k: int = 5) -> str:
-        """Compact source cards: title | domain | date | author (context only)."""
+        """Source metadata highlighting credibility and paradigm alignment."""
         try:
             results = self._top_relevant_results(context, k)
         except Exception:
@@ -501,6 +559,7 @@ class BaseAnswerGenerator:
             except Exception:
                 return ""
             return ""
+        paradigm_code = (getattr(context, "paradigm", None) or self.paradigm or "bernard").lower()
         for r in results:
             md = r.get("metadata", {}) or {}
             ext = (md.get("extracted_meta") or {}) if isinstance(md, dict) else {}
@@ -519,8 +578,43 @@ class BaseAnswerGenerator:
             parts = [p for p in [title, domain, date_s, author_s] if p]
             if not parts:
                 continue
-            lines.append(f"- {' | '.join(parts)}")
-        return "\n".join(lines) if lines else "(no source cards)"
+            try:
+                cred = r.get("credibility_score")
+            except Exception:
+                cred = None
+            if cred is None and isinstance(md, dict):
+                try:
+                    cred = md.get("credibility_score")
+                except Exception:
+                    cred = None
+            try:
+                cred_val = float(cred) if cred is not None else None
+            except Exception:
+                cred_val = None
+
+            align_val = None
+            if isinstance(md, dict):
+                alignments = md.get("paradigm_alignment")
+                if isinstance(alignments, dict):
+                    try:
+                        align_val = alignments.get(paradigm_code)
+                    except Exception:
+                        align_val = None
+            try:
+                align_val = float(align_val) if align_val is not None else None
+            except Exception:
+                align_val = None
+
+            info_bits: List[str] = []
+            if cred_val is not None:
+                info_bits.append(f"Credibility: {cred_val:.2f}")
+            if align_val is not None:
+                info_bits.append(f"{paradigm_code.title()} Alignment: {align_val:.2f}")
+
+            base = " | ".join(parts)
+            suffix = f" | {'; '.join(info_bits)}" if info_bits else ""
+            lines.append(f"- {base}{suffix}")
+        return "\n".join(lines) if lines else "(no source metadata)"
 
     def _source_summaries_block(
         self,
@@ -653,24 +747,47 @@ class BaseAnswerGenerator:
         return "\n".join(lines) if lines else "(no source summaries)"
 
     def _coverage_table(self, context: SynthesisContext, max_rows: int = 6) -> str:
-        # Use focus areas from EvidenceBundle
+        # Use focus areas from EvidenceBundle and supplement with paradigm defaults
         focus: List[str] = []
         try:
             eb = getattr(context, "evidence_bundle", None)
             if eb is not None and getattr(eb, "focus_areas", None):
-                focus = list(getattr(eb, "focus_areas", []) or [])
+                focus = [str(f) for f in (getattr(eb, "focus_areas", []) or []) if f]
         except Exception:
             focus = []
-        if not focus:
+
+        paradigm_code = (getattr(context, "paradigm", None) or self.paradigm or "bernard").lower()
+        default_themes = PARADIGM_THEMES.get(paradigm_code, PARADIGM_THEMES.get("bernard", []))
+
+        combined: List[str] = []
+        seen = set()
+        for theme in focus:
+            norm = theme.strip()
+            if not norm:
+                continue
+            lowered = norm.lower()
+            if lowered in seen:
+                continue
+            combined.append(norm)
+            seen.add(lowered)
+        for theme in default_themes:
+            lowered = theme.lower()
+            if lowered in seen:
+                continue
+            combined.append(theme)
+            seen.add(lowered)
+
+        if not combined:
             return "(no coverage targets)"
-        focus = focus[:max_rows]
+
+        focus_limited = combined[:max_rows]
         # Pick best URL per theme by token overlap
         rows: List[str] = ["Theme | Covered? | Best Domain"]
         def _tok(t: str) -> set:
             import re
             return set([w for w in re.findall(r"[A-Za-z0-9]+", (t or "").lower()) if len(w) > 2])
         results_for_scan = list(context.search_results or [])
-        for theme in focus:
+        for theme in focus_limited:
             tt = _tok(theme)
             best = None
             best_score = 0.0
@@ -1020,11 +1137,16 @@ class BaseAnswerGenerator:
     ) -> str:
         """Shared prompt scaffolding with optional Jinja2 (keeps old formatting)."""
         guard = guardrail_instruction
+        paradigm_code = (paradigm or self.paradigm or "bernard").lower()
+        guard_extra = PARADIGM_GUARDRAILS.get(paradigm_code)
+        if guard_extra:
+            guard = f"{guard}\n{guard_extra}"
+        citation_guidelines = PARADIGM_CITATION_INSTRUCTIONS.get(paradigm_code, "")
         extra_requirements = extra_requirements or []
         ctx_windows_line = (
             f"Context Windows (for quotes):\n{ctx_windows_block}" if ctx_windows_block and "disabled" not in ctx_windows_block else ""
         )
-        tmpl = """{{ guard }}\nWrite the "{{ section_title }}"" section focusing on: {{ section_focus }}\nQuery: {{ query }}\nSource Cards (context only):\n{{ source_cards }}\nEvidence Quotes (primary evidence; cite by [qid]):\n{{ evidence_block }}\n{% if ctx_windows_line %}{{ ctx_windows_line }}\n{% endif %}Isolated Findings:\n{{ iso_block }}\nCoverage Table (Theme | Covered? | Best Domain):\n{{ coverage_tbl }}\nFull Document Context (cite using [d###]):\n{{ summaries_block }}\n\nParadigm Directives:\n{% for d in paradigm_directives %}- {{ d }}\n{% endfor %}Additional Requirements:\n{% for r in extra_requirements %}- {{ r }}\n{% endfor %}STRICT: Do not fabricate claims beyond the evidence quotes above.\n{{ variant_extra }}\nLength: {{ target_words }} words\n"""
+        tmpl = """{{ guard }}\nWrite the "{{ section_title }}" section focusing on: {{ section_focus }}\nQuery: {{ query }}\nSource Metadata (assess credibility before citing):\n{{ source_cards }}\nEvidence Quotes (primary evidence; cite by [qid]):\n{{ evidence_block }}\n{% if ctx_windows_line %}{{ ctx_windows_line }}\n{% endif %}Isolated Findings:\n{{ iso_block }}\nCoverage Table (Theme | Covered? | Best Domain):\n{{ coverage_tbl }}\nFull Document Context (cite using [d###]):\n{{ summaries_block }}\n\nParadigm Directives:\n{% for d in paradigm_directives %}- {{ d }}\n{% endfor %}Additional Requirements:\n{% for r in extra_requirements %}- {{ r }}\n{% endfor %}{% if citation_guidelines %}Citation Guidelines:\n{{ citation_guidelines }}\n{% endif %}STRICT: Do not fabricate claims beyond the evidence quotes above.\n{{ variant_extra }}\nLength: {{ target_words }} words\n"""
         env = self._get_jinja_env()
         if env:
             return env.from_string(tmpl).render(
@@ -1042,15 +1164,20 @@ class BaseAnswerGenerator:
                 variant_extra=variant_extra,
                 paradigm_directives=paradigm_directives,
                 extra_requirements=extra_requirements,
+                citation_guidelines=citation_guidelines,
             )
         # Fallback f-string assembly
         directives_txt = "\n".join(f"- {d}" for d in paradigm_directives)
         reqs_txt = "\n".join(f"- {r}" for r in extra_requirements)
+        citation_block = (
+            f"Citation Guidelines:\n{citation_guidelines}\n" if citation_guidelines else ""
+        )
         return (
             f"{guard}\nWrite the \"{section_title}\" section focusing on: {section_focus}\nQuery: {query}\n"
-            f"Source Cards (context only):\n{source_cards}\nEvidence Quotes (primary evidence; cite by [qid]):\n{evidence_block}\n"
+            f"Source Metadata (assess credibility before citing):\n{source_cards}\nEvidence Quotes (primary evidence; cite by [qid]):\n{evidence_block}\n"
             f"{ctx_windows_line + '\n' if ctx_windows_line else ''}Isolated Findings:\n{iso_block}\nCoverage Table (Theme | Covered? | Best Domain):\n{coverage_tbl}\n"
             f"Full Document Context (cite using [d###]):\n{summaries_block}\n\nParadigm Directives:\n{directives_txt}\n\nAdditional Requirements:\n{reqs_txt}\n"
+            f"{citation_block}"
             f"STRICT: Do not fabricate claims beyond the evidence quotes above.\n{variant_extra}\nLength: {target_words} words\n"
         )
 
@@ -1930,6 +2057,329 @@ class MaeveAnswerGenerator(BaseAnswerGenerator):
                     content += f"- {item}\n"
                 content += "\n"
         return content
+
+    def _extract_strategic_insights(self, search_results: List[Dict[str, Any]]) -> List[StrategicRecommendation]:
+        """Derive structured strategic levers from search evidence without extra LLM calls."""
+        insights: List[StrategicRecommendation] = []
+        seen_titles: set[str] = set()
+        theme_catalog = [
+            {
+                "title": "Accelerate market expansion",
+                "keywords": ["market", "expansion", "go-to-market", "launch", "cagr", "demand"],
+                "impact": "high",
+                "effort": "medium",
+                "timeline": "3-6 months",
+                "dependencies": ["Market sizing", "Localized value proposition"],
+                "metrics": ["Net-new pipeline", "Market share delta"],
+                "risks": ["Insufficient localization or regulatory friction"],
+                "roi": 0.22,
+            },
+            {
+                "title": "Differentiate the product offering",
+                "keywords": ["differentiation", "unique", "innovation", "feature", "roadmap"],
+                "impact": "high",
+                "effort": "medium",
+                "timeline": "2-4 months",
+                "dependencies": ["Voice-of-customer synthesis", "Competitive teardown"],
+                "metrics": ["Win-rate lift", "Feature adoption"],
+                "risks": ["Feature creep diluting core value"],
+                "roi": 0.18,
+            },
+            {
+                "title": "Optimize cost structure",
+                "keywords": ["efficiency", "margin", "cost", "productivity", "automation"],
+                "impact": "medium",
+                "effort": "medium",
+                "timeline": "6-9 months",
+                "dependencies": ["Process mapping", "Automation backlog"],
+                "metrics": ["Unit economics", "Operating margin"],
+                "risks": ["Disruption to core workflows"],
+                "roi": 0.16,
+            },
+            {
+                "title": "Build strategic partnerships",
+                "keywords": ["partnership", "alliance", "ecosystem", "collaborat"],
+                "impact": "medium",
+                "effort": "low",
+                "timeline": "1-2 quarters",
+                "dependencies": ["Partner due diligence", "Joint value proposition"],
+                "metrics": ["Co-marketing leads", "Partner-attributed revenue"],
+                "risks": ["Misaligned incentives"],
+                "roi": 0.14,
+            },
+            {
+                "title": "Strengthen customer lifecycle",
+                "keywords": ["retention", "customer experience", "lifecycle", "churn", "loyalty"],
+                "impact": "medium",
+                "effort": "medium",
+                "timeline": "2-3 quarters",
+                "dependencies": ["Journey mapping", "Service playbooks"],
+                "metrics": ["Net revenue retention", "CSAT"],
+                "risks": ["Under-resourced success teams"],
+                "roi": 0.17,
+            },
+        ]
+
+        for result in search_results or []:
+            text_parts = [result.get("title", ""), result.get("snippet", ""), result.get("summary", "")]
+            raw_text = " ".join(part for part in text_parts if part)
+            lower_text = raw_text.lower()
+            if not lower_text.strip():
+                continue
+            for theme in theme_catalog:
+                if theme["title"] in seen_titles:
+                    continue
+                if any(keyword in lower_text for keyword in theme["keywords"]):
+                    description = raw_text.strip()[:320] or theme["title"]
+                    insights.append(
+                        StrategicRecommendation(
+                            title=theme["title"],
+                            description=description,
+                            impact=theme["impact"],
+                            effort=theme["effort"],
+                            timeline=theme["timeline"],
+                            dependencies=list(theme["dependencies"]),
+                            success_metrics=list(theme["metrics"]),
+                            risks=list(theme["risks"]),
+                            roi_potential=theme["roi"],
+                        )
+                    )
+                    seen_titles.add(theme["title"])
+                    break
+            if len(insights) >= 5:
+                break
+
+        if not insights:
+            insights.append(
+                StrategicRecommendation(
+                    title="Define near-term strategic roadmap",
+                    description="Evidence is thematic rather than prescriptive; establish a focused roadmap that sequences quick wins with longer-term bets.",
+                    impact="medium",
+                    effort="medium",
+                    timeline="6-8 weeks",
+                    dependencies=["Executive alignment", "Resource planning"],
+                    success_metrics=["Roadmap milestones achieved", "Stakeholder buy-in"],
+                    risks=["Diffuse ownership"],
+                    roi_potential=0.1,
+                )
+            )
+
+        return insights
+
+    def _generate_swot_analysis(
+        self,
+        query: str,
+        search_results: List[Dict[str, Any]],
+    ) -> Dict[str, List[str]]:
+        """Create a lightweight SWOT view from titles/snippets."""
+        categories = {
+            "strengths": ["leading", "advantage", "strength", "success", "momentum", "leadership", "innovative"],
+            "weaknesses": ["challenge", "gap", "limitation", "weak", "struggle", "pain point", "shortcoming"],
+            "opportunities": ["opportunity", "growth", "emerging", "demand", "expansion", "trend", "white space"],
+            "threats": ["risk", "threat", "competition", "downturn", "regulation", "pressure", "headwind"],
+        }
+        swot: Dict[str, List[str]] = {k: [] for k in categories}
+
+        for result in search_results or []:
+            text = " ".join(
+                part for part in [result.get("title", ""), result.get("snippet", ""), result.get("summary", "")] if part
+            )
+            if not text:
+                continue
+            sentences = re.split(r"(?<=[.!?])\s+", text)
+            for sentence in sentences:
+                lowered = sentence.lower()
+                for cat, keywords in categories.items():
+                    if any(keyword in lowered for keyword in keywords):
+                        cleaned = sentence.strip()
+                        if cleaned and cleaned not in swot[cat]:
+                            swot[cat].append(cleaned)
+                        break
+
+        # Provide purposeful fallbacks if a bucket is empty
+        defaults = {
+            "strengths": [f"Growing interest in {query} suggests momentum for strategic investment."],
+            "weaknesses": [f"Limited differentiated positioning around {query} could slow velocity."],
+            "opportunities": [f"Emerging demand signals room to create quick wins tied to {query}."],
+            "threats": [f"Active competitors and fast-moving technology shifts call for risk mitigation."],
+        }
+        for cat, fallback in defaults.items():
+            if not swot[cat]:
+                swot[cat] = fallback
+            else:
+                swot[cat] = swot[cat][:3]
+
+        return swot
+
+    def _format_swot_for_prompt(self, swot: Dict[str, List[str]]) -> str:
+        """Compress SWOT items into a prompt-friendly summary."""
+        parts: List[str] = []
+        for cat in ("strengths", "weaknesses", "opportunities", "threats"):
+            items = swot.get(cat) or []
+            if items:
+                parts.append(f"{cat.title()}: { '; '.join(item[:120] for item in items[:2])}")
+        return " | ".join(parts) if parts else "No explicit SWOT signals detected."
+
+    def _extract_strategic_insights_from_content(self, content: str) -> List[str]:
+        """Pull headline-worthy strategic points from generated content."""
+        if not content:
+            return []
+        insights: List[str] = []
+        sentences = re.split(r"(?<=[.!?])\s+", content)
+        keywords = ["strategy", "growth", "increase", "roi", "revenue", "customer", "risk", "opportunity", "metric"]
+        for sentence in sentences:
+            lowered = sentence.lower().strip()
+            if not lowered:
+                continue
+            if any(keyword in lowered for keyword in keywords):
+                insights.append(sentence.strip())
+            if len(insights) >= 5:
+                break
+
+        if len(insights) < 3:
+            bullets = [line.strip("-• \t") for line in content.splitlines() if line.strip().startswith(('-', '•'))]
+            for bullet in bullets:
+                if bullet and bullet not in insights:
+                    insights.append(bullet[:240])
+                if len(insights) >= 5:
+                    break
+
+        return insights[:5]
+
+    def _generate_strategic_recommendations(
+        self,
+        query: str,
+        strategic_insights: List[StrategicRecommendation],
+        swot: Dict[str, List[str]],
+    ) -> List[StrategicRecommendation]:
+        """Blend heuristic insights with SWOT cues into prioritized recommendations."""
+        recommendations: List[StrategicRecommendation] = []
+        seen_titles: set[str] = set()
+
+        for rec in strategic_insights:
+            if rec.title in seen_titles:
+                continue
+            recommendations.append(rec)
+            seen_titles.add(rec.title)
+            if len(recommendations) >= 3:
+                break
+
+        if swot.get("opportunities") and "Pursue opportunity backlog" not in seen_titles:
+            recommendations.append(
+                StrategicRecommendation(
+                    title="Pursue opportunity backlog",
+                    description=f"Convert top opportunities around {query} into sequenced initiatives with ROI guardrails.",
+                    impact="high",
+                    effort="medium",
+                    timeline="1-2 quarters",
+                    dependencies=["Growth experimentation team", "Budget envelope"],
+                    success_metrics=["Opportunity-to-project conversion", "Incremental revenue"],
+                    risks=["Chasing too many bets simultaneously"],
+                    roi_potential=0.2,
+                )
+            )
+            seen_titles.add("Pursue opportunity backlog")
+
+        if swot.get("weaknesses") and "Remediate capability gaps" not in seen_titles:
+            recommendations.append(
+                StrategicRecommendation(
+                    title="Remediate capability gaps",
+                    description="Address the most material weaknesses with capability investments and enablement plans.",
+                    impact="medium",
+                    effort="medium",
+                    timeline="1 quarter",
+                    dependencies=["Capability assessment", "Change management plan"],
+                    success_metrics=["Time-to-value for new capabilities", "Adoption score"],
+                    risks=["Change fatigue or talent constraints"],
+                    roi_potential=0.12,
+                )
+            )
+            seen_titles.add("Remediate capability gaps")
+
+        if swot.get("threats") and "Mitigate strategic risks" not in seen_titles:
+            recommendations.append(
+                StrategicRecommendation(
+                    title="Mitigate strategic risks",
+                    description="Stand up a risk playbook to track external threats and trigger predefined responses.",
+                    impact="medium",
+                    effort="low",
+                    timeline="6-8 weeks",
+                    dependencies=["Risk owner", "Monitoring cadence"],
+                    success_metrics=["Risk incident response time", "Mitigation readiness"],
+                    risks=["Underestimating regulatory or competitive shifts"],
+                    roi_potential=0.1,
+                )
+            )
+            seen_titles.add("Mitigate strategic risks")
+
+        if not recommendations:
+            recommendations.append(
+                StrategicRecommendation(
+                    title="Prioritize quick wins",
+                    description=f"Select two quick-win initiatives informed by current research on {query} to demonstrate tangible progress.",
+                    impact="medium",
+                    effort="low",
+                    timeline="6-8 weeks",
+                    dependencies=["Dedicated owner", "Success criteria"],
+                    success_metrics=["Quick-win completion", "Stakeholder confidence"],
+                    risks=["Under-scoped validation"],
+                    roi_potential=0.08,
+                )
+            )
+
+        return recommendations[:5]
+
+    def _format_recommendations_as_actions(
+        self,
+        recommendations: List[StrategicRecommendation]
+    ) -> List[Dict[str, Any]]:
+        """Convert structured recommendations into UI-friendly action items."""
+        actions: List[Dict[str, Any]] = []
+        priority_map = {"high": "high", "medium": "medium", "low": "low"}
+        for rec in recommendations:
+            actions.append(
+                {
+                    "action": rec.title,
+                    "priority": priority_map.get(rec.impact.lower(), "medium") if isinstance(rec.impact, str) else "medium",
+                    "description": rec.description,
+                    "timeline": rec.timeline,
+                    "dependencies": list(rec.dependencies or []),
+                    "metrics": list(rec.success_metrics or []),
+                    "risks": list(rec.risks or []),
+                }
+            )
+        return actions
+
+    def _generate_strategic_summary(
+        self,
+        sections: List[AnswerSection],
+        strategic_insights: List[StrategicRecommendation],
+    ) -> str:
+        """Assemble a concise executive summary for Maeve outputs."""
+        key_points: List[str] = []
+        for section in sections[:2]:
+            key_points.extend(section.key_insights[:2])
+
+        if strategic_insights:
+            key_points.append(f"Identified {len(strategic_insights)} strategic levers across market, offering, and execution.")
+
+        deduped = []
+        seen: set[str] = set()
+        for point in key_points:
+            norm = point.strip()
+            if not norm:
+                continue
+            if norm.lower() in seen:
+                continue
+            seen.add(norm.lower())
+            deduped.append(norm)
+            if len(deduped) >= 4:
+                break
+
+        if not deduped:
+            return "Strategic synthesis completed; see sections for detailed direction."  # fallback copy
+
+        return " | ".join(deduped)
 
 
 class TeddyAnswerGenerator(BaseAnswerGenerator):

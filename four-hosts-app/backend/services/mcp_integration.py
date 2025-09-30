@@ -26,6 +26,8 @@ class MCPCapability(str, Enum):
     DATABASE = "database"
     FILESYSTEM = "filesystem"
     COMPUTATION = "computation"
+    EVALUATION = "evaluation"
+    AI_MODEL = "ai_model"
     CUSTOM = "custom"
 
 
@@ -307,4 +309,14 @@ def configure_default_servers():
             url=os.getenv("MCP_DATABASE_URL"),
             capabilities=[MCPCapability.DATABASE],
             auth_token=os.getenv("MCP_DATABASE_TOKEN")
+        ))
+    
+    # Azure AI Foundry MCP server
+    if os.getenv("AZURE_AI_PROJECT_ENDPOINT"):
+        mcp_integration.register_server(MCPServer(
+            name="azure_ai_foundry",
+            url=os.getenv("AZURE_AI_FOUNDRY_MCP_URL", "stdio://azure-ai-foundry/mcp-foundry"),
+            capabilities=[MCPCapability.EVALUATION, MCPCapability.AI_MODEL],
+            auth_token=None,  # Uses Azure authentication
+            timeout=120  # AI operations may take longer
         ))

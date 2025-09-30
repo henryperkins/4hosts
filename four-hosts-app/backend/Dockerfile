@@ -61,9 +61,15 @@ RUN chmod +x /app/docker-entrypoint.sh && chown appuser:appuser /app/docker-entr
 RUN mkdir -p /app/logs /app/data /app/nltk_data /app/model_cache && \
     chown -R appuser:appuser /app
 
-# Download essential NLTK data as root before switching user
-RUN python -c "import nltk; nltk.download('punkt', download_dir='/app/nltk_data'); nltk.download('stopwords', download_dir='/app/nltk_data'); nltk.download('wordnet', download_dir='/app/nltk_data')" && \
-    chown -R appuser:appuser /app/nltk_data
+# NOTE: NLTK data and HuggingFace models are NOT downloaded at build time
+# to keep image size small. They will be downloaded at first runtime or
+# should be mounted from a persistent volume.
+#
+# If you prefer to bake them into the image (increases size by ~8-10GB):
+# RUN python -c "import nltk; nltk.download('punkt', download_dir='/app/nltk_data'); \
+#     nltk.download('stopwords', download_dir='/app/nltk_data'); \
+#     nltk.download('wordnet', download_dir='/app/nltk_data')" && \
+#     chown -R appuser:appuser /app/nltk_data
 
 # Ensure ownership (defensive) of HF cache after code copy
 RUN chown -R appuser:appuser /home/appuser/.cache

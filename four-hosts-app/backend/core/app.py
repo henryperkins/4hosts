@@ -143,6 +143,14 @@ async def lifespan(app: FastAPI):
             timeout_sec=_timeout("INIT_ORCHESTRATOR_TIMEOUT_SEC", 90),
         )
 
+        # Configure default MCP servers
+        try:
+            from services.mcp_integration import configure_default_servers
+            configure_default_servers()
+            logger.info("✓ Default MCP servers configured")
+        except Exception as e:
+            logger.warning("Failed to configure default MCP servers: %s", e)
+
         # Initialize LLM client
         from services.llm_client import initialise_llm_client
         llm_ok = await _run_with_timeout(

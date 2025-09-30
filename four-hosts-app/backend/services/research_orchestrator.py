@@ -32,7 +32,7 @@ from services.agentic_process import (
     run_followups,
 )
 from services.cache import cache_manager
-from services.credibility import analyze_source_credibility_batch, get_source_credibility_safe
+from services.credibility import analyze_source_credibility_batch, get_source_credibility_safe, get_source_credibility
 from services.exa_research import exa_research_client
 from services.llm_client import llm_client
 from services.paradigm_search import get_search_strategy, SearchContext, get_paradigm_focus
@@ -343,6 +343,14 @@ class UnifiedResearchOrchestrator:
             self.brave_enabled = await initialize_brave_mcp()
         except Exception as e:
             logger.warning(f"Brave MCP initialization failed: {e}")
+
+        # Try to initialize Azure AI Foundry MCP
+        try:
+            from services.azure_ai_foundry_mcp_integration import initialize_azure_ai_foundry_mcp
+            self.azure_ai_foundry_enabled = await initialize_azure_ai_foundry_mcp()
+        except Exception as e:
+            logger.warning(f"Azure AI Foundry MCP initialization failed: {e}")
+            self.azure_ai_foundry_enabled = False
 
         logger.info("✓ Unified Research Orchestrator V2 initialized")
         # Register default tool capabilities for budget tracking
@@ -1415,6 +1423,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                                         quotes_per_doc=EVIDENCE_QUOTES_PER_DOC_DEFAULT,
                                         include_full_content=True,
                                         full_text_budget=EVIDENCE_BUDGET_TOKENS_DEFAULT,
+                                        paradigm=paradigm_code,
                                     ),
                                     timeout=evidence_timeout,
                                 )
@@ -2682,7 +2691,143 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         logger.info("Early relevance filtering", research_id=research_id, stage="early_relevance_filtering", original_count=len(deduped), filtered_count=len(early))
 
-        # 4) Paradigm strategy ranking
+        # 4) Credibility scoring prior to ranking
+        cred_summary = {"average_score": 0.0}
+        creds: Dict[str, float] = {}
+        credibility_details: Dict[str, Any] = {}
+        default_limit = int(os.getenv("DEFAULT_SOURCE_LIMIT", "200"))
+        user_cap = int(getattr(user_context, "source_limit", default_limit) or default_limit)
+        max_candidates = min(max(20, user_cap), len(early))
+        candidate_results = early[:max_candidates]
+
+        unique_domains: List[str] = []
+        for r in candidate_results:
+            dom = getattr(r, "domain", "") or ""
+            if not dom:
+                dom = extract_domain(getattr(r, "url", "") or "")
+            if dom and dom not in unique_domains:
+                unique_domains.append(dom)
+
+        if progress_callback and research_id:
+            try:
+                await progress_callback.update_progress(
+                    research_id,
+                    phase="analysis",
+                    message="Evaluating source credibility",
+                    items_done=0,
+                    items_total=len(unique_domains) if unique_domains else 1,
+                )
+            except Exception:
+                pass
+
+        conc = 8
+        try:
+            conc = int(os.getenv("CREDIBILITY_CONCURRENCY", "8") or 8)
+        except Exception:
+            pass
+        semc = asyncio.Semaphore(max(1, conc))
+
+        async def _fetch_domain(dom: str) -> Tuple[str, Optional[Any]]:
+            async with semc:
+                try:
+                    cred_obj = await get_source_credibility(dom, paradigm_code)
+                    return dom, cred_obj
+                except Exception as exc:
+                    logger.debug("credibility_fetch_failed", domain=dom, error=str(exc))
+                    return dom, None
+
+        credibility_results: List[Tuple[str, Optional[Any]]] = []
+        if unique_domains:
+            for idx, item in enumerate(await asyncio.gather(*[_fetch_domain(d) for d in unique_domains])):
+                credibility_results.append(item)
+                try:
+                    if progress_callback and research_id:
+                        await progress_callback.update_progress(
+                            research_id,
+                            phase="analysis",
+                            message="Evaluating source credibility",
+                            items_done=idx + 1,
+                            items_total=len(unique_domains),
+                        )
+                except Exception:
+                    pass
+
+        for dom, cred_obj in credibility_results:
+            if cred_obj is None:
+                continue
+            try:
+                score = float(getattr(cred_obj, "overall_score", 0.5) or 0.5)
+            except Exception:
+                score = 0.5
+            creds[dom] = score
+            credibility_details[dom] = cred_obj
+
+        if creds:
+            try:
+                cred_summary["average_score"] = sum(creds.values()) / float(len(creds))
+            except Exception:
+                cred_summary["average_score"] = 0.0
+
+        # Assign scores and metadata to results
+        for res in early:
+            dom = getattr(res, "domain", "") or ""
+            if not dom:
+                dom = extract_domain(getattr(res, "url", "") or "")
+            score_val = creds.get(dom)
+            if score_val is not None:
+                try:
+                    res.credibility_score = float(score_val)
+                except Exception:
+                    res.credibility_score = score_val
+            if dom in credibility_details and credibility_details[dom] is not None:
+                cred_obj = credibility_details[dom]
+                meta = getattr(res, "metadata", None)
+                if not isinstance(meta, dict):
+                    meta = {}
+                try:
+                    meta.setdefault("credibility_score", float(getattr(cred_obj, "overall_score", 0.0) or 0.0))
+                except Exception:
+                    meta.setdefault("credibility_score", score_val or 0.0)
+                if hasattr(cred_obj, "source_category") and cred_obj.source_category:
+                    meta.setdefault("source_category", cred_obj.source_category)
+                if hasattr(cred_obj, "paradigm_alignment") and isinstance(cred_obj.paradigm_alignment, dict):
+                    meta.setdefault("paradigm_alignment", dict(cred_obj.paradigm_alignment))
+                if hasattr(cred_obj, "reputation_factors") and getattr(cred_obj, "reputation_factors", None):
+                    meta.setdefault("credibility_explanation", "; ".join(list(getattr(cred_obj, "reputation_factors", []))[:3]))
+                setattr(res, "metadata", meta)
+
+        prune_threshold = 0.0
+        try:
+            prune_threshold = float(os.getenv("CREDIBILITY_PRUNE_THRESHOLD", "0.2") or 0.2)
+        except Exception:
+            prune_threshold = 0.2
+        min_keep = 10
+        try:
+            min_keep = int(os.getenv("CREDIBILITY_MIN_RESULTS", "10") or 10)
+        except Exception:
+            min_keep = 10
+
+        filtered_for_ranking = [
+            r
+            for r in early
+            if (getattr(r, "credibility_score", 0.0) or 0.0) >= prune_threshold
+        ]
+        if len(filtered_for_ranking) < min_keep:
+            filtered_for_ranking = early
+
+        if progress_callback and research_id:
+            try:
+                await progress_callback.update_progress(
+                    research_id,
+                    phase="analysis",
+                    message="Credibility analysis complete",
+                    items_done=1,
+                    items_total=3,
+                )
+            except Exception:
+                pass
+
+        # 5) Paradigm strategy ranking
         strategy = get_search_strategy(paradigm_code)
 
         # Safely normalize secondary paradigm only when present to satisfy type checker
@@ -2696,7 +2841,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             paradigm=paradigm_code,
             secondary_paradigm=secondary_code,
         )
-        ranked: List[SearchResult] = await strategy.filter_and_rank_results(early, search_ctx)
+        ranked: List[SearchResult] = await strategy.filter_and_rank_results(filtered_for_ranking, search_ctx)
 
         # Safeguard: if ranking/filtering eliminates all results, fall back
         # progressively to earlier stages to avoid starving downstream phases.
@@ -2716,95 +2861,17 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 research_id,
                 phase="analysis",
                 message="Ranking results",
-                items_done=1, items_total=3  # 0 = dedup, 1 = ranking, 2 = credibility, 3 = duplicates
+                items_done=2,
+                items_total=3,
             )
 
-        # 5) Credibility on top-N (batched with concurrency)
-        cred_summary = {"average_score": 0.0}
-        creds: Dict[str, float] = {}
-        default_limit = int(os.getenv("DEFAULT_SOURCE_LIMIT", "200"))
-        user_cap = int(getattr(user_context, "source_limit", default_limit) or default_limit)
-        topN = ranked[: min(max(20, user_cap), len(ranked))]
-
-        # Deduplicate by domain, then fetch concurrently
-        unique_domains: List[str] = []
-        for r in topN:
-            d = getattr(r, "domain", "")
-            if d and d not in unique_domains:
-                unique_domains.append(d)
-
-        if progress_callback and research_id:
-            try:
-                await progress_callback.update_progress(
-                    research_id,
-                    phase="analysis",
-                    message="Evaluating source credibility",
-                    progress=55,
-                    items_done=0,
-                    items_total=len(unique_domains),
-                )
-            except Exception:
-                pass
-
-        conc = 8
-        try:
-            conc = int(os.getenv("CREDIBILITY_CONCURRENCY", "8") or 8)
-        except Exception:
-            pass
-        semc = asyncio.Semaphore(max(1, conc))
-
-        async def _fetch_dom(dom: str) -> Tuple[str, float]:
-            async with semc:
-                try:
-                    score, _, _ = await get_source_credibility_safe(
-                        dom, paradigm_code,
-                        credibility_enabled=self.credibility_enabled,
-                        log_failures=self.diagnostics.get("log_credibility_failures", True)
-                    )
-                    return dom, float(score)
-                except Exception:
-                    return dom, 0.5
-
-        domain_scores: Dict[str, float] = {}
-        for idx, (dom, score) in enumerate(await asyncio.gather(*[_fetch_dom(d) for d in unique_domains])):
-            domain_scores[dom] = score
-            try:
-                if progress_callback and research_id:
-                    pct = 55 + int(((idx + 1) / max(1, len(unique_domains))) * 20)
-                    await progress_callback.update_progress(
-                        research_id,
-                        phase="analysis",
-                        progress=pct,
-                        items_done=idx + 1,
-                        items_total=len(unique_domains),
-                    )
-            except Exception:
-                pass
-
-        # Assign scores to results (preserve mapping)
-        for r in topN:
-            dom = getattr(r, "domain", "")
-            sc = domain_scores.get(dom, None)
-            if sc is not None:
-                r.credibility_score = sc
-                creds[dom] = sc
-
-        if creds:
-            try:
-                cred_summary["average_score"] = sum(creds.values()) / float(len(creds))
-            except Exception:
-                cred_summary["average_score"] = 0.0
-
-        logger.info("Credibility scoring", research_id=research_id, stage="credibility_scoring", scored_domains=len(creds), average_score=cred_summary["average_score"])
-
-        # Update progress after credibility
-        if progress_callback and research_id:
-            await progress_callback.update_progress(
-                research_id,
-                phase="analysis",
-                message="Credibility analysis complete",
-                items_done=2, items_total=3  # 0 = dedup, 1 = ranking, 2 = credibility, 3 = duplicates
-            )
+        logger.info(
+            "Credibility scoring",
+            research_id=research_id,
+            stage="credibility_scoring",
+            scored_domains=len(creds),
+            average_score=cred_summary.get("average_score", 0.0),
+        )
 
         # Emit additional distribution metrics for observability
         try:

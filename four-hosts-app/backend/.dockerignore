@@ -1,0 +1,79 @@
+# Python bytecode and cache
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Testing
+.pytest_cache/
+.coverage
+.tox/
+htmlcov/
+*.cover
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Data directories (should be mounted or downloaded at runtime)
+data/
+model_cache/
+nltk_data/
+# Note: models/ directory contains application code (database models), NOT ML models
+# ML model weights should be in model_cache/ or mounted as volumes
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+*.md
+docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.circleci/
+
+# Azure
+.azure/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Node modules (if any JS tooling)
+node_modules/
+
+# Python distribution
+dist/
+build/
+*.egg-info/

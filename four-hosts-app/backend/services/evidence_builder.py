@@ -34,7 +34,7 @@ import os
 import re
 import structlog
 import time as _time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils.url_utils import extract_domain, canonicalize_url
 from utils.source_normalization import dedupe_by_url
@@ -63,6 +63,72 @@ from logging_config import configure_logging
 
 configure_logging()
 logger = structlog.get_logger(__name__)
+
+
+_PARADIGM_QUOTE_KEYWORDS: Dict[str, List[str]] = {
+    "bernard": [
+        "data",
+        "dataset",
+        "statistic",
+        "study",
+        "research",
+        "sample",
+        "methodology",
+        "p-value",
+        "confidence",
+    ],
+    "maeve": [
+        "strategy",
+        "strategic",
+        "competitive",
+        "advantage",
+        "roi",
+        "growth",
+        "market",
+        "tactic",
+        "roadmap",
+    ],
+    "dolores": [
+        "systemic",
+        "corruption",
+        "abuse",
+        "injustice",
+        "inequity",
+        "oppression",
+        "whistleblower",
+        "leaked",
+        "power",
+        "cover-up",
+    ],
+    "teddy": [
+        "support",
+        "resource",
+        "assistance",
+        "hotline",
+        "helpline",
+        "care",
+        "aid",
+        "accessible",
+        "eligibility",
+        "guidance",
+    ],
+}
+
+_PARADIGM_SUMMARY_HINTS: Dict[str, List[str]] = {
+    "bernard": ["study", "research", "analysis", "statistical", "method"],
+    "maeve": ["market", "revenue", "roi", "competitive", "growth", "roadmap"],
+    "dolores": ["systemic", "power", "investigation", "corruption", "disparity", "lawsuit", "whistleblower"],
+    "teddy": ["support", "resource", "service", "access", "eligibility", "community", "assistance"],
+}
+
+EVIDENCE_CONTEXT_MAX_CHARS = int(os.getenv("EVIDENCE_CONTEXT_MAX_CHARS", "500") or 500)
+EVIDENCE_CONTEXT_MIN_CHARS = int(os.getenv("EVIDENCE_CONTEXT_MIN_CHARS", "260") or 260)
+
+
+def _normalize_paradigm(paradigm: Optional[str]) -> str:
+    if not paradigm:
+        return ""
+    return str(paradigm).strip().lower()
 
 
 def _item_get(data: Any, key: str, default: Any = None) -> Any:
@@ -419,6 +485,7 @@ def _best_quotes_for_text(
     max_quotes: int = 3,
     max_len: int = EVIDENCE_QUOTE_MAX_CHARS,
     use_semantic: bool = EVIDENCE_SEMANTIC_SCORING,
+    paradigm: Optional[str] = None,
 ) -> List[Tuple[str, int, int]]:
     import logging
 
@@ -452,6 +519,9 @@ def _best_quotes_for_text(
         sem = _semantic_scores(query, parts)
     else:
         sem = [0.0] * len(parts)
+    paradigm_code = _normalize_paradigm(paradigm)
+    paradigm_terms = _PARADIGM_QUOTE_KEYWORDS.get(paradigm_code, [])
+
     for idx, p in enumerate(parts):
         # Trim long parts to a focused window around query terms when possible
         p_clean = sanitize_snippet(p, max_len=max_len * 2)
@@ -459,6 +529,11 @@ def _best_quotes_for_text(
         sem_sc = sem[idx] if idx < len(sem) else 0.0
         # Blend: semantic (60%), keyword overlap & numerics (40%)
         score = 0.6 * sem_sc + 0.4 * kw
+        if paradigm_terms:
+            lower = p_clean.lower()
+            matches = sum(1 for term in paradigm_terms if term in lower)
+            if matches:
+                score += min(0.3, matches * 0.1)
         if score <= 0:
             continue
         # Find approximate start offset (optional)
@@ -479,7 +554,7 @@ def _context_window_around(
     text: str,
     start: int,
     end: int,
-    max_chars: int = 320,
+    max_chars: int = EVIDENCE_CONTEXT_MAX_CHARS,
 ) -> str:
     """Return a short context window (prev/next sentences) around a span.
 
@@ -495,32 +570,74 @@ def _context_window_around(
         or start >= len(text)
     ):
         return ""
-    try:
-        # Search nearest sentence boundaries
-        left = max(
-            text.rfind(".", 0, start),
-            text.rfind("!", 0, start),
-            text.rfind("?", 0, start),
-        )
-    except Exception:
-        left = -1
-    try:
-        right_candidates = [
-            text.find(".", end),
-            text.find("!", end),
-            text.find("?", end),
-        ]
-        right_candidates = [c for c in right_candidates if c != -1]
-        right = min(right_candidates) if right_candidates else -1
-    except Exception:
-        right = -1
-    if left == -1:
-        left = max(0, start - max_chars // 2)
-    if right == -1:
-        right = min(len(text), end + max_chars // 2)
+    max_chars = max(160, int(max_chars))
+    min_chars = min(max_chars, max(120, EVIDENCE_CONTEXT_MIN_CHARS))
+
+    def _find_sentence_left(idx: int) -> int:
+        i = max(0, idx)
+        while i > 0 and text[i - 1].isspace():
+            i -= 1
+        while i > 0 and text[i - 1] not in ".!?\n" and text[i - 1] != "\u2026":
+            i -= 1
+        return max(0, i - 1 if i > 0 and text[i - 1] not in "\n" else i)
+
+    def _find_sentence_right(idx: int) -> int:
+        i = min(len(text), idx)
+        while i < len(text) and text[i : i + 1].isspace():
+            i += 1
+        while i < len(text) and text[i : i + 1] not in ".!?\n" and text[i : i + 1] != "\u2026":
+            i += 1
+        if i < len(text):
+            i += 1
+        return min(len(text), i)
+
+    pad = max_chars // 2
+    left = max(0, start - pad)
+    right = min(len(text), end + pad)
+    left = _find_sentence_left(left)
+    right = _find_sentence_right(right)
+
+    expand_left = left
+    expand_right = right
+
     window = text[left:right].strip()
+
+    # Expand to reach minimum characters while respecting sentence boundaries
+    while len(window) < min_chars and expand_left > 0:
+        prev = max(
+            text.rfind(".", 0, expand_left - 1),
+            text.rfind("!", 0, expand_left - 1),
+            text.rfind("?", 0, expand_left - 1),
+            text.rfind("\n", 0, expand_left - 1),
+        )
+        if prev <= 0:
+            expand_left = 0
+        else:
+            expand_left = max(0, prev)
+        window = text[expand_left:expand_right].strip()
+
+    while len(window) < min_chars and expand_right < len(text):
+        next_candidates = [
+            text.find(".", expand_right + 1),
+            text.find("!", expand_right + 1),
+            text.find("?", expand_right + 1),
+            text.find("\n", expand_right + 1),
+        ]
+        next_valid = [c for c in next_candidates if c != -1]
+        if not next_valid:
+            expand_right = len(text)
+        else:
+            expand_right = min(next_valid) + 1
+        window = text[expand_left:expand_right].strip()
+
+    window = text[expand_left:expand_right].strip()
     if len(window) > max_chars:
-        window = window[: max_chars - 1] + "…"
+        truncated = window[: max_chars - 1]
+        cutoff = truncated.rfind(" ")
+        if cutoff > max_chars * 0.6:
+            truncated = truncated[:cutoff]
+        window = truncated.rstrip() + "…"
+
     return sanitize_snippet(window, max_len=max_chars)
 
 
@@ -529,12 +646,9 @@ def _summarize_text(
     text: str,
     max_sentences: int = 3,
     max_len: int = 500,
+    paradigm: Optional[str] = None,
 ) -> str:
-    """Lightweight extractive summary using TF‑IDF similarity to the query.
-
-    Falls back to the first few sentences when semantic scoring is
-    unavailable.
-    """
+    """Lightweight extractive summary with paradigm-aware preferences."""
     if not text:
         return ""
     parts = [
@@ -544,26 +658,64 @@ def _summarize_text(
     ]
     if not parts:
         return sanitize_snippet(text[:max_len], max_len=max_len)
-    sem = _semantic_scores(query, parts)
-    idxs = list(range(len(parts)))
 
-    def _sort_key(i: int) -> float:
-        base = sem[i] if i < len(sem) else 0.0
-        length_bonus = min(len(parts[i]) / 200.0, 0.5)
-        return base + length_bonus
+    sem_scores = _semantic_scores(query, parts)
+    paradigm_code = _normalize_paradigm(paradigm)
+    paradigm_terms = _PARADIGM_SUMMARY_HINTS.get(paradigm_code, [])
 
-    # Rank by semantic score then length (prefer informative)
-    idxs.sort(key=_sort_key, reverse=True)
+    combined: List[float] = []
+    for idx, sentence in enumerate(parts):
+        sem_sc = sem_scores[idx] if idx < len(sem_scores) else 0.0
+        bonus = 0.0
+        lower = sentence.lower()
+        if paradigm_terms:
+            matches = sum(1 for term in paradigm_terms if term in lower)
+            if matches:
+                bonus += min(0.4, matches * 0.12)
+        if paradigm_code == "bernard":
+            if re.search(r"\b\d+(?:\.\d+)?%", lower) or re.search(r"\bp\s*[=<>]", lower):
+                bonus += 0.2
+            if "sample" in lower or "confidence" in lower or "method" in lower:
+                bonus += 0.1
+        elif paradigm_code == "maeve":
+            if re.search(r"\b\$?\d+(?:\.\d+)?", lower) and ("roi" in lower or "%" in lower):
+                bonus += 0.18
+            if "timeline" in lower or "strategy" in lower or "implementation" in lower:
+                bonus += 0.1
+        elif paradigm_code == "dolores":
+            if any(term in lower for term in ["whistleblower", "leak", "lawsuit", "discrimination", "cover-up"]):
+                bonus += 0.2
+            if "systemic" in lower or "power" in lower or "accountability" in lower:
+                bonus += 0.15
+        elif paradigm_code == "teddy":
+            if any(term in lower for term in ["support", "helpline", "contact", "eligibility", "no-cost", "free"]):
+                bonus += 0.18
+            if "resources" in lower or "access" in lower or "care" in lower:
+                bonus += 0.12
+
+        combined.append(0.55 * sem_sc + 0.45 * bonus)
+
+    ranked = sorted(
+        enumerate(parts),
+        key=lambda item: combined[item[0]] if item[0] < len(combined) else 0.0,
+        reverse=True,
+    )
     picked: List[str] = []
-    for i in idxs[:max_sentences]:
-        picked.append(
-            sanitize_snippet(
-                parts[i],
-                max_len=max_len // max(1, max_sentences),
-            )
-        )
-    out = " ".join(picked)
-    return sanitize_snippet(out, max_len=max_len)
+    for idx, _part in ranked:
+        if idx >= len(parts):
+            continue
+        snippet = sanitize_snippet(parts[idx], max_len=max_len // max(1, max_sentences))
+        if not snippet:
+            continue
+        picked.append(snippet)
+        if len(picked) >= max_sentences:
+            break
+
+    if not picked:
+        fallback = sanitize_snippet(" ".join(parts[:max_sentences]), max_len=max_len)
+        picked = [fallback] if fallback else []
+
+    return sanitize_snippet(" ".join(picked), max_len=max_len)
 
 
 async def build_evidence_bundle(
@@ -574,11 +726,14 @@ async def build_evidence_bundle(
     quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
     include_full_content: bool = True,
     full_text_budget: int = EVIDENCE_BUDGET_TOKENS_DEFAULT,
+    paradigm: Optional[str] = None,
 ) -> EvidenceBundle:
     """Build comprehensive evidence bundle including quotes and documents."""
     import logging
 
     # Use module-level structured logger
+
+    paradigm_code = _normalize_paradigm(paradigm)
 
     logger.debug(
         "Evidence builder invoked", 
@@ -588,6 +743,7 @@ async def build_evidence_bundle(
         quotes_per_doc=quotes_per_doc,
         include_full_content=include_full_content,
         full_text_budget=full_text_budget,
+        paradigm=paradigm_code,
     )
 
     if not results:
@@ -700,7 +856,7 @@ async def build_evidence_bundle(
         snippet = _item_get(raw_doc, "snippet", "") or ""
         text = texts.get(url, "")
         doc_summary = (
-            _summarize_text(query, text)
+            _summarize_text(query, text, paradigm=paradigm_code)
             if text
             else (sanitize_snippet(snippet, max_len=300) if snippet else "")
         )
@@ -708,6 +864,7 @@ async def build_evidence_bundle(
             query,
             text,
             max_quotes=quotes_per_doc,
+            paradigm=paradigm_code,
         )
         if not triples and snippet:
             triples = [(sanitize_snippet(snippet, 200), -1, -1)]
@@ -732,7 +889,7 @@ async def build_evidence_bundle(
                     text,
                     start,
                     end,
-                    max_chars=min(380, EVIDENCE_QUOTE_MAX_CHARS * 2),
+                    max_chars=min(EVIDENCE_CONTEXT_MAX_CHARS + 40, EVIDENCE_QUOTE_MAX_CHARS * 2 + 80),
                 )
                 if text and isinstance(start, int) and start >= 0
                 else ""
@@ -842,6 +999,7 @@ async def build_evidence_quotes(
     *,
     max_docs: int = EVIDENCE_MAX_DOCS_DEFAULT,
     quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
+    paradigm: Optional[str] = None,
 ) -> List[EvidenceQuote]:
     """Retained wrapper for legacy callers returning only evidence quotes."""
     bundle = await build_evidence_bundle(
@@ -850,6 +1008,7 @@ async def build_evidence_quotes(
         max_docs=max_docs,
         quotes_per_doc=quotes_per_doc,
         include_full_content=False,
+        paradigm=paradigm,
     )
     return list(bundle.quotes)
 
@@ -894,6 +1053,7 @@ async def build_evidence_pipeline(
     quotes_per_doc: int = EVIDENCE_QUOTES_PER_DOC_DEFAULT,
     include_full_content: bool = True,
     full_text_budget: int = EVIDENCE_BUDGET_TOKENS_DEFAULT,
+    paradigm: Optional[str] = None,
 ) -> tuple[EvidenceBundle, List[Dict[str, Any]]]:
     """
     Build end-to-end evidence bundle with centralized dedupe and budgeting.
@@ -927,6 +1087,7 @@ async def build_evidence_pipeline(
         quotes_per_doc=quotes_per_doc,
         include_full_content=include_full_content,
         full_text_budget=full_text_budget,
+        paradigm=paradigm,
     )
 
     quotes_plain: List[Dict[str, Any]] = quotes_to_plain_dicts(

@@ -76,11 +76,13 @@ class ExaResearchClient:
         if not query:
             return None
 
-        instructions = self._build_prompt(query, brave_highlights, focus)
+        # Build enhanced query with context
+        enhanced_query = self._build_query(query, brave_highlights, focus)
+
+        # Exa API /answer endpoint format
         payload = {
-            "model": self.model,
-            "input": instructions,
-            "response_format": self._build_response_format(),
+            "query": enhanced_query,
+            "text": True,  # Include full text content in citations
         }
 
         headers = {
@@ -88,7 +90,8 @@ class ExaResearchClient:
             "Content-Type": "application/json",
         }
 
-        url = f"{self.base_url}/responses"
+        # Use correct Exa endpoint: /answer
+        url = f"{self.base_url}/answer"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
@@ -104,168 +107,58 @@ class ExaResearchClient:
             logger.warning("Failed to decode Exa response JSON", error=str(exc))
             return None
 
-        text = self._extract_output_text(data)
-        if not text:
-            logger.debug("Empty Exa research output_text")
+        # Parse Exa's /answer response format
+        answer = data.get("answer", "").strip()
+        if not answer:
+            logger.debug("Empty Exa answer")
             return None
 
-        parsed = self._parse_json_payload(text)
-        if not parsed:
-            logger.debug("Exa research output was not valid JSON",
-                        raw_text_preview=text[:200])
-            return None
+        # Extract citations from Exa response
+        citations_raw = data.get("citations", [])
+        citations = []
+        supplemental_sources = []
+
+        for cite in citations_raw:
+            if not isinstance(cite, dict):
+                continue
+
+            citation_obj = {
+                "title": str(cite.get("title", "")).strip(),
+                "url": str(cite.get("url", "")).strip(),
+                "note": str(cite.get("text", "")[:200]).strip(),  # Use snippet from text
+            }
+
+            if citation_obj["url"]:
+                citations.append(citation_obj)
+
+                # Also add to supplemental sources
+                supplemental_sources.append({
+                    "title": citation_obj["title"],
+                    "url": citation_obj["url"],
+                    "snippet": citation_obj["note"],
+                })
 
         return ExaResearchOutput(
-            summary=str(parsed.get("summary", "")).strip(),
-            key_findings=[str(item).strip() for item in parsed.get("key_findings", []) if str(item).strip()],
-            supplemental_sources=[
-                {
-                    "title": str(src.get("title", "")).strip(),
-                    "url": str(src.get("url", "")).strip(),
-                    "snippet": str(src.get("snippet", "")).strip(),
-                }
-                for src in parsed.get("supplemental_sources", [])
-                if isinstance(src, dict)
-            ],
-            citations=[
-                {
-                    "title": str(cite.get("title", "")).strip(),
-                    "url": str(cite.get("url", "")).strip(),
-                    "note": str(cite.get("note", "")).strip(),
-                }
-                for cite in parsed.get("citations", [])
-                if isinstance(cite, dict) and (cite.get("url") or cite.get("title"))
-            ],
+            summary=answer,
+            key_findings=[],  # Exa /answer doesn't provide structured findings
+            supplemental_sources=supplemental_sources,
+            citations=citations,
         )
 
-    def _build_prompt(
+    def _build_query(
         self,
         query: str,
         highlights: List[Dict[str, str]],
         focus: Optional[str],
     ) -> str:
-        """Compose prompt guiding Exa research to complement Brave results."""
+        """Build enhanced query for Exa /answer endpoint.
 
-        highlight_lines = []
-        for idx, item in enumerate(highlights[:5], start=1):
-            title = item.get("title") or ""
-            url = item.get("url") or ""
-            snippet = item.get("snippet") or ""
-            highlight_lines.append(
-                f"{idx}. Title: {title}\n   URL: {url}\n   Summary: {snippet}"
-            )
-
-        context_block = "\n".join(highlight_lines) if highlight_lines else "(No Brave highlights available)"
-        focus_line = f"Focus Areas: {focus}" if focus else "Focus Areas: expand with unique insights, data-driven context, and recent developments."
-
-        return (
-            "You are an Exa research specialist providing high-precision analysis to complement "
-            "general web search findings. Review the Brave search highlights and produce a concise "
-            "augmentation that introduces additional perspectives, data points, citations, or sources.\n\n"
-            f"Primary Query: {query}\n"
-            f"{focus_line}\n\n"
-            "Brave Highlights:\n"
-            f"{context_block}\n\n"
-            "Ensure the response addresses the query directly, surfaces unique key findings, "
-            "and includes precise citations for any new facts introduced."
-        )
-
-    @staticmethod
-    def _build_response_format() -> Dict[str, Any]:
-        """Return JSON schema so Exa enforces structured output."""
-
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "exa_research_supplement",
-                "schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "summary": {"type": "string"},
-                        "key_findings": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "default": [],
-                        },
-                        "supplemental_sources": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "url": {"type": "string"},
-                                    "snippet": {"type": "string"},
-                                },
-                                "required": ["url"],
-                            },
-                            "default": [],
-                        },
-                        "citations": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "url": {"type": "string"},
-                                    "note": {"type": "string"},
-                                },
-                                "required": ["url"],
-                            },
-                            "default": [],
-                        },
-                    },
-                    "required": ["summary"],
-                },
-            },
-        }
-
-    @staticmethod
-    def _extract_output_text(payload: Dict[str, Any]) -> str:
-        """Best-effort extraction of text from Exa Responses API payload."""
-
-        if not isinstance(payload, dict):
-            return ""
-
-        output_text = payload.get("output_text")
-        if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
-
-        output_items = payload.get("output")
-        if isinstance(output_items, list):
-            buffer: List[str] = []
-            for item in output_items:
-                try:
-                    contents = item.get("content", []) if isinstance(item, dict) else []
-                except AttributeError:
-                    continue
-                for part in contents:
-                    if isinstance(part, dict) and part.get("type") == "output_text":
-                        txt = part.get("text")
-                        if isinstance(txt, str):
-                            buffer.append(txt)
-            if buffer:
-                return "\n".join(buffer).strip()
-
-        return ""
-
-    @staticmethod
-    def _parse_json_payload(text: str) -> Optional[Dict[str, Any]]:
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            # Attempt to salvage JSON by locating first brace pair
-            first = text.find("{")
-            last = text.rfind("}")
-            if first != -1 and last != -1 and last > first:
-                snippet = text[first : last + 1]
-                try:
-                    return json.loads(snippet)
-                except Exception:
-                    return None
-            return None
+        Exa's /answer endpoint expects a simple query string, not a long prompt.
+        We enhance the query with focus context if provided.
+        """
+        if focus:
+            return f"{query} (Focus: {focus})"
+        return query
 
 
 exa_research_client = ExaResearchClient()

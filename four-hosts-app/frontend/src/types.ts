@@ -57,6 +57,7 @@ export interface ResearchResult {
   },
   answer?: GeneratedAnswer
   integrated_synthesis?: IntegratedSynthesis
+  mesh_synthesis?: MeshSynthesis | null
   sources: SourceResult[]
   results?: SourceResult[]
   export_formats?: Record<string, string>
@@ -119,6 +120,8 @@ export interface ResearchResult {
     }
     evidence_quotes?: Array<Record<string, unknown>>
     paradigm?: Paradigm | string
+    warnings?: unknown[]
+    degraded?: boolean
   },
   cost_info?: {
     search_api_costs?: number
@@ -157,6 +160,7 @@ export interface ActionItem {
   // Optional content enhancements for ownership and deadlines
   owner?: string
   due_date?: string // ISO date string
+  description?: string
 }
 
 export interface Citation {
@@ -183,6 +187,20 @@ export interface IntegratedSynthesis {
     synergies: string[]
     integrated_summary: string
     confidence_score: number
+}
+
+export interface MeshSynthesisStance {
+  paradigm?: string
+  perspective?: string
+  key_points?: string[]
+}
+
+export interface MeshSynthesis {
+  integrated?: string
+  synthesis?: string
+  stances?: MeshSynthesisStance[]
+  synergies?: string[]
+  tensions?: string[]
 }
 
 // Authentication types
