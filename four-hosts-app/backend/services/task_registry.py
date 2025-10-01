@@ -46,6 +46,7 @@ class TaskRegistry:
         self._task_counter = 0
         self._shutdown_event = asyncio.Event()
         self._lock = asyncio.Lock()
+        self._cleanup_tasks: Set[asyncio.Task[Any]] = set()
         
     async def register_task(
         self, 
@@ -61,13 +62,53 @@ class TaskRegistry:
             
             task_id = f"{name}_{id(task)}"
             self._tasks[task_id] = TaskInfo(task, name, priority)
-            
-            # Add callback to remove task when done
-            task.add_done_callback(lambda t: asyncio.create_task(self._remove_task(task_id)))
+
+            def _on_task_done(_: asyncio.Task) -> None:
+                self._schedule_cleanup(task_id)
+
+            task.add_done_callback(_on_task_done)
             
             logger.debug(f"Registered task: {task_id} (priority: {priority})")
             return task_id
-    
+
+    def _schedule_cleanup(self, task_id: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("task_registry.cleanup_loop_missing", task_id=task_id)
+            return
+
+        async def _cleanup() -> None:
+            await self._remove_task(task_id)
+
+        cleanup_task = loop.create_task(
+            _cleanup(),
+            name=f"task_registry_cleanup:{task_id}",
+        )
+        self._cleanup_tasks.add(cleanup_task)
+
+        def _cleanup_done(done: asyncio.Task[Any]) -> None:
+            self._cleanup_tasks.discard(done)
+            try:
+                exc = done.exception()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.debug(
+                    "task_registry.cleanup_inspection_failed",
+                    task_id=task_id,
+                    error=str(exc),
+                )
+                return
+            if exc is not None:
+                logger.warning(
+                    "task_registry.cleanup_failed",
+                    task_id=task_id,
+                    error=str(exc),
+                )
+
+        cleanup_task.add_done_callback(_cleanup_done)
+
     async def _remove_task(self, task_id: str):
         """Remove a completed task from the registry"""
         async with self._lock:
@@ -190,7 +231,11 @@ class TaskRegistry:
                 await asyncio.gather(*all_tasks, return_exceptions=True)
             except Exception:
                 pass  # Ignore errors during final gathering
-        
+
+        if self._cleanup_tasks:
+            await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
+            self._cleanup_tasks.clear()
+
         logger.info(f"Task shutdown complete. Results: {shutdown_results}")
         return shutdown_results
     

@@ -4,8 +4,9 @@ import type { ReactNode } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts'
 import { FiActivity, FiTrendingUp, FiUsers, FiClock, FiDatabase, FiAlertCircle, FiEye, FiMousePointer, FiTarget, FiZap, FiChevronUp } from 'react-icons/fi'
 import api from '../services/api'
-import type { MetricsData, ExtendedStatsSnapshot } from '../types/api-types'
+import type { MetricsData, ExtendedStatsSnapshot, TelemetrySummary } from '../types/api-types'
 import { getParadigmHexColor } from '../constants/paradigm'
+import { TriageBoard } from './TriageBoard'
 
 interface ABTestMetrics {
   standardView: {
@@ -73,6 +74,27 @@ const metricGradients: Record<'primary' | 'success' | 'error', string> = {
   error: 'linear-gradient(135deg, rgba(var(--paradigm-dolores-rgb), 0.22) 0%, rgba(var(--error-rgb), 0.26) 100%)',
 }
 
+const formatRelativeTime = (timestamp: string | undefined): string => {
+  if (!timestamp) return '—'
+  try {
+    const now = Date.now()
+    const ts = new Date(timestamp).getTime()
+    if (Number.isNaN(ts)) return '—'
+    const diff = Math.max(0, now - ts)
+    const minutes = Math.round(diff / 60000)
+    if (minutes < 1) return 'just now'
+    if (minutes === 1) return '1 min ago'
+    if (minutes < 60) return `${minutes} mins ago`
+    const hours = Math.round(minutes / 60)
+    if (hours === 1) return '1 hr ago'
+    if (hours < 24) return `${hours} hrs ago`
+    const days = Math.round(hours / 24)
+    return `${days}d ago`
+  } catch {
+    return '—'
+  }
+}
+
 const MetricCard = React.memo<{
   icon: React.ElementType
   title: string
@@ -119,6 +141,8 @@ export const MetricsDashboard: React.FC = () => {
   const [extended, setExtended] = useState<ExtendedStatsSnapshot | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [telemetry, setTelemetry] = useState<TelemetrySummary | null>(null)
+  const [telemetryError, setTelemetryError] = useState<string | null>(null)
 
   const abTestMetrics = useMemo<ABTestMetrics>(() => ({
     standardView: {
@@ -139,7 +163,15 @@ export const MetricsDashboard: React.FC = () => {
 
   const loadStats = useCallback(async () => {
     try {
-      const data = await api.getSystemStatsSafe()
+      setIsLoading(true)
+      const [data, telemetrySummary] = await Promise.all([
+        api.getSystemStatsSafe(),
+        api.getTelemetrySummary().catch((err) => {
+          const msg = err instanceof Error ? err.message : 'Failed to load telemetry summary'
+          setTelemetryError(msg)
+          return null
+        })
+      ])
       const normalized: MetricsData = {
         total_queries: data.total_queries ?? 0,
         active_research: data.active_research ?? 0,
@@ -150,6 +182,10 @@ export const MetricsDashboard: React.FC = () => {
       }
       setStats(normalized)
       api.getExtendedStatsSafe().then(setExtended).catch(() => {})
+      if (telemetrySummary) {
+        setTelemetry(telemetrySummary)
+        setTelemetryError(null)
+      }
       setError(null)
     } catch {
       setError('Failed to load system metrics')
@@ -176,6 +212,77 @@ export const MetricsDashboard: React.FC = () => {
       .filter(item => item.value > 0)
   }, [stats?.paradigm_distribution])
 
+  const statsData: MetricsData = stats ?? {
+    total_queries: 0,
+    active_research: 0,
+    paradigm_distribution: {},
+    average_processing_time: 0,
+    cache_hit_rate: 0,
+    system_health: 'healthy'
+  }
+
+  const telemetryCards = useMemo(() => {
+    if (!telemetry) return null
+    return [
+      {
+        icon: FiActivity,
+        title: 'Runs Observed',
+        value: telemetry.totals?.runs ?? telemetry.runs ?? 0,
+        subtitle: 'Rolling window'
+      },
+      {
+        icon: FiClock,
+        title: 'Avg Processing',
+        value: `${(telemetry.totals?.avg_processing_time_seconds ?? 0).toFixed(1)}s`,
+        subtitle: 'Per research run'
+      },
+      {
+        icon: FiTrendingUp,
+        title: 'Avg Queries',
+        value: (telemetry.totals?.avg_total_queries ?? 0).toFixed(1),
+        subtitle: 'Per run'
+      },
+      {
+        icon: FiDatabase,
+        title: 'Avg Results',
+        value: (telemetry.totals?.avg_total_results ?? 0).toFixed(1),
+        subtitle: 'Per run'
+      }
+    ]
+  }, [telemetry])
+
+  const providerUsage = useMemo(() => {
+    if (!telemetry) return []
+    return Object.entries(telemetry.providers?.usage ?? {})
+      .sort(([, a], [, b]) => b - a)
+  }, [telemetry])
+
+  const providerCosts = useMemo(() => {
+    if (!telemetry) return []
+    return Object.entries(telemetry.providers?.costs ?? {})
+      .sort(([, a], [, b]) => b - a)
+  }, [telemetry])
+
+  const stageBreakdown = useMemo(() => {
+    if (!telemetry) return []
+    return Object.entries(telemetry.stages || {})
+      .sort(([, a], [, b]) => b - a)
+  }, [telemetry])
+
+  const recentTelemetryEvents = useMemo(() => {
+    if (!telemetry) return []
+    return (telemetry.recent_events || []).slice(0, 5).map((event) => {
+      const obj = (event && typeof event === 'object') ? event as Record<string, unknown> : {}
+      const paradigm = typeof obj.paradigm === 'string' ? obj.paradigm : String(obj.paradigm ?? 'unknown')
+      const depth = typeof obj.depth === 'string' ? obj.depth : String(obj.depth ?? 'standard')
+      const timestamp = typeof obj.timestamp === 'string' ? obj.timestamp : ''
+      const totalQueries = typeof obj.total_queries === 'number' ? obj.total_queries : Number(obj.total_queries ?? 0)
+      const totalResults = typeof obj.total_results === 'number' ? obj.total_results : Number(obj.total_results ?? 0)
+      const processing = typeof obj.processing_time_seconds === 'number' ? obj.processing_time_seconds : Number(obj.processing_time_seconds ?? 0)
+      return { paradigm, depth, timestamp, totalQueries, totalResults, processing }
+    })
+  }, [telemetry])
+
   if (isLoading) {
     return (
       <div className="rounded-xl border border-border bg-surface-subtle p-8 shadow-sm">
@@ -201,6 +308,143 @@ export const MetricsDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <TriageBoard />
+
+      {telemetry && telemetryCards && (
+        <CollapsibleSection
+          title="Telemetry Insights"
+          description="Aggregated metrics from recent research runs"
+        >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {telemetryCards.map((card, idx) => (
+              <MetricCard
+                key={`${card.title}-${idx}`}
+                icon={card.icon}
+                title={card.title}
+                value={card.value}
+                subtitle={card.subtitle}
+              />
+            ))}
+          </div>
+
+          <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div className="rounded-xl border border-border bg-surface p-5 shadow-sm">
+              <h3 className="text-sm font-medium text-text mb-3">Provider Usage</h3>
+              <ul className="space-y-2 text-sm text-text-muted">
+                {providerUsage.length === 0 ? (
+                  <li>No provider activity recorded.</li>
+                ) : (
+                  providerUsage.map(([provider, count]) => (
+                    <li key={provider} className="flex items-center justify-between">
+                      <span className="capitalize text-text">{provider}</span>
+                      <span className="font-medium text-text-subtle">{count}</span>
+                    </li>
+                  ))
+                )}
+              </ul>
+
+              {providerCosts.length > 0 && (
+                <div className="mt-4 rounded-lg bg-surface-subtle p-3 text-xs text-text-muted">
+                  <div className="mb-2 font-medium text-text">Provider Cost (USD)</div>
+                  <ul className="space-y-1">
+                    {providerCosts.map(([provider, cost]) => (
+                      <li key={provider} className="flex items-center justify-between">
+                        <span className="capitalize">{provider}</span>
+                        <span>${cost.toFixed(4)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-surface p-5 shadow-sm">
+              <h3 className="text-sm font-medium text-text mb-3">Coverage & Evidence</h3>
+              <div className="space-y-3 text-sm text-text">
+                <div className="flex items-center justify-between">
+                  <span className="text-text-muted">Grounding coverage</span>
+                  <span className="font-semibold">{(telemetry.coverage?.avg_grounding ?? 0).toFixed(2)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-text-muted">Avg evidence quotes</span>
+                  <span className="font-semibold">{(telemetry.coverage?.avg_evidence_quotes ?? 0).toFixed(1)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-text-muted">Avg evidence documents</span>
+                  <span className="font-semibold">{(telemetry.coverage?.avg_evidence_documents ?? 0).toFixed(1)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-text-muted">Agent iterations</span>
+                  <span className="font-semibold">{(telemetry.agent_loop?.avg_iterations ?? 0).toFixed(1)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-text-muted">Agent new queries</span>
+                  <span className="font-semibold">{(telemetry.agent_loop?.avg_new_queries ?? 0).toFixed(1)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border bg-surface p-5 shadow-sm">
+              <h3 className="text-sm font-medium text-text mb-3">Recent Runs</h3>
+              {recentTelemetryEvents.length === 0 ? (
+                <p className="text-sm text-text-muted">No recent telemetry events recorded.</p>
+              ) : (
+                <ul className="space-y-2 text-xs text-text-muted">
+                  {recentTelemetryEvents.map((event, index) => (
+                    <li key={`${event.timestamp}-${index}`} className="rounded-md border border-border/60 bg-surface-subtle p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-text">{event.paradigm}</span>
+                        <span>{formatRelativeTime(event.timestamp)}</span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        <span>queries: {event.totalQueries}</span>
+                        <span>results: {event.totalResults}</span>
+                        {event.processing > 0 && <span>{event.processing.toFixed(1)}s</span>}
+                      </div>
+                      <div className="mt-1 text-[11px] uppercase tracking-wide text-text-subtle">depth · {event.depth}</div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+
+          {stageBreakdown.length > 0 && (
+            <div className="mt-6 rounded-xl border border-border bg-surface p-5 shadow-sm">
+              <h3 className="text-sm font-medium text-text mb-3">Stage Breakdown</h3>
+              <ul className="grid grid-cols-1 gap-2 text-sm text-text-muted md:grid-cols-2 lg:grid-cols-3">
+                {stageBreakdown.map(([stage, count]) => (
+                  <li key={stage} className="flex items-center justify-between rounded-lg bg-surface-subtle px-3 py-2">
+                    <span className="capitalize text-text">{stage.replace(/_/g, ' ')}</span>
+                    <span className="text-text font-medium">{count}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </CollapsibleSection>
+      )}
+
+      {telemetryError && !telemetry && (
+        <div className="rounded-xl border border-border bg-surface-subtle p-4 text-sm text-text-muted">
+          Telemetry summary unavailable: {telemetryError}
+        </div>
+      )}
+
+      {isLoading && (
+        <div className="rounded-xl border border-border bg-surface-subtle p-5 text-sm text-text-muted flex items-center gap-2">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary/40 border-t-primary" />
+          <span>Refreshing system metrics…</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-xl border border-error bg-error/10 p-5 text-sm text-error flex items-center gap-2">
+          <FiAlertCircle className="h-5 w-5" />
+          <span>{error}</span>
+        </div>
+      )}
+
       <CollapsibleSection
         title="System Pulse"
         description="Real-time throughput across the research stack"
@@ -209,28 +453,28 @@ export const MetricsDashboard: React.FC = () => {
           <MetricCard
             icon={FiActivity}
             title="Total Queries"
-            value={stats.total_queries || 0}
+            value={statsData.total_queries || 0}
             subtitle="All time"
             trend={12}
           />
           <MetricCard
             icon={FiUsers}
             title="Active Research"
-            value={stats.active_research || 0}
+            value={statsData.active_research || 0}
             subtitle="Currently processing"
             accent="success"
           />
           <MetricCard
             icon={FiClock}
             title="Avg Processing Time"
-            value={`${(stats.average_processing_time || 0).toFixed(1)}s`}
+            value={`${(statsData.average_processing_time || 0).toFixed(1)}s`}
             subtitle="Per query"
             trend={-8}
           />
           <MetricCard
             icon={FiDatabase}
             title="Cache Hit Rate"
-            value={`${((stats.cache_hit_rate || 0) * 100).toFixed(1)}%`}
+            value={`${((statsData.cache_hit_rate || 0) * 100).toFixed(1)}%`}
             subtitle="Performance boost"
             trend={5}
           />
@@ -312,12 +556,12 @@ export const MetricsDashboard: React.FC = () => {
               <div>
                 <div className="flex justify-between text-sm mb-1">
                   <span className="text-text-muted">Cache Hit Rate</span>
-                  <span className="font-medium text-text">{((stats.cache_hit_rate || 0) * 100).toFixed(1)}%</span>
+                  <span className="font-medium text-text">{((statsData.cache_hit_rate || 0) * 100).toFixed(1)}%</span>
                 </div>
                 <div className="w-full rounded-full bg-surface-muted h-2">
                   <div
                     className="h-full rounded-full bg-primary"
-                    style={{ width: `${(stats.cache_hit_rate || 0) * 100}%` }}
+                    style={{ width: `${(statsData.cache_hit_rate || 0) * 100}%` }}
                   />
                 </div>
               </div>
@@ -327,15 +571,15 @@ export const MetricsDashboard: React.FC = () => {
                 <ul className="space-y-2 text-sm text-text">
                   <li className="flex items-center gap-2">
                     <FiTrendingUp className="h-4 w-4 text-success" />
-                    {stats.total_queries > 1000 ? 'High usage detected' : 'Normal usage patterns'}
+                    {statsData.total_queries > 1000 ? 'High usage detected' : 'Normal usage patterns'}
                   </li>
                   <li className="flex items-center gap-2">
                     <FiActivity className="h-4 w-4 text-primary" />
-                    {stats.active_research > 10 ? 'System under load' : 'System running smoothly'}
+                    {statsData.active_research > 10 ? 'System under load' : 'System running smoothly'}
                   </li>
                   <li className="flex items-center gap-2">
                     <FiClock className="h-4 w-4 text-primary" />
-                    {stats.average_processing_time < 30 ? 'Fast response times' : 'Consider optimization'}
+                    {statsData.average_processing_time < 30 ? 'Fast response times' : 'Consider optimization'}
                   </li>
                 </ul>
               </div>
@@ -352,15 +596,15 @@ export const MetricsDashboard: React.FC = () => {
         <div className="rounded-xl border border-border bg-surface p-6 shadow-sm">
           <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             <div className="text-center">
-              <p className="text-3xl font-semibold text-paradigm-dolores">{stats.total_queries ? Math.round(((paradigmData.find(p => p.name.toLowerCase() === 'dolores')?.value ?? 0) / stats.total_queries) * 100) : 0}%</p>
+              <p className="text-3xl font-semibold text-paradigm-dolores">{statsData.total_queries ? Math.round(((paradigmData.find(p => p.name.toLowerCase() === 'dolores')?.value ?? 0) / statsData.total_queries) * 100) : 0}%</p>
               <p className="mt-1 text-sm text-text-muted">Truth-seeking queries</p>
             </div>
             <div className="text-center">
-              <p className="text-3xl font-semibold text-paradigm-bernard">{stats.total_queries ? Math.round(((paradigmData.find(p => p.name.toLowerCase() === 'bernard')?.value ?? 0) / stats.total_queries) * 100) : 0}%</p>
+              <p className="text-3xl font-semibold text-paradigm-bernard">{statsData.total_queries ? Math.round(((paradigmData.find(p => p.name.toLowerCase() === 'bernard')?.value ?? 0) / statsData.total_queries) * 100) : 0}%</p>
               <p className="mt-1 text-sm text-text-muted">Analytical queries</p>
             </div>
             <div className="text-center">
-              <p className="text-3xl font-semibold text-paradigm-maeve">{(stats.cache_hit_rate || 0) > 0.5 ? 'High' : 'Low'}</p>
+              <p className="text-3xl font-semibold text-paradigm-maeve">{(statsData.cache_hit_rate || 0) > 0.5 ? 'High' : 'Low'}</p>
               <p className="mt-1 text-sm text-text-muted">Cache efficiency</p>
             </div>
           </div>

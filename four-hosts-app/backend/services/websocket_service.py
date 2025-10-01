@@ -25,6 +25,7 @@ from fastapi import WebSocket, WebSocketDisconnect, Header
 from pydantic import BaseModel, Field
 
 from services.auth_service import decode_token, TokenData, UserRole
+from services.triage import triage_manager
 
 # Configure logging
 logger = structlog.get_logger(__name__)
@@ -78,6 +79,7 @@ class WSEventType(str, Enum):
     SYSTEM_NOTIFICATION = "system.notification"
     # Evidence events
     EVIDENCE_BUILDER_SKIPPED = "evidence_builder.skipped"
+    TRIAGE_BOARD_UPDATE = "triage.board_update"
 
 
 class WSMessage(BaseModel):
@@ -648,18 +650,19 @@ class ProgressTracker:
         self._phase_stats: Dict[str, List[float]] = {}
 
         # Weighted progress model (sums to 1.0)
-        # Align with frontend PhaseTracker which now exposes 7 phases:
-        # classification → context_engineering → search → analysis → agentic_loop → synthesis → complete
-        # We treat the terminal 'complete' phase as zero weight (it flips to 100%).
-        # The agentic loop previously had no explicit weight causing overall progress to stall.
+        # Align with frontend PhaseTracker which now exposes 8 phases:
+        # classification → context_engineering → search → analysis → agentic_loop → synthesis → review → complete
+        # We treat the terminal 'complete' phase with a small weight so the meter reaches 100% when the
+        # orchestrator signals completion after final review.
         self._phase_weights: Dict[str, float] = {
-            "classification": 0.10,
-            "context_engineering": 0.15,
-            "search": 0.40,
-            "analysis": 0.10,   # dedup/credibility/filtering
-            "agentic_loop": 0.10,  # iterative follow‑ups
-            "synthesis": 0.12,  # Reduced to smooth 95-100% leap
-            "complete": 0.03,   # Small weight to smooth final transition
+            "classification": 0.08,
+            "context_engineering": 0.12,
+            "search": 0.38,
+            "analysis": 0.16,   # dedup/credibility/filtering
+            "agentic_loop": 0.08,  # iterative follow-ups
+            "synthesis": 0.12,
+            "review": 0.04,
+            "complete": 0.02,
         }
 
         # Throttled persistence of progress snapshots to the research store
@@ -682,7 +685,15 @@ class ProgressTracker:
         return p
 
     async def start_research(
-        self, research_id: str, user_id: str, query: str, paradigm: str, depth: str
+        self,
+        research_id: str,
+        user_id: str,
+        query: str,
+        paradigm: str,
+        depth: str,
+        *,
+        user_role: Optional[str] = None,
+        triage_context: Optional[Dict[str, Any]] = None,
     ):
         """Track start of research"""
         self.research_progress[research_id] = {
@@ -723,6 +734,21 @@ class ProgressTracker:
                 },
             ),
         )
+
+        # Initialise triage board entry for Kanban consumers
+        try:
+            await triage_manager.initialize_entry(
+                research_id=research_id,
+                user_id=user_id,
+                user_role=user_role,
+                depth=depth,
+                paradigm=paradigm,
+                query=query,
+                triage_context=triage_context,
+            )
+            await triage_manager.update_lane(research_id, phase="initialization")
+        except Exception as exc:
+            logger.debug("triage.init_failed", research_id=research_id, error=str(exc))
 
         # Launch background heartbeat so clients receive periodic updates even
         # when no phase events are emitted.
@@ -917,7 +943,8 @@ class ProgressTracker:
                     "analysis",
                     "agentic_loop",
                     "synthesis",
-                    # 'complete' excluded from iterative accumulation (0 weight)
+                    "review",
+                    "complete",
                 ]
                 cset = progress_data.get("completed_phases") or set()
                 units = progress_data.get("phase_units") or {}
@@ -1012,6 +1039,14 @@ class ProgressTracker:
 
         if eta_seconds is not None:
             update_data["eta_seconds"] = eta_seconds
+
+        try:
+            await triage_manager.update_lane(
+                research_id,
+                phase=progress_data.get("phase"),
+            )
+        except Exception as exc:
+            logger.debug("triage.update_failed", research_id=research_id, error=str(exc))
 
         await self.connection_manager.broadcast_to_research(
             research_id, WSMessage(type=WSEventType.RESEARCH_PROGRESS, data=update_data)
@@ -1248,6 +1283,10 @@ class ProgressTracker:
                 },
             ),
         )
+        try:
+            await triage_manager.mark_complete(research_id)
+        except Exception as exc:
+            logger.debug("triage.complete_failed", research_id=research_id, error=str(exc))
         # Invalidate cached status and results for this research
         try:
             from services.cache import research_status_cache, research_results_cache
@@ -1286,6 +1325,10 @@ class ProgressTracker:
                 },
             ),
         )
+        try:
+            await triage_manager.mark_failed(research_id)
+        except Exception as exc:
+            logger.debug("triage.fail_failed", research_id=research_id, error=str(exc))
         # Invalidate cached status for this research
         try:
             from services.cache import research_status_cache
@@ -1777,4 +1820,14 @@ connection_manager = ConnectionManager()
 # Use the compatibility alias so legacy callers invoking update_progress(message, progress)
 # continue to work while newer code can use the richer ProgressTracker API.
 progress_tracker = ResearchProgressTracker(connection_manager)
+
+
+async def _broadcast_triage_board(payload: Dict[str, Any]) -> None:
+    await connection_manager.broadcast_to_research(
+        "triage-board",
+        WSMessage(type=WSEventType.TRIAGE_BOARD_UPDATE, data=payload),
+    )
+
+
+triage_manager.register_broadcaster(_broadcast_triage_board)
 ws_integration = WebSocketIntegration(connection_manager, progress_tracker)

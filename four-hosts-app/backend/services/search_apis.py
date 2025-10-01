@@ -38,12 +38,29 @@ from urllib.robotparser import RobotFileParser
 import aiohttp
 
 # Import URL utilities
-from ..utils.url_utils import (
-    normalize_url,
-    is_valid_url,
-    extract_domain,
-    extract_doi,
-)
+# Support running both as ``backend.services`` and legacy ``services``.
+try:
+    from ..utils.url_utils import (
+        normalize_url,
+        is_valid_url,
+        extract_domain,
+        extract_doi,
+    )
+except ImportError:  # pragma: no cover - fallback when imported as top-level ``services``
+    try:
+        from backend.utils.url_utils import (  # type: ignore[no-redef]
+            normalize_url,
+            is_valid_url,
+            extract_domain,
+            extract_doi,
+        )
+    except ImportError:
+        from utils.url_utils import (  # type: ignore[no-redef]
+            normalize_url,
+            is_valid_url,
+            extract_domain,
+            extract_doi,
+        )
 # Import retry utilities
 from utils.retry import (
     handle_rate_limit,

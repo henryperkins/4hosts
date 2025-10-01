@@ -104,6 +104,7 @@ export interface WebSocketMessage {
     | 'credibility.check'
     | 'deduplication.progress'
     | 'evidence_builder_skipped'
+    | 'triage.board_update'
   data: {
     status?: string
     progress?: number
@@ -154,8 +155,60 @@ export interface WebSocketMessage {
     mcp_tools_used?: number
     // Heartbeat flag
     heartbeat?: boolean
+    lanes?: Record<string, TriageEntry[]>
+    entry_count?: number
+    updated_at?: string
   }
   timestamp: string
+}
+
+export interface TriageEntry {
+  research_id: string
+  priority: 'high' | 'medium' | 'low'
+  score: number
+  lane: string
+  user_id: string
+  user_role: string
+  depth: string
+  paradigm: string
+  query: string
+  created_at: string
+  updated_at: string
+  metadata?: Record<string, unknown>
+}
+
+export interface TriageBoardSnapshot {
+  updated_at: string
+  entry_count: number
+  lanes: Record<string, TriageEntry[]>
+}
+
+export interface TelemetrySummary {
+  runs: number
+  updated_at: string
+  totals: {
+    runs: number
+    avg_processing_time_seconds: number
+    avg_total_queries: number
+    avg_total_results: number
+  }
+  paradigms: Record<string, number>
+  depths: Record<string, number>
+  providers: {
+    costs: Record<string, number>
+    usage: Record<string, number>
+  }
+  coverage: {
+    avg_grounding: number
+    avg_evidence_quotes: number
+    avg_evidence_documents: number
+  }
+  agent_loop: {
+    avg_iterations: number
+    avg_new_queries: number
+  }
+  stages: Record<string, number>
+  recent_events: Array<Record<string, unknown>>
 }
 
 export interface PaginatedResponse<T> {
@@ -279,7 +332,7 @@ export function isWebSocketMessage(data: unknown): data is WebSocketMessage {
     'status', 'progress', 'result', 'error',
     'connected', 'disconnected', 'ping', 'pong', 'system.notification', 'rate_limit.warning',
     'research_progress', 'research_phase_change', 'source_found', 'source_analyzed', 'research_completed', 'research_failed', 'research_started',
-    'search.started', 'search.completed', 'search.retry', 'credibility.check', 'deduplication.progress'
+    'search.started', 'search.completed', 'search.retry', 'credibility.check', 'deduplication.progress', 'triage.board_update'
   ]
   return allowed.includes(t as WebSocketMessage['type'])
 }

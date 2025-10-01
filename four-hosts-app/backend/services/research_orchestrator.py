@@ -8,9 +8,9 @@ import asyncio
 import os
 import structlog
 import time
-from collections import defaultdict
+from collections import defaultdict, deque, OrderedDict
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, List, Optional, Tuple, Set
 from urllib.parse import quote_plus
 
 # Third-party imports
@@ -113,39 +113,76 @@ from utils.otel import otel_span as _otel_span
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Environment variable helpers with validation and clamping
+# ──────────────────────────────────────────────────────────────────────
+
+def _getenv_bool(name: str, default: bool) -> bool:
+    """Parse boolean environment variable with safe defaults."""
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _getenv_int(name: str, default: int, *, min_value: Optional[int] = None, max_value: Optional[int] = None) -> int:
+    """Parse integer environment variable with optional clamping."""
+    try:
+        v = int(os.getenv(name, str(default)) or default)
+    except Exception:
+        v = default
+    if min_value is not None:
+        v = max(min_value, v)
+    if max_value is not None:
+        v = min(max_value, v)
+    return v
+
+
+def _getenv_float(name: str, default: float, *, min_value: Optional[float] = None, max_value: Optional[float] = None) -> float:
+    """Parse float environment variable with optional clamping."""
+    try:
+        v = float(os.getenv(name, str(default)) or default)
+    except Exception:
+        v = default
+    if min_value is not None:
+        v = max(min_value, v)
+    if max_value is not None:
+        v = min(max_value, v)
+    return v
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Common utility functions to reduce code duplication
 # ──────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
 
 
 
 @dataclass
 class ResearchExecutionResult:
     """Complete research execution result"""
+
     original_query: str
     paradigm: str
     secondary_paradigm: Optional[str]
     search_queries_executed: List[Dict[str, Any]]
-    raw_results: Dict[str, List[SearchResult]]  # Results by API
-    # Back-compat: keep original attribute and add a safe alias
+    raw_results: Dict[str, List[SearchResult]]
     filtered_results: List[SearchResult]
-    # Alias to avoid AttributeError in any consumer expecting 'results'
-    # Note: property defined below to mirror filtered_results
-    credibility_scores: Dict[str, float]  # Domain -> score
-    # Non-default fields first
+    credibility_scores: Dict[str, float]
     execution_metrics: Dict[str, Any]
     cost_breakdown: Dict[str, float]
-    # Defaults after non-defaults to satisfy dataclass rules
     status: ContractResearchStatus = ContractResearchStatus.OK
     secondary_results: List[SearchResult] = field(default_factory=list)
     timestamp: datetime = field(default_factory=get_current_utc)
     deep_research_content: Optional[str] = None
 
-    # Provide a read-only alias so obj.results returns filtered_results
     @property
     def results(self) -> List[SearchResult]:
         return self.filtered_results
-
-
 
 
 
@@ -169,10 +206,7 @@ class UnifiedResearchOrchestrator:
         # Enforce that LLM-based synthesis must be available. If set to 1/true,
         # any failure to generate an answer will surface as a job failure rather
         # than silently degrading to evidence-only output. Default: on.
-        try:
-            self.require_synthesis = os.getenv("LLM_REQUIRED", "1").lower() in {"1", "true", "yes", "on"}
-        except Exception:
-            self.require_synthesis = True
+        self.require_synthesis = _getenv_bool("LLM_REQUIRED", True)
         # Agentic loop configuration (can be overridden by env)
         self.agentic_config = {
             "enabled": True,
@@ -182,52 +216,87 @@ class UnifiedResearchOrchestrator:
             "coverage_threshold": 0.75,
             "max_new_queries_per_iter": 4,
         }
-        try:
-            if os.getenv("AGENTIC_ENABLE_LLM_CRITIC", "0") == "1":
-                self.agentic_config["enable_llm_critic"] = True
-            if os.getenv("AGENTIC_ENABLE_LLM_CRITIC", "0") == "0" and "AGENTIC_ENABLE_LLM_CRITIC" in os.environ:
-                self.agentic_config["enable_llm_critic"] = False
-            if os.getenv("AGENTIC_DISABLE", "0") == "1":
-                self.agentic_config["enabled"] = False
-            # Optional tuning knobs
-            if os.getenv("AGENTIC_MAX_ITERATIONS"):
-                try:
-                    self.agentic_config["max_iterations"] = int(os.getenv("AGENTIC_MAX_ITERATIONS", "2") or 2)
-                except Exception:
-                    pass
-            if os.getenv("AGENTIC_COVERAGE_THRESHOLD"):
-                try:
-                    self.agentic_config["coverage_threshold"] = float(os.getenv("AGENTIC_COVERAGE_THRESHOLD", "0.75") or 0.75)
-                except Exception:
-                    pass
-            if os.getenv("AGENTIC_MAX_NEW_QUERIES_PER_ITER"):
-                try:
-                    self.agentic_config["max_new_queries_per_iter"] = int(os.getenv("AGENTIC_MAX_NEW_QUERIES_PER_ITER", "4") or 4)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        self.agentic_config["enable_llm_critic"] = _getenv_bool("AGENTIC_ENABLE_LLM_CRITIC", True)
+        if _getenv_bool("AGENTIC_DISABLE", False):
+            self.agentic_config["enabled"] = False
+        self.agentic_config["max_iterations"] = _getenv_int("AGENTIC_MAX_ITERATIONS", 2, min_value=0, max_value=10)
+        self.agentic_config["coverage_threshold"] = _getenv_float("AGENTIC_COVERAGE_THRESHOLD", 0.75, min_value=0.0, max_value=1.0)
+        self.agentic_config["max_new_queries_per_iter"] = _getenv_int("AGENTIC_MAX_NEW_QUERIES_PER_ITER", 4, min_value=0, max_value=10)
 
-        # Metrics
-        self._search_metrics: SearchMetrics = {
-            "total_queries": 0,
-            "total_results": 0,
-            "apis_used": [],
-            "deduplication_rate": 0.0,
-            # diagnostics
-            "retries_attempted": 0,
-            "task_timeouts": 0,
-            "exceptions_by_api": {},
-            "api_call_counts": {},
-            "dropped_no_url": 0,
-            "dropped_invalid_shape": 0,
-            "compression_plural_used": 0,
-            "compression_singular_used": 0,
-        }
-        self._diag_samples = {"no_url": []}
+        self._diag_samples = {"no_url": deque(maxlen=100)}
         self._supports_search_with_api = False
         # Capture deep research citations per research_id to merge into EvidenceBundle later
-        self._deep_citations_map: Dict[str, List[Any]] = {}
+        self._deep_citations_map: "OrderedDict[str, Tuple[List[Any], float]]" = OrderedDict()
+        self._deep_citations_ttl_seconds = _getenv_int("DEEP_CITATIONS_TTL_SEC", 1800, min_value=60, max_value=86400)
+        self._deep_citations_max_entries = _getenv_int("DEEP_CITATIONS_MAX_ENTRIES", 100, min_value=10, max_value=1000)
+        self._background_tasks: Set[asyncio.Task[Any]] = set()
+
+    def _schedule_background_task(self, coro: Awaitable[Any], *, name: str) -> None:
+        """Track a background task and surface exceptions."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _on_done(done_task: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(done_task)
+            try:
+                exc = done_task.exception()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("background_task_inspection_failed", task=name)
+                return
+            if exc is not None:
+                logger.error("background_task_failed", task=name, error=str(exc), exc_info=exc)
+
+        task.add_done_callback(_on_done)
+
+    def _prune_deep_citations(self) -> None:
+        """Remove expired or excess deep citation entries."""
+        now = time.time()
+        while self._deep_citations_map:
+            key, (_, ts) = next(iter(self._deep_citations_map.items()))
+            if (now - ts) > self._deep_citations_ttl_seconds or len(self._deep_citations_map) > self._deep_citations_max_entries:
+                self._deep_citations_map.popitem(last=False)
+                continue
+            break
+
+    def _store_deep_citations(self, research_id: str, citations: List[Any]) -> None:
+        """Store citations with TTL and bounded size."""
+        if not research_id:
+            return
+        self._prune_deep_citations()
+        if research_id in self._deep_citations_map:
+            self._deep_citations_map.pop(research_id, None)
+        self._deep_citations_map[research_id] = (list(citations or []), time.time())
+
+    def _consume_deep_citations(self, research_id: Optional[str]) -> List[Any]:
+        """Retrieve and delete cached citations for a research run."""
+        if not research_id:
+            return []
+        self._prune_deep_citations()
+        entry = self._deep_citations_map.pop(str(research_id), None)
+        if not entry:
+            return []
+        citations, ts = entry
+        if (time.time() - ts) > self._deep_citations_ttl_seconds:
+            return []
+        return list(citations or [])
+
+    async def cleanup(self) -> None:
+        """Release resources held by the orchestrator."""
+        manager = getattr(self, "search_manager", None)
+        if manager and hasattr(manager, "__aexit__"):
+            try:
+                await manager.__aexit__(None, None, None)
+            except Exception as exc:
+                logger.warning("search_manager_cleanup_failed", error=str(exc), exc_info=True)
+
+        pending = [t for t in self._background_tasks if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._background_tasks.clear()
 
         # Diagnostics toggles
         self.diagnostics = {
@@ -241,14 +310,8 @@ class UnifiedResearchOrchestrator:
         # Per-search task timeout (seconds) for external API calls.
         # Ensure this exceeds the per-provider timeout so we don't cancel
         # the overall search while individual providers are still running.
-        try:
-            task_to = float(os.getenv("SEARCH_TASK_TIMEOUT_SEC", "30") or 30)
-        except Exception:
-            task_to = 30.0
-        try:
-            prov_to = float(os.getenv("SEARCH_PROVIDER_TIMEOUT_SEC", "25") or 25)
-        except Exception:
-            prov_to = 25.0
+        task_to = _getenv_float("SEARCH_TASK_TIMEOUT_SEC", 30.0, min_value=5.0, max_value=300.0)
+        prov_to = _getenv_float("SEARCH_PROVIDER_TIMEOUT_SEC", 25.0, min_value=5.0, max_value=295.0)
         # Add a small cushion above provider timeout
         self.search_task_timeout = max(task_to, prov_to + 5.0)
 
@@ -263,6 +326,17 @@ class UnifiedResearchOrchestrator:
             self.search_manager = create_search_manager()
             # SearchAPIManager uses context manager protocol
             await self.search_manager.__aenter__()
+
+        self._prune_deep_citations()
+
+        if self.require_synthesis and not _ANSWER_GEN_AVAILABLE:
+            raise RuntimeError(
+                "Answer generation required but the answer_generator module is unavailable. "
+                "Install the dependencies or disable LLM_REQUIRED."
+            )
+
+        if self.search_manager is None:
+            raise RuntimeError("Search manager initialization failed")
         # Fail fast on empty provider set to avoid silent no-op searches
         try:
             if not getattr(self.search_manager, "apis", {}):
@@ -279,8 +353,7 @@ class UnifiedResearchOrchestrator:
                 raise RuntimeError(error_msg)
         except RuntimeError:
             # Allow opt-out via env (useful for deep-research-only scenarios)
-            import os as _os
-            if _os.getenv("SEARCH_DISABLE_FAILFAST", "0") not in {"1", "true", "yes"}:
+            if not _getenv_bool("SEARCH_DISABLE_FAILFAST", False):
                 logger.critical("Search provider initialization failed - exiting. Set SEARCH_DISABLE_FAILFAST=1 to bypass.")
                 raise
         await cache_manager.initialize()
@@ -300,13 +373,14 @@ class UnifiedResearchOrchestrator:
         except Exception as e:
             logger.warning(f"Brave MCP initialization failed: {e}")
 
+        # Ensure attribute exists even if init fails mid-path
+        self.azure_ai_foundry_enabled = False
         # Try to initialize Azure AI Foundry MCP
         try:
             from services.mcp.azure_ai_foundry_mcp_integration import initialize_azure_ai_foundry_mcp
             self.azure_ai_foundry_enabled = await initialize_azure_ai_foundry_mcp()
         except Exception as e:
             logger.warning(f"Azure AI Foundry MCP initialization failed: {e}")
-            self.azure_ai_foundry_enabled = False
 
         logger.info("✓ Unified Research Orchestrator V2 initialized")
         # Register default tool capabilities for budget tracking
@@ -603,13 +677,11 @@ class UnifiedResearchOrchestrator:
 
 # Backwards-compatibility alias for legacy imports/tests
 class ResearchOrchestrator(UnifiedResearchOrchestrator):
-    pass
-
     def _get_query_limit(self, user_context: Any) -> int:
         """Get query limit from user context or defaults"""
         try:
             return int(getattr(user_context, "query_limit", 5) or 5)
-        except:
+        except Exception:
             return 5
 
     def _build_planner_config(self, query_limit: int, refined_queries: List[str]) -> PlannerConfig:
@@ -654,6 +726,78 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             synthesize_answer=synthesize_answer
         )
 
+        async def _emit_phase_update(
+            phase: str,
+            message: str,
+            *,
+            progress_value: Optional[int] = None,
+            items_done: Optional[int] = None,
+            items_total: Optional[int] = None,
+            custom_data: Optional[Dict[str, Any]] = None,
+        ) -> None:
+            if not (progress_callback and research_id):
+                return
+
+            payload: Dict[str, Any] = {"phase": phase, "message": message}
+            if progress_value is not None:
+                try:
+                    payload["progress"] = int(progress_value)
+                except Exception:
+                    payload["progress"] = progress_value
+            if items_done is not None:
+                payload["items_done"] = items_done
+            if items_total is not None:
+                payload["items_total"] = items_total
+            if custom_data:
+                payload["custom_data"] = custom_data
+
+            try:
+                await progress_callback.update_progress(
+                    research_id,
+                    **payload,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug(
+                    "progress.emit_failed",
+                    phase=phase,
+                    research_id=research_id,
+                    exc_info=True,
+                )
+
+        primary_paradigm_name = getattr(
+            getattr(classification, "primary_paradigm", None),
+            "value",
+            None,
+        ) or str(getattr(classification, "primary_paradigm", "unknown"))
+        secondary_paradigm = getattr(classification, "secondary_paradigm", None)
+        classification_payload: Dict[str, Any] = {
+            "event": "classification_completed",
+            "primary_paradigm": primary_paradigm_name,
+            "confidence": float(getattr(classification, "confidence", 0.0) or 0.0),
+        }
+        if secondary_paradigm is not None:
+            classification_payload["secondary_paradigm"] = getattr(
+                secondary_paradigm,
+                "value",
+                str(secondary_paradigm),
+            )
+
+        await _emit_phase_update(
+            "classification",
+            f"Primary paradigm: {primary_paradigm_name}",
+            progress_value=5,
+            custom_data=classification_payload,
+        )
+
+        synthesis_requested = bool(synthesize_answer)
+        synthesis_skip_reason: Optional[str] = None
+        if not synthesize_answer:
+            synthesis_skip_reason = "disabled"
+
+        self._prune_deep_citations()
+
         async def check_cancelled():
             # Local cancellation check to avoid circular imports
             if not research_id:
@@ -692,6 +836,32 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         seed_query = refined_queries[0] if refined_queries else original_query
         if not seed_query:
             seed_query = getattr(classification, "query", "") or ""
+
+        context_payload: Dict[str, Any] = {
+            "event": "context_engineered",
+            "refined_query_count": len(refined_queries),
+        }
+        if refined_queries:
+            context_payload["primary_refined_query"] = refined_queries[0][:120]
+        try:
+            depth_val = getattr(user_context, "depth", None)
+            if depth_val:
+                context_payload["depth"] = str(depth_val)
+        except Exception:
+            pass
+        try:
+            lang_val = getattr(user_context, "language", None)
+            if lang_val:
+                context_payload["language"] = str(lang_val)
+        except Exception:
+            pass
+
+        await _emit_phase_update(
+            "context",
+            f"Context engineered ({len(refined_queries)} refined queries)",
+            progress_value=12,
+            custom_data=context_payload,
+        )
 
         logger.info(
             "Query planning initialized",
@@ -763,7 +933,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 error=str(e),
                 exc_info=True
             )
-            logger.warning(f"Query planning failed; using fallback. {e}")
+            logger.warning("query_planning_fallback", error=str(e))
             fallback_query = seed_query or original_query or getattr(classification, "query", "")
             planned_candidates = [
                 QueryCandidate(query=fallback_query, stage="rule_based", label="primary")
@@ -779,13 +949,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             planned_candidates = list(planned_candidates[:limited])
 
         logger.info(
-            f"Planned {len(planned_candidates)} query candidates for research_id: {research_id}"
-        )
-
-        logger.info(
-            "Planned %d query candidates for %s",
-            len(planned_candidates),
-            getattr(classification.primary_paradigm, "value", classification.primary_paradigm),
+            "planned_query_candidates",
+            research_id=research_id,
+            count=len(planned_candidates),
+            paradigm=getattr(classification.primary_paradigm, "value", classification.primary_paradigm)
         )
 
         if session:
@@ -930,10 +1097,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         pass
 
             def _can_spend(estimated: float) -> bool:
-                try:
-                    max_cost_per_request = float(os.getenv("MAX_COST_PER_REQUEST_USD", "0.50"))
-                except Exception:
-                    max_cost_per_request = 0.50
+                max_cost_per_request = _getenv_float("MAX_COST_PER_REQUEST_USD", 0.50, min_value=0.0, max_value=100.0)
                 current_request_cost = sum(cost_breakdown.values())
                 if current_request_cost + estimated > max_cost_per_request:
                     logger.warning(
@@ -944,7 +1108,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         max_cost_per_request,
                     )
                     # Fire-and-forget progress
-                    asyncio.create_task(_progress_budget_reached(max_cost_per_request))
+                    self._schedule_background_task(
+                        _progress_budget_reached(max_cost_per_request),
+                        name="progress_budget_reached",
+                    )
                     return False
                 # Informational log for notable spend
                 if estimated > 0.10:
@@ -1210,7 +1377,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 total_sources_analyzed = 0
                 high_quality_sources = 0
                 credibility_summary.setdefault("average_score", 0.0)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "credibility.analysis_failed",
+                research_id=research_id,
+                phase="analysis",
+                provider="credibility_service",
+                error=str(exc),
+                exc_info=True,
+            )
             # Fallback: simple aggregation if credibility service unavailable
             total_sources_analyzed = len(final_results)
             high_quality_sources = 0
@@ -1230,11 +1405,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             else:
                 credibility_summary["high_credibility_ratio"] = 0.0
 
-        # Category distribution will be computed from normalized_sources later using compute_category_distribution
-
+        # Preserve category_distribution computed earlier in _process_results()
         processed_results["metadata"]["total_sources_analyzed"] = total_sources_analyzed
         processed_results["metadata"]["high_quality_sources"] = high_quality_sources
-        processed_results["metadata"]["category_distribution"] = category_distribution
+        processed_results["metadata"].setdefault("category_distribution", {})
         processed_results["metadata"].setdefault("bias_distribution", {})
         if progress_callback and research_id:
             try:
@@ -1267,27 +1441,27 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 continue
 
         if failed_normalizations > 0:
-            logger.warning(f"Failed to normalize {failed_normalizations} out of {len(final_results)} results")
+            logger.warning("normalize_failed_count", research_id=research_id, failed=failed_normalizations, total=len(final_results))
 
         # Compute category distribution from normalized sources and update metadata
         try:
             category_distribution, normalized_sources = compute_category_distribution(normalized_sources)
             processed_results["metadata"]["category_distribution"] = category_distribution
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "credibility.distribution_metrics_failed",
+                research_id=research_id,
+                phase="analysis",
+                provider="credibility_service",
+                error=str(exc),
+            )
 
         # Optional answer synthesis (P2) with data-quality gating
         synthesized_answer = None
         if synthesize_answer:
             # Gate synthesis when there isn't enough or credible evidence
-            try:
-                min_results = int(os.getenv("MIN_RESULTS_FOR_SYNTHESIS", "3") or 3)
-            except Exception:
-                min_results = 3
-            try:
-                min_avg_cred = float(os.getenv("MIN_AVG_CREDIBILITY", "0.45") or 0.45)
-            except Exception:
-                min_avg_cred = 0.45
+            min_results = _getenv_int("MIN_RESULTS_FOR_SYNTHESIS", 3, min_value=1, max_value=50)
+            min_avg_cred = _getenv_float("MIN_AVG_CREDIBILITY", 0.45, min_value=0.0, max_value=1.0)
 
             try:
                 results_count = len(processed_results.get("results", []) or [])
@@ -1306,9 +1480,31 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     "avg_credibility": avg_cred,
                     "thresholds": {"min_results": min_results, "min_avg_credibility": min_avg_cred},
                 }
+                synthesis_skip_reason = (
+                    "insufficient_results" if results_count < min_results else "low_average_credibility"
+                )
                 synthesize_answer = False
 
         if synthesize_answer:
+            candidate_sources = 0
+            try:
+                candidate_sources = len(processed_results.get("results", []) or [])
+            except Exception:
+                candidate_sources = 0
+
+            await _emit_phase_update(
+                "synthesis",
+                "Synthesizing final answer",
+                progress_value=90,
+                custom_data={
+                    "event": "synthesis_started",
+                    "candidate_sources": candidate_sources,
+                },
+            )
+
+            synthesis_success = False
+            quotes_emitted = 0
+
             try:
                 # Build evidence quotes from processed results (typed EvidenceQuote)
                 evidence_quotes: List[Any] = []
@@ -1362,12 +1558,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         )
 
                         logger.info(
-                            f"Building evidence bundle via pipeline from {len(normalized_sources)} sources, "
-                            f"max_docs={max_docs}, quotes_per_doc={EVIDENCE_QUOTES_PER_DOC_DEFAULT}"
+                            "evidence_builder_start",
+                            research_id=research_id,
+                            sources=len(normalized_sources),
+                            max_docs=max_docs,
+                            quotes_per_doc=EVIDENCE_QUOTES_PER_DOC_DEFAULT
                         )
 
                         # Apply overall timeout for evidence building phase
-                        evidence_timeout = int(os.getenv("EVIDENCE_BUILDER_OVERALL_TIMEOUT", "120"))
+                        evidence_timeout = _getenv_int("EVIDENCE_BUILDER_OVERALL_TIMEOUT", 120, min_value=30, max_value=900)
 
                         try:
                             with _otel_span("evidence.build", {"research_id": str(research_id or ""), "normalized_sources": int(len(normalized_sources)), "max_docs": int(max_docs), "quotes_per_doc": int(EVIDENCE_QUOTES_PER_DOC_DEFAULT)}) as _sp:
@@ -1390,7 +1589,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                                 except Exception:
                                     pass
                         except asyncio.TimeoutError:
-                            logger.error(f"Evidence building timed out after {evidence_timeout} seconds")
+                            logger.error("evidence_builder_timeout", timeout_seconds=evidence_timeout)
                             # Create empty evidence bundle to continue with synthesis
                             evidence_bundle = None
                             evidence_quotes_payload = []
@@ -1409,8 +1608,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                             )
                         else:
                             logger.info(
-                                f"Evidence builder succeeded: {len(evidence_quotes)} quotes from "
-                                f"{len(getattr(evidence_bundle, 'documents', []))} documents"
+                                "evidence_builder_succeeded",
+                                quotes=len(evidence_quotes),
+                                documents=len(getattr(evidence_bundle, "documents", [])),
+                                research_id=research_id,
                             )
                             # Attach evidence stats for telemetry
                             try:
@@ -1479,9 +1680,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 # Attempt synthesis even if evidence building failed
                 if evidence_bundle is None and processed_results.get("results"):
                     logger.warning(
-                        f"Proceeding with answer synthesis without evidence bundle. "
-                        f"Using {len(processed_results.get('results', []))} raw search results. "
-                        f"Research ID: {research_id or 'N/A'}"
+                        "synthesis_without_evidence_bundle",
+                        research_id=research_id,
+                        results_count=len(processed_results.get("results", [])),
                     )
 
                 # ----------------------------------------------------------
@@ -1503,6 +1704,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 except Exception:
                     pass
 
+                quotes_emitted = len(evidence_quotes_payload or [])
                 logger.info(f"Starting answer synthesis for research_id: {research_id}")
 
                 with _otel_span(
@@ -1550,10 +1752,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         )
                 except Exception:
                     pass
+            synthesis_success = True
             except asyncio.CancelledError:
                 # Preserve cancellation semantics; do not misreport as LLM failure
                 raise
             except Exception as e:
+                synthesis_success = False
                 error_msg = (
                     f"CRITICAL: LLM Answer synthesis failed - Cannot generate response. "
                     f"Error: {str(e)}. "
@@ -1577,6 +1781,29 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     logger.warning(
                         f"Continuing without synthesis (require_synthesis=False) - Returning {len(normalized_sources)} search results only."
                     )
+
+            if synthesis_success:
+                await _emit_phase_update(
+                    "synthesis",
+                    "Synthesis complete",
+                    progress_value=94,
+                    custom_data={
+                        "event": "synthesis_completed",
+                        "quotes_emitted": quotes_emitted,
+                    },
+                )
+        else:
+            skip_message = "Synthesis disabled" if synthesis_skip_reason == "disabled" else "Synthesis skipped"
+            skip_payload = {"event": "synthesis_skipped"}
+            if synthesis_skip_reason:
+                skip_payload["reason"] = synthesis_skip_reason
+
+            await _emit_phase_update(
+                "synthesis",
+                skip_message,
+                progress_value=90,
+                custom_data=skip_payload,
+            )
 
         # Assemble contract-aligned response payload
         primary_paradigm = getattr(classification, "primary_paradigm", HostParadigm.BERNARD)
@@ -1689,7 +1916,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     retrieved_documents=retrieved_documents,
                     check_content_safety=True
                 )
-            except:
+            except Exception:
                 # Fallback to sync evaluation if async fails
                 context_eval = evaluate_context_package(
                     packaged_context,
@@ -1804,6 +2031,19 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             # Best-effort enrichment; skip on any unexpected shape issues
             pass
 
+        review_payload = {
+            "event": "review_started",
+            "total_results": len(response.get("results", []) or []),
+            "has_answer": bool(synthesized_answer is not None),
+        }
+
+        await _emit_phase_update(
+            "review",
+            "Reviewing final package",
+            progress_value=96,
+            custom_data=review_payload,
+        )
+
         try:
             rid = response["research_id"]
             response["export_formats"] = {
@@ -1851,7 +2091,18 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     response["metadata"].setdefault("evidence_quotes", evidence_quotes_copy)
             except Exception:
                 pass
-        logger.info(f"Finished research execution for research_id: {research_id}")
+
+        await _emit_phase_update(
+            "complete",
+            "Research run complete",
+            progress_value=100,
+            custom_data={
+                "event": "research_complete",
+                "status": response.get("status", "ok"),
+            },
+        )
+
+        logger.info("research_execution_complete", research_id=research_id, results_count=len(response.get("results", [])), status=response.get("status", "ok"))
         return response
 
 
@@ -1867,8 +2118,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         evidence_bundle: Any | None = None,
     ) -> Any:
         """Build a SynthesisContext from research outputs and invoke answer generator."""
-        logger.info(f"Starting answer synthesis for research_id: {research_id}")
-        logger.info(f"_synthesize_answer called for research_id: {research_id}, results count: {len(results)}")
+        logger.info("answer_synthesis_start", research_id=research_id, results_count=len(results))
         if not _ANSWER_GEN_AVAILABLE:
             error_msg = (
                 "CRITICAL: Answer generation module not available - Cannot synthesize response. "
@@ -1942,7 +2192,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         try:
             # Compute knowledge bucket for synthesis source list
-            synth_total = int(os.getenv("SYNTHESIS_BUDGET_TOKENS", "8000") or 8000)
+            synth_total = _getenv_int("SYNTHESIS_BUDGET_TOKENS", 8000, min_value=1000, max_value=64000)
             budget_plan = compute_budget_plan(synth_total)
             knowledge_budget = int(budget_plan.get("knowledge", int(synth_total * 0.70)))
         except Exception:
@@ -2034,12 +2284,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 # Merge quotes from evidence_builder and optional deep research
                 deep_q: List[Any] = []
                 try:
-                    if research_id and hasattr(self, "_deep_citations_map"):
-                        deep_q = list(getattr(self, "_deep_citations_map", {}).get(research_id, []) or [])
-                        # clear after use to avoid leaks across requests
-                        if research_id in self._deep_citations_map:
-                            self._deep_citations_map.pop(research_id, None)
-                except Exception:
+                    deep_q = self._consume_deep_citations(research_id)
+                except Exception as exc:
+                    logger.debug("deep_citation_merge_failed", error=str(exc))
                     deep_q = []
 
                 if evidence_bundle is not None:
@@ -2168,7 +2415,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # Invoke the answer orchestrator using the keyword-friendly signature
         assert answer_orchestrator is not None, "Answer generation not available"
-        logger.info(f"Calling answer_orchestrator.generate_answer for research_id: {research_id}")
+        logger.info("invoking_answer_orchestrator", research_id=research_id, sources_count=len(sources))
         answer = await answer_orchestrator.generate_answer(
             paradigm=paradigm_code,
             query=getattr(context_engineered, "original_query", ""),
@@ -2258,8 +2505,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             pass
 
-        logger.info(f"Finished answer synthesis for research_id: {research_id}")
-        logger.info(f"Answer generation completed for research_id: {research_id}")
+        logger.info("answer_synthesis_complete", research_id=research_id)
         return answer
 
 
@@ -2277,6 +2523,16 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             max_results = int(getattr(user_context, "source_limit", default_limit) or default_limit)
         else:
             max_results = int(max_results)
+        max_results = max(1, max_results)
+
+        # Depth-aware tweak (match deterministic path)
+        min_rel = 0.35 if normalize_to_internal_code(primary_paradigm) == "bernard" else 0.15
+        try:
+            depth = str(getattr(user_context, "depth", "")).lower()
+            if depth == "deep":
+                min_rel = max(0.05, min_rel - 0.05)
+        except Exception:
+            pass
 
         return SearchConfig(
             max_results=max_results,
@@ -2287,7 +2543,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             # results for some paradigms which in turn starved downstream
             # evidence-building and answer synthesis stages.  A more lenient
             # default strikes a better balance between quality and recall.
-            min_relevance_score=0.35 if normalize_to_internal_code(primary_paradigm) == "bernard" else 0.15,
+            min_relevance_score=min_rel,
         )
 
     async def _execute_searches_with_budget(
@@ -2322,20 +2578,38 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             queries=[c.query[:50] for c in planned_candidates[:3]]  # Log first 3 queries
         )
         try:
+            # Ensure candidate labels are unique before hitting the manager
+            def _ensure_unique_labels(cands: List[QueryCandidate]) -> Dict[str, QueryCandidate]:
+                seen: Dict[str, int] = {}
+                index: Dict[str, QueryCandidate] = {}
+                for i, c in enumerate(cands):
+                    label = getattr(c, "label", "") or f"q{i}"
+                    n = seen.get(label, 0)
+                    if n:
+                        label = f"{label}#{n}"
+                        setattr(c, "label", label)
+                    seen[label] = n + 1
+                    index[label] = c
+                return index
+
+            label_index = _ensure_unique_labels(planned_candidates)
+            if check_cancelled and await check_cancelled():
+                raise asyncio.CancelledError()
             results_by_label = await self.search_manager.search_with_plan(planned_candidates, search_config)
+            if check_cancelled and await check_cancelled():
+                raise asyncio.CancelledError()
             logger.info(
                 "Search queries completed",
                 research_id=research_id,
                 labels=list(results_by_label.keys()) if results_by_label else []
             )
 
-            # Convert results (label -> results) back to query -> results
+            # Convert results (label -> results) back to query -> results via unique labels
             all_results: Dict[str, List[SearchResult]] = {}
-            for label, results in (results_by_label or {}).items():
-                for candidate in planned_candidates:
-                    if getattr(candidate, "label", "unknown") == label:
-                        all_results[candidate.query] = results
-                        break
+            for label, results in results_by_label.items():
+                cand = label_index.get(label)
+                if cand:
+                    all_results[cand.query] = results
 
             # Attribute provider costs per planned candidate
             if cost_accumulator is not None:
@@ -2410,8 +2684,10 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         except Exception:
             concurrency = 0
         if concurrency <= 0:
-            concurrency = int(os.getenv("SEARCH_QUERY_CONCURRENCY", "4"))
-        sem = asyncio.Semaphore(max(1, concurrency))
+            concurrency = _getenv_int("SEARCH_QUERY_CONCURRENCY", 4, min_value=1, max_value=32)
+        else:
+            concurrency = max(1, min(32, concurrency))
+        sem = asyncio.Semaphore(concurrency)
 
         async def _run_query(idx: int, candidate: QueryCandidate) -> Tuple[str, List[SearchResult]]:
             if check_cancelled and await check_cancelled():
@@ -2480,12 +2756,13 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     results = []
 
             # Attribute cost to providers observed in results
-            await attribute_search_costs(
-                results,
-                self.cost_monitor,
-                cost_accumulator,
-                self.search_manager
-            )
+            if cost_accumulator is not None:
+                await attribute_search_costs(
+                    results,
+                    self.cost_monitor,
+                    cost_accumulator,
+                    self.search_manager
+                )
 
             # Progress (completed + sample sources)
             if progress_callback and research_id:
@@ -2512,7 +2789,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 except Exception:
                     pass
 
-            logger.info(f"Query {candidate.query} for research_id: {research_id} returned {len(results)} results.")
+            logger.info("query_completed", research_id=research_id, query=candidate.query[:100], results=len(results))
             return candidate.query, results
 
         tasks = [
@@ -2528,7 +2805,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         t.cancel()
                     if pending:
                         await asyncio.gather(*pending, return_exceptions=True)
-                    break
+                    raise asyncio.CancelledError()
                 try:
                     q, res = await fut
                     all_results[q] = res
@@ -2581,13 +2858,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 sm = getattr(self, "search_manager", None)
                 if sm is not None:
                     http_session = sm._any_session()
-                    limit = int(os.getenv("SEARCH_BACKFILL_CONCURRENCY", "8") or 8)
-                    sem_fetch = asyncio.Semaphore(max(1, limit))
+                    limit = _getenv_int("SEARCH_BACKFILL_CONCURRENCY", 8, min_value=1, max_value=32)
+                    sem_fetch = asyncio.Semaphore(limit)
 
                     async def _fetch_and_set(item: Tuple[SearchResult, str]):
                         res, url = item
                         async with sem_fetch:
                             try:
+                                if http_session is None:
+                                    return
                                 fetched = await sm.fetcher.fetch(http_session, url)
                                 if fetched and not str(getattr(res, "content", "") or "").strip():
                                     res.content = fetched
@@ -2659,13 +2938,15 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         max_candidates = min(max(20, user_cap), len(early))
         candidate_results = early[:max_candidates]
 
-        unique_domains: List[str] = []
+        unique_domains_set: Set[str] = set()
         for r in candidate_results:
             dom = getattr(r, "domain", "") or ""
             if not dom:
                 dom = extract_domain(getattr(r, "url", "") or "")
-            if dom and dom not in unique_domains:
-                unique_domains.append(dom)
+            if dom:
+                unique_domains_set.add(dom)
+
+        unique_domains: List[str] = list(unique_domains_set)
 
         if progress_callback and research_id:
             try:
@@ -2679,12 +2960,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 pass
 
-        conc = 8
-        try:
-            conc = int(os.getenv("CREDIBILITY_CONCURRENCY", "8") or 8)
-        except Exception:
-            pass
-        semc = asyncio.Semaphore(max(1, conc))
+        conc = _getenv_int("CREDIBILITY_CONCURRENCY", 8, min_value=1, max_value=64)
+        semc = asyncio.Semaphore(conc)
 
         async def _fetch_domain(dom: str) -> Tuple[str, Optional[Any]]:
             async with semc:
@@ -2755,16 +3032,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     meta.setdefault("credibility_explanation", "; ".join(list(getattr(cred_obj, "reputation_factors", []))[:3]))
                 setattr(res, "metadata", meta)
 
-        prune_threshold = 0.0
-        try:
-            prune_threshold = float(os.getenv("CREDIBILITY_PRUNE_THRESHOLD", "0.2") or 0.2)
-        except Exception:
-            prune_threshold = 0.2
-        min_keep = 10
-        try:
-            min_keep = int(os.getenv("CREDIBILITY_MIN_RESULTS", "10") or 10)
-        except Exception:
-            min_keep = 10
+        prune_threshold = _getenv_float("CREDIBILITY_PRUNE_THRESHOLD", 0.2, min_value=0.0, max_value=1.0)
+        min_keep = _getenv_int("CREDIBILITY_MIN_RESULTS", 10, min_value=1, max_value=100)
 
         filtered_for_ranking = [
             r
@@ -2856,7 +3125,8 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # 6) Final limit by user context
         default_limit = int(os.getenv("DEFAULT_SOURCE_LIMIT", "200"))
-        final_results: List[SearchResult] = ranked[: int(getattr(user_context, "source_limit", default_limit) or default_limit)]
+        _limit = int(getattr(user_context, "source_limit", default_limit) or default_limit)
+        final_results: List[SearchResult] = ranked[: max(1, _limit)]
 
         # Update apis_used from final results
         apis = set()
@@ -2909,11 +3179,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
     ) -> None:
         """Run Exa research to supplement search results when configured."""
 
-        try:
-            enabled = os.getenv("ENABLE_EXA_RESEARCH_SUPPLEMENT", "1").lower() in {"1", "true", "yes"}
-        except Exception:
-            enabled = True
-        if not enabled:
+        if not _getenv_bool("ENABLE_EXA_RESEARCH_SUPPLEMENT", True):
             return
 
         if not exa_research_client.is_configured():
@@ -2990,20 +3256,45 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
         # Dedupe and budget highlights (from Brave or fallback sources) before sending to EXA
         try:
             highlights_dedup = dedupe_by_url(highlights)  # Use the highlights list we built (Brave or fallback)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "exa.dedupe_failed",
+                research_id=research_id,
+                phase="analysis",
+                provider="exa",
+                error=str(exc),
+                highlight_count=len(highlights),
+            )
             highlights_dedup = list(highlights)
         try:
-            exa_total = int(os.getenv("EXA_HIGHLIGHTS_BUDGET_TOKENS", "4000") or 4000)
+            exa_total = _getenv_int("EXA_HIGHLIGHTS_BUDGET_TOKENS", 4000, min_value=500, max_value=20000)
             exa_plan = compute_budget_plan(exa_total)
             exa_budget = int(exa_plan.get("knowledge", int(exa_total * 0.70)))
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "exa.budget_plan_failed",
+                research_id=research_id,
+                phase="analysis",
+                provider="exa",
+                error=str(exc),
+                budget_tokens=4000,
+            )
             exa_budget = 3000
         try:
             highlights_budgeted, _u, _d = select_items_within_budget(
                 highlights_dedup,
                 max_tokens=exa_budget,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "exa.highlight_selection_failed",
+                research_id=research_id,
+                phase="analysis",
+                provider="exa",
+                error=str(exc),
+                highlight_count=len(highlights_dedup),
+                budget_tokens=exa_budget,
+            )
             highlights_budgeted = highlights_dedup
 
         exa_output = await exa_research_client.supplement_with_research(
@@ -3220,6 +3511,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
 
         # Track retry attempts handled via utils.retry.instrumented_retry
 
+        providers: List[str] = []
+        try:
+            providers = list(getattr(sm, "apis", {}).keys()) if sm is not None else []
+        except Exception:
+            providers = []
+
         async def _execute_search():
             """Inner function for retry_with_backoff"""
             # Cancellation check
@@ -3245,18 +3542,30 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     return []
             except asyncio.TimeoutError as e:
                 logger.error(
-                    f"Search task timeout for query: {candidate.query}, research_id: {research_id}"
+                    "search.timeout",
+                    research_id=research_id,
+                    query=candidate.query[:120],
+                    providers=providers,
+                    timeout_seconds=self.search_task_timeout,
                 )
                 raise e
             except asyncio.CancelledError:
                 logger.error(
-                    f"Search cancelled for query: {candidate.query}, research_id: {research_id}"
+                    "search.cancelled",
+                    research_id=research_id,
+                    query=candidate.query[:120],
+                    providers=providers,
                 )
                 # Preserve cooperative cancellation semantics
                 raise
             except Exception as e:
                 logger.error(
-                    f"Search failed for query: {candidate.query}, research_id: {research_id}, error: {e}"
+                    "search.execution_failed",
+                    research_id=research_id,
+                    query=candidate.query[:120],
+                    providers=providers,
+                    error=str(e),
+                    exc_info=True,
                 )
                 raise e
 
@@ -3283,21 +3592,23 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             except Exception:
                 pass
             logger.info(
-                "Search retry scheduled",
+                "search.retry_scheduled",
                 research_id=research_id,
                 query=candidate.query[:120],
                 attempt=attempt,
                 delay=delay,
                 error=str(error),
+                providers=providers,
             )
 
         def _on_give_up(attempt: int, error: Exception) -> None:
             logger.error(
-                "Search failed after all retries",
+                "search.failed_after_retries",
                 research_id=research_id,
                 attempt=attempt,
                 query=candidate.query[:120],
                 error=str(error),
+                providers=providers,
             )
 
         try:
@@ -3317,9 +3628,12 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
             raise
         except Exception as e:
             logger.error(
-                "Search failed after all retries err=%s q='%s'",
-                str(e),
-                candidate.query[:120],
+                "search.retry_exhausted",
+                research_id=research_id,
+                query=candidate.query[:120],
+                providers=providers,
+                error=str(e),
+                exc_info=True,
             )
             return []
 
@@ -3433,9 +3747,9 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 getattr(deep_result, "content", "") or "",
             )
             if research_id and evq:
-                self._deep_citations_map[research_id] = evq
-        except Exception:
-            pass
+                self._store_deep_citations(research_id, evq)
+        except Exception as exc:
+            logger.debug("deep_citation_store_failed", error=str(exc))
 
         for citation in getattr(deep_result, "citations", []) or []:
             title = getattr(citation, "title", "") or ""

@@ -78,7 +78,7 @@ export const WebSocketMessageSchema = z.object({
     'research_progress', 'research_phase_change', 'source_found', 'source_analyzed',
     'research_completed', 'research_failed', 'research_started',
     // Search and analysis events
-    'search.started', 'search.completed', 'credibility.check', 'deduplication.progress'
+    'search.started', 'search.completed', 'search.retry', 'credibility.check', 'deduplication.progress', 'evidence_builder_skipped', 'triage.board_update'
   ]),
   // Accept known fields, but allow extra keys to pass through so
   // backend schema changes don’t silently strip useful metrics.
@@ -133,6 +133,9 @@ export const WebSocketMessageSchema = z.object({
     eta_seconds: z.number().optional(),
     // Heartbeat flag used to avoid log noise
     heartbeat: z.boolean().optional(),
+    lanes: z.record(z.string(), z.array(z.any())).optional(),
+    entry_count: z.number().optional(),
+    updated_at: z.string().optional(),
   }).passthrough(),
   timestamp: z.string()
 })

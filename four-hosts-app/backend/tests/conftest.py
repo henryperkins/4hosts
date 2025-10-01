@@ -33,6 +33,15 @@ if _REPO_ROOT not in sys.path:
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+import backend  # noqa: E402  (path adjusted just above)
+
+# Ensure legacy ``services`` imports resolve to ``backend.services`` so that
+# relative imports inside the services package keep their original semantics.
+try:  # pragma: no cover - defensive safety net for test bootstrap
+    backend._alias_services_package()
+except Exception:
+    pass
+
 
 HOST = "127.0.0.1"
 PORT = 8000

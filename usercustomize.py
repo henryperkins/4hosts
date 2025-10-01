@@ -42,3 +42,13 @@ _OPTIONALS = [
 for _name in _OPTIONALS:
     if _name not in sys.modules:
         sys.modules[_name] = _Stub(_name)
+
+# Ensure legacy ``services`` imports reuse ``backend.services`` so that relative
+# imports (``from ..utils import``) keep working even when the backend package
+# is executed from the repository root.
+try:  # pragma: no cover - executed at interpreter start
+    import backend
+
+    backend._alias_services_package()
+except Exception:
+    pass

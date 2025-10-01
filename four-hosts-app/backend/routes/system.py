@@ -20,6 +20,8 @@ from services.research_store import research_store
 from services.llm_client import llm_client
 from services.token_manager import token_manager
 from models.base import ResearchStatus, UserRole
+from services.telemetry_dashboard import build_summary as build_telemetry_summary
+from services.triage import triage_manager
 from utils.type_coercion import as_int
 from utils.date_utils import safe_parse_date, get_current_utc
 
@@ -363,3 +365,17 @@ async def get_search_metrics(window_minutes: int = 60, limit: int = 720) -> Dict
 
 
 # _safe_int moved to utils.type_coercion.as_int
+
+
+@router.get("/triage-board")
+async def get_triage_board() -> Dict[str, Any]:
+    """Expose the live triage Kanban board."""
+
+    return await triage_manager.snapshot()
+
+
+@router.get("/telemetry/summary")
+async def telemetry_summary(limit: int = 50) -> Dict[str, Any]:
+    """Return aggregated telemetry metrics for dashboard prototypes."""
+
+    return await build_telemetry_summary(limit=limit)

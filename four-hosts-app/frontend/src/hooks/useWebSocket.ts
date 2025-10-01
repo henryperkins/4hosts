@@ -1,9 +1,9 @@
 import { useEffect, useRef, useCallback } from 'react'
-import type { WSMessage } from '../types'
+import type { WebSocketMessage } from '../types/api-types'
 
 interface UseWebSocketOptions {
   researchId: string
-  onMessage: (message: WSMessage) => void
+  onMessage: (message: WebSocketMessage) => void
   enabled?: boolean
 }
 

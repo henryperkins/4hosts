@@ -6,7 +6,8 @@ Trains and updates models based on user feedback and system performance
 import asyncio
 import structlog
 import json
-from typing import Dict, List, Optional, Any, Tuple
+import time
+from typing import Dict, List, Optional, Any, Tuple, Set, Awaitable, Callable
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,8 @@ except ImportError:
 
 from .classification_engine import HostParadigm, QueryFeatures
 from .self_healing_system import self_healing_system
+from .task_registry import task_registry, TaskPriority
+from .metrics_facade import metrics as metrics_facade
 
 from logging_config import configure_logging
 
@@ -135,7 +138,10 @@ class MLPipeline:
         # Concurrency for retraining
         self._retrain_lock = asyncio.Lock()
         self._retraining = False
-        
+        self._background_tasks: Set[asyncio.Task[Any]] = set()
+        self._active_retraining_task: Optional[asyncio.Task[Any]] = None
+        self._training_loop_task: Optional[asyncio.Task[Any]] = None
+
         # Load existing model if available
         self._load_existing_model()
         
@@ -223,6 +229,7 @@ class MLPipeline:
         synthesis_quality: Optional[float] = None,
     ) -> None:
         """Record a training example from system usage"""
+        await self._ensure_training_loop_started()
         # If no true paradigm provided, infer from feedback
         if true_paradigm is None and user_feedback is not None:
             # High satisfaction suggests correct paradigm
@@ -259,23 +266,108 @@ class MLPipeline:
                 # Serialize retraining to avoid overlapping tasks
                 if not self._retraining:
                     self._retraining = True
-                    asyncio.create_task(self._retrain_model())
+                    self._active_retraining_task = await self._schedule_background_task(
+                        self._retrain_model(),
+                        name="ml_retrain",
+                        priority=TaskPriority.LOW,
+                    )
+                    logger.info(
+                        "ml.retrain_scheduled",
+                        queued_examples=len(self.training_examples),
+                        user_feedback_samples=sum(1 for ex in self.training_examples if ex.user_satisfaction is not None),
+                    )
+
+    async def _schedule_background_task(
+        self,
+        coro: Awaitable[Any],
+        *,
+        name: str,
+        priority: TaskPriority = TaskPriority.NORMAL,
+    ) -> asyncio.Task[Any]:
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(coro, name=name)
+        self._background_tasks.add(task)
+
+        try:
+            await task_registry.register_task(task, name=name, priority=priority)
+        except Exception as exc:
+            logger.debug(
+                "ml.task_registry_register_failed",
+                task=name,
+                error=str(exc),
+            )
+
+        def _on_done(done_task: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(done_task)
+            try:
+                exc = done_task.exception()
+            except asyncio.CancelledError:
+                metrics_facade.increment("ml_background_task_cancelled", name)
+                return
+            except Exception:
+                logger.exception("ml_background_task_inspection_failed", task=name)
+                return
+            if exc is not None:
+                logger.error(
+                    "ml_background_task_failed",
+                    task=name,
+                    error=str(exc),
+                    exc_info=exc,
+                )
+                metrics_facade.increment("ml_background_task_failed", name)
+
+        task.add_done_callback(_on_done)
+        return task
+
+    async def _ensure_training_loop_started(self) -> None:
+        if self._training_loop_task and not self._training_loop_task.done():
+            return
+        try:
+            self._training_loop_task = await self._schedule_background_task(
+                self._training_loop(),
+                name="ml_training_loop",
+                priority=TaskPriority.LOW,
+            )
+            self._training_loop_task.add_done_callback(
+                lambda _task: setattr(self, "_training_loop_task", None)
+            )
+            logger.info("ml.training_loop_started")
+            metrics_facade.increment("ml_training_loop_started")
+        except RuntimeError as exc:
+            logger.debug("ml.training_loop_start_failed", error=str(exc))
+
+    async def shutdown(self) -> None:
+        pending = [t for t in self._background_tasks if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._background_tasks.clear()
+        self._active_retraining_task = None
+        self._training_loop_task = None
 
     async def _retrain_model(self) -> None:
         """Retrain the classification model with accumulated examples"""
         if not ML_AVAILABLE:
             logger.info("ML libraries not available - skipping retraining")
             return
-        
+        start_time = time.perf_counter()
+        success = False
+
         async with self._retrain_lock:
             logger.info(f"Starting model retraining with {len(self.training_examples)} examples")
-            
+
             try:
                 # Prepare training data
                 X_text = [ex.query_text for ex in self.training_examples]
                 X_features = self._extract_additional_features(self.training_examples)
                 y = [ex.true_paradigm.value for ex in self.training_examples]
-                
+
+                metrics_facade.increment(
+                    "ml_training_examples_processed",
+                    amount=len(self.training_examples),
+                )
+
                 # Split data
                 # Use stratify only if each class has at least 2 samples to avoid ValueError
                 class_counts = Counter(y)
@@ -283,18 +375,15 @@ class MLPipeline:
                 X_text_train, X_text_val, X_feat_train, X_feat_val, y_train, y_val = train_test_split(
                     X_text, X_features, y, test_size=0.2, random_state=42, stratify=y if can_stratify else None
                 )
-                
+
                 # Vectorize text
                 X_text_train_vec = self.vectorizer.fit_transform(X_text_train)
                 X_text_val_vec = self.vectorizer.transform(X_text_val)
-                
+
                 # Combine text and additional features
                 X_train = self._combine_features(X_text_train_vec, X_feat_train)
                 X_val = self._combine_features(X_text_val_vec, X_feat_val)
-                
-                # Scaling omitted for tree-based model to reduce memory and CPU
-                # (GradientBoosting handles unscaled numeric features adequately)
-                
+
                 # Train new model
                 new_classifier = GradientBoostingClassifier(
                     n_estimators=150,
@@ -302,7 +391,7 @@ class MLPipeline:
                     max_depth=6,
                     random_state=42,
                 )
-                
+
                 # Class balancing via sample weights (inverse frequency)
                 class_counts_train = Counter(y_train)
                 n_classes_train = max(1, len(class_counts_train))
@@ -312,33 +401,51 @@ class MLPipeline:
                     for cls, cnt in class_counts_train.items()
                 }
                 sample_weight = np.array([class_weights[label] for label in y_train], dtype=float)
-                
+
                 new_classifier.fit(X_train, y_train, sample_weight=sample_weight)
-                
+
                 # Evaluate new model
                 y_pred = new_classifier.predict(X_val)
                 accuracy = accuracy_score(y_val, y_pred)
-                
+
                 # Compare with current model
                 should_update = await self._should_update_model(
                     new_classifier, accuracy, X_val, y_val
                 )
-                
+
                 if should_update:
                     await self._update_model(new_classifier, accuracy, y_val, y_pred)
+                    metrics_facade.increment("ml_model_updates")
                 else:
                     logger.info(
                         f"New model accuracy ({accuracy:.3f}) not sufficient improvement. "
                         f"Keeping current model."
                     )
-                
+
                 self.last_training_date = datetime.now()
-            
+                success = True
+
             except Exception as e:
-                logger.error(f"Error during model retraining: {e}")
+                logger.error(
+                    "ml.retrain_failed",
+                    error=str(e),
+                    exc_info=True,
+                )
             finally:
+                duration_ms = (time.perf_counter() - start_time) * 1000.0
+                metrics_facade.record_stage(
+                    stage="ml.retrain",
+                    duration_ms=duration_ms,
+                    success=success,
+                    fallback=not success,
+                )
+                metrics_facade.increment(
+                    "ml_retrain_runs",
+                    "success" if success else "failed",
+                )
                 # Ensure flag is cleared even if errors occur
                 self._retraining = False
+                self._active_retraining_task = None
 
     def _extract_additional_features(
         self, examples: List[TrainingExample]
@@ -637,19 +744,28 @@ class MLPipeline:
         while True:
             try:
                 await asyncio.sleep(3600)  # Check every hour
-                
+                metrics_facade.increment("ml_training_loop_tick")
+
                 # Analyze recent performance
                 await self._analyze_recent_performance()
-                
+
                 # Check if retraining needed
                 if self._should_retrain():
                     await self._retrain_model()
-                
+
                 # Clean up old data
                 await self._cleanup_old_examples()
-                
+            except asyncio.CancelledError:
+                metrics_facade.increment("ml_training_loop_cancelled")
+                logger.info("ml.training_loop_cancelled")
+                raise
             except Exception as e:
-                logger.error(f"Error in training loop: {e}")
+                logger.error(
+                    "ml.training_loop_error",
+                    error=str(e),
+                    exc_info=True,
+                )
+                metrics_facade.increment("ml_training_loop_error")
 
     async def _analyze_recent_performance(self) -> None:
         """Analyze recent model performance"""
@@ -729,6 +845,7 @@ class MLPipeline:
         self, query_text: str, features: QueryFeatures
     ) -> Tuple[HostParadigm, float]:
         """Predict paradigm using the current model"""
+        await self._ensure_training_loop_started()
         # Try HF zero-shot classifier first if available
         if HF_AVAILABLE:
             try:

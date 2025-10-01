@@ -23,6 +23,8 @@ import structlog
 __all__ = [
     "configure_logging",
     "bind_request_context",
+    "clear_request_context",
+    "request_context",
     "get_logger",
 ]
 
@@ -123,6 +125,33 @@ def bind_request_context(
             logging.getLogger(__name__).debug(
                 "Failed to bind context: %s", e, exc_info=True
             )
+
+
+def clear_request_context() -> None:
+    """Clear bound contextvars to avoid leaking across tasks/tests."""
+    try:
+        from structlog.contextvars import clear_contextvars  # type: ignore
+        clear_contextvars()
+    except Exception:
+        pass
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def request_context(*, request_id: Optional[str] = None, research_id: Optional[str] = None):
+    """
+    Context manager that binds request/research IDs and clears them after.
+    Usage:
+        with request_context(research_id=rid):
+            logger.info("search_start")
+    """
+    bind_request_context(request_id=request_id, research_id=research_id)
+    try:
+        yield
+    finally:
+        clear_request_context()
 
 
 def get_logger(name: Optional[str] = None):

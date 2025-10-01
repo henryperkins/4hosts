@@ -54,6 +54,7 @@ from models.base import Paradigm
 from models.context_models import ClassificationDetailsSchema
 from services.webhook_manager import WebhookEvent, WebhookManager
 from services.rate_limiter import RateLimitExceeded
+from services.triage import triage_manager
 from utils.error_handling import log_exception
 from utils.text_sanitize import sanitize_text
 from utils.security import validate_and_sanitize_url
@@ -402,6 +403,13 @@ async def execute_real_research(
             depth_name,
             query_concurrency,
         )
+
+        triage_context = {
+            "max_sources": max_sources,
+            "enable_real_search": bool(getattr(research.options, "enable_real_search", True)),
+            "paradigm_override": bool(getattr(getattr(research, "options", object()), "paradigm_override", None)),
+            "priority_tags": list(getattr(getattr(research, "options", object()), "priority_tags", []) or []),
+        }
 
         # Determine deep research activation:
         # - Only auto-enable when the request explicitly asks for deep research
@@ -1356,6 +1364,8 @@ async def submit_research(
                 research.query,
                 (getattr(classification.primary, "value", str(classification.primary))),
                 depth_enum.value,
+                user_role=user_role_name,
+                triage_context=triage_context,
             )
 
         # Trigger webhook (if available)
@@ -1747,12 +1757,20 @@ async def submit_deep_research(
 
         # Start WS tracking
         if progress_tracker:
+            triage_context = {
+                "max_sources": int(getattr(research.options, "max_sources", 0)),
+                "enable_real_search": bool(getattr(research.options, "enable_real_search", True)),
+                "paradigm_override": bool(getattr(research.options, "paradigm_override", None)),
+                "priority_tags": list(getattr(research.options, "priority_tags", []) or []),
+            }
             await progress_tracker.start_research(
                 research_id,
                 str(current_user.user_id),
                 research.query,
                 (getattr(classification.primary, "value", str(classification.primary))),
                 ResearchDepth.DEEP_RESEARCH.value,
+                user_role=str(current_user.role.value if hasattr(current_user.role, "value") else current_user.role),
+                triage_context=triage_context,
             )
 
         # Webhook
@@ -1935,12 +1953,20 @@ async def resume_deep_research(
     # WebSocket event
     if progress_tracker:
         try:
+            triage_context = {
+                "max_sources": int(getattr(getattr(rq, "options", object()), "max_sources", 0) or 0),
+                "enable_real_search": bool(getattr(getattr(rq, "options", object()), "enable_real_search", True)),
+                "paradigm_override": bool(getattr(getattr(rq, "options", object()), "paradigm_override", None)),
+                "priority_tags": list(getattr(getattr(rq, "options", object()), "priority_tags", []) or []),
+            }
             await progress_tracker.start_research(
                 research_id,
                 str(current_user.user_id),
                 rq.query,
                 ((getattr(classification.primary, "value", str(classification.primary)) if classification else research.get("paradigm_classification", {}).get("primary", "unknown"))),
                 ResearchDepth.DEEP_RESEARCH.value,
+                user_role=str(current_user.role.value if hasattr(current_user.role, "value") else current_user.role),
+                triage_context=triage_context,
             )
         except Exception:
             pass
@@ -2004,6 +2030,11 @@ async def cancel_research(
             "Research %s cancelled by user %s",
             research_id, current_user.user_id
         )
+
+        try:
+            await triage_manager.mark_cancelled(research_id)
+        except Exception:
+            pass
 
         # Broadcast cancellation over WebSocket for live UIs
         if progress_tracker:

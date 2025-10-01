@@ -17,7 +17,9 @@ import type {
   LoginResponse,
   MetricsData,
   WebSocketMessage,
-  ResearchResponse
+  ResearchResponse,
+  TriageBoardSnapshot,
+  TelemetrySummary
 } from '../types/api-types'
 import type { ExtendedStatsSnapshot } from '../types/api-types'
 import { isExtendedStatsSnapshot, ResearchResponseSchema } from '../types/api-types'
@@ -851,6 +853,61 @@ class APIService {
       }
     }
     return data as Partial<MetricsData>
+  }
+
+  async getTriageBoard(): Promise<TriageBoardSnapshot> {
+    const response = await this.fetchWithAuth('/system/triage-board')
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => null)
+      if (isErrorResponse(error)) {
+        const message = typeof error.detail === 'string' ? error.detail : error.error
+        throw new Error(message || 'Failed to load triage board')
+      }
+      throw new Error('Failed to load triage board')
+    }
+
+    const data = await response.json()
+    if (!data || typeof data !== 'object') {
+      throw new Error('Invalid triage board response')
+    }
+
+    const lanes = (data as TriageBoardSnapshot).lanes || {}
+    const hydrated: TriageBoardSnapshot = {
+      updated_at: typeof (data as TriageBoardSnapshot).updated_at === 'string' ? (data as TriageBoardSnapshot).updated_at : new Date().toISOString(),
+      entry_count: typeof (data as TriageBoardSnapshot).entry_count === 'number' ? (data as TriageBoardSnapshot).entry_count : Object.values(lanes).reduce((acc, list) => acc + (Array.isArray(list) ? list.length : 0), 0),
+      lanes,
+    }
+    return hydrated
+  }
+
+  async getTelemetrySummary(limit = 50): Promise<TelemetrySummary> {
+    const safeLimit = Math.max(1, Math.min(limit, 500))
+    const response = await this.fetchWithAuth(`/system/telemetry/summary?limit=${safeLimit}`)
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => null)
+      if (isErrorResponse(error)) {
+        const message = typeof error.detail === 'string' ? error.detail : error.error
+        throw new Error(message || 'Failed to load telemetry summary')
+      }
+      throw new Error('Failed to load telemetry summary')
+    }
+
+    const data = await response.json()
+    if (!data || typeof data !== 'object') {
+      throw new Error('Invalid telemetry summary response')
+    }
+
+    const summary = data as TelemetrySummary
+    summary.providers = summary.providers || { costs: {}, usage: {} }
+    summary.coverage = summary.coverage || { avg_grounding: 0, avg_evidence_quotes: 0, avg_evidence_documents: 0 }
+    summary.agent_loop = summary.agent_loop || { avg_iterations: 0, avg_new_queries: 0 }
+    summary.stages = summary.stages || {}
+    summary.paradigms = summary.paradigms || {}
+    summary.depths = summary.depths || {}
+    summary.recent_events = summary.recent_events || []
+    return summary
   }
 
   // WebSocket Management

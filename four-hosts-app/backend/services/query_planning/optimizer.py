@@ -8,7 +8,13 @@ import traceback
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
-from ..text_utils import _use_nltk, STOP_WORDS, tokenize
+try:
+    from ..text_utils import _use_nltk, STOP_WORDS, tokenize
+except ImportError:  # pragma: no cover - fallback when imported as top-level ``services``
+    try:
+        from backend.services.text_utils import _use_nltk, STOP_WORDS, tokenize  # type: ignore[no-redef]
+    except ImportError:
+        from services.text_utils import _use_nltk, STOP_WORDS, tokenize  # type: ignore[no-redef]
 import structlog
 
 logger = structlog.get_logger(__name__)
