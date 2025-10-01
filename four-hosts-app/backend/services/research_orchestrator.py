@@ -1752,7 +1752,7 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                         )
                 except Exception:
                     pass
-            synthesis_success = True
+                synthesis_success = True
             except asyncio.CancelledError:
                 # Preserve cancellation semantics; do not misreport as LLM failure
                 raise

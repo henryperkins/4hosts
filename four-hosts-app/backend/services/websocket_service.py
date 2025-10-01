@@ -1695,26 +1695,40 @@ def create_websocket_router(
                 },
             )
 
-            # Verify access to research before subscribing
-            try:
-                from services.research_store import research_store  # local import
-                research = await research_store.get(research_id)
-            except Exception:
-                research = None
-
+            allowed_triage_roles = {UserRole.ADMIN, UserRole.ENTERPRISE}
             is_admin = _is_admin_role(user_data.role)
-            if (not research) or (
-                (str(research.get("user_id")) != str(user_data.user_id)) and not is_admin
-            ):
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "error": "access_denied",
-                        "message": "Access denied or research not found",
-                    }
-                )
-                await websocket.close(code=1008, reason="Access denied")
-                return
+
+            if research_id == "triage-board":
+                if getattr(user_data, "role", None) not in allowed_triage_roles:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "error": "access_denied",
+                            "message": "Triage board access restricted",
+                        }
+                    )
+                    await websocket.close(code=1008, reason="Access denied")
+                    return
+            else:
+                # Verify access to research before subscribing
+                try:
+                    from services.research_store import research_store  # local import
+                    research = await research_store.get(research_id)
+                except Exception:
+                    research = None
+
+                if (not research) or (
+                    (str(research.get("user_id")) != str(user_data.user_id)) and not is_admin
+                ):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "error": "access_denied",
+                            "message": "Access denied or research not found",
+                        }
+                    )
+                    await websocket.close(code=1008, reason="Access denied")
+                    return
 
             # Auto-subscribe to updates for this research
             await connection_manager.subscribe_to_research(websocket, research_id)

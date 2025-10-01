@@ -10,10 +10,11 @@ from datetime import timedelta
 import structlog
 # pylint: disable=import-error
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends, HTTPException
 
 from core.limits import API_RATE_LIMITS, WS_RATE_LIMITS
 from core.config import PROGRESS_WS_TIMEOUT_MS, RESULTS_POLL_TIMEOUT_MS
+from core.dependencies import get_current_user
 from services.context_engineering import context_pipeline
 from services.cache import cache_manager
 from services.research_store import research_store
@@ -368,9 +369,10 @@ async def get_search_metrics(window_minutes: int = 60, limit: int = 720) -> Dict
 
 
 @router.get("/triage-board")
-async def get_triage_board() -> Dict[str, Any]:
+async def get_triage_board(current_user=Depends(get_current_user)) -> Dict[str, Any]:
     """Expose the live triage Kanban board."""
-
+    if getattr(current_user, "role", None) not in {UserRole.ADMIN, UserRole.ENTERPRISE}:
+        raise HTTPException(status_code=403, detail="Triage board access restricted")
     return await triage_manager.snapshot()
 
 

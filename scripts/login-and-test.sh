@@ -3,6 +3,8 @@
 
 set -e
 
+umask 077
+
 API_BASE="${API_BASE:-http://localhost:8000}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -43,18 +45,23 @@ echo ""
 export AUTH_TOKEN="$ACCESS_TOKEN"
 export X_CSRF_TOKEN="${CSRF_TOKEN:-$ACCESS_TOKEN}"
 
-# Save to file for persistence
+# Save to file for persistence (0600 thanks to umask, enforce defensively)
+echo "Warning: tokens will be written to $SCRIPT_DIR/.env.tokens with restricted permissions." >&2
+
 cat > "$SCRIPT_DIR/.env.tokens" << EOF
 # Generated on $(date)
 export AUTH_TOKEN="$ACCESS_TOKEN"
 export X_CSRF_TOKEN="${CSRF_TOKEN:-$ACCESS_TOKEN}"
 EOF
 
+chmod 600 "$SCRIPT_DIR/.env.tokens" 2>/dev/null || true
+
 echo "Tokens saved to $SCRIPT_DIR/.env.tokens"
 echo "To use in another shell: source $SCRIPT_DIR/.env.tokens"
 echo ""
 
 # Display tokens for manual export
+echo "Warning: printed tokens may remain in your shell history. Clear history if this terminal is shared." >&2
 echo "=== Token Values ==="
 echo "export AUTH_TOKEN=\"$ACCESS_TOKEN\""
 echo "export X_CSRF_TOKEN=\"${CSRF_TOKEN:-$ACCESS_TOKEN}\""

@@ -380,6 +380,7 @@ async def execute_real_research(
                 self.query_concurrency = query_concurrency
 
         # Resolve user role string (e.g., 'PRO') for orchestrator context
+        user_role = getattr(current_user, "role", UserRole.PRO)
         user_role_name = user_role.name if isinstance(user_role, UserRole) else str(user_role).upper()
         max_sources = int(research.options.max_sources)
         depth_enum = _resolve_research_depth(research)
@@ -1358,6 +1359,8 @@ async def submit_research(
 
         # Track in WebSocket (if available)
         if progress_tracker:
+            user_role = getattr(current_user, "role", UserRole.PRO)
+            user_role_name = user_role.name if isinstance(user_role, UserRole) else str(user_role).upper()
             await progress_tracker.start_research(
                 research_id,
                 str(current_user.user_id),
