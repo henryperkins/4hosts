@@ -231,6 +231,23 @@ class UnifiedResearchOrchestrator:
         self._deep_citations_max_entries = _getenv_int("DEEP_CITATIONS_MAX_ENTRIES", 100, min_value=10, max_value=1000)
         self._background_tasks: Set[asyncio.Task[Any]] = set()
 
+        # Diagnostics toggles
+        self.diagnostics = {
+            "log_task_creation": True,
+            "log_result_normalization": True,
+            "log_credibility_failures": True,
+            "enforce_url_presence": True,
+            "enforce_per_result_origin": True
+        }
+
+        # Per-search task timeout (seconds) for external API calls.
+        # Ensure this exceeds the per-provider timeout so we don't cancel
+        # the overall search while individual providers are still running.
+        task_to = _getenv_float("SEARCH_TASK_TIMEOUT_SEC", 30.0, min_value=5.0, max_value=300.0)
+        prov_to = _getenv_float("SEARCH_PROVIDER_TIMEOUT_SEC", 25.0, min_value=5.0, max_value=295.0)
+        # Add a small cushion above provider timeout
+        self.search_task_timeout = max(task_to, prov_to + 5.0)
+
     def _schedule_background_task(self, coro: Awaitable[Any], *, name: str) -> None:
         """Track a background task and surface exceptions."""
         task = asyncio.create_task(coro)
@@ -297,23 +314,6 @@ class UnifiedResearchOrchestrator:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         self._background_tasks.clear()
-
-        # Diagnostics toggles
-        self.diagnostics = {
-            "log_task_creation": True,
-            "log_result_normalization": True,
-            "log_credibility_failures": True,
-            "enforce_url_presence": True,
-            "enforce_per_result_origin": True
-        }
-
-        # Per-search task timeout (seconds) for external API calls.
-        # Ensure this exceeds the per-provider timeout so we don't cancel
-        # the overall search while individual providers are still running.
-        task_to = _getenv_float("SEARCH_TASK_TIMEOUT_SEC", 30.0, min_value=5.0, max_value=300.0)
-        prov_to = _getenv_float("SEARCH_PROVIDER_TIMEOUT_SEC", 25.0, min_value=5.0, max_value=295.0)
-        # Add a small cushion above provider timeout
-        self.search_task_timeout = max(task_to, prov_to + 5.0)
 
     async def initialize(self):
         """Initialize the orchestrator. If a search_manager is already
@@ -507,15 +507,53 @@ class UnifiedResearchOrchestrator:
         if grounding_cov is not None:
             record["grounding_coverage"] = grounding_cov
 
+        analysis_metrics = (
+            processed_results.get("metadata", {}).get("analysis_metrics")
+            if isinstance(processed_results, dict)
+            else None
+        )
+        if isinstance(analysis_metrics, dict):
+            try:
+                duration_seconds = float(analysis_metrics.get("duration_ms", 0.0) or 0.0) / 1000.0
+            except Exception:
+                duration_seconds = 0.0
+            try:
+                avg_gap_seconds = float(analysis_metrics.get("avg_update_gap_ms", 0.0) or 0.0) / 1000.0
+            except Exception:
+                avg_gap_seconds = 0.0
+            try:
+                p95_gap_seconds = float(analysis_metrics.get("p95_update_gap_ms", 0.0) or 0.0) / 1000.0
+            except Exception:
+                p95_gap_seconds = 0.0
+            try:
+                first_gap_seconds = float(analysis_metrics.get("first_update_gap_ms", 0.0) or 0.0) / 1000.0
+            except Exception:
+                first_gap_seconds = 0.0
+            try:
+                last_gap_seconds = float(analysis_metrics.get("last_update_gap_ms", 0.0) or 0.0) / 1000.0
+            except Exception:
+                last_gap_seconds = 0.0
+            record.update(
+                {
+                    "analysis_duration_seconds": duration_seconds,
+                    "analysis_sources_total": as_int(analysis_metrics.get("sources_total")),
+                    "analysis_sources_completed": as_int(analysis_metrics.get("sources_completed")),
+                    "analysis_progress_updates": as_int(analysis_metrics.get("progress_updates")),
+                    "analysis_updates_per_second": float(analysis_metrics.get("updates_per_second", 0.0) or 0.0),
+                    "analysis_avg_update_gap_seconds": avg_gap_seconds,
+                    "analysis_p95_update_gap_seconds": p95_gap_seconds,
+                    "analysis_first_update_gap_seconds": first_gap_seconds,
+                    "analysis_last_update_gap_seconds": last_gap_seconds,
+                    "analysis_cancelled": bool(analysis_metrics.get("cancelled", False)),
+                }
+            )
+
         # Attach last-call LLM usage (captured by llm_client)
         try:
             from services.llm_client import llm_client as _llm_client_instance  # local import to avoid cycles
 
             try:
-                if hasattr(_llm_client_instance, "get_last_usage"):
-                    llm_usage = _llm_client_instance.get_last_usage()
-                else:
-                    llm_usage = getattr(_llm_client_instance, "_last_usage", None)
+                llm_usage = _llm_client_instance.get_last_usage()
             except Exception:
                 llm_usage = None
             if llm_usage and isinstance(llm_usage, dict):
@@ -1354,29 +1392,32 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                     "published_date": getattr(result, "published_date", None),
                     "search_terms": [getattr(context_engineered, "original_query", "")],
                 })
-            if sources_for_analysis:
-                stats = await analyze_source_credibility_batch(
-                    sources=sources_for_analysis,
-                    paradigm=normalize_to_internal_code(classification.primary_paradigm),
-                    progress_tracker=progress_callback,
-                    research_id=research_id,
-                    check_cancelled=check_cancelled,
-                )
-                # Map credibility distribution into schema-conformant key
-                credibility_summary["average_score"] = float(stats.get("average_credibility", 0.0) or 0.0)
-                credibility_summary["score_distribution"] = stats.get("credibility_distribution", {})
-                high_quality_sources = int(stats.get("high_credibility_sources", 0) or 0)
-                total_sources_analyzed = int(stats.get("total_sources", len(final_results)) or len(final_results))
-                if total_sources_analyzed > 0:
-                    credibility_summary["high_credibility_ratio"] = high_quality_sources / float(total_sources_analyzed)
-                else:
-                    credibility_summary["high_credibility_ratio"] = 0.0
-                # Explicitly surface the absolute count for UI consumers that expect it
-                credibility_summary["high_credibility_count"] = high_quality_sources
+            stats = await analyze_source_credibility_batch(
+                sources=sources_for_analysis,
+                paradigm=normalize_to_internal_code(classification.primary_paradigm),
+                progress_tracker=progress_callback,
+                research_id=research_id,
+                check_cancelled=check_cancelled,
+            )
+            analysis_metrics = stats.get("analysis_metrics") if isinstance(stats, dict) else None
+            # Map credibility distribution into schema-conformant key
+            credibility_summary["average_score"] = float(stats.get("average_credibility", 0.0) or 0.0)
+            credibility_summary["score_distribution"] = stats.get("credibility_distribution", {})
+            high_quality_sources = int(stats.get("high_credibility_sources", 0) or 0)
+            total_sources_analyzed = int(stats.get("total_sources", len(final_results)) or len(final_results))
+            if total_sources_analyzed > 0:
+                credibility_summary["high_credibility_ratio"] = high_quality_sources / float(total_sources_analyzed)
             else:
-                total_sources_analyzed = 0
-                high_quality_sources = 0
-                credibility_summary.setdefault("average_score", 0.0)
+                credibility_summary["high_credibility_ratio"] = 0.0
+            # Explicitly surface the absolute count for UI consumers that expect it
+            credibility_summary["high_credibility_count"] = high_quality_sources
+            if analysis_metrics and isinstance(analysis_metrics, dict):
+                try:
+                    metadata = processed_results.setdefault("metadata", {})  # type: ignore[assignment]
+                    if isinstance(metadata, dict):
+                        metadata["analysis_metrics"] = analysis_metrics
+                except Exception:
+                    logger.debug("analysis_metrics_store_failed", exc_info=True)
         except Exception as exc:
             logger.warning(
                 "credibility.analysis_failed",
@@ -1404,6 +1445,24 @@ class ResearchOrchestrator(UnifiedResearchOrchestrator):
                 credibility_summary["high_credibility_ratio"] = high_quality_sources / float(total_sources_analyzed)
             else:
                 credibility_summary["high_credibility_ratio"] = 0.0
+
+            try:
+                metadata = processed_results.setdefault("metadata", {})  # type: ignore[assignment]
+                if isinstance(metadata, dict) and "analysis_metrics" not in metadata:
+                    metadata["analysis_metrics"] = {
+                        "duration_ms": 0.0,
+                        "sources_total": len(final_results),
+                        "sources_completed": 0,
+                        "progress_updates": 0,
+                        "updates_per_second": 0.0,
+                        "avg_update_gap_ms": 0.0,
+                        "p95_update_gap_ms": 0.0,
+                        "first_update_gap_ms": 0.0,
+                        "last_update_gap_ms": 0.0,
+                        "cancelled": False,
+                    }
+            except Exception:
+                pass
 
         # Preserve category_distribution computed earlier in _process_results()
         processed_results["metadata"]["total_sources_analyzed"] = total_sources_analyzed

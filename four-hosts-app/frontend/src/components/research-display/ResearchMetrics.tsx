@@ -3,7 +3,7 @@ import { useResearchDisplay } from './useResearchDisplay'
 
 export const ResearchMetrics: React.FC = () => {
   const {
-    data: { contextLayers, biasCheck, categoryDistribution, biasDistribution, credibilityDistribution },
+    data: { contextLayers, biasCheck, categoryDistribution, biasDistribution, credibilityDistribution, analysisMetrics },
   } = useResearchDisplay()
 
   const hasDistributions =
@@ -11,11 +11,25 @@ export const ResearchMetrics: React.FC = () => {
     Object.keys(biasDistribution).length > 0 ||
     Object.keys(credibilityDistribution).length > 0
 
+  const formatMsToSeconds = (ms?: number) => {
+    if (typeof ms !== 'number' || !Number.isFinite(ms)) return null
+    const seconds = ms / 1000
+    if (seconds >= 10) return `${seconds.toFixed(1)}s`
+    return `${seconds.toFixed(2)}s`
+  }
+
+  const formatRate = (rate?: number) => {
+    if (typeof rate !== 'number' || !Number.isFinite(rate)) return null
+    return `${rate.toFixed(2)} /s`
+  }
+
+  const analysisHasData = Boolean(analysisMetrics)
+
   return (
     <section className="space-y-4">
       <div className="bg-surface rounded-lg border border-border p-4 sm:p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-text mb-3">Research metrics</h3>
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <div>
             <h4 className="text-sm font-semibold text-text mb-2">Context engineering</h4>
             {contextLayers ? (
@@ -46,6 +60,38 @@ export const ResearchMetrics: React.FC = () => {
               </ul>
             ) : (
               <p className="text-sm text-text-muted">Bias metrics unavailable.</p>
+            )}
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold text-text mb-2">Analysis cadence</h4>
+            {analysisHasData && analysisMetrics ? (
+              <ul className="text-sm text-text-muted space-y-1">
+                {analysisMetrics.sourcesCompleted !== undefined && analysisMetrics.sourcesTotal !== undefined ? (
+                  <li>
+                    Sources analyzed: {Math.round(analysisMetrics.sourcesCompleted)} / {Math.round(analysisMetrics.sourcesTotal)}
+                  </li>
+                ) : null}
+                {analysisMetrics.durationMs !== undefined ? (
+                  <li>Phase duration: {formatMsToSeconds(analysisMetrics.durationMs) ?? '-'}</li>
+                ) : null}
+                {analysisMetrics.progressUpdates !== undefined ? (
+                  <li>Progress updates: {Math.round(analysisMetrics.progressUpdates)}</li>
+                ) : null}
+                {analysisMetrics.updatesPerSecond !== undefined ? (
+                  <li>Update rate: {formatRate(analysisMetrics.updatesPerSecond) ?? '-'}</li>
+                ) : null}
+                {analysisMetrics.avgUpdateGapMs !== undefined ? (
+                  <li>Average gap: {formatMsToSeconds(analysisMetrics.avgUpdateGapMs) ?? '-'}</li>
+                ) : null}
+                {analysisMetrics.p95UpdateGapMs !== undefined ? (
+                  <li>P95 gap: {formatMsToSeconds(analysisMetrics.p95UpdateGapMs) ?? '-'}</li>
+                ) : null}
+                {analysisMetrics.cancelled ? (
+                  <li className="text-warning">Cancelled mid-phase</li>
+                ) : null}
+              </ul>
+            ) : (
+              <p className="text-sm text-text-muted">Analysis telemetry unavailable.</p>
             )}
           </div>
         </div>

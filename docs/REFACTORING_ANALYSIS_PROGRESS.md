@@ -1,164 +1,42 @@
-# Refactoring Plan: Granular Progress for Analysis Phase
+# Refactoring Status: Granular Progress for Analysis Phase
 
 ## 1. Background and Context
 
-**Problem:** The user interface stalls during the `analysis` phase, where source credibility is checked. This is a primary source of negative user feedback regarding "frozen" or "stuck" research tasks.
+**Problem (resolved):** The user interface previously stalled during the `analysis` phase because the credibility checker ran every domain concurrently via `asyncio.gather` and only emitted progress after *all* tasks finished. This matched the gap called out in `docs/PROGRESS_GAPS_ANALYSIS.md` (Gap #2, "Silent credibility checks").
 
-**Root Cause:** The issue is detailed in `docs/PROGRESS_GAPS_ANALYSIS.md` (Gap #2, "Silent credibility checks"). The current implementation in `research_orchestrator.py` calls the `analyze_source_credibility_batch` function, which uses `asyncio.gather` to run all credibility checks concurrently. While efficient, this approach waits for **all** checks to finish before reporting any progress. For a research task with dozens of sources, this creates a single, long-running, silent operation, causing the UI to stall.
+**Resolution:** Backend support for granular analysis progress landed in the credibility helpers and orchestrator wiring:
 
-This refactoring will instrument this concurrent batch operation to provide real-time, per-source feedback.
+- `four-hosts-app/backend/services/credibility.py:1333` rewrote `analyze_source_credibility_batch` around `asyncio.as_completed`, incremental progress emission, and cancellation support.
+- `four-hosts-app/backend/services/research_orchestrator.py:1358` now passes the `progress_tracker`, `research_id`, and `check_cancelled` callback so those updates reach the WebSocket facade.
 
-## 2. Proposed Solution
+## 2. Current Behaviour Snapshot
 
-The core of this refactoring is to replace the `asyncio.gather` pattern with `asyncio.as_completed`. This will allow the system to iterate through credibility check tasks *as they finish*, rather than waiting for the entire batch.
+- Credibility checks are spawned as individual tasks and surfaced as they complete, so long batches steadily advance the `analysis` phase.
+- Every iteration awaits `check_cancelled()` to honour user-initiated aborts quickly.
+- An empty-source guard marks the phase complete and logs a friendly message, preventing a lingering "0/0" state.
+- Aggregation results retain legacy schema keys while exposing additional metrics such as `high_credibility_count` for downstream consumers.
+- The batch helper now records cadence telemetry (`duration_ms`, update gaps, cancellation flag) which is bubbled into `processed_results.metadata.analysis_metrics`.
 
-On each completion, we will call the progress tracker to update the UI, creating a smooth and responsive progress bar. The plan also includes robust error handling, cancellation logic, and edge-case management.
+## 3. Telemetry & Dashboards
 
-## 3. Detailed Implementation Plan
+- Prometheus now exposes the following series for dashboarding: `analysis_phase_duration_seconds`, `analysis_phase_sources_total`, `analysis_phase_updates_total`, `analysis_phase_updates_per_second`, `analysis_phase_avg_gap_seconds`, `analysis_phase_p95_gap_seconds`, `analysis_phase_first_gap_seconds`, `analysis_phase_last_gap_seconds`, and `analysis_phase_cancelled_total` (all labelled by `paradigm`/`depth`).
+- Redis telemetry payloads receive the same fields via `telemetry_pipeline.record_search_run`, so historical comparisons (pre/post refactor) can be queried directly from the metrics store.
+- Suggested dashboards: overlay `analysis_phase_updates_per_second` with `analysis_phase_duration_seconds` to visualise smoothness, and set alerts on `analysis_phase_first_gap_seconds > 5s` to catch regressions early.
 
-The required changes are localized to two key files: `credibility.py` and `research_orchestrator.py`.
+## 4. Remaining Follow-ups
 
----
+- **Frontend smoothing:** UI-level buffering/smoothing work remains tracked separately in `docs/CONCURRENT_PROGRESS_ANALYSIS.md`.
+- **Documentation hygiene:** Ensure older narratives of the `asyncio.gather` behaviour cite this change (see `docs/PROGRESS_GAPS_ANALYSIS.md`).
 
-### 3.1 File: `four-hosts-app/backend/services/credibility.py`
+## 5. Verification Checklist
 
-The main logic change occurs in this file.
+- [x] Incremental updates emitted from `analyze_source_credibility_batch`.
+- [x] Orchestrator forwards `progress_tracker`, `research_id`, and `check_cancelled`.
+- [x] Empty source batches complete the phase cleanly.
+- [x] Observability dashboards updated to monitor real-time batch throughput.
 
-#### **Target Function: `analyze_source_credibility_batch` (starting at line 1084)**
+## 6. Risk & Mitigation Notes
 
-This function will be rewritten to manage the `as_completed` loop and report progress.
-
-##### **Action 1: Modify Function Signature**
-
-The signature must be updated to accept the `progress_tracker` object, the `research_id`, and a `check_cancelled` callback.
-
-*   **Current Signature (line 1084):**
-    ```python
-    async def analyze_source_credibility_batch(
-        sources: List[Dict[str, Any]], 
-        paradigm: str = "bernard"
-    ) -> Dict[str, Any]:
-    ```
-
-*   **New Signature:**
-    ```python
-    from typing import Callable, Awaitable 
-
-    async def analyze_source_credibility_batch(
-        sources: List[Dict[str, Any]],
-        paradigm: str,
-        progress_tracker: Any,
-        research_id: str,
-        check_cancelled: Callable[[], Awaitable[bool]]
-    ) -> Dict[str, Any]:
-    ```
-
-##### **Action 2: Implement Core Refactoring**
-
-Replace the body of the function with the new `as_completed` pattern.
-
-*   **New Implementation Logic:**
-    ```python
-    import asyncio
-    from . import get_source_credibility_safe # Ensure this is imported
-
-    async def analyze_source_credibility_batch(...):
-        # 1. Handle the zero-source edge case to prevent phase-skipping.
-        if not sources:
-            if progress_tracker and research_id:
-                await progress_tracker.update_progress(
-                    research_id, phase="analysis", items_done=1, items_total=1
-                )
-            return { "total_sources": 0, "average_credibility": 0.0, ... }
-
-        # 2. Create a list of safe, concurrent tasks using the _safe wrapper.
-        tasks = [
-            get_source_credibility_safe(
-                domain=source.get("domain", ""),
-                paradigm=paradigm
-            )
-            for source in sources
-        ]
-        
-        total_tasks = len(tasks)
-        credibility_scores = []
-
-        # 3. Process tasks as they complete.
-        for i, future in enumerate(asyncio.as_completed(tasks)):
-            # 3a. Check for cancellation on each iteration for responsiveness.
-            if await check_cancelled():
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                break 
-
-            # 3b. Await the next result. No try/except is needed here because
-            # get_source_credibility_safe is guaranteed not to raise an exception.
-            score_obj, explanation, status = await future
-            if status == 'success':
-                credibility_scores.append(score_obj)
-
-            # 3c. Report progress for every completed task (success or fail).
-            if progress_tracker and research_id:
-                await progress_tracker.update_progress(
-                    research_id,
-                    phase="analysis",
-                    message=f"Analyzing source credibility {i + 1}/{total_tasks}",
-                    items_done=i + 1,
-                    items_total=total_tasks
-                )
-
-        # 4. Aggregate and return results (existing logic can be adapted).
-        # ...
-        return { ... }
-    ```
-
----
-
-### 3.2 File: `four-hosts-app/backend/services/research_orchestrator.py`
-
-This file only requires a minor change to pass the required arguments to the updated function.
-
-#### **Target Location: `execute_research` method (around line 1003)**
-
-The call to `analyze_source_credibility_batch` inside the `try...except` block for credibility aggregation needs to be updated.
-
-*   **Current Call (line 1003):**
-    ```python
-    stats = await analyze_source_credibility_batch(
-        sources_for_analysis,
-        paradigm=normalize_to_internal_code(classification.primary_paradigm),
-    )
-    ```
-
-*   **New Call:**
-    ```python
-    # The required variables (progress_callback, research_id, check_cancelled)
-    # are already available in the scope of the execute_research method.
-
-    stats = await analyze_source_credibility_batch(
-        sources=sources_for_analysis,
-        paradigm=normalize_to_internal_code(classification.primary_paradigm),
-        progress_tracker=progress_callback,
-        research_id=research_id,
-        check_cancelled=check_cancelled
-    )
-    ```
-
-## 4. Expected Outcome
-
-1.  The `analysis` phase progress bar will update smoothly and incrementally for each source checked.
-2.  The "stall-then-jump" behavior for this phase will be completely eliminated.
-3.  The analysis process will be responsive to user-initiated cancellation requests.
-4.  System robustness will be improved by handling individual API failures during credibility checks without halting the entire research process.
-
-## 5. Risk Assessment & Mitigation
-
--   **Risk:** A single failing credibility check could halt progress.
-    -   **Mitigation:** This is mitigated by using the `get_source_credibility_safe` wrapper, which catches exceptions and returns a status tuple, ensuring the processing loop continues uninterrupted.
-
--   **Risk:** The process could become unresponsive to cancellation.
-    -   **Mitigation:** The plan explicitly includes passing a `check_cancelled` function and calling it on each loop iteration, ensuring the process can be terminated gracefully.
-
--   **Risk:** Incorrect progress calculation if no sources are found.
-    -   **Mitigation:** The explicit check for an empty `sources` list ensures the phase is marked as complete, maintaining the integrity of the overall progress calculation.
+- **Progress spam:** Tight loops can overwhelm the tracker. Mitigated by the existing `update_progress` coalescing logic in `ProgressTracker`.
+- **Cancellation churn:** Cancelled tasks log an info message for visibility; follow-up may add structured telemetry if cancellations increase.
+- **Tracker outages:** All tracker interactions stay inside `try/except` so outages remain non-fatal.

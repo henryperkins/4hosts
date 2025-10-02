@@ -120,26 +120,17 @@ class LLMClient:
         self._azure_api_version: str = "preview"
 
         # Context-local token usage so concurrent requests don't overwrite
-        # each other's statistics.  Backwards-compatibility: we still publish
-        # the *_last_usage* attribute so existing code keeps working, but it
-        # now simply mirrors the value stored in the *ContextVar*.
+        # each other's statistics.
         self._usage_var: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = (
             contextvars.ContextVar("llm_last_usage", default=None)
         )
-        self._last_usage: Optional[Dict[str, Any]] = None  # deprecated shim
 
     # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
 
     def get_last_usage(self) -> Optional[Dict[str, Any]]:
-        """Return LLM usage for the *current* request context.
-
-        This replaces the old ``_last_usage`` attribute which was prone to
-        data races when the service handled concurrent requests.  Callers that
-        still access ``_last_usage`` will continue to receive the same object
-        (for now), but they should migrate to this method.
-        """
+        """Return LLM usage for the *current* request context."""
 
         return self._usage_var.get()
 
@@ -370,8 +361,6 @@ class LLMClient:
                             }
                             # Store per-context for concurrency safety
                             self._usage_var.set(snapshot)
-                            # Deprecated attribute (kept for legacy access)
-                            self._last_usage = snapshot
                     except Exception:
                         pass
 
@@ -598,7 +587,6 @@ class LLMClient:
                     "total_tokens": usage.get("total_tokens"),
                 }
                 self._usage_var.set(snapshot)
-                self._last_usage = snapshot  # compatibility
         except Exception:
             pass
 

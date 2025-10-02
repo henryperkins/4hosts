@@ -41,7 +41,7 @@ from .llm_client import (
 )
 from .classification_engine import HostParadigm, ClassificationResult
 from .context_engineering import ContextEngineeredQuery
-from .websocket_service import ResearchProgressTracker
+from .websocket_service import ProgressTracker
 from .research_store import research_store
 
 from models.evidence import EvidenceQuote
@@ -291,7 +291,7 @@ class DeepResearchService:
         classification: Optional[ClassificationResult] = None,
         context_engineering: Optional[ContextEngineeredQuery] = None,
         config: Optional[DeepResearchConfig] = None,
-        progress_tracker: Optional[ResearchProgressTracker] = None,
+        progress_tracker: Optional[ProgressTracker] = None,
         research_id: Optional[str] = None,
     ) -> DeepResearchResult:
         """
@@ -906,7 +906,7 @@ def convert_citations_to_evidence_quotes(
     async def resume_deep_research(
         self,
         research_id: str,
-        progress_tracker: Optional[ResearchProgressTracker] = None,
+        progress_tracker: Optional[ProgressTracker] = None,
     ) -> DeepResearchResult:
         """Resume a deep research task that was interrupted"""
         if not self._initialized:
@@ -966,7 +966,7 @@ def convert_citations_to_evidence_quotes(
         self,
         response_id: str,
         timeout: int,
-        progress_tracker: Optional[ResearchProgressTracker],
+        progress_tracker: Optional[ProgressTracker],
         research_id: Optional[str],
     ) -> Dict[str, Any]:
         """Wait for background response with progress updates"""

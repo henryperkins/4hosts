@@ -7,11 +7,11 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 
-from services.websocket_service import ResearchProgressTracker, WSMessage
+from services.websocket_service import ProgressTracker, WSMessage
 
 
-class TestResearchProgressTracker:
-    """Test the ResearchProgressTracker class, particularly counter synchronization."""
+class TestProgressTracker:
+    """Test the ProgressTracker class, particularly counter synchronization."""
 
     @pytest.fixture
     def mock_connection_manager(self):
@@ -22,8 +22,8 @@ class TestResearchProgressTracker:
 
     @pytest.fixture
     def tracker(self, mock_connection_manager):
-        """Create a ResearchProgressTracker instance with mocked dependencies."""
-        tracker = ResearchProgressTracker(mock_connection_manager)
+        """Create a ProgressTracker instance with mocked dependencies."""
+        tracker = ProgressTracker(mock_connection_manager)
         return tracker
 
     @pytest.mark.asyncio

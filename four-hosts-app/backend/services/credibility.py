@@ -4,6 +4,7 @@ Implements domain authority checking, bias detection, and source reputation scor
 """
 
 import asyncio
+import time
 import aiohttp
 # json unused
 import structlog
@@ -1352,6 +1353,8 @@ async def analyze_source_credibility_batch(
     4.  Relies on :pyfunc:`get_source_credibility_safe` to sandbox failures and
         surface them as ``("failed", explanation)`` tuples rather than raising
         hard exceptions that could halt the whole batch.
+    5.  Captures instrumentation (duration, cadence, cancellation) so telemetry
+        dashboards can verify smoother progress during the analysis phase.
     """
 
     # ---------------------------------------------------------------------
@@ -1359,6 +1362,11 @@ async def analyze_source_credibility_batch(
     #    completion.  We *also* emit a final progress update to avoid the UI
     #    being stuck at “0/0”.
     # ---------------------------------------------------------------------
+    start_ts = time.perf_counter()
+    last_tick = start_ts
+    update_gaps: List[float] = []
+    cancelled = False
+
     if not sources:
         if progress_tracker is not None and research_id is not None:
             try:
@@ -1373,6 +1381,7 @@ async def analyze_source_credibility_batch(
                 # Progress-tracker errors must never cascade.
                 logger.debug("Progress tracker failed in empty-batch branch", exc_info=True)
 
+        elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
         return {
             "total_sources": 0,
             "average_credibility": 0.0,
@@ -1388,6 +1397,18 @@ async def analyze_source_credibility_batch(
                 "very_low": 0,
             },
             "paradigm_recommendations": [],
+            "analysis_metrics": {
+                "duration_ms": elapsed_ms,
+                "sources_total": 0,
+                "sources_completed": 0,
+                "progress_updates": 0,
+                "updates_per_second": 0.0,
+                "avg_update_gap_ms": 0.0,
+                "p95_update_gap_ms": 0.0,
+                "first_update_gap_ms": 0.0,
+                "last_update_gap_ms": 0.0,
+                "cancelled": False,
+            },
         }
 
     # ------------------------------------------------------------------
@@ -1435,6 +1456,7 @@ async def analyze_source_credibility_batch(
                 if not t.done():
                     t.cancel()
             logger.info("Credibility batch cancelled after %s/%s tasks", completed_count - 1, total_tasks)
+            cancelled = True
             break
 
         try:
@@ -1445,6 +1467,10 @@ async def analyze_source_credibility_batch(
                     credibility_results.append((source, score))
         except Exception:  # pragma: no cover
             logger.warning("Unexpected exception in credibility task", exc_info=True)
+
+        now = time.perf_counter()
+        update_gaps.append(max(0.0, now - last_tick))
+        last_tick = now
 
         # 2b. Emit incremental progress update; swallow any tracker errors.
         if progress_tracker is not None and research_id is not None:
@@ -1488,6 +1514,15 @@ async def analyze_source_credibility_batch(
 
     sorted_results = sorted(credibility_results, key=lambda x: x[1].overall_score, reverse=True)
 
+    elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+    updates = len(update_gaps)
+    avg_gap_ms = (sum(update_gaps) / updates * 1000.0) if updates else 0.0
+    p95_gap_ms = (_percentile(update_gaps, 95.0) * 1000.0) if updates else 0.0
+    first_gap_ms = update_gaps[0] * 1000.0 if updates else 0.0
+    last_gap_ms = update_gaps[-1] * 1000.0 if updates else 0.0
+    duration_seconds = elapsed_ms / 1000.0 if elapsed_ms > 0 else 0.0
+    updates_per_second = (updates / duration_seconds) if duration_seconds > 0 else 0.0
+
     return {
         "total_sources": len(sources),
         "average_credibility": avg_credibility,
@@ -1503,6 +1538,18 @@ async def analyze_source_credibility_batch(
             "very_low": sum(1 for c in scores_only if c.overall_score < 0.2),
         },
         "paradigm_recommendations": _get_paradigm_recommendations(scores_only, paradigm),
+        "analysis_metrics": {
+            "duration_ms": elapsed_ms,
+            "sources_total": len(sources),
+            "sources_completed": len(credibility_results),
+            "progress_updates": updates,
+            "updates_per_second": updates_per_second,
+            "avg_update_gap_ms": avg_gap_ms,
+            "p95_update_gap_ms": p95_gap_ms,
+            "first_update_gap_ms": first_gap_ms,
+            "last_update_gap_ms": last_gap_ms,
+            "cancelled": cancelled,
+        },
     }
 
 def _get_paradigm_recommendations(scores: List[CredibilityScore], paradigm: str) -> List[str]:
@@ -1530,3 +1577,19 @@ def _get_paradigm_recommendations(scores: List[CredibilityScore], paradigm: str)
             recommendations.append("Update with more recent business intelligence for strategic insights")
     
     return recommendations
+
+
+def _percentile(values: List[float], percentile: float) -> float:
+    """Return the percentile value from a list of samples."""
+
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    k = (len(ordered) - 1) * max(0.0, min(100.0, percentile)) / 100.0
+    f = math.floor(k)
+    c = math.ceil(k)
+    if f == c:
+        return ordered[int(k)]
+    lower = ordered[f] * (c - k)
+    upper = ordered[c] * (k - f)
+    return lower + upper

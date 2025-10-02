@@ -152,6 +152,74 @@ class PrometheusMetrics:
             registry=self.registry,
         )
 
+        # Analysis / credibility phase telemetry — tracks smoothness of
+        # incremental updates after the refactor.
+        self.analysis_phase_duration_seconds = Histogram(
+            "analysis_phase_duration_seconds",
+            "Duration of the credibility analysis phase",
+            ["paradigm", "depth"],
+            buckets=[0.25, 0.5, 1, 2, 5, 10, 20, 40, 80, 160],
+            registry=self.registry,
+        )
+
+        self.analysis_phase_sources_total = Histogram(
+            "analysis_phase_sources_total",
+            "Number of sources evaluated during analysis",
+            ["paradigm", "depth"],
+            buckets=[1, 5, 10, 20, 40, 80, 160, 320],
+            registry=self.registry,
+        )
+
+        self.analysis_phase_updates_total = Histogram(
+            "analysis_phase_updates_total",
+            "Count of progress updates emitted during analysis",
+            ["paradigm", "depth"],
+            buckets=[1, 5, 10, 20, 40, 80, 160, 320],
+            registry=self.registry,
+        )
+
+        self.analysis_phase_updates_per_second = Gauge(
+            "analysis_phase_updates_per_second",
+            "Rate of analysis progress updates per second",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.analysis_phase_avg_gap_seconds = Gauge(
+            "analysis_phase_avg_gap_seconds",
+            "Average gap between analysis progress updates (seconds)",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.analysis_phase_p95_gap_seconds = Gauge(
+            "analysis_phase_p95_gap_seconds",
+            "95th percentile gap between analysis progress updates (seconds)",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.analysis_phase_first_gap_seconds = Gauge(
+            "analysis_phase_first_gap_seconds",
+            "Time from phase start to the first analysis update",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.analysis_phase_last_gap_seconds = Gauge(
+            "analysis_phase_last_gap_seconds",
+            "Gap between the final two analysis updates",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
+        self.analysis_phase_cancelled_total = Counter(
+            "analysis_phase_cancelled_total",
+            "Number of cancelled analysis/credibility batches",
+            ["paradigm", "depth"],
+            registry=self.registry,
+        )
+
         self.search_provider_usage = Counter(
             "search_provider_queries_total",
             "Queries executed per provider",

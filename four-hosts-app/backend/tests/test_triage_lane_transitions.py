@@ -51,7 +51,7 @@ websocket_auth_stub.secure_websocket_endpoint = _identity_decorator
 sys.modules.setdefault("services.websocket_auth", websocket_auth_stub)
 
 from services.triage import TriageManager
-from services.websocket_service import ResearchProgressTracker
+from services.websocket_service import ProgressTracker
 
 
 @pytest.mark.asyncio
@@ -81,7 +81,7 @@ async def test_triage_lane_progression_through_websocket_updates(monkeypatch) ->
 
     connection_manager = MagicMock()
     connection_manager.broadcast_to_research = AsyncMock()
-    tracker = ResearchProgressTracker(connection_manager)
+    tracker = ProgressTracker(connection_manager)
 
     research_id = "res-triage-001"
     await tracker.start_research(

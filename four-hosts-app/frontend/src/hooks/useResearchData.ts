@@ -41,6 +41,7 @@ export interface ResearchDisplayData {
   credibilityDistribution: Record<'high' | 'medium' | 'low', number>
   actionableRatio: number
   biasCheck: ResearchResult['metadata']['bias_check']
+  analysisMetrics: AnalysisMetrics | null
   confidenceInfo: ConfidenceInfo
   integratedSynthesis?: IntegratedSynthesis
   meshSynthesis?: ResearchResult['mesh_synthesis']
@@ -48,6 +49,19 @@ export interface ResearchDisplayData {
   warnings: unknown[] | undefined
   degraded: boolean
   status: string
+}
+
+export interface AnalysisMetrics {
+  durationMs?: number
+  sourcesTotal?: number
+  sourcesCompleted?: number
+  progressUpdates?: number
+  updatesPerSecond?: number
+  avgUpdateGapMs?: number
+  p95UpdateGapMs?: number
+  firstUpdateGapMs?: number
+  lastUpdateGapMs?: number
+  cancelled?: boolean
 }
 
 const normaliseEvidenceQuote = (item: EvidenceQuoteRaw): EvidenceQuote | null => {
@@ -195,6 +209,47 @@ export const useResearchData = (results: ResearchResult): ResearchDisplayData =>
 
   const actionableRatio = Number(metadata?.actionable_content_ratio ?? 0)
 
+  const analysisMetrics = useMemo<AnalysisMetrics | null>(() => {
+    const raw = metadata?.analysis_metrics as Record<string, unknown> | undefined
+    if (!raw || typeof raw !== 'object') return null
+
+    const asFinite = (value: unknown): number | undefined => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value
+      if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value)
+        if (Number.isFinite(parsed)) return parsed
+      }
+      return undefined
+    }
+
+    const metrics: AnalysisMetrics = {
+      durationMs: asFinite(raw.duration_ms),
+      sourcesTotal: asFinite(raw.sources_total),
+      sourcesCompleted: asFinite(raw.sources_completed),
+      progressUpdates: asFinite(raw.progress_updates),
+      updatesPerSecond: asFinite(raw.updates_per_second),
+      avgUpdateGapMs: asFinite(raw.avg_update_gap_ms),
+      p95UpdateGapMs: asFinite(raw.p95_update_gap_ms),
+      firstUpdateGapMs: asFinite(raw.first_update_gap_ms),
+      lastUpdateGapMs: asFinite(raw.last_update_gap_ms),
+      cancelled: Boolean(raw.cancelled),
+    }
+
+    const hasSignal = (
+      (typeof metrics.durationMs === 'number' && metrics.durationMs > 0) ||
+      (typeof metrics.progressUpdates === 'number' && metrics.progressUpdates > 0) ||
+      (typeof metrics.sourcesTotal === 'number' && metrics.sourcesTotal > 0) ||
+      (typeof metrics.sourcesCompleted === 'number' && metrics.sourcesCompleted > 0) ||
+      (typeof metrics.updatesPerSecond === 'number' && metrics.updatesPerSecond > 0)
+    )
+
+    if (!hasSignal && !metrics.cancelled) {
+      return null
+    }
+
+    return metrics
+  }, [metadata?.analysis_metrics])
+
   const summary = baseAnswer?.summary || results.answer?.summary || ''
   const citations = (baseAnswer?.citations || []) as AnswerCitation[]
   const actionItems = baseAnswer?.action_items || []
@@ -249,6 +304,7 @@ export const useResearchData = (results: ResearchResult): ResearchDisplayData =>
     biasDistribution,
     credibilityDistribution,
     actionableRatio,
+    analysisMetrics,
     biasCheck: metadata?.bias_check,
     confidenceInfo,
     integratedSynthesis: integrated,

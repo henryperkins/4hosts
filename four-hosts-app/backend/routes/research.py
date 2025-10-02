@@ -380,7 +380,6 @@ async def execute_real_research(
                 self.query_concurrency = query_concurrency
 
         # Resolve user role string (e.g., 'PRO') for orchestrator context
-        user_role = getattr(current_user, "role", UserRole.PRO)
         user_role_name = user_role.name if isinstance(user_role, UserRole) else str(user_role).upper()
         max_sources = int(research.options.max_sources)
         depth_enum = _resolve_research_depth(research)
@@ -1345,6 +1344,18 @@ async def submit_research(
         )
 
         depth_enum = _resolve_research_depth(research)
+
+        raw_max_sources = getattr(getattr(research, "options", object()), "max_sources", None)
+        try:
+            max_sources_val = int(raw_max_sources) if raw_max_sources is not None else 0
+        except (TypeError, ValueError):
+            max_sources_val = 0
+        triage_context = {
+            "max_sources": max_sources_val,
+            "enable_real_search": bool(getattr(getattr(research, "options", object()), "enable_real_search", True)),
+            "paradigm_override": bool(getattr(getattr(research, "options", object()), "paradigm_override", None)),
+            "priority_tags": list(getattr(getattr(research, "options", object()), "priority_tags", []) or []),
+        }
 
         # Execute real research
         background_tasks.add_task(

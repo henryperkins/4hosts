@@ -145,6 +145,53 @@ class TelemetryPipeline:
             )
 
         # ------------------------------------------------------------------ #
+        # Analysis telemetry instrumentation
+        # ------------------------------------------------------------------ #
+
+        analysis_duration = as_float(record.get("analysis_duration_seconds"))
+        if analysis_duration:
+            self._prometheus.analysis_phase_duration_seconds.labels(**labels).observe(
+                analysis_duration
+            )
+
+        analysis_sources = as_int(record.get("analysis_sources_total"))
+        if analysis_sources:
+            self._prometheus.analysis_phase_sources_total.labels(**labels).observe(
+                analysis_sources
+            )
+
+        analysis_updates = as_int(record.get("analysis_progress_updates"))
+        if analysis_updates:
+            self._prometheus.analysis_phase_updates_total.labels(**labels).observe(
+                analysis_updates
+            )
+
+        analysis_rate = as_float(record.get("analysis_updates_per_second"))
+        if analysis_rate is not None and analysis_rate >= 0:
+            self._prometheus.analysis_phase_updates_per_second.labels(**labels).set(
+                analysis_rate
+            )
+
+        avg_gap = as_float(record.get("analysis_avg_update_gap_seconds"))
+        if avg_gap is not None and avg_gap >= 0:
+            self._prometheus.analysis_phase_avg_gap_seconds.labels(**labels).set(avg_gap)
+
+        p95_gap = as_float(record.get("analysis_p95_update_gap_seconds"))
+        if p95_gap is not None and p95_gap >= 0:
+            self._prometheus.analysis_phase_p95_gap_seconds.labels(**labels).set(p95_gap)
+
+        first_gap = as_float(record.get("analysis_first_update_gap_seconds"))
+        if first_gap is not None and first_gap >= 0:
+            self._prometheus.analysis_phase_first_gap_seconds.labels(**labels).set(first_gap)
+
+        last_gap = as_float(record.get("analysis_last_update_gap_seconds"))
+        if last_gap is not None and last_gap >= 0:
+            self._prometheus.analysis_phase_last_gap_seconds.labels(**labels).set(last_gap)
+
+        if record.get("analysis_cancelled"):
+            self._prometheus.analysis_phase_cancelled_total.labels(**labels).inc(1)
+
+        # ------------------------------------------------------------------ #
         # New Metrics Recording
         # ------------------------------------------------------------------ #
 

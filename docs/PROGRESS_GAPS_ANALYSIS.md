@@ -15,12 +15,11 @@
 - **Impact**: Progress stalls at 75% during iterative follow-ups
 - **Fix Needed**: Add progress tracking in `agentic_process.py`
 
-### 3. **Credibility Checking Not Reporting Progress**
-- **Gap**: Individual credibility checks don't trigger `report_credibility_check()`
-- **Location**: `get_source_credibility_safe()` at `research_orchestrator.py:2583`
-- **Evidence**: The function is called but doesn't report progress back
-- **Impact**: No real-time feedback on credibility evaluation
-- **Fix Needed**: Add progress callback to credibility scoring function
+### 3. **Credibility Checking Not Reporting Progress** *(Resolved October 2025)*
+- **Gap**: Individual credibility checks didn't surface incremental updates, leaving the analysis phase silent.
+- **Resolution**: `analyze_source_credibility_batch` now iterates with `asyncio.as_completed` and calls `progress_tracker.update_progress` on each completion (`four-hosts-app/backend/services/credibility.py:1333`). The orchestrator passes the required tracker context at `four-hosts-app/backend/services/research_orchestrator.py:1358`.
+- **Telemetry**: The same helper emits cadence metrics (`analysis_metrics`) that flow into `telemetry_pipeline.record_search_run`, powering new Prometheus series: `analysis_phase_duration_seconds`, `analysis_phase_updates_total`, `analysis_phase_updates_per_second`, and related gap gauges.
+- **Impact**: Long-running credibility batches now advance progress smoothly and are observable in dashboards; no further backend action required.
 
 ### 4. **Classification Phase Partial Coverage**
 - **Gap**: Classification reports progress only at 2 points (feature extraction and rule-based)

@@ -9,7 +9,6 @@ import contextlib
 import json
 import logging
 import structlog
-import warnings
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Set, Any, Optional, List
 from enum import Enum
@@ -1140,6 +1139,136 @@ class ProgressTracker:
             # Clean up the lock for this research
             self._progress_locks.pop(research_id, None)
 
+    async def report_search_started(self, research_id: str, query: str, engine: str, index: int, total: int):
+        """Broadcast the start of a search operation and sync counters."""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.SEARCH_STARTED,
+                data={
+                    "research_id": research_id,
+                    "query": query[:50] + "..." if len(query) > 50 else query,
+                    "engine": engine,
+                    "index": index,
+                    "total": total,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+
+        if research_id in self.research_progress:
+            try:
+                total_int = max(0, int(total))
+            except Exception:
+                total_int = None
+            if total_int is not None:
+                progress_state = self.research_progress[research_id]
+                current_total = int(progress_state.get("total_searches", 0) or 0)
+                if total_int > current_total:
+                    progress_state["total_searches"] = total_int
+
+    async def report_search_completed(self, research_id: str, query: str, results_count: int):
+        """Broadcast completion of a search and update counters."""
+
+        completed: Optional[int] = None
+        total_value: Optional[int] = None
+
+        if research_id in self.research_progress:
+            try:
+                progress_state = self.research_progress[research_id]
+                completed = int(progress_state.get("searches_completed", 0) or 0) + 1
+                total_recorded = int(progress_state.get("total_searches", 0) or 0)
+                total_value = max(total_recorded, completed)
+            except Exception:
+                completed = None
+                total_value = None
+
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.SEARCH_COMPLETED,
+                data={
+                    "research_id": research_id,
+                    "query": query[:50] + "..." if len(query) > 50 else query,
+                    "results_count": results_count,
+                    "searches_completed": completed,
+                    "total_searches": total_value,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+
+        if completed is not None:
+            try:
+                await self.update_progress(
+                    research_id,
+                    searches_completed=completed,
+                    total_searches=total_value,
+                    recompute=False,
+                )
+            except Exception:
+                pass
+
+    async def report_credibility_check(self, research_id: str, domain: str, score: float):
+        """Broadcast an individual credibility evaluation."""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.CREDIBILITY_CHECK,
+                data={
+                    "research_id": research_id,
+                    "domain": domain,
+                    "score": score,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+
+    async def report_deduplication(self, research_id: str, before_count: int, after_count: int):
+        """Broadcast deduplication statistics."""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.DEDUPLICATION,
+                data={
+                    "research_id": research_id,
+                    "before_count": before_count,
+                    "after_count": after_count,
+                    "removed": before_count - after_count,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+
+        if research_id in self.research_progress:
+            try:
+                removed_total = max(0, int(before_count) - int(after_count))
+            except Exception:
+                removed_total = None
+            if removed_total is not None:
+                try:
+                    await self.update_progress(
+                        research_id,
+                        duplicates_removed=removed_total,
+                        recompute=False,
+                    )
+                except Exception:
+                    pass
+
+    async def report_evidence_builder_skipped(self, research_id: str, reason: str | None = None):
+        """Broadcast that the evidence builder was skipped."""
+        await self.connection_manager.broadcast_to_research(
+            research_id,
+            WSMessage(
+                type=WSEventType.EVIDENCE_BUILDER_SKIPPED,
+                data={
+                    "research_id": research_id,
+                    "reason": reason or "no_search_results",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        )
+
     async def report_source_found(self, research_id: str, source: Dict[str, Any]):
         """Report a new source found"""
         if research_id not in self.research_progress:
@@ -1345,171 +1474,6 @@ class ProgressTracker:
         # Clean up the lock for this research
         self._progress_locks.pop(research_id, None)
 
-
-# --- Research Progress Tracker (alias for compatibility) ---
-
-
-class ResearchProgressTracker(ProgressTracker):
-    """Back-compat wrapper exposing the same flexible signature as ProgressTracker.
-
-    Legacy code may still import this alias and call `update_progress` with the
-    original (research_id, message, progress) positional arguments **or** the
-    new keyword-rich form.  We therefore forward *args/**kwargs to the parent
-    implementation so both styles work transparently.
-    """
-
-    def __init__(self, *args, **kwargs):
-        warnings.warn("ResearchProgressTracker is deprecated, use ProgressTracker instead",
-                     DeprecationWarning, stacklevel=2)
-        super().__init__(*args, **kwargs)
-
-    async def update_progress(self, research_id: str, *positional: Any, **kwargs):  # type: ignore[override]
-        # Detect the classic 3-positional call and translate it into the new
-        # keyword structure so downstream consumers remain consistent.
-        if positional and len(positional) == 2 and not kwargs:
-            message, progress = positional  # type: ignore[assignment]
-            kwargs = {
-                "message": message,
-                "progress": progress,
-            }
-            positional = ()
-
-        await super().update_progress(research_id, *positional, **kwargs)
-
-    async def report_search_started(self, research_id: str, query: str, engine: str, index: int, total: int):
-        """Report that a search has started"""
-        await self.connection_manager.broadcast_to_research(
-            research_id,
-            WSMessage(
-                type=WSEventType.SEARCH_STARTED,
-                data={
-                    "research_id": research_id,
-                    "query": query[:50] + "..." if len(query) > 50 else query,
-                    "engine": engine,
-                    "index": index,
-                    "total": total,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-        )
-        if research_id in self.research_progress:
-            try:
-                total_int = max(0, int(total))
-            except Exception:
-                total_int = None
-            if total_int is not None:
-                progress_state = self.research_progress[research_id]
-                current_total = int(progress_state.get("total_searches", 0) or 0)
-                if total_int > current_total:
-                    progress_state["total_searches"] = total_int
-
-    async def report_search_completed(self, research_id: str, query: str, results_count: int):
-        """Report that a search has completed"""
-        # Calculate up-to-date search counters before broadcasting so the
-        # frontend receives a self-contained payload with the latest metrics.
-        completed: Optional[int] = None
-        total_value: Optional[int] = None
-
-        if research_id in self.research_progress:
-            try:
-                progress_state = self.research_progress[research_id]
-                completed = int(progress_state.get("searches_completed", 0) or 0) + 1
-                total_recorded = int(progress_state.get("total_searches", 0) or 0)
-                total_value = max(total_recorded, completed)
-            except Exception:
-                completed = None
-                total_value = None
-
-        # Broadcast search completion event including derived counters so the
-        # frontend can update its UI without inferring state.
-        await self.connection_manager.broadcast_to_research(
-            research_id,
-            WSMessage(
-                type=WSEventType.SEARCH_COMPLETED,
-                data={
-                    "research_id": research_id,
-                    "query": query[:50] + "..." if len(query) > 50 else query,
-                    "results_count": results_count,
-                    # Provide running counters for UI synchronisation.
-                    "searches_completed": completed,
-                    "total_searches": total_value,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-            ),
-        )
-
-        # Persist counters via a regular progress update so downstream
-        # consumers (e.g., other WebSocket clients, database snapshots) stay in
-        # sync with the event we just emitted.
-        if completed is not None:
-            try:
-                await self.update_progress(
-                    research_id,
-                    searches_completed=completed,
-                    total_searches=total_value,
-                )
-            except Exception:
-                # Intentionally ignore to avoid breaking the primary event flow.
-                pass
-
-    async def report_credibility_check(self, research_id: str, domain: str, score: float):
-        """Report credibility check progress"""
-        await self.connection_manager.broadcast_to_research(
-            research_id,
-            WSMessage(
-                type=WSEventType.CREDIBILITY_CHECK,
-                data={
-                    "research_id": research_id,
-                    "domain": domain,
-                    "score": score,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-        )
-
-    async def report_deduplication(self, research_id: str, before_count: int, after_count: int):
-        """Report deduplication progress"""
-        await self.connection_manager.broadcast_to_research(
-            research_id,
-            WSMessage(
-                type=WSEventType.DEDUPLICATION,
-                data={
-                    "research_id": research_id,
-                    "before_count": before_count,
-                    "after_count": after_count,
-                    "removed": before_count - after_count,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-        )
-
-        if research_id in self.research_progress:
-            try:
-                removed_total = max(0, int(before_count) - int(after_count))
-            except Exception:
-                removed_total = None
-            if removed_total is not None:
-                try:
-                    await self.update_progress(
-                        research_id,
-                        duplicates_removed=removed_total,
-                    )
-                except Exception:
-                    pass
-
-    async def report_evidence_builder_skipped(self, research_id: str, reason: str | None = None):
-        """Notify frontend that evidence builder was skipped (no sources)."""
-        await self.connection_manager.broadcast_to_research(
-            research_id,
-            WSMessage(
-                type=WSEventType.EVIDENCE_BUILDER_SKIPPED,
-                data={
-                    "research_id": research_id,
-                    "reason": (reason or "no_search_results"),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-            ),
-        )
 
 
 # --- WebSocket Authentication ---
@@ -1831,9 +1795,7 @@ class WebSocketIntegration:
 # --- Create global instances ---
 
 connection_manager = ConnectionManager()
-# Use the compatibility alias so legacy callers invoking update_progress(message, progress)
-# continue to work while newer code can use the richer ProgressTracker API.
-progress_tracker = ResearchProgressTracker(connection_manager)
+progress_tracker = ProgressTracker(connection_manager)
 
 
 async def _broadcast_triage_board(payload: Dict[str, Any]) -> None:

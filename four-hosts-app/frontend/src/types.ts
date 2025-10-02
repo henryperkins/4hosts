@@ -84,6 +84,18 @@ export interface ResearchResult {
     }
     deduplication_stats?: Record<string, unknown>
     search_metrics?: Record<string, unknown>
+    analysis_metrics?: {
+      duration_ms?: number
+      sources_total?: number
+      sources_completed?: number
+      progress_updates?: number
+      updates_per_second?: number
+      avg_update_gap_ms?: number
+      p95_update_gap_ms?: number
+      first_update_gap_ms?: number
+      last_update_gap_ms?: number
+      cancelled?: boolean
+    }
     context_layers?: {
       write_focus?: string
       compression_ratio?: number
