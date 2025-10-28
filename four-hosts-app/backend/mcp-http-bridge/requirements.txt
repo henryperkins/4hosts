@@ -1,2 +1,2 @@
-aiohttp==3.9.3
+aiohttp==3.12.14
 structlog==24.1.0
